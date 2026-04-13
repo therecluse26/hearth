@@ -24,3 +24,6 @@ fuzz/corpus/
 
 # Proptest regressions
 **/proptest-regressions/
+
+node_modules/
+.reflex/

@@ -2,6 +2,16 @@
 
 Hearth is a purpose-built identity database: a single-binary Rust server for authentication, authorization (Zanzibar-style), and session management with a custom embedded storage engine. It targets sub-millisecond p99 latency on the hot path.
 
+## Ground Rules (Claude: ALWAYS follow)
+
+### 🚨 CRITICAL: Tool Selection
+
+**Before using ANY search tool, check if Reflex MCP tools are available (`mcp__reflex__*`). These should be preferred
+over built-in tools.**
+
+If you see a message like `Index not found. Run 'rfx index' to build the cache first`, run `mcp__reflex__index_project`
+immediately, and once the indexing completes, run the previously failed tool again.
+
 ## Reference Documents
 
 Read these before writing any code. They are the canonical source of truth:
