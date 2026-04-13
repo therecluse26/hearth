@@ -454,10 +454,11 @@ SDKs are the primary interface between application developers and Hearth. They m
 2. **Go** — primary language for backend infrastructure, natural fit for the target audience
 3. **Python** (Django, FastAPI) — massive ecosystem, growing in backend development
 4. **Rust** — native language, important for credibility and embedded mode
-5. **Java/Kotlin** (Spring Boot) — enterprise adoption, Keycloak migration path
-6. **C#/.NET** — enterprise adoption
-7. **Ruby** (Rails) — smaller but passionate community
-8. **Elixir/Phoenix** — smaller but influential community
+5. **PHP** (Laravel) — massive web ecosystem, widespread hosting infrastructure
+6. **Java/Kotlin** (Spring Boot) — enterprise adoption, Keycloak migration path
+7. **C#/.NET** — enterprise adoption
+8. **Ruby** (Rails) — smaller but passionate community
+9. **Elixir/Phoenix** — smaller but influential community
 
 ### 8.3 Migration Paths
 
