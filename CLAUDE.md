@@ -8,7 +8,20 @@ Read these before writing any code. They are the canonical source of truth:
 
 - `docs/specs/ARCHITECTURE.md` — structural rules (MUST/SHOULD per RFC 2119). Violations of MUST-level rules block merge.
 - `docs/specs/TESTING.md` — eight testing layers, TDD workflow, tooling, CI tiers.
+- `docs/specs/TEST_SCENARIOS.md` — granular checkbox-tracked test scenario checklist by module and layer.
+- `docs/specs/IMPLEMENTATION_ORDER.md` — **mandatory build sequence for Phase 0.** Steps MUST be completed in order (1→18). Do not skip ahead or work out of sequence.
 - `docs/vision/VISION.md` — design rationale, performance targets, competitive positioning, roadmap. Read this to understand *why* decisions were made.
+
+## Implementation Order (MANDATORY)
+
+All implementation work MUST follow the sequence defined in `docs/specs/IMPLEMENTATION_ORDER.md`. This is not a suggestion — it is a strict dependency chain where each step depends on the ones before it.
+
+**Rules:**
+- Complete steps in order: 1 → 2 → 3 → ... → 18. Do not skip ahead.
+- Each step MUST pass verification (`cargo nextest run`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`) before proceeding to the next.
+- Within each step, tackle P0 `fast` scenarios first, then P0 `extended`, then P1.
+- Read the corresponding TEST_SCENARIOS.md section before starting each step to understand the full scope of tests required.
+- Do not create proto files, HTTP endpoints, or wire format code until step 15 (OIDC) demands it.
 
 ## Architecture
 
