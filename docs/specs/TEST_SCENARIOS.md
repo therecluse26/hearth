@@ -17,7 +17,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Module | Unit | Integration | Property | Fuzz | Simulation | Adversarial | Conformance | Benchmark | **Total** |
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
 | Test Infrastructure | 0/2 | 0/2 | -- | -- | -- | -- | -- | -- | **0/4** |
-| Storage: WAL | 0/5 | -- | 0/3 | 0/1 | 0/3 | -- | -- | -- | **0/12** |
+| Storage: WAL | 5/5 | -- | 3/3 | 0/1 | 0/3 | -- | -- | -- | **8/12** |
 | Storage: Memtable | 0/5 | -- | 0/2 | -- | -- | -- | -- | -- | **0/7** |
 | Storage: Persistence | 0/4 | -- | 0/2 | -- | 0/3 | -- | -- | -- | **0/9** |
 | Storage: Tiered Hot/Cold | 0/5 | -- | 0/2 | -- | 0/2 | -- | -- | 0/3 | **0/12** |
@@ -31,7 +31,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **0/54** | **0/24** | **0/18** | **0/5** | **0/10** | **0/23** | **0/2** | **0/12** | **0/148** |
+| **Column Total** | **5/54** | **0/24** | **3/18** | **0/5** | **0/10** | **0/23** | **0/2** | **0/12** | **8/148** |
 
 ---
 
@@ -55,17 +55,17 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Append single entry and read back matches original `P0` `fast`
-- [ ] Append multiple entries and read back preserves insertion order `P0` `fast`
-- [ ] WAL fsync on commit guarantees durability (entry persists after process restart) `P0` `fast`
-- [ ] Empty WAL returns no entries on read `P0` `fast`
-- [ ] WAL file rotation triggers at configured size threshold `P1` `fast`
+- [x] Append single entry and read back matches original `P0` `fast`
+- [x] Append multiple entries and read back preserves insertion order `P0` `fast`
+- [x] WAL fsync on commit guarantees durability (entry persists after process restart) `P0` `fast`
+- [x] Empty WAL returns no entries on read `P0` `fast`
+- [x] WAL file rotation triggers at configured size threshold `P1` `fast`
 
 #### Property
 
-- [ ] Random write sequences maintain append-order integrity (`proptest`, 256/10K+ cases) `P0` `extended`
-- [ ] WAL replay after any prefix of operations produces consistent state `P0` `extended`
-- [ ] Entry serialization round-trip: `deserialize(serialize(entry)) == entry` for arbitrary entries `P0` `extended`
+- [x] Random write sequences maintain append-order integrity (`proptest`, 256/10K+ cases) `P0` `extended`
+- [x] WAL replay after any prefix of operations produces consistent state `P0` `extended`
+- [x] Entry serialization round-trip: `deserialize(serialize(entry)) == entry` for arbitrary entries `P0` `extended`
 
 #### Simulation
 

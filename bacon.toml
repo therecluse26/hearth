@@ -1,0 +1,15 @@
+[jobs.test]
+command = ["cargo", "nextest", "run"]
+watch = ["src", "tests"]
+
+[jobs.test-unit]
+command = ["cargo", "nextest", "run", "--lib"]
+watch = ["src"]
+
+[jobs.clippy]
+command = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+watch = ["src", "tests", "benches"]
+
+[jobs.check]
+command = ["cargo", "check", "--all-targets"]
+watch = ["src", "tests", "benches"]
