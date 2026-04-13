@@ -33,11 +33,10 @@ Six modules with strict downward dependency flow:
 
 ### Inter-Layer Communication
 
-- Layers communicate through trait interfaces defined in each layer's `mod.rs`.
 - `mod.rs` contains ONLY trait definitions, re-exports, and module declarations. No implementation logic.
 - Internal types MUST be `pub(crate)` or private. Default to private.
-- Storage engine MUST NOT expose WAL/memtable/SST types to upper layers.
 - Identity Engine MUST NOT depend on any wire format or serialization framework.
+- See ARCHITECTURE.md § 1.3 for layer-specific encapsulation rules.
 
 ### Hot Path Rules
 
@@ -53,9 +52,7 @@ Everything else (user creation, hashing, token issuance, WAL writes, cold-tier p
 
 ### Storage Engine
 
-- WAL MUST be `fsync`'d before acknowledging any write.
-- Engine MUST survive `kill -9` at any point and recover to consistent state.
-- Hot-to-cold eviction MUST NOT block the read path.
+- WAL MUST be `fsync`'d before acknowledging any write. Engine MUST survive `kill -9`. See ARCHITECTURE.md § 6.
 
 ### Multi-Tenancy
 
@@ -65,9 +62,7 @@ Everything else (user creation, hashing, token issuance, WAL writes, cold-tier p
 
 ### API Contracts
 
-- `.proto` files in `proto/` are the single source of truth for all API contracts.
-- REST and gRPC endpoints serialize from protobuf-generated types (via `prost`).
-- `buf` is the protobuf toolchain.
+- `.proto` files in `proto/` are the single source of truth for all API contracts (`prost` + `buf`). See ARCHITECTURE.md § 4.
 
 ## TDD Workflow (Mandatory)
 
@@ -83,16 +78,7 @@ A PR that adds functionality without a test written *before* the implementation 
 
 ### Eight Testing Layers
 
-| # | Layer | Location | Purpose |
-|---|-------|----------|---------|
-| 1 | Unit tests | `#[cfg(test)]` inline | Internal invariants, TDD |
-| 2 | Integration / black box | `tests/` | Public API only, dual-mode (embedded + server) |
-| 3 | Property tests | `proptest` | Random inputs, invariant assertion (10k+ cases in CI) |
-| 4 | Fuzz tests | `fuzz/` | Coverage-guided mutation on all parsers |
-| 5 | Simulation | `simulation/` | Deterministic fault injection via `madsim` |
-| 6 | Adversarial | `tests/adversarial.rs` | Security tests from attacker perspective |
-| 7 | Conformance | Per-protocol | OIDC/SAML/SCIM spec suites |
-| 8 | Benchmarks | `benches/` | `criterion`, regression detection (+20% threshold) |
+Hearth uses eight testing layers (unit, integration, property, fuzz, simulation, adversarial, conformance, benchmarks). For each feature, consider which layers apply. See TESTING.md for the full matrix, locations, and conventions.
 
 ### Testing Tooling
 
@@ -106,20 +92,11 @@ A PR that adds functionality without a test written *before* the implementation 
 
 ### TestHarness Pattern
 
-Black box tests use `TestHarness` (`tests/common/mod.rs`) with dual modes:
-- `TestHarness::embedded()` — direct library API
-- `TestHarness::server()` — HTTP against a running instance
-
-Same test logic runs against both modes via shared async functions.
+Black box tests use `TestHarness` (`tests/common/mod.rs`) with embedded and server modes. See TESTING.md for the dual-mode pattern.
 
 ### CI Tiers
 
-| Tier | Trigger | Time Budget |
-|------|---------|-------------|
-| Fast | Every commit/PR | < 5 min |
-| Standard | Merge to main | < 15 min (adds benchmarks) |
-| Extended | Nightly | < 60 min (proptest high count, fuzz) |
-| Full | Weekly/pre-release | < 4 hrs (simulation, extended fuzz, conformance) |
+CI runs four tiers: Fast (every commit), Standard (merge), Extended (nightly), Full (weekly). See TESTING.md for triggers and time budgets.
 
 ## Code Style & Conventions
 
@@ -176,10 +153,8 @@ Same test logic runs against both modes via shared async functions.
 
 ## Dependency Policy
 
-- New deps MUST be justified in PR, pass `cargo-audit`, and have compatible license (Apache 2.0, MIT, BSD, MPL-2.0).
-- `cargo-audit` and `cargo-deny` run in CI on every PR.
-- No ORM crates. No `reqwest` in production code (test-only).
-- See `docs/specs/ARCHITECTURE.md` § 15.2 for the pre-approved crate list.
+- New deps MUST be justified in PR, pass `cargo-audit`, and have compatible license (Apache 2.0/MIT/BSD/MPL-2.0).
+- Bans: no ORM, no `lazy_static`, no `async-trait` on hot path, no `reqwest` in prod. See ARCHITECTURE.md § 15 for approved crates.
 
 ## Async Model
 
