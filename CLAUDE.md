@@ -1,0 +1,188 @@
+# Hearth — Development Rules
+
+Hearth is a purpose-built identity database: a single-binary Rust server for authentication, authorization (Zanzibar-style), and session management with a custom embedded storage engine. It targets sub-millisecond p99 latency on the hot path.
+
+## Reference Documents
+
+Read these before writing any code. They are the canonical source of truth:
+
+- `docs/specs/ARCHITECTURE.md` — structural rules (MUST/SHOULD per RFC 2119). Violations of MUST-level rules block merge.
+- `docs/specs/TESTING.md` — eight testing layers, TDD workflow, tooling, CI tiers.
+- `docs/vision/VISION.md` — design rationale, performance targets, competitive positioning, roadmap. Read this to understand *why* decisions were made.
+
+## Architecture
+
+### Layer Structure
+
+Six modules with strict downward dependency flow:
+
+| Layer | Path | Role |
+|-------|------|------|
+| Core | `src/core/` | Shared types and traits only. No logic, no state, no I/O. |
+| Protocol | `src/protocol/` | Wire adapters (REST, gRPC, OIDC, SAML, SCIM). Stateless, thin. |
+| Identity Engine | `src/identity/` | Domain logic. Users, credentials, sessions, tenants, tokens. |
+| Authorization Engine | `src/authz/` | Zanzibar relationship tuples. `check()`, `expand()`, `write_tuples()`, `watch()`. |
+| Cluster | `src/cluster/` | Raft consensus via `openraft`. Invisible in single-node mode. |
+| Storage Engine | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |
+
+**Dependency rules:**
+- Dependencies MUST flow downward. No layer imports from above.
+- One lateral exception: `identity/` may call `authz/`. Never the reverse.
+- Every layer MAY depend on `core/`.
+- `src/main.rs` wires layers together; it may import from any layer.
+
+### Inter-Layer Communication
+
+- Layers communicate through trait interfaces defined in each layer's `mod.rs`.
+- `mod.rs` contains ONLY trait definitions, re-exports, and module declarations. No implementation logic.
+- Internal types MUST be `pub(crate)` or private. Default to private.
+- Storage engine MUST NOT expose WAL/memtable/SST types to upper layers.
+- Identity Engine MUST NOT depend on any wire format or serialization framework.
+
+### Hot Path Rules
+
+Hot path = `validate_token()`, `lookup_session()`, `check_permission()` (1-hop), `lookup_user()` when data is in hot tier.
+
+Hot path code MUST obey ALL of:
+1. **Zero heap allocations** — no `Box::new`, `Vec::new`, `String::from`, `format!()`, `to_string()`.
+2. **No syscalls for reads** — serve from memory-mapped structures or in-process data.
+3. **No locks on read path** — no mutexes, no `RwLock` write locks. Use epoch-based reclamation.
+4. **No yielding** — MUST NOT `.await` on I/O. Complete synchronously within async context.
+
+Everything else (user creation, hashing, token issuance, WAL writes, cold-tier promotion, admin ops) is off the hot path.
+
+### Storage Engine
+
+- WAL MUST be `fsync`'d before acknowledging any write.
+- Engine MUST survive `kill -9` at any point and recover to consistent state.
+- Hot-to-cold eviction MUST NOT block the read path.
+
+### Multi-Tenancy
+
+- Every storage operation MUST require a `TenantId` parameter (newtype, not raw string).
+- All keys MUST be prefixed with tenant ID. No code path to construct a key without `TenantId`.
+- Scans MUST be bounded to a single tenant's key space.
+
+### API Contracts
+
+- `.proto` files in `proto/` are the single source of truth for all API contracts.
+- REST and gRPC endpoints serialize from protobuf-generated types (via `prost`).
+- `buf` is the protobuf toolchain.
+
+## TDD Workflow (Mandatory)
+
+**Every feature and bug fix follows strict TDD — no exceptions:**
+
+1. Write a failing test that describes expected behavior.
+2. Run it — confirm it fails (red).
+3. Write the minimal implementation to make it pass (green).
+4. Refactor while keeping tests green.
+5. Add a black box test through the public API if applicable.
+
+A PR that adds functionality without a test written *before* the implementation is incomplete.
+
+### Eight Testing Layers
+
+| # | Layer | Location | Purpose |
+|---|-------|----------|---------|
+| 1 | Unit tests | `#[cfg(test)]` inline | Internal invariants, TDD |
+| 2 | Integration / black box | `tests/` | Public API only, dual-mode (embedded + server) |
+| 3 | Property tests | `proptest` | Random inputs, invariant assertion (10k+ cases in CI) |
+| 4 | Fuzz tests | `fuzz/` | Coverage-guided mutation on all parsers |
+| 5 | Simulation | `simulation/` | Deterministic fault injection via `madsim` |
+| 6 | Adversarial | `tests/adversarial.rs` | Security tests from attacker perspective |
+| 7 | Conformance | Per-protocol | OIDC/SAML/SCIM spec suites |
+| 8 | Benchmarks | `benches/` | `criterion`, regression detection (+20% threshold) |
+
+### Testing Tooling
+
+- **Test runner**: `cargo-nextest` (not `cargo test`)
+- **Watch mode**: `bacon test` for TDD loop
+- **Property tests**: `proptest` (256 cases dev, 10k+ CI)
+- **Benchmarks**: `criterion`
+- **Coverage**: `cargo-llvm-cov`
+- **Simulation**: `madsim`
+- **Mocking**: Minimal. Real implementations preferred. DI only for clock, filesystem, randomness.
+
+### TestHarness Pattern
+
+Black box tests use `TestHarness` (`tests/common/mod.rs`) with dual modes:
+- `TestHarness::embedded()` — direct library API
+- `TestHarness::server()` — HTTP against a running instance
+
+Same test logic runs against both modes via shared async functions.
+
+### CI Tiers
+
+| Tier | Trigger | Time Budget |
+|------|---------|-------------|
+| Fast | Every commit/PR | < 5 min |
+| Standard | Merge to main | < 15 min (adds benchmarks) |
+| Extended | Nightly | < 60 min (proptest high count, fuzz) |
+| Full | Weekly/pre-release | < 4 hrs (simulation, extended fuzz, conformance) |
+
+## Code Style & Conventions
+
+- `clippy::pedantic` MUST pass. Allowed lints documented in `Cargo.toml`/`clippy.toml`.
+- `rustfmt` with project `rustfmt.toml`. No formatting debates.
+- All `pub`/`pub(crate)` items MUST have doc comments.
+- Follow the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
+
+### Error Handling
+
+- Each layer defines its own error enum (`StorageError`, `IdentityError`, etc.).
+- All error enums: `#[non_exhaustive]`, implement `std::error::Error` + `Display`.
+- Errors MUST NOT cross layer boundaries as concrete types — convert via `From`.
+- Error messages MUST NOT contain sensitive data (passwords, tokens, keys, PII).
+
+### Panic Policy
+
+- **No `unwrap()` or `expect()` in production code.** `#[deny(clippy::unwrap_used)]` enforced.
+- `unwrap()` permitted ONLY with `#[allow(clippy::unwrap_used)]` + `// INVARIANT:` comment.
+- `expect()` permitted in test code and one-time startup initialization.
+- Public functions MUST return `Result<T, LayerError>`.
+
+### Observability
+
+- `tracing` ONLY — no `println!`, `eprintln!`, or `log` crate.
+- Hot path MUST NOT log at `info` or above in steady state.
+- MUST NOT log passwords, tokens, keys, or PII.
+
+### Types
+
+- Entity IDs are distinct newtypes: `UserId(Uuid)`, `SessionId(Uuid)`, `TenantId(Uuid)`, etc.
+- Newtypes MUST NOT implement `Deref` to inner type. Use `.as_uuid()`.
+- Timestamps stored as UTC. Internal representation: Unix microseconds.
+- Clock injectable via `Clock` trait for deterministic testing.
+- Sensitive data (passwords, tokens, keys) MUST wrap in `Zeroize`-on-drop types. MUST NOT implement `Debug`/`Display`/`Serialize` revealing contents.
+
+## Security Rules
+
+- **Signing**: Ed25519 (asymmetric only). No HS256, no `alg:none`.
+- **Password hashing**: Argon2id, OWASP parameters. Off hot path, no latency compromise.
+- **Input validation**: Each layer validates its own invariants. MUST NOT assume upstream validated.
+- **Crypto**: `ring` or `RustCrypto` only. No hand-rolled crypto. Constant-time secret comparisons.
+- **Encryption at rest**: Per-tenant keys. Keys MUST NOT appear in logs/errors/debug output.
+- **Audit**: Security-critical mutations emit structured `tracing` events at `info` level.
+
+### Concurrency & Safety
+
+- No global mutable state. Shared state passed explicitly or in `Arc<AppState>`.
+- `Mutex` MUST NOT be held across `.await` points.
+- `unsafe` minimized and isolated. Every `unsafe` block MUST have a `// SAFETY:` comment.
+- `unsafe` MUST NOT appear in protocol or identity layers.
+- No `lazy_static` — use `std::sync::OnceLock` or `LazyLock`.
+- No `async-trait` on hot path (heap-allocates). Use RPITIT.
+
+## Dependency Policy
+
+- New deps MUST be justified in PR, pass `cargo-audit`, and have compatible license (Apache 2.0, MIT, BSD, MPL-2.0).
+- `cargo-audit` and `cargo-deny` run in CI on every PR.
+- No ORM crates. No `reqwest` in production code (test-only).
+- See `docs/specs/ARCHITECTURE.md` § 15.2 for the pre-approved crate list.
+
+## Async Model
+
+- **Tokio only.** No other async runtime.
+- Blocking operations (file I/O, crypto hashing, DNS) MUST use `spawn_blocking`.
+- Config is immutable after startup — loaded once into `Arc<Config>`.
