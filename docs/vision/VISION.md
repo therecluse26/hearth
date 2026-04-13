@@ -174,13 +174,14 @@ Concretely:
 - The hot path (token validation, session lookup, permission checks) runs entirely in memory, against purpose-built data structures, with no allocations in the steady state
 - Writes go through a write-ahead log to durable storage; reads never block on writes
 - The system is designed to saturate modern hardware: memory bandwidth, CPU caches, NVMe I/O
+- The system distinguishes between hot data (in memory, sub-microsecond access) and cold data (on disk, millisecond-class access), automatically promoting records based on access patterns — enabling a single node to manage far more data than fits in RAM without sacrificing hot-path performance
 - No garbage collection, no JVM warm-up, no interpretive overhead
 
 This is not premature optimization. It's a design constraint that shapes the architecture from day one. You cannot bolt on sub-millisecond performance after building a system that round-trips to Postgres.
 
 ### 5.3 Opinionation as a Feature
 
-Hearth makes decisions so you don't have to. The configuration surface is deliberately small. The number of supported authentication flows is deliberately limited to the ones that matter. The authorization model is Zanzibar-style relationship-based access control — not RBAC, not ABAC, not "pluggable policy engines."
+Hearth makes decisions so you don't have to. The configuration surface is deliberately small. The number of supported authentication flows is deliberately limited to the ones that matter. The authorization model is a single Zanzibar-style engine that covers the full spectrum of access control — from simple roles to fine-grained relationships to conditional permissions — without bolting together separate RBAC, ABAC, and ReBAC systems.
 
 What Hearth explicitly **does**:
 - OIDC / OAuth 2.0 (authorization code, client credentials, device authorization)
@@ -189,7 +190,7 @@ What Hearth explicitly **does**:
 - Magic links / passwordless email
 - TOTP / authenticator apps
 - SCIM 2.0 provisioning
-- Zanzibar-style relationship-based permissions
+- Zanzibar-style permissions: built-in RBAC schemas (admin/editor/viewer) as the starting point, fine-grained relationship-based permissions as the growth path, conditional rules for time-based and attribute-based policies
 - Multi-tenancy with per-tenant identity provider configuration
 - Session management with revocation and device tracking
 - Comprehensive audit logging
@@ -199,8 +200,10 @@ What Hearth explicitly **does not do**:
 - LDAP server (legacy protocol; provide a migration path in, not ongoing support)
 - RADIUS (not in scope; different domain)
 - Custom authentication flow scripting (opinionated flows are the product)
-- Generic policy evaluation (not OPA; permissions are relationship-based, period)
+- Generic policy engines or arbitrary scripting (not OPA/Rego; one permission model, not a framework for inventing your own)
 - CMS or user-facing UI framework (provide headless APIs and reference UIs)
+
+The authorization model deserves special attention. Most teams start with roles (RBAC) and eventually need something more expressive — per-document sharing, organization hierarchies, time-limited access. The industry's answer has been to bolt together separate systems: Casbin for RBAC, OPA for policy, SpiceDB for relationships. Hearth's answer is one engine with progressive complexity: roles are a built-in pattern expressed as relationships, fine-grained permissions emerge naturally from the same graph, and conditional relationships (caveats) handle attribute-based and time-based rules without a separate policy language. One model to learn, one system to operate, one set of audit logs to review.
 
 The discipline of saying no is what makes the product coherent. Every "pluggable" and "configurable" decision point in Keycloak is a support burden, a documentation page, a potential misconfiguration, and a performance cost. Hearth trades flexibility for correctness and simplicity.
 
@@ -266,13 +269,21 @@ Hearth compiles to a single statically-linked binary. Inside that binary are sev
 
 **Identity Engine**: The core logic layer. Handles user lifecycle, credential management, session management, token issuance and validation, and multi-tenant isolation. This is where authentication flows are orchestrated and where the opinionated decisions about supported flows are enforced.
 
-**Authorization Engine**: A Zanzibar-style relationship-based permission system, embedded directly in the same process. Relationship tuples are stored in the same storage engine as identity data. Permission checks are in-process function calls, not network requests — enabling sub-microsecond authorization checks once the data is in memory.
+**Authorization Engine**: A Zanzibar-style permission system embedded directly in the same process, covering the full RBAC → ReBAC → conditional spectrum through a single engine. Key design choices:
+- **Pre-built RBAC schemas**: Admin/editor/viewer role templates work out of the box. Teams start with familiar role-based patterns and grow into fine-grained relationships when they need them.
+- **Conditional relationships (caveats)**: Tuples can carry conditions evaluated at check time — time-based expiration, IP range restrictions, attribute comparisons — following the pattern established by SpiceDB caveats. This provides ABAC-lite capability without a separate policy engine.
+- **SDK-level RBAC convenience APIs**: The SDK exposes `assignRole()` / `hasRole()` / `removeRole()` helpers that abstract away the underlying tuple mechanics. Developers who only need roles never have to think about relationship graphs.
+- **Co-located with identity data**: Because relationship tuples live in the same storage engine as users, tenants, and sessions, permission setup is atomic with identity operations. Creating a user and assigning their initial roles happens in a single transaction — no dual-write synchronization, no eventual consistency between an identity store and a separate authorization service.
+
+Permission checks are in-process function calls, not network requests — enabling sub-microsecond authorization checks once the data is in memory.
 
 **Storage Engine**: A purpose-built embedded storage engine optimized for identity access patterns. Not a generic LSM tree or B-tree — a hybrid that recognizes the distinct access patterns of different identity data types:
 - **User profiles and credentials**: relatively static, read-heavy, indexed by multiple keys (email, username, external ID, tenant). Stored in a B-tree-like structure optimized for point lookups.
 - **Sessions**: time-bounded, write-moderate, naturally ordered by creation time with TTL-based expiration. Stored in a time-partitioned structure that efficiently handles both lookups and bulk expiration.
-- **Relationship tuples**: graph-structured, read-heavy with occasional writes, traversed for permission checks. Stored in an adjacency-list structure optimized for the specific traversal patterns of Zanzibar `Check` and `Expand` operations.
+- **Relationship tuples**: graph-structured, read-heavy with occasional writes, traversed for permission checks. Tuples may carry optional condition data (caveats) evaluated at check time. Stored in an adjacency-list structure optimized for the specific traversal patterns of Zanzibar `Check` and `Expand` operations.
 - **Audit log**: append-only, write-heavy, rarely read except for compliance queries. Stored in a sequential log structure, compacted to S3-compatible object storage for long-term retention.
+
+All data types except the audit log participate in a **hot/cold tiered storage model**. Recently accessed records are held in the hot tier (in-memory, memory-mapped structures) for sub-microsecond read access. Records that have not been accessed within the eviction window are demoted to the cold tier (on-disk SSTs) and transparently promoted back to the hot tier on next access. The hot tier is auto-sized based on available system memory, enabling a single node to manage far more total records than fit in RAM while maintaining sub-millisecond latency for the active working set. See Section 7.3.1 for capacity implications.
 
 **Cluster Layer**: Raft-based consensus for multi-node deployments. Automatic leader election, log replication, and snapshot-based recovery. The cluster layer is designed to be invisible in single-node mode — no configuration, no port allocation, no ceremony. In cluster mode, it handles membership changes, node failure detection, and data rebalancing without manual intervention.
 
@@ -313,12 +324,14 @@ Hearth is written in Rust. This is a deliberate choice, not a trend-following on
 The hot path — the code that executes on every authenticated request — is the most performance-critical part of the system. It's designed with the following constraints:
 
 1. **Zero allocations**: all data structures used on the hot path are pre-allocated or arena-allocated. No heap allocation per request.
-2. **No syscalls for reads**: hot data (active sessions, frequently-accessed user records, relationship tuples) lives in memory-mapped structures. Reads are pointer dereferences, not I/O operations.
+2. **No syscalls for hot reads**: hot-tier data (active sessions, frequently-accessed user records, relationship tuples) lives in memory-mapped structures. Hot-tier reads are pointer dereferences, not I/O operations. Cold-tier reads incur a disk I/O on first access; see Section 7.3.1.
 3. **Lock-free reads**: read operations use epoch-based reclamation or read-copy-update patterns. Readers never block on writers.
 4. **Batched writes**: mutations are batched and committed to the WAL in groups, amortizing the cost of fsync across multiple operations.
 5. **CPU-cache-friendly layouts**: data structures are designed for sequential memory access patterns where possible, minimizing cache misses on the hot path.
 
 The target is for a single Hearth node to handle token validation and session lookup workloads at the same order of magnitude as Redis handles `GET` operations — because the underlying operations (hash table lookup, memory read, return value) are fundamentally similar in complexity.
+
+**Cold path fallback.** Not all reads hit the hot tier. When a request targets a record that has been evicted to the cold tier — for example, a user who has not logged in for months — the read falls through to the on-disk SST layer. This incurs a disk I/O penalty (see Section 7.3.1 for target latencies) but happens transparently: the record is loaded, served, and promoted to the hot tier in a single operation. The design goal is that the cold path is invisible to the caller — the API contract is the same, only the latency differs. Critically, cold-path reads do not degrade hot-path performance: the promotion I/O is asynchronous with respect to other readers, and hot-tier data structures are never locked or invalidated by a cold promotion.
 
 ---
 
@@ -328,15 +341,15 @@ These are design targets, not guarantees. They represent the performance that a 
 
 ### 7.1 Latency Targets (Single Node)
 
-| Operation | Target p50 | Target p99 | Comparable System |
-|-----------|-----------|-----------|-------------------|
-| Token validation (JWT verify + session lookup) | < 50 μs | < 500 μs | Redis GET: ~100 μs p99 |
-| Session lookup by ID | < 10 μs | < 100 μs | Redis GET: ~100 μs p99 |
-| Permission check (direct relationship) | < 20 μs | < 200 μs | SpiceDB: ~1–5ms p99 |
-| Permission check (3-hop graph traversal) | < 100 μs | < 1 ms | SpiceDB: ~5–20ms p99 |
-| User lookup by email/ID | < 50 μs | < 500 μs | Postgres indexed lookup: ~1–5ms |
-| Token issuance (full OAuth2 flow) | < 1 ms | < 5 ms | Keycloak: 5–50ms p50 |
-| User creation (with credential hashing) | < 50 ms | < 100 ms | Dominated by Argon2id cost |
+| Operation | Target p50 | Target p99 | Cold-path first access | Comparable System |
+|-----------|-----------|-----------|----------------------|-------------------|
+| Token validation (JWT verify + session lookup) | < 50 μs | < 500 μs | < 5 ms | Redis GET: ~100 μs p99 |
+| Session lookup by ID | < 10 μs | < 100 μs | N/A (sessions always hot while active) | Redis GET: ~100 μs p99 |
+| Permission check (direct relationship) | < 20 μs | < 200 μs | < 5 ms | SpiceDB: ~1–5ms p99 |
+| Permission check (3-hop graph traversal) | < 100 μs | < 1 ms | < 10 ms | SpiceDB: ~5–20ms p99 |
+| User lookup by email/ID | < 50 μs | < 500 μs | < 5 ms | Postgres indexed lookup: ~1–5ms |
+| Token issuance (full OAuth2 flow) | < 1 ms | < 5 ms | < 10 ms | Keycloak: 5–50ms p50 |
+| User creation (with credential hashing) | < 50 ms | < 100 ms | N/A (write path) | Dominated by Argon2id cost |
 
 ### 7.2 Throughput Targets (Single Node, Modern Hardware)
 
@@ -351,13 +364,37 @@ These are design targets, not guarantees. They represent the performance that a 
 
 | Metric | Target |
 |--------|--------|
-| Users per node | 100M+ |
+| Users per node (total managed) | 100M+ |
+| Users in hot tier (default, auto-tuned) | Adapts to available memory |
 | Active sessions per node | 10M+ |
 | Relationship tuples per node | 1B+ |
-| Memory footprint (idle, 1M users) | < 500 MB |
-| Memory footprint (idle, 100M users) | < 50 GB |
+| Memory footprint (idle, 1M hot users) | < 500 MB |
+| Memory footprint (idle, 10M hot users) | < 8 GB |
+| Memory footprint (idle, 100M hot users) | < 50 GB |
+| Disk footprint (100M total users) | < 200 GB |
 | Binary size | < 50 MB |
 | Cold start to serving requests | < 2 seconds |
+| Cold-to-hot promotion latency | < 5 ms |
+
+#### 7.3.1 Tiered Storage: Hot and Cold Data
+
+Identity workloads follow a heavy power-law distribution. A system managing 100M registered users may see 5M monthly active users and 500K–1M daily active users. The remaining 95%+ of records — inactive accounts, churned users, rarely-accessed service accounts — are stored but almost never read. Requiring all 100M records to live in RAM at all times is wasteful; requiring operators to provision 50GB+ of memory per node for a workload that realistically touches 1–5% of records in any given hour is operationally hostile.
+
+Hearth addresses this with a two-tier storage model:
+
+**Hot tier.** Recently accessed records live in memory-mapped, cache-line-aligned structures designed for sub-microsecond reads. This is the tier described in Section 6.4: zero allocations, no syscalls, lock-free reads. The hot tier holds the *working set* — the subset of data actively being accessed — not the entire dataset. For a system with 1M daily active users, the hot tier may hold ~1–2M user records, all active sessions, and the relationship tuples reachable from those users.
+
+**Cold tier.** Records that have not been accessed within the eviction window are stored in on-disk sorted string tables (SSTs), fully durable and queryable. Cold-tier reads are not failures — they are normal, expected operations for low-frequency data. Target latencies: < 5 ms on NVMe storage, < 20 ms on spinning disk. The cold tier uses the same data format as the hot tier, so no deserialization or format conversion is needed on promotion — just a memory copy.
+
+**Promotion on access.** When a request targets a cold record, the system loads it from disk, serves the response, and promotes the record to the hot tier in a single operation. Subsequent accesses hit the hot tier. This is analogous to a CPU cache hierarchy: the first access is slow, subsequent accesses are fast. The promotion is asynchronous with respect to other hot-tier readers — it does not lock or invalidate existing hot-tier data structures.
+
+**Eviction policy.** The hot tier uses a clock-based LRU approximation to decide which records to demote. Clock-based eviction was chosen over strict LRU because strict LRU requires linked-list mutation on every access — violating the zero-allocation, lock-free read constraints of the hot path (Section 6.4). The clock algorithm uses a single "recently used" bit per record, swept periodically. This provides near-LRU eviction quality at O(1) per-access overhead. LFU (least-frequently-used) was considered but rejected: identity workloads are bursty (a user logs in, performs a burst of actions, then goes idle), and LFU is pathological for bursty access patterns — it would retain stale-but-historically-frequent records over recently-active ones.
+
+**Auto-tuning (default).** By default, the hot tier auto-sizes based on available system memory. At startup, Hearth reads the available physical memory (or cgroup memory limit in containerized environments), reserves a margin for the OS and other processes (20% of total memory or 2 GB, whichever is larger), and allocates the remainder to the hot tier. The hot tier dynamically adjusts as the working set grows or shrinks — if a traffic spike brings more users online, the hot tier grows; if traffic subsides, eviction reclaims memory. Cgroup awareness is critical: without it, a container with a 4 GB memory limit would attempt to use the host's full memory and be OOM-killed.
+
+**Manual override.** Operators who need explicit control can set `storage.hot_tier_max_memory: 4GB` or `storage.hot_tier_memory_fraction: 0.7` in the configuration YAML. These settings cap hot-tier memory usage at a fixed value or a fraction of available memory, respectively. When both are set, the lower bound wins.
+
+**Why it matters.** Without tiering, managing 100M users requires ~50 GB of RAM per node — always, regardless of how many users are actually active. With tiering, RAM usage is proportional to *active* users: a deployment serving 1M daily active users from a 100M-user dataset needs roughly 1–2 GB for user records, plus memory for sessions, indexes, and relationship tuples — potentially 3–5 GB total. This is the difference between requiring a $500/month high-memory VM and running comfortably on a $50/month standard instance. For the self-hosted, operationally-simple deployment model that Hearth targets, this reduction in hardware requirements is not a nice-to-have — it is essential.
 
 ### 7.4 The "Redis Replacement" Pitch
 
@@ -376,6 +413,8 @@ App → Hearth
 ```
 
 With comparable or better latency on the hot path (session lookups, token validation), there is no need for a caching layer. The cache *is* the database. Sessions live in memory-mapped structures with WAL-backed durability. You get Redis-class read performance with database-class durability, in a single system that also handles the authentication and authorization logic.
+
+And unlike Redis, which evicts data permanently when memory is exhausted, Hearth's tiered storage model gracefully spills cold records to disk. No data is lost. No cache invalidation logic is needed. The system transparently manages the boundary between what lives in memory and what lives on disk, based on real access patterns and available resources.
 
 ---
 
@@ -670,19 +709,21 @@ Concrete markers:
 
 The following items are not part of the core vision but represent areas where further thinking is needed:
 
-1. **Embedded authorization language**: Should the Zanzibar-style permission model support a schema definition language (like SpiceDB's schema language), or should relationships be defined purely through API calls? A schema language adds complexity but improves developer experience and enables validation.
+1. **Authorization schema language approach**: The permission model needs a schema definition language — both SpiceDB and OpenFGA converged on this, and the developer experience benefits (validation, IDE support, version-controlled schemas) are clear. The open question is: how closely should Hearth follow SpiceDB's schema language (which is becoming a de facto standard) vs. designing a bespoke DSL optimized for Hearth's co-located architecture? SpiceDB compatibility would ease migration and leverage existing tooling; a custom language could better express Hearth-specific concepts like tenant-scoped relationships and identity-aware conditions.
 
-2. **Event streaming / webhooks**: Should Hearth provide a built-in event system (user created, session revoked, permission changed) for downstream consumers? This is common in auth systems but adds scope. A webhook-based approach would be simpler than a full event streaming system.
+2. **Expression language for conditions**: Conditional relationships (caveats) need an expression language for evaluating conditions at check time. CEL (Common Expression Language, used by Google and adopted by SpiceDB) is the obvious candidate — it's sandboxed, performant, and well-specified. The alternative is a custom expression evaluator that could be more tightly integrated with Hearth's type system and identity data model. The tradeoffs are ecosystem compatibility vs. integration depth and control over evaluation performance in the hot path.
 
-3. **UI components**: Should the project maintain headless login/signup UI components (React, Vue, Svelte) as part of the core project, or leave this to the community? Clerk's strength is partly its pre-built UI components. There's a tension between "database, not application" positioning and the DX benefits of shipping UI components.
+3. **Event streaming / webhooks**: Should Hearth provide a built-in event system (user created, session revoked, permission changed) for downstream consumers? This is common in auth systems but adds scope. A webhook-based approach would be simpler than a full event streaming system.
 
-4. **Tenant federation**: For B2B SaaS use cases, should Hearth support a model where multiple Hearth instances federate identity across organizational boundaries? This is a complex feature but potentially high-value for large enterprise deployments.
+4. **UI components**: Should the project maintain headless login/signup UI components (React, Vue, Svelte) as part of the core project, or leave this to the community? Clerk's strength is partly its pre-built UI components. There's a tension between "database, not application" positioning and the DX benefits of shipping UI components.
 
-5. **Hardware security module (HSM) integration**: For high-security deployments, should Hearth support PKCS#11 or cloud KMS integration for key management? This is common in enterprise auth products but adds significant complexity.
+5. **Tenant federation**: For B2B SaaS use cases, should Hearth support a model where multiple Hearth instances federate identity across organizational boundaries? This is a complex feature but potentially high-value for large enterprise deployments.
 
-6. **Compliance-specific features**: Features like data residency (ensuring user data stays in a specific geographic region), right-to-be-forgotten (GDPR Article 17 compliance), and data classification may need to be part of the core product rather than addons. The scope implications are significant.
+6. **Hardware security module (HSM) integration**: For high-security deployments, should Hearth support PKCS#11 or cloud KMS integration for key management? This is common in enterprise auth products but adds significant complexity.
 
-7. **Rate limiting and abuse prevention**: Should Hearth include built-in rate limiting, brute force protection, and bot detection, or should these be handled by a separate layer (WAF, API gateway)? The "single binary" principle argues for inclusion; the "do fewer things well" principle argues for exclusion.
+7. **Compliance-specific features**: Features like data residency (ensuring user data stays in a specific geographic region), right-to-be-forgotten (GDPR Article 17 compliance), and data classification may need to be part of the core product rather than addons. The scope implications are significant.
+
+8. **Rate limiting and abuse prevention**: Should Hearth include built-in rate limiting, brute force protection, and bot detection, or should these be handled by a separate layer (WAF, API gateway)? The "single binary" principle argues for inclusion; the "do fewer things well" principle argues for exclusion.
 
 ---
 
