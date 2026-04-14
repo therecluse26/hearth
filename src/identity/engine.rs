@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use crate::core::{Clock, TenantId, UserId};
+use crate::identity::credentials::{self, CleartextPassword, CredentialConfig, StoredCredential};
 use crate::identity::error::IdentityError;
 use crate::identity::keys;
 use crate::identity::types::{CreateUserRequest, UpdateUserRequest, User, UserStatus};
@@ -18,12 +19,15 @@ use crate::storage::StorageEngine;
 pub struct IdentityConfig {
     /// Default status for newly created users.
     pub default_status: UserStatus,
+    /// Password hashing parameters.
+    pub credential: CredentialConfig,
 }
 
 impl Default for IdentityConfig {
     fn default() -> Self {
         Self {
             default_status: UserStatus::Active,
+            credential: CredentialConfig::default(),
         }
     }
 }
@@ -39,6 +43,12 @@ pub struct EmbeddedIdentityEngine {
     clock: Arc<dyn Clock>,
     /// Engine configuration.
     config: IdentityConfig,
+    /// Pre-computed dummy hash for timing-oracle prevention.
+    ///
+    /// When `verify_password` is called for a nonexistent user or missing
+    /// credential, we verify against this dummy hash so the response time
+    /// is indistinguishable from a real failed verification.
+    dummy_hash: String,
 }
 
 impl std::fmt::Debug for EmbeddedIdentityEngine {
@@ -51,15 +61,20 @@ impl std::fmt::Debug for EmbeddedIdentityEngine {
 
 impl EmbeddedIdentityEngine {
     /// Creates a new identity engine.
+    ///
+    /// Pre-computes a dummy Argon2id hash on construction for use in
+    /// timing-oracle prevention during password verification.
     pub fn new(
         storage: Arc<dyn StorageEngine>,
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
     ) -> Self {
+        let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         Self {
             storage,
             clock,
             config,
+            dummy_hash,
         }
     }
 
@@ -80,6 +95,20 @@ impl EmbeddedIdentityEngine {
     /// Wraps a storage error into an `IdentityError`.
     fn storage_err(e: crate::storage::StorageError) -> IdentityError {
         IdentityError::Storage(Box::new(e))
+    }
+
+    /// Serializes a stored credential to JSON bytes.
+    fn serialize_credential(cred: &StoredCredential) -> Result<Vec<u8>, IdentityError> {
+        serde_json::to_vec(cred).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
+    }
+
+    /// Deserializes a stored credential from JSON bytes.
+    fn deserialize_credential(bytes: &[u8]) -> Result<StoredCredential, IdentityError> {
+        serde_json::from_slice(bytes).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
     }
 }
 
@@ -270,7 +299,98 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .delete(tenant_id, &email_key)
             .map_err(Self::storage_err)?;
 
+        // 4. Delete credential (if any — best effort, ignore not-found)
+        let cred_key = keys::encode_credential_key(user_id);
+        self.storage
+            .delete(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?;
+
         Ok(())
+    }
+
+    fn set_password(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        password: &CleartextPassword,
+    ) -> Result<(), IdentityError> {
+        // Ensure the user exists
+        self.get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Hash and store
+        let now = self.clock.now().as_micros();
+        let cred = credentials::hash_password(password, &self.config.credential, now)?;
+        let cred_bytes = Self::serialize_credential(&cred)?;
+        let cred_key = keys::encode_credential_key(user_id);
+        self.storage
+            .put(tenant_id, &cred_key, &cred_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(())
+    }
+
+    fn verify_password(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        password: &CleartextPassword,
+    ) -> Result<bool, IdentityError> {
+        // Check user exists
+        let user = self.get_user(tenant_id, user_id)?;
+        if user.is_none() {
+            // Timing defense: verify against dummy hash so timing is
+            // indistinguishable from a real failed verification
+            let _ = credentials::verify_hash(password, &self.dummy_hash);
+            return Err(IdentityError::UserNotFound);
+        }
+
+        // Load credential
+        let cred_key = keys::encode_credential_key(user_id);
+        let cred_bytes = self
+            .storage
+            .get(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?;
+
+        let Some(cred_bytes) = cred_bytes else {
+            // Timing defense: same as above
+            let _ = credentials::verify_hash(password, &self.dummy_hash);
+            return Err(IdentityError::CredentialNotFound);
+        };
+
+        let cred = Self::deserialize_credential(&cred_bytes)?;
+        let matches = credentials::verify_password(password, &cred)?;
+
+        // Auto-upgrade legacy algorithms on successful verification
+        if matches && cred.algorithm != credentials::PasswordAlgorithm::Argon2id {
+            let now = self.clock.now().as_micros();
+            let upgraded = credentials::hash_password(password, &self.config.credential, now)?;
+            let upgraded_bytes = Self::serialize_credential(&upgraded)?;
+            self.storage
+                .put(tenant_id, &cred_key, &upgraded_bytes)
+                .map_err(Self::storage_err)?;
+        }
+
+        Ok(matches)
+    }
+
+    fn change_password(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        old_password: &CleartextPassword,
+        new_password: &CleartextPassword,
+    ) -> Result<(), IdentityError> {
+        // Verify old password (this also checks user existence and credential existence)
+        let matches = self.verify_password(tenant_id, user_id, old_password)?;
+        if !matches {
+            return Err(IdentityError::InvalidCredential {
+                reason: "old password does not match".to_string(),
+            });
+        }
+
+        // Set the new password
+        self.set_password(tenant_id, user_id, new_password)
     }
 }
 
@@ -285,10 +405,14 @@ mod tests {
         let config = StorageConfig::dev(dir.path().to_path_buf());
         let storage = EmbeddedStorageEngine::open(config).expect("open");
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
         let engine = EmbeddedIdentityEngine::new(
             Arc::new(storage) as Arc<dyn StorageEngine>,
             Arc::clone(&clock) as Arc<dyn Clock>,
-            IdentityConfig::default(),
+            identity_config,
         );
         (dir, engine, clock)
     }
@@ -845,6 +969,218 @@ mod tests {
     fn engine_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<EmbeddedIdentityEngine>();
+    }
+
+    // ===== Credential Scenario 1: set_password + verify_password =====
+
+    fn create_test_user(engine: &EmbeddedIdentityEngine, tenant: &TenantId) -> User {
+        engine
+            .create_user(
+                tenant,
+                &CreateUserRequest {
+                    email: format!("user-{}@example.com", uuid::Uuid::new_v4()),
+                    display_name: "Test User".to_string(),
+                },
+            )
+            .expect("create user")
+    }
+
+    #[test]
+    fn set_and_verify_password_correct() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("my-secure-password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        let pw_check = CleartextPassword::from_string("my-secure-password".to_string());
+        let result = engine
+            .verify_password(&tenant, user.id(), &pw_check)
+            .expect("verify");
+        assert!(result, "correct password should verify");
+    }
+
+    #[test]
+    fn set_and_verify_password_wrong() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("correct-password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        let wrong = CleartextPassword::from_string("wrong-password".to_string());
+        let result = engine
+            .verify_password(&tenant, user.id(), &wrong)
+            .expect("verify");
+        assert!(!result, "wrong password should not verify");
+    }
+
+    #[test]
+    fn set_password_nonexistent_user_fails() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let pw = CleartextPassword::from_string("password".to_string());
+
+        let err = engine
+            .set_password(&tenant, &UserId::generate(), &pw)
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::UserNotFound));
+    }
+
+    #[test]
+    fn verify_password_nonexistent_user_returns_error() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let pw = CleartextPassword::from_string("password".to_string());
+
+        let err = engine
+            .verify_password(&tenant, &UserId::generate(), &pw)
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::UserNotFound));
+    }
+
+    #[test]
+    fn verify_password_no_credential_returns_error() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+        let pw = CleartextPassword::from_string("password".to_string());
+
+        let err = engine
+            .verify_password(&tenant, user.id(), &pw)
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::CredentialNotFound));
+    }
+
+    // ===== Credential Scenario 3: Password change =====
+
+    #[test]
+    fn change_password_succeeds() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let old_pw = CleartextPassword::from_string("old-password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &old_pw)
+            .expect("set password");
+
+        let old_for_change = CleartextPassword::from_string("old-password".to_string());
+        let new_pw = CleartextPassword::from_string("new-password".to_string());
+        engine
+            .change_password(&tenant, user.id(), &old_for_change, &new_pw)
+            .expect("change password");
+
+        // Old password should no longer verify
+        let old_check = CleartextPassword::from_string("old-password".to_string());
+        let result = engine
+            .verify_password(&tenant, user.id(), &old_check)
+            .expect("verify old");
+        assert!(!result, "old password should no longer verify");
+
+        // New password should verify
+        let new_check = CleartextPassword::from_string("new-password".to_string());
+        let result = engine
+            .verify_password(&tenant, user.id(), &new_check)
+            .expect("verify new");
+        assert!(result, "new password should verify");
+    }
+
+    #[test]
+    fn change_password_wrong_old_fails() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("real-password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        let wrong_old = CleartextPassword::from_string("wrong-old".to_string());
+        let new_pw = CleartextPassword::from_string("new-password".to_string());
+        let err = engine
+            .change_password(&tenant, user.id(), &wrong_old, &new_pw)
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidCredential { .. }));
+
+        // Original password should still work
+        let orig = CleartextPassword::from_string("real-password".to_string());
+        let result = engine
+            .verify_password(&tenant, user.id(), &orig)
+            .expect("verify");
+        assert!(result, "original password should still verify");
+    }
+
+    // ===== Delete cascades to credentials =====
+
+    #[test]
+    fn delete_user_cascades_credential() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        engine.delete_user(&tenant, user.id()).expect("delete");
+
+        // Verify should fail with UserNotFound, not CredentialNotFound
+        let pw_check = CleartextPassword::from_string("password".to_string());
+        let err = engine
+            .verify_password(&tenant, user.id(), &pw_check)
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::UserNotFound));
+    }
+
+    // ===== Adversarial: Timing oracle prevention =====
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for timing ratio
+    fn verify_nonexistent_user_takes_comparable_time() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        // Time a real failed verification
+        let wrong = CleartextPassword::from_string("wrong".to_string());
+        let start_real = std::time::Instant::now();
+        let _ = engine.verify_password(&tenant, user.id(), &wrong);
+        let real_time = start_real.elapsed();
+
+        // Time a nonexistent user verification
+        let fake = CleartextPassword::from_string("wrong".to_string());
+        let start_fake = std::time::Instant::now();
+        let _ = engine.verify_password(&tenant, &UserId::generate(), &fake);
+        let fake_time = start_fake.elapsed();
+
+        // Both should take roughly the same time. We allow 10x tolerance
+        // because we're testing on CI with variable load, but the key
+        // property is that fake_time is NOT near-zero (i.e., we did
+        // actually compute the dummy hash).
+        let ratio = if real_time > fake_time {
+            real_time.as_nanos() as f64 / fake_time.as_nanos().max(1) as f64
+        } else {
+            fake_time.as_nanos() as f64 / real_time.as_nanos().max(1) as f64
+        };
+
+        assert!(
+            ratio < 10.0,
+            "timing ratio {ratio:.1}x too large: real={real_time:?}, fake={fake_time:?}"
+        );
     }
 
     // ===== Property tests =====

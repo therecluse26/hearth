@@ -4,12 +4,14 @@
 //! Depends on `storage` (for persistence) and `core` (for shared types).
 //! May call `authz` (lateral dependency). Never the reverse.
 
+pub(crate) mod credentials;
 mod engine;
 pub mod error;
 pub(crate) mod keys;
 mod types;
 mod validation;
 
+pub use credentials::{CleartextPassword, CredentialConfig};
 pub use engine::{EmbeddedIdentityEngine, IdentityConfig};
 pub use error::IdentityError;
 pub use types::{CreateUserRequest, UpdateUserRequest, User, UserStatus};
@@ -63,4 +65,42 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// Returns `IdentityError::UserNotFound` if the user does not exist.
     fn delete_user(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError>;
+
+    /// Sets (or replaces) the password for a user.
+    ///
+    /// Hashes the password using Argon2id with the configured parameters
+    /// and stores the credential. The user must exist.
+    fn set_password(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        password: &CleartextPassword,
+    ) -> Result<(), IdentityError>;
+
+    /// Verifies a password against the stored credential for a user.
+    ///
+    /// Returns `Ok(true)` if the password matches, `Ok(false)` if it does
+    /// not match. Returns `Err` if the user or credential does not exist.
+    ///
+    /// If the stored credential uses a legacy algorithm (bcrypt/scrypt),
+    /// a successful verification will automatically upgrade the hash to
+    /// Argon2id.
+    fn verify_password(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        password: &CleartextPassword,
+    ) -> Result<bool, IdentityError>;
+
+    /// Changes a user's password after verifying the old one.
+    ///
+    /// Returns `Err(InvalidCredential)` if the old password is wrong.
+    /// Returns `Err(CredentialNotFound)` if no credential exists.
+    fn change_password(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        old_password: &CleartextPassword,
+        new_password: &CleartextPassword,
+    ) -> Result<(), IdentityError>;
 }

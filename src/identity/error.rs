@@ -15,6 +15,13 @@ pub enum IdentityError {
         /// Description of what was invalid.
         reason: String,
     },
+    /// No credential found for this user.
+    CredentialNotFound,
+    /// The provided credential was invalid (e.g., wrong password).
+    InvalidCredential {
+        /// Description of why the credential was invalid.
+        reason: String,
+    },
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -30,6 +37,10 @@ impl fmt::Display for IdentityError {
             Self::UserNotFound => write!(f, "user not found"),
             Self::DuplicateEmail => write!(f, "a user with this email already exists"),
             Self::InvalidInput { reason } => write!(f, "invalid input: {reason}"),
+            Self::CredentialNotFound => write!(f, "no credential found for this user"),
+            Self::InvalidCredential { reason } => {
+                write!(f, "invalid credential: {reason}")
+            }
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -43,6 +54,8 @@ impl std::error::Error for IdentityError {
             Self::UserNotFound
             | Self::DuplicateEmail
             | Self::InvalidInput { .. }
+            | Self::CredentialNotFound
+            | Self::InvalidCredential { .. }
             | Self::Serialization { .. } => None,
         }
     }
@@ -111,10 +124,33 @@ mod tests {
     }
 
     #[test]
+    fn display_credential_not_found() {
+        let err = IdentityError::CredentialNotFound;
+        let display = format!("{err}");
+        assert!(display.contains("no credential found"), "got: {display}");
+    }
+
+    #[test]
+    fn display_invalid_credential() {
+        let err = IdentityError::InvalidCredential {
+            reason: "wrong password".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid credential"), "got: {display}");
+        assert!(display.contains("wrong password"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::UserNotFound.source().is_none());
         assert!(IdentityError::DuplicateEmail.source().is_none());
+        assert!(IdentityError::CredentialNotFound.source().is_none());
         assert!((IdentityError::InvalidInput {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!((IdentityError::InvalidCredential {
             reason: "x".to_string()
         })
         .source()

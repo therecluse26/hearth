@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use hearth::authz::{AuthorizationEngine, EmbeddedAuthzEngine};
 use hearth::core::{Clock, SystemClock};
-use hearth::identity::{EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
+use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Errors from test harness operations.
@@ -109,10 +109,14 @@ impl TestHarness {
             hearth::authz::AuthzConfig::default(),
         );
         let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
         let identity_engine = EmbeddedIdentityEngine::new(
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             clock,
-            IdentityConfig::default(),
+            identity_config,
         );
 
         Ok(Self {

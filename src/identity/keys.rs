@@ -15,6 +15,9 @@ const USER_ID_PREFIX: &str = "usr:id:";
 /// Prefix for user email index keys.
 const USER_EMAIL_PREFIX: &str = "usr:email:";
 
+/// Prefix for user credential keys.
+const CREDENTIAL_PREFIX: &str = "cred:user:";
+
 /// Encodes the primary key for a user record.
 ///
 /// Format: `usr:id:{uuid}`
@@ -38,6 +41,13 @@ pub(crate) fn encode_user_email(email: &str) -> Vec<u8> {
 #[allow(dead_code)]
 pub(crate) fn user_id_scan_prefix() -> Vec<u8> {
     USER_ID_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the credential key for a user.
+///
+/// Format: `cred:user:{uuid}`
+pub(crate) fn encode_credential_key(user_id: &UserId) -> Vec<u8> {
+    format!("{CREDENTIAL_PREFIX}{}", user_id.as_uuid()).into_bytes()
 }
 
 /// Computes the exclusive end bound for a prefix scan.
@@ -101,6 +111,15 @@ mod tests {
     fn prefix_end_empty() {
         let end = prefix_end(b"");
         assert!(end.is_empty());
+    }
+
+    #[test]
+    fn encode_credential_key_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let user_id = UserId::new(uuid);
+        let key = encode_credential_key(&user_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "cred:user:550e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]

@@ -22,7 +22,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Storage: Persistence | 4/4 | -- | 2/2 | -- | 0/3 | -- | -- | -- | **6/9** |
 | Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 0/2 | -- | -- | 0/3 | **7/12** |
 | User CRUD | 5/5 | 3/3 | 2/2 | -- | -- | 2/2 | -- | 2/2 | **14/14** |
-| Credential Storage | 0/4 | 0/2 | 0/2 | 0/1 | -- | 0/3 | -- | -- | **0/12** |
+| Credential Storage | 4/4 | 2/2 | 2/2 | 0/1 | -- | 2/3 | -- | -- | **10/12** |
 | Session Management | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/3 | -- | 0/2 | **0/17** |
 | Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 2/2 | **15/15** |
 | JWT / Tokens | 0/5 | 0/2 | -- | 0/1 | -- | 0/4 | -- | 0/2 | **0/14** |
@@ -31,7 +31,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **35/54** | **7/24** | **14/18** | **1/5** | **0/10** | **5/23** | **0/2** | **4/12** | **66/148** |
+| **Column Total** | **39/54** | **9/24** | **16/18** | **1/5** | **0/10** | **7/23** | **0/2** | **4/12** | **76/148** |
 
 ---
 
@@ -183,20 +183,20 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Store and verify Argon2id-hashed password: correct password succeeds, wrong password fails `P0` `fast`
-- [ ] Multi-algorithm verification: bcrypt/scrypt credentials from migration verify correctly `P0` `fast`
-- [ ] Password change updates stored credential; old password no longer verifies `P0` `fast`
-- [ ] Key derivation parameters (memory cost, time cost, parallelism) are configurable `P1` `fast`
+- [x] Store and verify Argon2id-hashed password: correct password succeeds, wrong password fails `P0` `fast`
+- [x] Multi-algorithm verification: bcrypt/scrypt credentials from migration verify correctly `P0` `fast`
+- [x] Password change updates stored credential; old password no longer verifies `P0` `fast`
+- [x] Key derivation parameters (memory cost, time cost, parallelism) are configurable `P1` `fast`
 
 #### Integration
 
-- [ ] Credential storage, verification, and change via public API `P0` `fast`
-- [ ] Password change flow end-to-end (authenticate → change → re-authenticate) `P0` `fast`
+- [x] Credential storage, verification, and change via public API `P0` `fast`
+- [x] Password change flow end-to-end (authenticate → change → re-authenticate) `P0` `fast`
 
 #### Property
 
-- [ ] Arbitrary byte inputs to credential parsing functions never panic (`proptest`) `P0` `extended`
-- [ ] Stored credential is always verifiable with the original password (round-trip) `P0` `extended`
+- [x] Arbitrary byte inputs to credential parsing functions never panic (`proptest`) `P0` `extended`
+- [x] Stored credential is always verifiable with the original password (round-trip) `P0` `extended`
 
 #### Fuzz
 
@@ -204,8 +204,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] Constant-time password comparison: statistical timing analysis shows no measurable difference between valid/invalid users `P0` `fast`
-- [ ] Password hashes never appear in API responses, error messages, or log output `P0` `fast`
+- [x] Constant-time password comparison: statistical timing analysis shows no measurable difference between valid/invalid users `P0` `fast`
+- [x] Password hashes never appear in API responses, error messages, or log output `P0` `fast`
 - [ ] Rate limiting engages under sustained credential guessing attempts `P1` `fast`
 
 ---
