@@ -21,17 +21,17 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Storage: Memtable | 5/5 | -- | 2/2 | -- | -- | -- | -- | -- | **7/7** |
 | Storage: Persistence | 4/4 | -- | 2/2 | -- | 0/3 | -- | -- | -- | **6/9** |
 | Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 0/2 | -- | -- | 0/3 | **7/12** |
-| User CRUD | 0/5 | 0/3 | 0/2 | -- | -- | 0/2 | -- | 0/2 | **0/14** |
+| User CRUD | 5/5 | 3/3 | 2/2 | -- | -- | 2/2 | -- | 2/2 | **14/14** |
 | Credential Storage | 0/4 | 0/2 | 0/2 | 0/1 | -- | 0/3 | -- | -- | **0/12** |
 | Session Management | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/3 | -- | 0/2 | **0/17** |
-| Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 0/2 | **13/15** |
+| Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 2/2 | **15/15** |
 | JWT / Tokens | 0/5 | 0/2 | -- | 0/1 | -- | 0/4 | -- | 0/2 | **0/14** |
 | OIDC (Auth Code Flow) | 0/5 | 0/3 | -- | 0/1 | -- | 0/3 | 0/2 | 0/1 | **0/15** |
 | Configuration | 4/4 | -- | -- | 1/1 | -- | -- | -- | -- | **5/5** |
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **30/54** | **4/24** | **12/18** | **1/5** | **0/10** | **3/23** | **0/2** | **0/12** | **50/148** |
+| **Column Total** | **35/54** | **7/24** | **14/18** | **1/5** | **0/10** | **5/23** | **0/2** | **4/12** | **66/148** |
 
 ---
 
@@ -150,32 +150,32 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Create user with required fields succeeds and returns assigned ID `P0` `fast`
-- [ ] Read user by ID and by email both return correct record `P0` `fast`
-- [ ] Update user fields persists changes; subsequent read reflects updates `P0` `fast`
-- [ ] Delete user removes record; subsequent read returns not-found `P0` `fast`
-- [ ] Duplicate email on create rejected with appropriate error `P0` `fast`
+- [x] Create user with required fields succeeds and returns assigned ID `P0` `fast`
+- [x] Read user by ID and by email both return correct record `P0` `fast`
+- [x] Update user fields persists changes; subsequent read reflects updates `P0` `fast`
+- [x] Delete user removes record; subsequent read returns not-found `P0` `fast`
+- [x] Duplicate email on create rejected with appropriate error `P0` `fast`
 
 #### Integration
 
-- [ ] Full CRUD lifecycle via embedded public API (zero internal imports) `P0` `fast`
-- [ ] Full CRUD lifecycle via server HTTP API `P1` `fast`
-- [ ] Delete user cascades: associated sessions invalidated, credentials removed `P0` `fast`
+- [x] Full CRUD lifecycle via embedded public API (zero internal imports) `P0` `fast`
+- [x] Full CRUD lifecycle via server HTTP API `P1` `fast`
+- [x] Delete user cascades: associated sessions invalidated, credentials removed `P0` `fast`
 
 #### Property
 
-- [ ] Random create/read/update/delete sequences maintain consistent user count (`proptest`) `P0` `extended`
-- [ ] Email uniqueness constraint holds under random concurrent creation sequences `P0` `extended`
+- [x] Random create/read/update/delete sequences maintain consistent user count (`proptest`) `P0` `extended`
+- [x] Email uniqueness constraint holds under random concurrent creation sequences `P0` `extended`
 
 #### Adversarial
 
-- [ ] Null bytes in usernames and unicode normalization attacks handled safely `P0` `fast`
-- [ ] Oversized input fields (username, email, metadata) rejected gracefully `P0` `fast`
+- [x] Null bytes in usernames and unicode normalization attacks handled safely `P0` `fast`
+- [x] Oversized input fields (username, email, metadata) rejected gracefully `P0` `fast`
 
 #### Benchmark
 
-- [ ] User lookup by email/ID: p50 < 50 μs, p99 < 500 μs (regression: +20%) `P0` `standard`
-- [ ] User creation with Argon2id hashing: p50 < 50 ms, p99 < 100 ms `P0` `standard`
+- [x] User lookup by email/ID: p50 < 50 μs, p99 < 500 μs (regression: +20%) `P0` `standard`
+- [x] User creation with Argon2id hashing: p50 < 50 ms, p99 < 100 ms `P0` `standard`
 
 ---
 
@@ -278,8 +278,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Benchmark
 
-- [ ] Direct permission check: p50 < 20 μs, p99 < 200 μs (regression: +20%) `P0` `standard`
-- [ ] 3-hop graph traversal: p50 < 100 μs, p99 < 1 ms (regression: +20%) `P0` `standard`
+- [x] Direct permission check: p50 < 20 μs, p99 < 200 μs (regression: +20%) `P0` `standard`
+- [x] 3-hop graph traversal: p50 < 100 μs, p99 < 1 ms (regression: +20%) `P0` `standard`
 
 ---
 

@@ -12,6 +12,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use hearth::authz::{AuthorizationEngine, EmbeddedAuthzEngine};
+use hearth::core::{Clock, SystemClock};
+use hearth::identity::{EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Errors from test harness operations.
@@ -78,6 +80,8 @@ pub struct TestHarness {
     engine: Arc<EmbeddedStorageEngine>,
     /// Authorization engine.
     authz_engine: EmbeddedAuthzEngine,
+    /// Identity engine.
+    identity_engine: EmbeddedIdentityEngine,
     /// Temporary directory — held for lifetime management.
     _temp_dir: tempfile::TempDir,
 }
@@ -104,11 +108,18 @@ impl TestHarness {
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             hearth::authz::AuthzConfig::default(),
         );
+        let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+        let identity_engine = EmbeddedIdentityEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            clock,
+            IdentityConfig::default(),
+        );
 
         Ok(Self {
             mode: HarnessMode::Embedded,
             engine,
             authz_engine,
+            identity_engine,
             _temp_dir: temp_dir,
         })
     }
@@ -142,6 +153,14 @@ impl TestHarness {
     /// server mode will return a client-backed implementation.
     pub fn authz(&self) -> &dyn AuthorizationEngine {
         &self.authz_engine
+    }
+
+    /// Returns a reference to the identity engine.
+    ///
+    /// Available in both modes — embedded mode returns the in-process engine,
+    /// server mode will return a client-backed implementation.
+    pub fn identity(&self) -> &dyn IdentityEngine {
+        &self.identity_engine
     }
 
     /// Returns the base URL for server mode, or `None` for embedded mode.

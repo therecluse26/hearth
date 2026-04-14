@@ -25,6 +25,7 @@ serde_yaml = "0.9"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+unicode-normalization = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
@@ -37,6 +38,10 @@ tokio = { version = "1", features = ["full", "test-util"] }
 
 [[bench]]
 name = "permission_check"
+harness = false
+
+[[bench]]
+name = "user_lookup"
 harness = false
 
 [lints.clippy]
