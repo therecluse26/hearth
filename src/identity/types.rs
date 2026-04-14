@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{Timestamp, UserId};
+use crate::core::{SessionId, Timestamp, UserId};
 
 /// The lifecycle status of a user account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +97,80 @@ impl User {
     /// Updates the `updated_at` timestamp.
     pub(crate) fn set_updated_at(&mut self, ts: Timestamp) {
         self.updated_at = ts;
+    }
+}
+
+/// An authentication session bound to a user.
+///
+/// Sessions have a configurable TTL and can be refreshed or revoked.
+/// Fields are private; access via accessor methods.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    id: SessionId,
+    user_id: UserId,
+    created_at: Timestamp,
+    expires_at: Timestamp,
+    last_refreshed_at: Timestamp,
+    revoked: bool,
+}
+
+impl Session {
+    /// Creates a new session. Used internally by the identity engine.
+    pub(crate) fn new(
+        id: SessionId,
+        user_id: UserId,
+        created_at: Timestamp,
+        expires_at: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            user_id,
+            created_at,
+            expires_at,
+            last_refreshed_at: created_at,
+            revoked: false,
+        }
+    }
+
+    /// Returns the session's unique identifier.
+    pub fn id(&self) -> &SessionId {
+        &self.id
+    }
+
+    /// Returns the ID of the user this session belongs to.
+    pub fn user_id(&self) -> &UserId {
+        &self.user_id
+    }
+
+    /// Returns when the session was created (UTC microseconds).
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
+    }
+
+    /// Returns when the session expires (UTC microseconds).
+    pub fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+
+    /// Returns when the session was last refreshed (UTC microseconds).
+    pub fn last_refreshed_at(&self) -> Timestamp {
+        self.last_refreshed_at
+    }
+
+    /// Returns whether the session is valid (not expired and not revoked).
+    pub(crate) fn is_valid(&self, now: Timestamp) -> bool {
+        !self.revoked && now < self.expires_at
+    }
+
+    /// Marks the session as revoked.
+    pub(crate) fn revoke(&mut self) {
+        self.revoked = true;
+    }
+
+    /// Refreshes the session by extending the TTL.
+    pub(crate) fn refresh(&mut self, now: Timestamp, ttl_micros: i64) {
+        self.expires_at = now.add_micros(ttl_micros);
+        self.last_refreshed_at = now;
     }
 }
 

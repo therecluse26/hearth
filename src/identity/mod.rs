@@ -12,11 +12,11 @@ mod types;
 mod validation;
 
 pub use credentials::{CleartextPassword, CredentialConfig};
-pub use engine::{EmbeddedIdentityEngine, IdentityConfig};
+pub use engine::{EmbeddedIdentityEngine, IdentityConfig, SessionConfig};
 pub use error::IdentityError;
-pub use types::{CreateUserRequest, UpdateUserRequest, User, UserStatus};
+pub use types::{CreateUserRequest, Session, UpdateUserRequest, User, UserStatus};
 
-use crate::core::{TenantId, UserId};
+use crate::core::{SessionId, TenantId, UserId};
 
 /// Trait defining the identity engine interface.
 ///
@@ -103,4 +103,47 @@ pub trait IdentityEngine: Send + Sync {
         old_password: &CleartextPassword,
         new_password: &CleartextPassword,
     ) -> Result<(), IdentityError>;
+
+    // ===== Session management =====
+
+    /// Creates a new session bound to the given user.
+    ///
+    /// Generates a random `SessionId`, sets TTL from configuration,
+    /// and persists the session record. The user must exist.
+    fn create_session(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Session, IdentityError>;
+
+    /// Looks up a session by ID.
+    ///
+    /// Returns `Ok(Some(session))` only if the session exists, is not
+    /// expired, and has not been revoked. Returns `Ok(None)` for all
+    /// other cases (enumeration resistance).
+    fn get_session(
+        &self,
+        tenant_id: &TenantId,
+        session_id: &SessionId,
+    ) -> Result<Option<Session>, IdentityError>;
+
+    /// Revokes a session immediately.
+    ///
+    /// After revocation, `get_session` will return `None`.
+    /// Returns `Err(SessionNotFound)` if the session does not exist.
+    fn revoke_session(
+        &self,
+        tenant_id: &TenantId,
+        session_id: &SessionId,
+    ) -> Result<(), IdentityError>;
+
+    /// Refreshes a session, extending its TTL from the current time.
+    ///
+    /// Returns the updated session. Returns `Err(SessionNotFound)` if
+    /// the session does not exist, is expired, or has been revoked.
+    fn refresh_session(
+        &self,
+        tenant_id: &TenantId,
+        session_id: &SessionId,
+    ) -> Result<Session, IdentityError>;
 }

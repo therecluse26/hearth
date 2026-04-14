@@ -23,7 +23,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 0/2 | -- | -- | 0/3 | **7/12** |
 | User CRUD | 5/5 | 3/3 | 2/2 | -- | -- | 2/2 | -- | 2/2 | **14/14** |
 | Credential Storage | 4/4 | 2/2 | 2/2 | 0/1 | -- | 2/3 | -- | -- | **10/12** |
-| Session Management | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/3 | -- | 0/2 | **0/17** |
+| Session Management | 5/5 | 3/3 | 2/2 | -- | 0/2 | 3/3 | -- | 0/2 | **13/17** |
 | Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 2/2 | **15/15** |
 | JWT / Tokens | 0/5 | 0/2 | -- | 0/1 | -- | 0/4 | -- | 0/2 | **0/14** |
 | OIDC (Auth Code Flow) | 0/5 | 0/3 | -- | 0/1 | -- | 0/3 | 0/2 | 0/1 | **0/15** |
@@ -31,7 +31,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **39/54** | **9/24** | **16/18** | **1/5** | **0/10** | **7/23** | **0/2** | **4/12** | **76/148** |
+| **Column Total** | **44/54** | **12/24** | **18/18** | **1/5** | **0/10** | **10/23** | **0/2** | **4/12** | **89/148** |
 
 ---
 
@@ -214,22 +214,22 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Create session returns valid session ID bound to correct user `P0` `fast`
-- [ ] Lookup session by ID returns correct session data and user association `P0` `fast`
-- [ ] Revoke session: immediate invalidation, subsequent lookup fails `P0` `fast`
-- [ ] TTL expiration: session becomes invalid after configured timeout `P0` `fast`
-- [ ] Refresh session extends TTL; session remains valid past original expiry `P0` `fast`
+- [x] Create session returns valid session ID bound to correct user `P0` `fast`
+- [x] Lookup session by ID returns correct session data and user association `P0` `fast`
+- [x] Revoke session: immediate invalidation, subsequent lookup fails `P0` `fast`
+- [x] TTL expiration: session becomes invalid after configured timeout `P0` `fast`
+- [x] Refresh session extends TTL; session remains valid past original expiry `P0` `fast`
 
 #### Integration
 
-- [ ] Full lifecycle (create → validate → refresh → revoke → validate-fails) via embedded API `P0` `fast`
-- [ ] Full lifecycle via server HTTP API `P1` `fast`
-- [ ] Session data persists across server restart (WAL durability) `P0` `fast`
+- [x] Full lifecycle (create → validate → refresh → revoke → validate-fails) via embedded API `P0` `fast`
+- [x] Full lifecycle via server HTTP API `P1` `fast`
+- [x] Session data persists across server restart (WAL durability) `P0` `fast`
 
 #### Property
 
-- [ ] Random create/revoke sequences maintain consistent active session count (`proptest`) `P0` `extended`
-- [ ] No session ID collisions across 10,000+ random generations `P0` `extended`
+- [x] Random create/revoke sequences maintain consistent active session count (`proptest`) `P0` `extended`
+- [x] No session ID collisions across 10,000+ random generations `P0` `extended`
 
 #### Simulation
 
@@ -238,9 +238,9 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] Replayed session tokens rejected after revocation `P0` `fast`
-- [ ] Session fixation: pre-authentication session ID cannot be reused post-authentication `P0` `fast`
-- [ ] Enumeration resistance: responses for invalid, expired, and nonexistent session IDs are indistinguishable `P0` `fast`
+- [x] Replayed session tokens rejected after revocation `P0` `fast`
+- [x] Session fixation: pre-authentication session ID cannot be reused post-authentication `P0` `fast`
+- [x] Enumeration resistance: responses for invalid, expired, and nonexistent session IDs are indistinguishable `P0` `fast`
 
 #### Benchmark
 

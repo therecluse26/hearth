@@ -5,14 +5,32 @@
 
 use std::sync::Arc;
 
-use crate::core::{Clock, TenantId, UserId};
+use crate::core::{Clock, SessionId, TenantId, UserId};
 use crate::identity::credentials::{self, CleartextPassword, CredentialConfig, StoredCredential};
 use crate::identity::error::IdentityError;
 use crate::identity::keys;
-use crate::identity::types::{CreateUserRequest, UpdateUserRequest, User, UserStatus};
+use crate::identity::types::{CreateUserRequest, Session, UpdateUserRequest, User, UserStatus};
 use crate::identity::validation;
 use crate::identity::IdentityEngine;
 use crate::storage::StorageEngine;
+
+/// Configuration for session management.
+#[derive(Debug, Clone)]
+pub struct SessionConfig {
+    /// Session time-to-live in microseconds.
+    ///
+    /// Default: 24 hours (86,400,000,000 μs).
+    pub ttl_micros: i64,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            // 24 hours in microseconds
+            ttl_micros: 24 * 60 * 60 * 1_000_000,
+        }
+    }
+}
 
 /// Configuration for the identity engine.
 #[derive(Debug, Clone)]
@@ -21,6 +39,8 @@ pub struct IdentityConfig {
     pub default_status: UserStatus,
     /// Password hashing parameters.
     pub credential: CredentialConfig,
+    /// Session management parameters.
+    pub session: SessionConfig,
 }
 
 impl Default for IdentityConfig {
@@ -28,6 +48,7 @@ impl Default for IdentityConfig {
         Self {
             default_status: UserStatus::Active,
             credential: CredentialConfig::default(),
+            session: SessionConfig::default(),
         }
     }
 }
@@ -109,6 +130,54 @@ impl EmbeddedIdentityEngine {
         serde_json::from_slice(bytes).map_err(|e| IdentityError::Serialization {
             reason: e.to_string(),
         })
+    }
+
+    /// Serializes a session to JSON bytes.
+    fn serialize_session(session: &Session) -> Result<Vec<u8>, IdentityError> {
+        serde_json::to_vec(session).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
+    }
+
+    /// Deserializes a session from JSON bytes.
+    fn deserialize_session(bytes: &[u8]) -> Result<Session, IdentityError> {
+        serde_json::from_slice(bytes).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
+    }
+
+    /// Loads a raw session from storage without validity checks.
+    ///
+    /// Returns the deserialized session regardless of expiry/revocation.
+    /// Used internally by methods that need to mutate the session.
+    fn load_session_raw(
+        &self,
+        tenant_id: &TenantId,
+        session_id: &SessionId,
+    ) -> Result<Option<Session>, IdentityError> {
+        let key = keys::encode_session_id(session_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+        match bytes {
+            Some(data) => Ok(Some(Self::deserialize_session(&data)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Persists a session to storage (both primary and user index).
+    fn persist_session(
+        &self,
+        tenant_id: &TenantId,
+        session: &Session,
+    ) -> Result<(), IdentityError> {
+        let session_bytes = Self::serialize_session(session)?;
+        let id_key = keys::encode_session_id(session.id());
+        self.storage
+            .put(tenant_id, &id_key, &session_bytes)
+            .map_err(Self::storage_err)?;
+        Ok(())
     }
 }
 
@@ -305,6 +374,38 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .delete(tenant_id, &cred_key)
             .map_err(Self::storage_err)?;
 
+        // 5. Delete all sessions for this user
+        let session_prefix = keys::encode_user_sessions_prefix(user_id);
+        let session_end = keys::prefix_end(&session_prefix);
+        let session_entries = self
+            .storage
+            .scan(tenant_id, &session_prefix, &session_end)
+            .map_err(Self::storage_err)?;
+
+        for entry in &session_entries {
+            // Extract session UUID from the user-session index key
+            // Key format: "ses:user:{user_uuid}:{session_uuid}"
+            let key_str =
+                std::str::from_utf8(&entry.key).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            if let Some(session_uuid_str) = key_str.rsplit(':').next() {
+                if let Ok(uuid) = uuid::Uuid::parse_str(session_uuid_str) {
+                    let session_id = SessionId::new(uuid);
+                    let session_key = keys::encode_session_id(&session_id);
+                    self.storage
+                        .delete(tenant_id, &session_key)
+                        .map_err(Self::storage_err)?;
+                }
+            }
+
+            // Delete the user-session index entry itself
+            // The scan returns keys without tenant prefix, so re-use entry.key
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
         Ok(())
     }
 
@@ -391,6 +492,80 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Set the new password
         self.set_password(tenant_id, user_id, new_password)
+    }
+
+    fn create_session(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Session, IdentityError> {
+        // Ensure the user exists
+        self.get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Generate session
+        let session_id = SessionId::generate();
+        let now = self.clock.now();
+        let expires_at = now.add_micros(self.config.session.ttl_micros);
+        let session = Session::new(session_id.clone(), user_id.clone(), now, expires_at);
+
+        // Persist session record
+        self.persist_session(tenant_id, &session)?;
+
+        // Write user-to-session index entry
+        let user_session_key = keys::encode_user_session(user_id, &session_id);
+        self.storage
+            .put(tenant_id, &user_session_key, &[])
+            .map_err(Self::storage_err)?;
+
+        Ok(session)
+    }
+
+    fn get_session(
+        &self,
+        tenant_id: &TenantId,
+        session_id: &SessionId,
+    ) -> Result<Option<Session>, IdentityError> {
+        let session = self.load_session_raw(tenant_id, session_id)?;
+        match session {
+            Some(s) if s.is_valid(self.clock.now()) => Ok(Some(s)),
+            _ => Ok(None),
+        }
+    }
+
+    fn revoke_session(
+        &self,
+        tenant_id: &TenantId,
+        session_id: &SessionId,
+    ) -> Result<(), IdentityError> {
+        let mut session = self
+            .load_session_raw(tenant_id, session_id)?
+            .ok_or(IdentityError::SessionNotFound)?;
+
+        session.revoke();
+        self.persist_session(tenant_id, &session)?;
+
+        Ok(())
+    }
+
+    fn refresh_session(
+        &self,
+        tenant_id: &TenantId,
+        session_id: &SessionId,
+    ) -> Result<Session, IdentityError> {
+        let mut session = self
+            .load_session_raw(tenant_id, session_id)?
+            .ok_or(IdentityError::SessionNotFound)?;
+
+        // Cannot refresh a revoked or expired session
+        if !session.is_valid(self.clock.now()) {
+            return Err(IdentityError::SessionNotFound);
+        }
+
+        session.refresh(self.clock.now(), self.config.session.ttl_micros);
+        self.persist_session(tenant_id, &session)?;
+
+        Ok(session)
     }
 }
 
@@ -1183,6 +1358,258 @@ mod tests {
         );
     }
 
+    // ===== Session Scenario 1: Create session returns valid ID bound to user =====
+
+    #[test]
+    fn create_session_returns_valid_session() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        assert_eq!(session.user_id(), user.id());
+        assert_eq!(session.created_at(), Timestamp::from_micros(1_000_000));
+        // TTL is 24 hours = 86_400_000_000 μs
+        let expected_expiry = Timestamp::from_micros(1_000_000 + 86_400_000_000);
+        assert_eq!(session.expires_at(), expected_expiry);
+        assert_eq!(session.last_refreshed_at(), session.created_at());
+    }
+
+    #[test]
+    fn create_session_nonexistent_user_fails() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let err = engine
+            .create_session(&tenant, &UserId::generate())
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::UserNotFound));
+    }
+
+    // ===== Session Scenario 2: Lookup session by ID =====
+
+    #[test]
+    fn lookup_session_by_id_returns_correct_data() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        let fetched = engine
+            .get_session(&tenant, session.id())
+            .expect("get session")
+            .expect("should exist");
+
+        assert_eq!(fetched.id(), session.id());
+        assert_eq!(fetched.user_id(), user.id());
+        assert_eq!(fetched.created_at(), session.created_at());
+        assert_eq!(fetched.expires_at(), session.expires_at());
+    }
+
+    #[test]
+    fn lookup_nonexistent_session_returns_none() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let result = engine
+            .get_session(&tenant, &SessionId::generate())
+            .expect("get");
+        assert!(result.is_none());
+    }
+
+    // ===== Session Scenario 3: Revoke session =====
+
+    #[test]
+    fn revoke_session_immediate_invalidation() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        // Revoke it
+        engine
+            .revoke_session(&tenant, session.id())
+            .expect("revoke");
+
+        // Lookup should return None
+        let result = engine.get_session(&tenant, session.id()).expect("get");
+        assert!(result.is_none(), "revoked session should not be found");
+    }
+
+    #[test]
+    fn revoke_nonexistent_session_fails() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let err = engine
+            .revoke_session(&tenant, &SessionId::generate())
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::SessionNotFound));
+    }
+
+    // ===== Session Scenario 4: TTL expiration =====
+
+    #[test]
+    fn session_expires_after_ttl() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        // Session should be valid now
+        let valid = engine.get_session(&tenant, session.id()).expect("get");
+        assert!(valid.is_some(), "session should be valid before TTL");
+
+        // Advance clock past TTL (24 hours + 1 microsecond)
+        let ttl = 24 * 60 * 60 * 1_000_000_i64;
+        clock.advance(ttl + 1);
+
+        // Session should now be expired
+        let expired = engine.get_session(&tenant, session.id()).expect("get");
+        assert!(expired.is_none(), "session should be expired after TTL");
+    }
+
+    #[test]
+    fn session_valid_just_before_expiry() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        // Advance clock to 1 μs before expiry
+        let ttl = 24 * 60 * 60 * 1_000_000_i64;
+        clock.advance(ttl - 1);
+
+        let still_valid = engine.get_session(&tenant, session.id()).expect("get");
+        assert!(
+            still_valid.is_some(),
+            "session should still be valid 1μs before expiry"
+        );
+    }
+
+    // ===== Session Scenario 5: Refresh session extends TTL =====
+
+    #[test]
+    fn refresh_session_extends_ttl() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        let ttl = 24 * 60 * 60 * 1_000_000_i64;
+
+        // Advance 12 hours (half TTL)
+        clock.advance(ttl / 2);
+
+        // Refresh the session
+        let refreshed = engine
+            .refresh_session(&tenant, session.id())
+            .expect("refresh");
+
+        // Expiry should be 24h from now (not original creation)
+        let now = clock.now();
+        assert_eq!(refreshed.expires_at(), now.add_micros(ttl));
+        assert_eq!(refreshed.last_refreshed_at(), now);
+
+        // Original created_at should be preserved
+        assert_eq!(refreshed.created_at(), session.created_at());
+
+        // Advance another 23 hours — would have expired without refresh
+        clock.advance(ttl - ttl / 2 + 1_000_000);
+
+        let still_valid = engine.get_session(&tenant, session.id()).expect("get");
+        assert!(
+            still_valid.is_some(),
+            "refreshed session should still be valid past original expiry"
+        );
+    }
+
+    #[test]
+    fn refresh_expired_session_fails() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        // Advance past TTL
+        let ttl = 24 * 60 * 60 * 1_000_000_i64;
+        clock.advance(ttl + 1);
+
+        let err = engine
+            .refresh_session(&tenant, session.id())
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::SessionNotFound));
+    }
+
+    #[test]
+    fn refresh_revoked_session_fails() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id())
+            .expect("create session");
+
+        engine
+            .revoke_session(&tenant, session.id())
+            .expect("revoke");
+
+        let err = engine
+            .refresh_session(&tenant, session.id())
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::SessionNotFound));
+    }
+
+    // ===== Delete cascades to sessions =====
+
+    #[test]
+    fn delete_user_cascades_sessions() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        // Create multiple sessions
+        let s1 = engine
+            .create_session(&tenant, user.id())
+            .expect("session 1");
+        let s2 = engine
+            .create_session(&tenant, user.id())
+            .expect("session 2");
+
+        // Both should be valid
+        assert!(engine.get_session(&tenant, s1.id()).expect("get").is_some());
+        assert!(engine.get_session(&tenant, s2.id()).expect("get").is_some());
+
+        // Delete user
+        engine.delete_user(&tenant, user.id()).expect("delete");
+
+        // Both sessions should be gone
+        assert!(engine.get_session(&tenant, s1.id()).expect("get").is_none());
+        assert!(engine.get_session(&tenant, s2.id()).expect("get").is_none());
+    }
+
     // ===== Property tests =====
 
     mod proptests {
@@ -1271,6 +1698,75 @@ mod tests {
                         );
                     }
                 }
+            }
+
+            /// Property: Random create/revoke sequences maintain consistent active session count.
+            #[test]
+            fn session_create_revoke_maintains_count(
+                n_create in 1..8usize,
+                n_revoke_ratio in 0.0..1.0_f64,
+            ) {
+                let (_dir, engine, _clock) = setup_engine();
+                let tenant = TenantId::generate();
+                let user = engine.create_user(&tenant, &CreateUserRequest {
+                    email: format!("session-prop-{}@example.com", uuid::Uuid::new_v4()),
+                    display_name: "Prop User".to_string(),
+                }).expect("create user");
+
+                // Create N sessions
+                let mut session_ids = Vec::new();
+                for _ in 0..n_create {
+                    let session = engine
+                        .create_session(&tenant, user.id())
+                        .expect("create session");
+                    session_ids.push(session.id().clone());
+                }
+
+                // All should be valid
+                for id in &session_ids {
+                    let s = engine.get_session(&tenant, id).expect("get");
+                    prop_assert!(s.is_some(), "created session should be valid");
+                }
+
+                // Revoke a proportion of them
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+                let n_revoke = (n_create as f64 * n_revoke_ratio) as usize;
+                for id in &session_ids[..n_revoke] {
+                    engine.revoke_session(&tenant, id).expect("revoke");
+                }
+
+                // Count active sessions
+                let active_count = session_ids
+                    .iter()
+                    .filter(|id| engine.get_session(&tenant, id).expect("get").is_some())
+                    .count();
+
+                prop_assert_eq!(
+                    active_count,
+                    n_create - n_revoke,
+                    "active count should be creates minus revokes"
+                );
+            }
+
+            /// Property: No session ID collisions across many generations.
+            #[test]
+            fn no_session_id_collisions(n in 10..100usize) {
+                let (_dir, engine, _clock) = setup_engine();
+                let tenant = TenantId::generate();
+                let user = engine.create_user(&tenant, &CreateUserRequest {
+                    email: format!("collision-{}@example.com", uuid::Uuid::new_v4()),
+                    display_name: "Collision User".to_string(),
+                }).expect("create user");
+
+                let mut ids = std::collections::HashSet::new();
+                for _ in 0..n {
+                    let session = engine
+                        .create_session(&tenant, user.id())
+                        .expect("create session");
+                    let was_new = ids.insert(session.id().clone());
+                    prop_assert!(was_new, "session ID collision detected");
+                }
+                prop_assert_eq!(ids.len(), n, "all session IDs should be unique");
             }
         }
     }

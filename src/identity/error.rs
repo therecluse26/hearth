@@ -22,6 +22,11 @@ pub enum IdentityError {
         /// Description of why the credential was invalid.
         reason: String,
     },
+    /// The requested session was not found, expired, or revoked.
+    ///
+    /// Intentionally conflates not-found, expired, and revoked for
+    /// enumeration resistance — callers cannot distinguish the three.
+    SessionNotFound,
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -41,6 +46,7 @@ impl fmt::Display for IdentityError {
             Self::InvalidCredential { reason } => {
                 write!(f, "invalid credential: {reason}")
             }
+            Self::SessionNotFound => write!(f, "session not found"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -56,6 +62,7 @@ impl std::error::Error for IdentityError {
             | Self::InvalidInput { .. }
             | Self::CredentialNotFound
             | Self::InvalidCredential { .. }
+            | Self::SessionNotFound
             | Self::Serialization { .. } => None,
         }
     }
@@ -141,10 +148,18 @@ mod tests {
     }
 
     #[test]
+    fn display_session_not_found() {
+        let err = IdentityError::SessionNotFound;
+        let display = format!("{err}");
+        assert!(display.contains("session not found"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::UserNotFound.source().is_none());
         assert!(IdentityError::DuplicateEmail.source().is_none());
         assert!(IdentityError::CredentialNotFound.source().is_none());
+        assert!(IdentityError::SessionNotFound.source().is_none());
         assert!((IdentityError::InvalidInput {
             reason: "x".to_string()
         })
