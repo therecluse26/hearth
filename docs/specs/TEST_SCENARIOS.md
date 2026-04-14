@@ -24,14 +24,14 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | User CRUD | 0/5 | 0/3 | 0/2 | -- | -- | 0/2 | -- | 0/2 | **0/14** |
 | Credential Storage | 0/4 | 0/2 | 0/2 | 0/1 | -- | 0/3 | -- | -- | **0/12** |
 | Session Management | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/3 | -- | 0/2 | **0/17** |
-| Authorization Engine | 0/5 | 0/2 | 0/3 | -- | -- | 0/3 | -- | 0/2 | **0/15** |
+| Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 0/2 | **13/15** |
 | JWT / Tokens | 0/5 | 0/2 | -- | 0/1 | -- | 0/4 | -- | 0/2 | **0/14** |
 | OIDC (Auth Code Flow) | 0/5 | 0/3 | -- | 0/1 | -- | 0/3 | 0/2 | 0/1 | **0/15** |
 | Configuration | 4/4 | -- | -- | 1/1 | -- | -- | -- | -- | **5/5** |
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **25/54** | **2/24** | **9/18** | **1/5** | **0/10** | **0/23** | **0/2** | **0/12** | **37/148** |
+| **Column Total** | **30/54** | **4/24** | **12/18** | **1/5** | **0/10** | **3/23** | **0/2** | **0/12** | **50/148** |
 
 ---
 
@@ -253,28 +253,28 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Direct relationship check: returns true when present, false when absent `P0` `fast`
-- [ ] Transitive relationship check: correctly resolves 2-hop and 3-hop paths `P0` `fast`
-- [ ] Cycle detection: relationship graph rejects or handles cycles correctly `P0` `fast`
-- [ ] Write and delete relationship tuples; check reflects changes immediately `P0` `fast`
-- [ ] Expand operation returns complete set of reachable subjects `P0` `fast`
+- [x] Direct relationship check: returns true when present, false when absent `P0` `fast`
+- [x] Transitive relationship check: correctly resolves 2-hop and 3-hop paths `P0` `fast`
+- [x] Cycle detection: relationship graph rejects or handles cycles correctly `P0` `fast`
+- [x] Write and delete relationship tuples; check reflects changes immediately `P0` `fast`
+- [x] Expand operation returns complete set of reachable subjects `P0` `fast`
 
 #### Integration
 
-- [ ] Permission check via embedded public API (zero internal imports) `P0` `fast`
-- [ ] Write relationship + check permission round-trip via public API `P0` `fast`
+- [x] Permission check via embedded public API (zero internal imports) `P0` `fast`
+- [x] Write relationship + check permission round-trip via public API `P0` `fast`
 
 #### Property
 
-- [ ] Random relationship graphs produce correct reachability results (`proptest`) `P0` `extended`
-- [ ] Cycle detection holds for arbitrary graph topologies `P0` `extended`
-- [ ] Random add/delete sequences maintain graph invariants (acyclicity, referential integrity) `P0` `extended`
+- [x] Random relationship graphs produce correct reachability results (`proptest`) `P0` `extended`
+- [x] Cycle detection holds for arbitrary graph topologies `P0` `extended`
+- [x] Random add/delete sequences maintain graph invariants (acyclicity, referential integrity) `P0` `extended`
 
 #### Adversarial
 
-- [ ] Malformed permission tuples (invalid object/relation/subject) rejected safely `P0` `fast`
-- [ ] Cross-tenant permission leak prevented: namespace traversal returns no results `P0` `fast`
-- [ ] Maximum graph traversal depth enforced to prevent DoS via deep chains `P0` `fast`
+- [x] Malformed permission tuples (invalid object/relation/subject) rejected safely `P0` `fast`
+- [x] Cross-tenant permission leak prevented: namespace traversal returns no results `P0` `fast`
+- [x] Maximum graph traversal depth enforced to prevent DoS via deep chains `P0` `fast`
 
 #### Benchmark
 

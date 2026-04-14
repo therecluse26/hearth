@@ -4,8 +4,14 @@
 //! embedded and server modes. The same test logic can run against both
 //! modes to verify the public API contract.
 
-use std::fmt;
+// Each integration test binary compiles this module independently,
+// so not all variants/methods are used in every binary.
+#![allow(dead_code)]
 
+use std::fmt;
+use std::sync::Arc;
+
+use hearth::authz::{AuthorizationEngine, EmbeddedAuthzEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Errors from test harness operations.
@@ -68,8 +74,10 @@ pub enum HarnessMode {
 pub struct TestHarness {
     /// The operational mode.
     mode: HarnessMode,
-    /// Storage engine (embedded mode only).
-    engine: EmbeddedStorageEngine,
+    /// Storage engine (embedded mode only), wrapped in Arc for sharing with authz.
+    engine: Arc<EmbeddedStorageEngine>,
+    /// Authorization engine.
+    authz_engine: EmbeddedAuthzEngine,
     /// Temporary directory — held for lifetime management.
     _temp_dir: tempfile::TempDir,
 }
@@ -91,11 +99,16 @@ impl TestHarness {
     pub async fn embedded() -> Result<Self, TestHarnessError> {
         let temp_dir = tempfile::tempdir().map_err(hearth::storage::StorageError::Io)?;
         let config = StorageConfig::dev(temp_dir.path().to_path_buf());
-        let engine = EmbeddedStorageEngine::open(config)?;
+        let engine = Arc::new(EmbeddedStorageEngine::open(config)?);
+        let authz_engine = EmbeddedAuthzEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            hearth::authz::AuthzConfig::default(),
+        );
 
         Ok(Self {
             mode: HarnessMode::Embedded,
             engine,
+            authz_engine,
             _temp_dir: temp_dir,
         })
     }
@@ -120,7 +133,15 @@ impl TestHarness {
     /// Available in both modes — embedded mode returns the in-process engine,
     /// server mode will return a client-backed implementation.
     pub fn storage(&self) -> &dyn StorageEngine {
-        &self.engine
+        self.engine.as_ref()
+    }
+
+    /// Returns a reference to the authorization engine.
+    ///
+    /// Available in both modes — embedded mode returns the in-process engine,
+    /// server mode will return a client-backed implementation.
+    pub fn authz(&self) -> &dyn AuthorizationEngine {
+        &self.authz_engine
     }
 
     /// Returns the base URL for server mode, or `None` for embedded mode.
