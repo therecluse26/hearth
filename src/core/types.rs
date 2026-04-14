@@ -63,6 +63,11 @@ define_id_type!(
     SessionId, "session_"
 );
 
+define_id_type!(
+    /// Unique identifier for an OAuth 2.0 client registration.
+    ClientId, "client_"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

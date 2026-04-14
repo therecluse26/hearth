@@ -28,7 +28,8 @@ fn setup_user() -> (
         Arc::new(storage) as Arc<dyn StorageEngine>,
         clock,
         IdentityConfig::default(),
-    );
+    )
+    .expect("engine creation");
     let tenant = TenantId::generate();
 
     let user = engine

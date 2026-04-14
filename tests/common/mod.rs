@@ -117,7 +117,8 @@ impl TestHarness {
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             clock,
             identity_config,
-        );
+        )
+        .expect("identity engine creation");
 
         Ok(Self {
             mode: HarnessMode::Embedded,

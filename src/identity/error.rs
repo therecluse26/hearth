@@ -27,6 +27,29 @@ pub enum IdentityError {
     /// Intentionally conflates not-found, expired, and revoked for
     /// enumeration resistance — callers cannot distinguish the three.
     SessionNotFound,
+    /// The token is invalid (malformed, bad signature, unsupported algorithm).
+    ///
+    /// Intentionally vague to prevent information leakage about why
+    /// validation failed.
+    InvalidToken,
+    /// The token has expired.
+    TokenExpired,
+    /// A cryptographic signing or key generation error.
+    SigningError {
+        /// Description of the signing failure (no secrets).
+        reason: String,
+    },
+    /// The OAuth client was not found or is invalid.
+    InvalidClient,
+    /// The redirect URI does not match any registered URI for the client.
+    InvalidRedirectUri,
+    /// The authorization code is not found, expired, already used, or invalid.
+    InvalidAuthorizationCode,
+    /// A generic OAuth error for code exchange failures (e.g., PKCE mismatch).
+    InvalidGrant {
+        /// Description of why the grant was invalid.
+        reason: String,
+    },
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -47,6 +70,13 @@ impl fmt::Display for IdentityError {
                 write!(f, "invalid credential: {reason}")
             }
             Self::SessionNotFound => write!(f, "session not found"),
+            Self::InvalidToken => write!(f, "invalid token"),
+            Self::TokenExpired => write!(f, "token expired"),
+            Self::SigningError { reason } => write!(f, "signing error: {reason}"),
+            Self::InvalidClient => write!(f, "invalid client"),
+            Self::InvalidRedirectUri => write!(f, "invalid redirect URI"),
+            Self::InvalidAuthorizationCode => write!(f, "invalid authorization code"),
+            Self::InvalidGrant { reason } => write!(f, "invalid grant: {reason}"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -63,6 +93,13 @@ impl std::error::Error for IdentityError {
             | Self::CredentialNotFound
             | Self::InvalidCredential { .. }
             | Self::SessionNotFound
+            | Self::InvalidToken
+            | Self::TokenExpired
+            | Self::SigningError { .. }
+            | Self::InvalidClient
+            | Self::InvalidRedirectUri
+            | Self::InvalidAuthorizationCode
+            | Self::InvalidGrant { .. }
             | Self::Serialization { .. } => None,
         }
     }
@@ -155,17 +192,90 @@ mod tests {
     }
 
     #[test]
+    fn display_invalid_token() {
+        let err = IdentityError::InvalidToken;
+        let display = format!("{err}");
+        assert!(display.contains("invalid token"), "got: {display}");
+    }
+
+    #[test]
+    fn display_token_expired() {
+        let err = IdentityError::TokenExpired;
+        let display = format!("{err}");
+        assert!(display.contains("token expired"), "got: {display}");
+    }
+
+    #[test]
+    fn display_signing_error() {
+        let err = IdentityError::SigningError {
+            reason: "key generation failed".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("signing error"), "got: {display}");
+        assert!(display.contains("key generation failed"), "got: {display}");
+    }
+
+    #[test]
+    fn display_invalid_client() {
+        let err = IdentityError::InvalidClient;
+        let display = format!("{err}");
+        assert!(display.contains("invalid client"), "got: {display}");
+    }
+
+    #[test]
+    fn display_invalid_redirect_uri() {
+        let err = IdentityError::InvalidRedirectUri;
+        let display = format!("{err}");
+        assert!(display.contains("invalid redirect URI"), "got: {display}");
+    }
+
+    #[test]
+    fn display_invalid_authorization_code() {
+        let err = IdentityError::InvalidAuthorizationCode;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid authorization code"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_invalid_grant() {
+        let err = IdentityError::InvalidGrant {
+            reason: "PKCE mismatch".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid grant"), "got: {display}");
+        assert!(display.contains("PKCE mismatch"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::UserNotFound.source().is_none());
         assert!(IdentityError::DuplicateEmail.source().is_none());
         assert!(IdentityError::CredentialNotFound.source().is_none());
         assert!(IdentityError::SessionNotFound.source().is_none());
+        assert!(IdentityError::InvalidToken.source().is_none());
+        assert!(IdentityError::TokenExpired.source().is_none());
+        assert!(IdentityError::InvalidClient.source().is_none());
+        assert!(IdentityError::InvalidRedirectUri.source().is_none());
+        assert!(IdentityError::InvalidAuthorizationCode.source().is_none());
         assert!((IdentityError::InvalidInput {
             reason: "x".to_string()
         })
         .source()
         .is_none());
         assert!((IdentityError::InvalidCredential {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!((IdentityError::SigningError {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!((IdentityError::InvalidGrant {
             reason: "x".to_string()
         })
         .source()

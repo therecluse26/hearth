@@ -107,7 +107,8 @@ async fn session_persists_across_restart() {
             Arc::clone(&storage) as Arc<dyn StorageEngine>,
             clock,
             identity_config,
-        );
+        )
+        .expect("engine creation");
 
         let user = engine
             .create_user(
@@ -146,7 +147,8 @@ async fn session_persists_across_restart() {
             Arc::clone(&storage) as Arc<dyn StorageEngine>,
             clock,
             identity_config,
-        );
+        )
+        .expect("engine creation");
 
         // Session should survive restart (WAL durability)
         let recovered = engine
@@ -397,7 +399,8 @@ async fn enumeration_resistance() {
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock) as Arc<dyn hearth::core::Clock>,
         identity_config,
-    );
+    )
+    .expect("engine creation");
 
     let tenant = TenantId::generate();
     let user = engine

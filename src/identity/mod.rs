@@ -8,12 +8,22 @@ pub(crate) mod credentials;
 mod engine;
 pub mod error;
 pub(crate) mod keys;
+pub mod oidc;
+pub mod tokens;
 mod types;
 mod validation;
 
 pub use credentials::{CleartextPassword, CredentialConfig};
 pub use engine::{EmbeddedIdentityEngine, IdentityConfig, SessionConfig};
 pub use error::IdentityError;
+pub use oidc::{
+    AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
+    OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
+};
+pub use tokens::{
+    decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
+    Jwk, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
+};
 pub use types::{CreateUserRequest, Session, UpdateUserRequest, User, UserStatus};
 
 use crate::core::{SessionId, TenantId, UserId};
@@ -146,4 +156,83 @@ pub trait IdentityEngine: Send + Sync {
         tenant_id: &TenantId,
         session_id: &SessionId,
     ) -> Result<Session, IdentityError>;
+
+    // ===== Token management =====
+
+    /// Issues an access/refresh token pair for a session.
+    ///
+    /// The user and session must exist and be valid. Tokens are signed
+    /// with Ed25519 and contain claims binding the token to the user,
+    /// session, and tenant.
+    fn issue_tokens(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        session_id: &SessionId,
+    ) -> Result<TokenPair, IdentityError>;
+
+    /// Validates a token via session lookup (internal hot path).
+    ///
+    /// Extracts the session ID from the token without verifying the
+    /// signature (Hearth trusts its own tokens). Looks up the session
+    /// and checks validity. Returns the decoded claims only if the
+    /// session is still active.
+    fn validate_token(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<TokenClaims, IdentityError>;
+
+    /// Refreshes tokens: validates the refresh token, then issues a new pair.
+    ///
+    /// The refresh token's session must still be valid. The session's TTL
+    /// is also refreshed. Returns a new token pair with updated expiration.
+    fn refresh_tokens(
+        &self,
+        tenant_id: &TenantId,
+        refresh_token: &str,
+    ) -> Result<TokenPair, IdentityError>;
+
+    /// Returns the JWKS document containing public keys for external verification.
+    fn jwks(&self) -> JwksDocument;
+
+    // ===== OIDC / OAuth 2.0 =====
+
+    /// Registers a new OAuth 2.0 client.
+    ///
+    /// Validates the client name and redirect URIs, generates a `ClientId`,
+    /// and persists the client record.
+    fn register_client(
+        &self,
+        tenant_id: &TenantId,
+        request: &RegisterClientRequest,
+    ) -> Result<OAuthClient, IdentityError>;
+
+    /// Initiates an OAuth 2.0 authorization code flow.
+    ///
+    /// Validates the client, redirect URI, response type, and state parameter.
+    /// Generates a cryptographically random authorization code, stores it
+    /// (hashed), and returns the code with the echoed state.
+    fn authorize(
+        &self,
+        tenant_id: &TenantId,
+        request: &AuthorizationRequest,
+    ) -> Result<AuthorizationResponse, IdentityError>;
+
+    /// Exchanges an authorization code for access, ID, and refresh tokens.
+    ///
+    /// Validates the code (exists, not expired, not used, correct client and
+    /// redirect URI), verifies PKCE if a code challenge was present, marks
+    /// the code as used, creates a session, and issues tokens.
+    fn exchange_authorization_code(
+        &self,
+        tenant_id: &TenantId,
+        request: &TokenExchangeRequest,
+    ) -> Result<OidcTokenResponse, IdentityError>;
+
+    /// Returns the OIDC Discovery document.
+    ///
+    /// Contains metadata about the provider's endpoints, supported response
+    /// types, signing algorithms, and PKCE methods.
+    fn oidc_discovery(&self) -> OidcDiscoveryDocument;
 }

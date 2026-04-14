@@ -25,13 +25,13 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Credential Storage | 4/4 | 2/2 | 2/2 | 0/1 | -- | 2/3 | -- | -- | **10/12** |
 | Session Management | 5/5 | 3/3 | 2/2 | -- | 0/2 | 3/3 | -- | 0/2 | **13/17** |
 | Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 2/2 | **15/15** |
-| JWT / Tokens | 0/5 | 0/2 | -- | 0/1 | -- | 0/4 | -- | 0/2 | **0/14** |
-| OIDC (Auth Code Flow) | 0/5 | 0/3 | -- | 0/1 | -- | 0/3 | 0/2 | 0/1 | **0/15** |
+| JWT / Tokens | 5/5 | 2/2 | -- | 0/1 | -- | 3/4 | -- | 2/2 | **12/14** |
+| OIDC (Auth Code Flow) | 5/5 | 2/3 | -- | 0/1 | -- | 3/3 | 0/2 | 1/1 | **11/15** |
 | Configuration | 4/4 | -- | -- | 1/1 | -- | -- | -- | -- | **5/5** |
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **44/54** | **12/24** | **18/18** | **1/5** | **0/10** | **10/23** | **0/2** | **4/12** | **89/148** |
+| **Column Total** | **49/54** | **14/24** | **18/18** | **1/5** | **0/10** | **13/23** | **0/2** | **6/12** | **101/148** |
 
 ---
 
@@ -287,16 +287,16 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Issue JWT with correct standard claims (`sub`, `iss`, `aud`, `exp`, `iat`) `P0` `fast`
-- [ ] Validate JWT: correct signature returns success with parsed claims `P0` `fast`
-- [ ] Reject expired, tampered-payload, and wrong-signing-key JWTs `P0` `fast`
-- [ ] Token refresh issues new JWT with extended expiration `P0` `fast`
-- [ ] JWKS endpoint returns correct public keys in standard format `P0` `fast`
+- [x] Issue JWT with correct standard claims (`sub`, `iss`, `aud`, `exp`, `iat`) `P0` `fast`
+- [x] Validate JWT: correct signature returns success with parsed claims `P0` `fast`
+- [x] Reject expired, tampered-payload, and wrong-signing-key JWTs `P0` `fast`
+- [x] Token refresh issues new JWT with extended expiration `P0` `fast`
+- [x] JWKS endpoint returns correct public keys in standard format `P0` `fast`
 
 #### Integration
 
-- [ ] Token issuance and validation round-trip via public API `P0` `fast`
-- [ ] Token refresh flow end-to-end (issue → expire → refresh → validate) `P0` `fast`
+- [x] Token issuance and validation round-trip via public API `P0` `fast`
+- [x] Token refresh flow end-to-end (issue → expire → refresh → validate) `P0` `fast`
 
 #### Fuzz
 
@@ -304,15 +304,15 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] `alg=none` attack: unsigned token rejected regardless of claims `P0` `fast`
-- [ ] RSA/HMAC key confusion: HMAC-signed token with RSA public key as secret rejected `P0` `fast`
-- [ ] Modified `exp`, `iss`, or `aud` claims detected and rejected on validation `P0` `fast`
+- [x] `alg=none` attack: unsigned token rejected regardless of claims `P0` `fast`
+- [x] RSA/HMAC key confusion: HMAC-signed token with RSA public key as secret rejected `P0` `fast`
+- [x] Modified `exp`, `iss`, or `aud` claims detected and rejected on validation `P0` `fast`
 - [ ] Nonce reuse in token requests detected (when nonce enforcement enabled) `P1` `fast`
 
 #### Benchmark
 
-- [ ] Token validation (JWT verify + session lookup): p50 < 50 μs, p99 < 500 μs (regression: +20%) `P0` `standard`
-- [ ] Token issuance (full OAuth2 flow): p50 < 1 ms, p99 < 5 ms (regression: +20%) `P0` `standard`
+- [x] Token validation (JWT verify + session lookup): p50 < 50 μs, p99 < 500 μs (regression: +20%) `P0` `standard`
+- [x] Token issuance (full OAuth2 flow): p50 < 1 ms, p99 < 5 ms (regression: +20%) `P0` `standard`
 
 ---
 
@@ -320,17 +320,17 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Generate authorization code with correct parameters (client_id, redirect_uri, scope, state) `P0` `fast`
-- [ ] Exchange valid authorization code for access + ID tokens `P0` `fast`
-- [ ] Authorization code single-use: second exchange attempt rejected `P0` `fast`
-- [ ] Authorization code expiration: exchange after timeout rejected `P0` `fast`
-- [ ] Discovery document at `.well-known/openid-configuration` returns correct metadata `P0` `fast`
+- [x] Generate authorization code with correct parameters (client_id, redirect_uri, scope, state) `P0` `fast`
+- [x] Exchange valid authorization code for access + ID tokens `P0` `fast`
+- [x] Authorization code single-use: second exchange attempt rejected `P0` `fast`
+- [x] Authorization code expiration: exchange after timeout rejected `P0` `fast`
+- [x] Discovery document at `.well-known/openid-configuration` returns correct metadata `P0` `fast`
 
 #### Integration
 
-- [ ] Full authorization code flow via embedded API (authorize → exchange → validate) `P0` `fast`
+- [x] Full authorization code flow via embedded API (authorize → exchange → validate) `P0` `fast`
 - [ ] Full authorization code flow via HTTP endpoints `P1` `fast`
-- [ ] PKCE (S256): code challenge generated, code verifier validated on exchange `P0` `fast`
+- [x] PKCE (S256): code challenge generated, code verifier validated on exchange `P0` `fast`
 
 #### Fuzz
 
@@ -338,9 +338,9 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] Authorization code reuse and injection attacks rejected `P0` `fast`
-- [ ] Open redirect via `redirect_uri` manipulation: non-registered URIs rejected `P0` `fast`
-- [ ] CSRF prevention: missing or invalid `state` parameter causes flow rejection `P0` `fast`
+- [x] Authorization code reuse and injection attacks rejected `P0` `fast`
+- [x] Open redirect via `redirect_uri` manipulation: non-registered URIs rejected `P0` `fast`
+- [x] CSRF prevention: missing or invalid `state` parameter causes flow rejection `P0` `fast`
 
 #### Conformance
 
@@ -349,7 +349,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Benchmark
 
-- [ ] Authorization code exchange latency: p50 < 1 ms, p99 < 5 ms (regression: +20%) `P1` `standard`
+- [x] Authorization code exchange latency: p50 < 1 ms, p99 < 5 ms (regression: +20%) `P1` `standard`
 
 ---
 

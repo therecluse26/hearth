@@ -7,7 +7,7 @@
 //!
 //! Scan prefix `usr:id:` enables listing all users in a tenant.
 
-use crate::core::{SessionId, UserId};
+use crate::core::{ClientId, SessionId, UserId};
 
 /// Prefix for user primary keys.
 const USER_ID_PREFIX: &str = "usr:id:";
@@ -17,6 +17,12 @@ const USER_EMAIL_PREFIX: &str = "usr:email:";
 
 /// Prefix for user credential keys.
 const CREDENTIAL_PREFIX: &str = "cred:user:";
+
+/// Prefix for OAuth client keys.
+const OAUTH_CLIENT_PREFIX: &str = "oauth:client:";
+
+/// Prefix for OAuth authorization code keys (stored by hash).
+const OAUTH_CODE_PREFIX: &str = "oauth:code:";
 
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
@@ -96,10 +102,25 @@ pub(crate) fn prefix_end(prefix: &[u8]) -> Vec<u8> {
     end
 }
 
+/// Encodes the storage key for an OAuth client.
+///
+/// Format: `oauth:client:{client_id_uuid}`
+pub(crate) fn encode_oauth_client(client_id: &ClientId) -> Vec<u8> {
+    format!("{OAUTH_CLIENT_PREFIX}{}", client_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the storage key for an OAuth authorization code.
+///
+/// The code is stored by its SHA-256 hex digest, not the raw code value.
+/// Format: `oauth:code:{sha256_hex}`
+pub(crate) fn encode_oauth_code(code_hash: &str) -> Vec<u8> {
+    format!("{OAUTH_CODE_PREFIX}{code_hash}").into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::SessionId;
+    use crate::core::{ClientId, SessionId};
     use uuid::Uuid;
 
     #[test]
@@ -213,6 +234,35 @@ mod tests {
         let id2 = SessionId::generate();
         let key1 = encode_session_id(&id1);
         let key2 = encode_session_id(&id2);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn encode_oauth_client_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let client_id = ClientId::new(uuid);
+        let key = encode_oauth_client(&client_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "oauth:client:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn encode_oauth_code_format() {
+        let hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let key = encode_oauth_code(hash);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(
+            key_str,
+            "oauth:code:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        );
+    }
+
+    #[test]
+    fn different_clients_produce_different_keys() {
+        let id1 = ClientId::generate();
+        let id2 = ClientId::generate();
+        let key1 = encode_oauth_client(&id1);
+        let key2 = encode_oauth_client(&id2);
         assert_ne!(key1, key2);
     }
 }

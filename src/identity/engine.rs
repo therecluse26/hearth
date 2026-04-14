@@ -5,10 +5,33 @@
 
 use std::sync::Arc;
 
-use crate::core::{Clock, SessionId, TenantId, UserId};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use ring::rand::SecureRandom;
+
+use crate::core::{ClientId, Clock, SessionId, TenantId, UserId};
 use crate::identity::credentials::{self, CleartextPassword, CredentialConfig, StoredCredential};
 use crate::identity::error::IdentityError;
 use crate::identity::keys;
+/// Encodes bytes as lowercase hexadecimal.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+use crate::identity::oidc::{
+    AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
+    OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, StoredAuthorizationCode,
+    TokenExchangeRequest,
+};
+use crate::identity::tokens::{
+    self, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
+};
 use crate::identity::types::{CreateUserRequest, Session, UpdateUserRequest, User, UserStatus};
 use crate::identity::validation;
 use crate::identity::IdentityEngine;
@@ -41,6 +64,10 @@ pub struct IdentityConfig {
     pub credential: CredentialConfig,
     /// Session management parameters.
     pub session: SessionConfig,
+    /// Token issuance parameters.
+    pub token: TokenConfig,
+    /// OIDC / OAuth 2.0 parameters.
+    pub oidc: OidcConfig,
 }
 
 impl Default for IdentityConfig {
@@ -49,6 +76,8 @@ impl Default for IdentityConfig {
             default_status: UserStatus::Active,
             credential: CredentialConfig::default(),
             session: SessionConfig::default(),
+            token: TokenConfig::default(),
+            oidc: OidcConfig::default(),
         }
     }
 }
@@ -70,6 +99,8 @@ pub struct EmbeddedIdentityEngine {
     /// credential, we verify against this dummy hash so the response time
     /// is indistinguishable from a real failed verification.
     dummy_hash: String,
+    /// Ed25519 signing key for JWT token issuance.
+    signing_key: Arc<SigningKey>,
 }
 
 impl std::fmt::Debug for EmbeddedIdentityEngine {
@@ -83,12 +114,33 @@ impl std::fmt::Debug for EmbeddedIdentityEngine {
 impl EmbeddedIdentityEngine {
     /// Creates a new identity engine.
     ///
-    /// Pre-computes a dummy Argon2id hash on construction for use in
-    /// timing-oracle prevention during password verification.
+    /// Generates an Ed25519 signing key and pre-computes a dummy Argon2id
+    /// hash on construction for timing-oracle prevention during password
+    /// verification.
     pub fn new(
         storage: Arc<dyn StorageEngine>,
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
+    ) -> Result<Self, IdentityError> {
+        let dummy_hash = credentials::compute_dummy_hash(&config.credential);
+        let signing_key = Arc::new(SigningKey::generate()?);
+        Ok(Self {
+            storage,
+            clock,
+            config,
+            dummy_hash,
+            signing_key,
+        })
+    }
+
+    /// Creates a new identity engine with a pre-existing signing key.
+    ///
+    /// Used for testing with a known key or for key restoration from storage.
+    pub fn with_signing_key(
+        storage: Arc<dyn StorageEngine>,
+        clock: Arc<dyn Clock>,
+        config: IdentityConfig,
+        signing_key: Arc<SigningKey>,
     ) -> Self {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         Self {
@@ -96,7 +148,13 @@ impl EmbeddedIdentityEngine {
             clock,
             config,
             dummy_hash,
+            signing_key,
         }
+    }
+
+    /// Returns a reference to the signing key.
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
     }
 
     /// Serializes a user to JSON bytes.
@@ -164,6 +222,20 @@ impl EmbeddedIdentityEngine {
             Some(data) => Ok(Some(Self::deserialize_session(&data)?)),
             None => Ok(None),
         }
+    }
+
+    /// Computes the SHA-256 hex digest of the given data.
+    fn sha256_hex(data: &[u8]) -> String {
+        let digest = ring::digest::digest(&ring::digest::SHA256, data);
+        hex_encode(digest.as_ref())
+    }
+
+    /// Computes the PKCE S256 code challenge from a code verifier.
+    ///
+    /// `S256 = BASE64URL(SHA256(code_verifier))`
+    fn pkce_s256_challenge(verifier: &str) -> String {
+        let digest = ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes());
+        URL_SAFE_NO_PAD.encode(digest.as_ref())
     }
 
     /// Persists a session to storage (both primary and user index).
@@ -567,6 +639,392 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         Ok(session)
     }
+
+    // ===== Token management =====
+
+    fn issue_tokens(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        session_id: &SessionId,
+    ) -> Result<TokenPair, IdentityError> {
+        // Verify user exists
+        let user = self.get_user(tenant_id, user_id)?;
+        if user.is_none() {
+            return Err(IdentityError::UserNotFound);
+        }
+
+        // Verify session exists and is valid
+        let session = self.get_session(tenant_id, session_id)?;
+        if session.is_none() {
+            return Err(IdentityError::SessionNotFound);
+        }
+
+        let now = self.clock.now();
+        self.signing_key.issue_token_pair(&IssueTokenRequest {
+            sub: &user_id.to_string(),
+            sid: &session_id.to_string(),
+            tid: &tenant_id.to_string(),
+            now,
+            config: &self.config.token,
+        })
+    }
+
+    fn validate_token(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<TokenClaims, IdentityError> {
+        // Hot path: extract claims without signature verification
+        let claims = tokens::decode_claims_unverified(token)?;
+
+        // Verify the token was issued for this tenant
+        if claims.tid != tenant_id.to_string() {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        // Parse session ID from claims
+        let session_id_str = claims
+            .sid
+            .strip_prefix("session_")
+            .ok_or(IdentityError::InvalidToken)?;
+        let session_uuid =
+            uuid::Uuid::parse_str(session_id_str).map_err(|_| IdentityError::InvalidToken)?;
+        let session_id = SessionId::new(session_uuid);
+
+        // Look up session — this is the actual validation
+        let session = self.get_session(tenant_id, &session_id)?;
+        if session.is_none() {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        Ok(claims)
+    }
+
+    fn refresh_tokens(
+        &self,
+        tenant_id: &TenantId,
+        refresh_token: &str,
+    ) -> Result<TokenPair, IdentityError> {
+        // Decode the refresh token (unverified — we trust our own tokens)
+        let claims = tokens::decode_claims_unverified(refresh_token)?;
+
+        // Must be a refresh token
+        if claims.token_type != "refresh" {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        // Verify tenant matches
+        if claims.tid != tenant_id.to_string() {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        // Check expiration
+        let now = self.clock.now();
+        let now_secs = now.as_micros() / 1_000_000;
+        if now_secs >= claims.exp {
+            return Err(IdentityError::TokenExpired);
+        }
+
+        // Parse session ID
+        let session_id_str = claims
+            .sid
+            .strip_prefix("session_")
+            .ok_or(IdentityError::InvalidToken)?;
+        let session_uuid =
+            uuid::Uuid::parse_str(session_id_str).map_err(|_| IdentityError::InvalidToken)?;
+        let session_id = SessionId::new(session_uuid);
+
+        // Refresh the underlying session
+        self.refresh_session(tenant_id, &session_id)?;
+
+        // Parse user ID
+        let user_id_str = claims
+            .sub
+            .strip_prefix("user_")
+            .ok_or(IdentityError::InvalidToken)?;
+        let user_uuid =
+            uuid::Uuid::parse_str(user_id_str).map_err(|_| IdentityError::InvalidToken)?;
+        let user_id = UserId::new(user_uuid);
+
+        // Issue new token pair
+        self.issue_tokens(tenant_id, &user_id, &session_id)
+    }
+
+    fn jwks(&self) -> JwksDocument {
+        self.signing_key.to_jwks()
+    }
+
+    // ===== OIDC / OAuth 2.0 =====
+
+    fn register_client(
+        &self,
+        tenant_id: &TenantId,
+        request: &RegisterClientRequest,
+    ) -> Result<OAuthClient, IdentityError> {
+        // Validate client name
+        let client_name = request.client_name.trim();
+        if client_name.is_empty() {
+            return Err(IdentityError::InvalidInput {
+                reason: "client name must not be empty".to_string(),
+            });
+        }
+
+        // Validate redirect URIs
+        if request.redirect_uris.is_empty() {
+            return Err(IdentityError::InvalidInput {
+                reason: "at least one redirect URI is required".to_string(),
+            });
+        }
+        for uri in &request.redirect_uris {
+            if uri.trim().is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "redirect URIs must not be empty".to_string(),
+                });
+            }
+        }
+
+        let client_id = ClientId::generate();
+        let now = self.clock.now();
+
+        let client = OAuthClient::new(
+            client_id.clone(),
+            client_name.to_string(),
+            request.redirect_uris.clone(),
+            now,
+        );
+
+        // Serialize and persist
+        let client_bytes =
+            serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let key = keys::encode_oauth_client(&client_id);
+        self.storage
+            .put(tenant_id, &key, &client_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(client)
+    }
+
+    fn authorize(
+        &self,
+        tenant_id: &TenantId,
+        request: &AuthorizationRequest,
+    ) -> Result<AuthorizationResponse, IdentityError> {
+        // 1. Validate response_type
+        if request.response_type != "code" {
+            return Err(IdentityError::InvalidInput {
+                reason: "response_type must be 'code'".to_string(),
+            });
+        }
+
+        // 2. Validate state is non-empty (CSRF protection)
+        if request.state.is_empty() {
+            return Err(IdentityError::InvalidGrant {
+                reason: "state parameter is required for CSRF protection".to_string(),
+            });
+        }
+
+        // 3. Load and validate client
+        let client_key = keys::encode_oauth_client(&request.client_id);
+        let client_bytes = self
+            .storage
+            .get(tenant_id, &client_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidClient)?;
+        let client: OAuthClient =
+            serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 4. Validate redirect_uri matches a registered URI
+        if !client.redirect_uris().contains(&request.redirect_uri) {
+            return Err(IdentityError::InvalidRedirectUri);
+        }
+
+        // 5. Validate PKCE code_challenge_method if present
+        if let Some(ref method) = request.code_challenge_method {
+            if *method != CodeChallengeMethod::S256 {
+                return Err(IdentityError::InvalidInput {
+                    reason: "only S256 code challenge method is supported".to_string(),
+                });
+            }
+            // code_challenge must be present if method is specified
+            if request.code_challenge.is_none() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "code_challenge is required when code_challenge_method is specified"
+                        .to_string(),
+                });
+            }
+        }
+
+        // 6. Generate cryptographically random authorization code (32 bytes)
+        let rng = ring::rand::SystemRandom::new();
+        let mut code_bytes = [0u8; 32];
+        rng.fill(&mut code_bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "failed to generate random bytes for authorization code".to_string(),
+            })?;
+        let raw_code = URL_SAFE_NO_PAD.encode(code_bytes);
+
+        // 7. Hash the code for storage
+        let code_hash = Self::sha256_hex(raw_code.as_bytes());
+
+        // 8. Build stored authorization code
+        let now = self.clock.now();
+        let ttl_micros = self.config.oidc.authorization_code_ttl_secs * 1_000_000;
+        let expires_at = now.add_micros(ttl_micros);
+
+        let stored_code = StoredAuthorizationCode {
+            code_hash: code_hash.clone(),
+            client_id: request.client_id.clone(),
+            user_id: request.user_id.clone(),
+            redirect_uri: request.redirect_uri.clone(),
+            scope: request.scope.clone(),
+            code_challenge: request.code_challenge.clone(),
+            code_challenge_method: request.code_challenge_method.clone(),
+            created_at: now,
+            expires_at,
+            used: false,
+        };
+
+        // 9. Persist the code
+        let code_key = keys::encode_oauth_code(&code_hash);
+        let code_bytes =
+            serde_json::to_vec(&stored_code).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &code_key, &code_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(AuthorizationResponse::new(raw_code, request.state.clone()))
+    }
+
+    fn exchange_authorization_code(
+        &self,
+        tenant_id: &TenantId,
+        request: &TokenExchangeRequest,
+    ) -> Result<OidcTokenResponse, IdentityError> {
+        // 1. Hash the incoming code to find it in storage
+        let code_hash = Self::sha256_hex(request.code.as_bytes());
+        let code_key = keys::encode_oauth_code(&code_hash);
+
+        // 2. Load the stored code
+        let code_bytes = self
+            .storage
+            .get(tenant_id, &code_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+
+        let mut stored_code: StoredAuthorizationCode = serde_json::from_slice(&code_bytes)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 3. Check if already used (single-use enforcement)
+        if stored_code.used {
+            return Err(IdentityError::InvalidAuthorizationCode);
+        }
+
+        // 4. Check expiration
+        let now = self.clock.now();
+        if now >= stored_code.expires_at {
+            return Err(IdentityError::InvalidAuthorizationCode);
+        }
+
+        // 5. Verify client_id matches
+        if stored_code.client_id != request.client_id {
+            return Err(IdentityError::InvalidAuthorizationCode);
+        }
+
+        // 6. Verify redirect_uri matches
+        if stored_code.redirect_uri != request.redirect_uri {
+            return Err(IdentityError::InvalidAuthorizationCode);
+        }
+
+        // 7. Validate PKCE if code_challenge was present
+        if let Some(ref challenge) = stored_code.code_challenge {
+            let verifier = request
+                .code_verifier
+                .as_ref()
+                .ok_or(IdentityError::InvalidGrant {
+                    reason: "code_verifier is required when code_challenge was used".to_string(),
+                })?;
+
+            // Compute S256: BASE64URL(SHA256(code_verifier))
+            let computed_challenge = Self::pkce_s256_challenge(verifier);
+            if computed_challenge != *challenge {
+                return Err(IdentityError::InvalidGrant {
+                    reason: "PKCE code_verifier does not match code_challenge".to_string(),
+                });
+            }
+        }
+
+        // 8. Mark the code as used
+        stored_code.used = true;
+        let updated_bytes =
+            serde_json::to_vec(&stored_code).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &code_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 9. Create a session for the user
+        let session = self.create_session(tenant_id, &stored_code.user_id)?;
+
+        // 10. Issue tokens (access + refresh)
+        let token_pair = self.issue_tokens(tenant_id, &stored_code.user_id, session.id())?;
+
+        // 11. Issue ID token (OIDC-specific)
+        let iat = now.as_micros() / 1_000_000;
+        let id_token_claims = TokenClaims {
+            sub: stored_code.user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: request.client_id.to_string(),
+            exp: iat + self.config.token.access_token_ttl_secs,
+            iat,
+            sid: session.id().to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "id_token".to_string(),
+        };
+        let id_token = self
+            .signing_key
+            .issue_token(&id_token_claims)
+            .map_err(|e| IdentityError::SigningError {
+                reason: format!("failed to issue ID token: {e}"),
+            })?;
+
+        Ok(OidcTokenResponse::new(
+            token_pair.access_token().to_string(),
+            id_token,
+            "Bearer".to_string(),
+            self.config.token.access_token_ttl_secs,
+            token_pair.refresh_token().to_string(),
+        ))
+    }
+
+    fn oidc_discovery(&self) -> OidcDiscoveryDocument {
+        let issuer = &self.config.oidc.issuer;
+        OidcDiscoveryDocument {
+            issuer: issuer.clone(),
+            authorization_endpoint: format!("{issuer}/authorize"),
+            token_endpoint: format!("{issuer}/token"),
+            jwks_uri: format!("{issuer}/.well-known/jwks.json"),
+            response_types_supported: vec!["code".to_string()],
+            subject_types_supported: vec!["public".to_string()],
+            id_token_signing_alg_values_supported: vec!["EdDSA".to_string()],
+            scopes_supported: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+            ],
+            token_endpoint_auth_methods_supported: vec!["none".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -588,7 +1046,8 @@ mod tests {
             Arc::new(storage) as Arc<dyn StorageEngine>,
             Arc::clone(&clock) as Arc<dyn Clock>,
             identity_config,
-        );
+        )
+        .expect("engine creation");
         (dir, engine, clock)
     }
 
@@ -1769,5 +2228,344 @@ mod tests {
                 prop_assert_eq!(ids.len(), n, "all session IDs should be unique");
             }
         }
+    }
+
+    // ===================================================================
+    //  OIDC / OAuth 2.0 Unit Tests (Step 15)
+    // ===================================================================
+
+    fn register_test_client(engine: &EmbeddedIdentityEngine, tenant: &TenantId) -> OAuthClient {
+        engine
+            .register_client(
+                tenant,
+                &RegisterClientRequest {
+                    client_name: "Test App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                },
+            )
+            .expect("register client")
+    }
+
+    // ===== Unit Test 1: Generate authorization code with correct parameters =====
+
+    #[test]
+    fn generate_authorization_code_with_correct_params() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        let response = engine
+            .authorize(
+                &tenant,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "random-state-value".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                },
+            )
+            .expect("authorize should succeed");
+
+        // Code should be non-empty base64url
+        assert!(!response.code().is_empty(), "code must not be empty");
+        // State should be echoed back
+        assert_eq!(response.state(), "random-state-value");
+    }
+
+    // ===== Unit Test 2: Exchange authorization code returns tokens =====
+
+    #[test]
+    fn exchange_authorization_code_returns_tokens() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        let auth_response = engine
+            .authorize(
+                &tenant,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "state1".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                },
+            )
+            .expect("authorize");
+
+        let token_response = engine
+            .exchange_authorization_code(
+                &tenant,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth_response.code().to_string(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange code");
+
+        assert!(!token_response.access_token().is_empty());
+        assert!(!token_response.id_token().is_empty());
+        assert!(!token_response.refresh_token().is_empty());
+        assert_eq!(token_response.token_type(), "Bearer");
+        assert!(token_response.expires_in() > 0);
+
+        // Verify access token is valid via session lookup
+        let claims = engine
+            .validate_token(&tenant, token_response.access_token())
+            .expect("validate access token");
+        assert_eq!(claims.sub, user.id().to_string());
+
+        // Verify ID token is a valid JWT with correct claims
+        let id_claims =
+            tokens::decode_claims_unverified(token_response.id_token()).expect("decode id token");
+        assert_eq!(id_claims.sub, user.id().to_string());
+        assert_eq!(id_claims.token_type, "id_token");
+    }
+
+    // ===== Unit Test 3: Authorization code single-use =====
+
+    #[test]
+    fn authorization_code_single_use() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        let auth_response = engine
+            .authorize(
+                &tenant,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "state2".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                },
+            )
+            .expect("authorize");
+
+        // First exchange succeeds
+        let result1 = engine.exchange_authorization_code(
+            &tenant,
+            &TokenExchangeRequest {
+                client_id: client.client_id().clone(),
+                code: auth_response.code().to_string(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                code_verifier: None,
+            },
+        );
+        assert!(result1.is_ok(), "first exchange should succeed");
+
+        // Second exchange with same code fails
+        let result2 = engine.exchange_authorization_code(
+            &tenant,
+            &TokenExchangeRequest {
+                client_id: client.client_id().clone(),
+                code: auth_response.code().to_string(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                code_verifier: None,
+            },
+        );
+        assert!(
+            matches!(result2, Err(IdentityError::InvalidAuthorizationCode)),
+            "second exchange must fail, got: {result2:?}"
+        );
+    }
+
+    // ===== Unit Test 4: Authorization code expiration =====
+
+    #[test]
+    fn authorization_code_expiration() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        let auth_response = engine
+            .authorize(
+                &tenant,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "state3".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                },
+            )
+            .expect("authorize");
+
+        // Advance clock past the authorization code TTL (default: 600 seconds)
+        clock.advance(601 * 1_000_000); // 601 seconds in microseconds
+
+        // Exchange should fail due to expiration
+        let result = engine.exchange_authorization_code(
+            &tenant,
+            &TokenExchangeRequest {
+                client_id: client.client_id().clone(),
+                code: auth_response.code().to_string(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                code_verifier: None,
+            },
+        );
+        assert!(
+            matches!(result, Err(IdentityError::InvalidAuthorizationCode)),
+            "expired code must be rejected, got: {result:?}"
+        );
+    }
+
+    // ===== Unit Test 5: Discovery document returns correct metadata =====
+
+    #[test]
+    fn discovery_document_correct_metadata() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let doc = engine.oidc_discovery();
+
+        assert_eq!(doc.issuer, "https://hearth.local");
+        assert_eq!(doc.authorization_endpoint, "https://hearth.local/authorize");
+        assert_eq!(doc.token_endpoint, "https://hearth.local/token");
+        assert_eq!(doc.jwks_uri, "https://hearth.local/.well-known/jwks.json");
+        assert!(doc.response_types_supported.contains(&"code".to_string()));
+        assert!(doc.subject_types_supported.contains(&"public".to_string()));
+        assert!(doc
+            .id_token_signing_alg_values_supported
+            .contains(&"EdDSA".to_string()));
+        assert!(doc.scopes_supported.contains(&"openid".to_string()));
+        assert!(doc
+            .code_challenge_methods_supported
+            .contains(&"S256".to_string()));
+    }
+
+    // ===================================================================
+    //  OIDC Adversarial Tests (Step 15)
+    // ===================================================================
+
+    // ===== Adversarial Test 1: Authorization code reuse rejected =====
+
+    #[test]
+    fn adversarial_authorization_code_reuse_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        let auth_response = engine
+            .authorize(
+                &tenant,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "adv-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                },
+            )
+            .expect("authorize");
+
+        // Use the code
+        engine
+            .exchange_authorization_code(
+                &tenant,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth_response.code().to_string(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("first exchange");
+
+        // Attempt reuse — must fail
+        let reuse = engine.exchange_authorization_code(
+            &tenant,
+            &TokenExchangeRequest {
+                client_id: client.client_id().clone(),
+                code: auth_response.code().to_string(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                code_verifier: None,
+            },
+        );
+        assert!(
+            matches!(reuse, Err(IdentityError::InvalidAuthorizationCode)),
+            "code reuse must be rejected, got: {reuse:?}"
+        );
+    }
+
+    // ===== Adversarial Test 2: Open redirect via non-registered URI rejected =====
+
+    #[test]
+    fn adversarial_open_redirect_non_registered_uri_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        // Attempt to authorize with an unregistered redirect URI
+        let result = engine.authorize(
+            &tenant,
+            &AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://evil.example.com/steal-tokens".to_string(),
+                scope: "openid".to_string(),
+                state: "state-val".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+            },
+        );
+        assert!(
+            matches!(result, Err(IdentityError::InvalidRedirectUri)),
+            "unregistered redirect URI must be rejected, got: {result:?}"
+        );
+    }
+
+    // ===== Adversarial Test 3: CSRF — missing state causes rejection =====
+
+    #[test]
+    fn adversarial_csrf_missing_state_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        // Attempt to authorize with empty state
+        let result = engine.authorize(
+            &tenant,
+            &AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: String::new(), // empty state
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+            },
+        );
+        assert!(
+            matches!(result, Err(IdentityError::InvalidGrant { .. })),
+            "missing state must be rejected, got: {result:?}"
+        );
     }
 }
