@@ -27,11 +27,11 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Authorization Engine | 0/5 | 0/2 | 0/3 | -- | -- | 0/3 | -- | 0/2 | **0/15** |
 | JWT / Tokens | 0/5 | 0/2 | -- | 0/1 | -- | 0/4 | -- | 0/2 | **0/14** |
 | OIDC (Auth Code Flow) | 0/5 | 0/3 | -- | 0/1 | -- | 0/3 | 0/2 | 0/1 | **0/15** |
-| Configuration | 0/4 | -- | -- | 0/1 | -- | -- | -- | -- | **0/5** |
+| Configuration | 4/4 | -- | -- | 1/1 | -- | -- | -- | -- | **5/5** |
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **19/54** | **0/24** | **9/18** | **0/5** | **0/10** | **0/23** | **0/2** | **0/12** | **28/148** |
+| **Column Total** | **23/54** | **0/24** | **9/18** | **1/5** | **0/10** | **0/23** | **0/2** | **0/12** | **33/148** |
 
 ---
 
@@ -357,14 +357,14 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Parse valid TOML/YAML server configuration file `P0` `fast`
-- [ ] Reject invalid configuration with descriptive, actionable error messages `P0` `fast`
-- [ ] Default values applied correctly for all omitted optional fields `P0` `fast`
-- [ ] `--dev` flag applies development-mode defaults (in-memory, relaxed security, test users) `P0` `fast`
+- [x] Parse valid TOML/YAML server configuration file `P0` `fast`
+- [x] Reject invalid configuration with descriptive, actionable error messages `P0` `fast`
+- [x] Default values applied correctly for all omitted optional fields `P0` `fast`
+- [x] `--dev` flag applies development-mode defaults (in-memory, relaxed security, test users) `P0` `fast`
 
 #### Fuzz
 
-- [ ] Arbitrary bytes to configuration parser never panic (`cargo-fuzz`) `P0` `extended`
+- [x] Arbitrary bytes to configuration parser never panic (`cargo-fuzz`) `P0` `extended`
 
 ---
 

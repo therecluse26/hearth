@@ -1,0 +1,417 @@
+//! Configuration loading, validation, and defaults.
+//!
+//! Loads YAML configuration with environment variable substitution,
+//! validates values, and provides production-safe defaults.
+
+mod env;
+pub mod error;
+mod types;
+
+pub use error::ConfigError;
+pub use types::{ObservabilityConfig, OperationalConfig, ServerConfig, StorageSection};
+
+use serde::Deserialize;
+use std::path::Path;
+
+/// Top-level Hearth configuration.
+///
+/// All sections use `#[serde(default)]` so a partial or empty YAML file
+/// produces valid configuration with production-safe defaults.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Config {
+    /// Server network settings.
+    #[serde(default)]
+    pub server: ServerConfig,
+    /// Storage engine settings.
+    #[serde(default)]
+    pub storage: StorageSection,
+    /// Logging and tracing settings.
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
+    /// Operational limits and timeouts.
+    #[serde(default)]
+    pub operational: OperationalConfig,
+    /// Whether development mode is active. Not serialized — set by [`Config::dev`].
+    #[serde(skip)]
+    pub dev_mode: bool,
+}
+
+impl Config {
+    /// Parses a YAML string into a validated [`Config`].
+    ///
+    /// Environment variables referenced as `${VAR_NAME}` are substituted
+    /// before parsing. Returns an error for invalid YAML, missing env vars,
+    /// or values that fail validation.
+    pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
+        let substituted = env::substitute_env_vars(yaml)?;
+        let config: Self = serde_yaml::from_str(&substituted)
+            .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Loads configuration from a YAML file on disk.
+    ///
+    /// Reads the file, substitutes environment variables, parses YAML,
+    /// and validates the result.
+    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
+        let content = std::fs::read_to_string(path)?;
+        Self::from_yaml_str(&content)
+    }
+
+    /// Creates a development-mode configuration with relaxed settings.
+    ///
+    /// Intended for local development and testing:
+    /// - `fsync` disabled for faster writes
+    /// - No TLS
+    /// - Debug-level logging
+    /// - Relaxed validation (empty `data_dir` allowed)
+    pub fn dev() -> Self {
+        Self {
+            server: ServerConfig {
+                bind_address: "127.0.0.1".to_string(),
+                port: 8420,
+                tls_cert_path: None,
+                tls_key_path: None,
+            },
+            storage: StorageSection {
+                data_dir: String::new(),
+                wal_max_size_bytes: 64 * 1024 * 1024,
+                memtable_flush_bytes: 16 * 1024 * 1024,
+                hot_tier_capacity: 1_000,
+                fsync: false,
+            },
+            observability: ObservabilityConfig {
+                log_level: "debug".to_string(),
+                log_format: "text".to_string(),
+            },
+            operational: OperationalConfig::default(),
+            dev_mode: true,
+        }
+    }
+
+    /// Validates configuration values.
+    ///
+    /// Called automatically by [`from_yaml_str`] and [`from_file`].
+    /// Dev-mode configs skip certain checks (e.g., empty `data_dir`).
+    fn validate(&self) -> Result<(), ConfigError> {
+        // Port: valid TCP port range
+        if self.server.port == 0 {
+            return Err(ConfigError::ValidationError {
+                field: "server.port".to_string(),
+                reason: "must be between 1 and 65535".to_string(),
+            });
+        }
+
+        // Data directory: must not be empty in production mode
+        if !self.dev_mode && self.storage.data_dir.is_empty() {
+            return Err(ConfigError::ValidationError {
+                field: "storage.data_dir".to_string(),
+                reason: "must not be empty".to_string(),
+            });
+        }
+
+        // Log level: must be a recognized level
+        if !ObservabilityConfig::VALID_LOG_LEVELS.contains(&self.observability.log_level.as_str()) {
+            return Err(ConfigError::ValidationError {
+                field: "observability.log_level".to_string(),
+                reason: format!(
+                    "must be one of: {}",
+                    ObservabilityConfig::VALID_LOG_LEVELS.join(", ")
+                ),
+            });
+        }
+
+        // Log format: must be recognized
+        if !ObservabilityConfig::VALID_LOG_FORMATS.contains(&self.observability.log_format.as_str())
+        {
+            return Err(ConfigError::ValidationError {
+                field: "observability.log_format".to_string(),
+                reason: format!(
+                    "must be one of: {}",
+                    ObservabilityConfig::VALID_LOG_FORMATS.join(", ")
+                ),
+            });
+        }
+
+        // Timeouts: must be positive
+        if self.operational.request_timeout_secs == 0 {
+            return Err(ConfigError::ValidationError {
+                field: "operational.request_timeout_secs".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+
+        if self.operational.shutdown_timeout_secs == 0 {
+            return Err(ConfigError::ValidationError {
+                field: "operational.shutdown_timeout_secs".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+
+        // Connections and queue depth: must be positive
+        if self.operational.max_connections == 0 {
+            return Err(ConfigError::ValidationError {
+                field: "operational.max_connections".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+
+        if self.operational.queue_depth == 0 {
+            return Err(ConfigError::ValidationError {
+                field: "operational.queue_depth".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === TEST_SCENARIOS #1: Parse valid YAML config ===
+
+    #[test]
+    fn parse_valid_yaml_config() {
+        let yaml = r#"
+server:
+  bind_address: "0.0.0.0"
+  port: 9090
+storage:
+  data_dir: "/var/lib/hearth"
+  wal_max_size_bytes: 134217728
+  memtable_flush_bytes: 33554432
+  hot_tier_capacity: 5000
+  fsync: true
+observability:
+  log_level: "warn"
+  log_format: "json"
+operational:
+  request_timeout_secs: 60
+  shutdown_timeout_secs: 30
+  max_connections: 2048
+  queue_depth: 8192
+"#;
+        let config = Config::from_yaml_str(yaml).expect("valid YAML should parse");
+
+        assert_eq!(config.server.bind_address, "0.0.0.0");
+        assert_eq!(config.server.port, 9090);
+        assert!(config.server.tls_cert_path.is_none());
+
+        assert_eq!(config.storage.data_dir, "/var/lib/hearth");
+        assert_eq!(config.storage.wal_max_size_bytes, 128 * 1024 * 1024);
+        assert_eq!(config.storage.memtable_flush_bytes, 32 * 1024 * 1024);
+        assert_eq!(config.storage.hot_tier_capacity, 5000);
+        assert!(config.storage.fsync);
+
+        assert_eq!(config.observability.log_level, "warn");
+        assert_eq!(config.observability.log_format, "json");
+
+        assert_eq!(config.operational.request_timeout_secs, 60);
+        assert_eq!(config.operational.shutdown_timeout_secs, 30);
+        assert_eq!(config.operational.max_connections, 2048);
+        assert_eq!(config.operational.queue_depth, 8192);
+
+        assert!(!config.dev_mode);
+    }
+
+    // === TEST_SCENARIOS #3: Default values applied for omitted fields ===
+
+    #[test]
+    fn default_values_applied_for_omitted_fields() {
+        let config = Config::from_yaml_str("{}").expect("empty YAML should use defaults");
+
+        assert_eq!(config.server.bind_address, "127.0.0.1");
+        assert_eq!(config.server.port, 8420);
+        assert!(config.server.tls_cert_path.is_none());
+        assert!(config.server.tls_key_path.is_none());
+
+        assert_eq!(config.storage.data_dir, "./data");
+        assert_eq!(config.storage.wal_max_size_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.storage.memtable_flush_bytes, 64 * 1024 * 1024);
+        assert_eq!(config.storage.hot_tier_capacity, 10_000);
+        assert!(config.storage.fsync);
+
+        assert_eq!(config.observability.log_level, "info");
+        assert_eq!(config.observability.log_format, "text");
+
+        assert_eq!(config.operational.request_timeout_secs, 30);
+        assert_eq!(config.operational.shutdown_timeout_secs, 10);
+        assert_eq!(config.operational.max_connections, 1024);
+        assert_eq!(config.operational.queue_depth, 4096);
+
+        assert!(!config.dev_mode);
+    }
+
+    #[test]
+    fn partial_override_preserves_other_defaults() {
+        let yaml = r#"
+server:
+  port: 3000
+storage:
+  data_dir: "/custom/path"
+"#;
+        let config = Config::from_yaml_str(yaml).expect("partial YAML should parse");
+
+        // Overridden values
+        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.storage.data_dir, "/custom/path");
+
+        // Remaining defaults preserved
+        assert_eq!(config.server.bind_address, "127.0.0.1");
+        assert!(config.storage.fsync);
+        assert_eq!(config.observability.log_level, "info");
+        assert_eq!(config.operational.request_timeout_secs, 30);
+    }
+
+    // === TEST_SCENARIOS #2: Reject invalid config ===
+
+    #[test]
+    fn reject_invalid_yaml_syntax() {
+        let bad_yaml = "server:\n  port: [unclosed";
+        let result = Config::from_yaml_str(bad_yaml);
+        assert!(result.is_err());
+        let err = result.expect_err("should be a config error");
+        let display = format!("{err}");
+        assert!(display.contains("parse"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_invalid_port_zero() {
+        let yaml = "server:\n  port: 0";
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let err = result.expect_err("should be a config error");
+        let display = format!("{err}");
+        assert!(display.contains("server.port"), "got: {display}");
+        assert!(display.contains("65535"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_negative_timeout() {
+        let yaml = "operational:\n  request_timeout_secs: 0";
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let err = result.expect_err("should be a config error");
+        let display = format!("{err}");
+        assert!(display.contains("request_timeout_secs"), "got: {display}");
+        assert!(display.contains("greater than 0"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_invalid_log_level() {
+        let yaml = "observability:\n  log_level: \"verbose\"";
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let err = result.expect_err("should be a config error");
+        let display = format!("{err}");
+        assert!(display.contains("log_level"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_empty_data_dir_in_prod_mode() {
+        let yaml = "storage:\n  data_dir: \"\"";
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let err = result.expect_err("should be a config error");
+        let display = format!("{err}");
+        assert!(display.contains("data_dir"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_invalid_log_format() {
+        let yaml = "observability:\n  log_format: \"xml\"";
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let err = result.expect_err("should be a config error");
+        let display = format!("{err}");
+        assert!(display.contains("log_format"), "got: {display}");
+    }
+
+    // === TEST_SCENARIOS #4: Dev mode ===
+
+    #[test]
+    fn dev_mode_defaults() {
+        let config = Config::dev();
+
+        assert!(config.dev_mode);
+        assert!(!config.storage.fsync, "dev mode should disable fsync");
+        assert!(
+            config.server.tls_cert_path.is_none(),
+            "dev mode should have no TLS"
+        );
+        assert!(
+            config.server.tls_key_path.is_none(),
+            "dev mode should have no TLS"
+        );
+        assert_eq!(
+            config.observability.log_level, "debug",
+            "dev mode should use debug logging"
+        );
+    }
+
+    #[test]
+    fn dev_mode_allows_relaxed_validation() {
+        let config = Config::dev();
+        // Dev config has empty data_dir — validate should not reject it
+        assert!(config.storage.data_dir.is_empty());
+        // Validate directly to confirm relaxed rules
+        assert!(config.validate().is_ok());
+    }
+
+    // === File loading ===
+
+    #[test]
+    fn load_from_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("hearth.yaml");
+        std::fs::write(
+            &config_path,
+            "server:\n  port: 7777\nstorage:\n  data_dir: /tmp/hearth\n",
+        )
+        .expect("write config file");
+
+        let config = Config::from_file(&config_path).expect("load from file");
+        assert_eq!(config.server.port, 7777);
+        assert_eq!(config.storage.data_dir, "/tmp/hearth");
+    }
+
+    #[test]
+    fn load_from_missing_file_returns_error() {
+        let result = Config::from_file(Path::new("/nonexistent/hearth.yaml"));
+        assert!(result.is_err());
+        let err = result.expect_err("should be a config error");
+        let display = format!("{err}");
+        assert!(display.contains("read configuration"), "got: {display}");
+    }
+
+    // === Env var integration ===
+
+    #[test]
+    fn from_yaml_str_with_env_vars() {
+        std::env::set_var("HEARTH_CFG_PORT", "4242");
+        std::env::set_var("HEARTH_CFG_DIR", "/opt/hearth");
+        let yaml = r#"
+server:
+  port: ${HEARTH_CFG_PORT}
+storage:
+  data_dir: "${HEARTH_CFG_DIR}/data"
+"#;
+        let config = Config::from_yaml_str(yaml).expect("env var substitution");
+        assert_eq!(config.server.port, 4242);
+        assert_eq!(config.storage.data_dir, "/opt/hearth/data");
+        std::env::remove_var("HEARTH_CFG_PORT");
+        std::env::remove_var("HEARTH_CFG_DIR");
+    }
+
+    // === Config is Send + Sync (for Arc<Config>) ===
+
+    #[test]
+    fn config_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Config>();
+    }
+}

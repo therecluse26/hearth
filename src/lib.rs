@@ -5,6 +5,7 @@
 
 pub mod authz;
 pub mod cluster;
+pub mod config;
 pub mod core;
 pub mod identity;
 pub mod protocol;
