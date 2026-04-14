@@ -32,6 +32,24 @@ pub struct StorageConfig {
 }
 
 impl StorageConfig {
+    /// Creates a development/test configuration with no fsync and moderate thresholds.
+    ///
+    /// Suitable for integration tests and `--dev` mode. Uses `SyncMode::None`
+    /// for speed and reasonable defaults that exercise flush/eviction paths
+    /// without excessive I/O.
+    pub fn dev(data_dir: PathBuf) -> Self {
+        use crate::storage::wal::SyncMode;
+        Self {
+            data_dir,
+            wal_config: WalConfig {
+                max_size: 64 * 1024 * 1024,
+                sync_mode: SyncMode::None,
+            },
+            memtable_config: MemtableConfig::default(),
+            tiered_config: TieredConfig::default(),
+        }
+    }
+
     /// Creates a test configuration with fast sync and small thresholds.
     #[cfg(test)]
     pub(crate) fn test_config(data_dir: PathBuf) -> Self {

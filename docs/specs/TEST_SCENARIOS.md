@@ -16,7 +16,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 | Module | Unit | Integration | Property | Fuzz | Simulation | Adversarial | Conformance | Benchmark | **Total** |
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
-| Test Infrastructure | 0/2 | 0/2 | -- | -- | -- | -- | -- | -- | **0/4** |
+| Test Infrastructure | 2/2 | 2/2 | -- | -- | -- | -- | -- | -- | **4/4** |
 | Storage: WAL | 5/5 | -- | 3/3 | 0/1 | 0/3 | -- | -- | -- | **8/12** |
 | Storage: Memtable | 5/5 | -- | 2/2 | -- | -- | -- | -- | -- | **7/7** |
 | Storage: Persistence | 4/4 | -- | 2/2 | -- | 0/3 | -- | -- | -- | **6/9** |
@@ -31,7 +31,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **23/54** | **0/24** | **9/18** | **1/5** | **0/10** | **0/23** | **0/2** | **0/12** | **33/148** |
+| **Column Total** | **25/54** | **2/24** | **9/18** | **1/5** | **0/10** | **0/23** | **0/2** | **0/12** | **37/148** |
 
 ---
 
@@ -41,13 +41,13 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] TestHarness embedded mode starts with isolated temp directory and stops cleanly `P0` `fast`
-- [ ] TestHarness server mode starts on random port, accepts connections, and stops cleanly `P0` `fast`
+- [x] TestHarness embedded mode starts with isolated temp directory and stops cleanly `P0` `fast`
+- [x] TestHarness server mode starts on random port, accepts connections, and stops cleanly `P0` `fast`
 
 #### Integration
 
-- [ ] Dual-mode test pattern: same async test logic runs against both embedded and server modes `P0` `fast`
-- [ ] Server-mode tests are `#[ignore]`-tagged until HTTP layer exists `P1` `fast`
+- [x] Dual-mode test pattern: same async test logic runs against both embedded and server modes `P0` `fast`
+- [x] Server-mode tests are `#[ignore]`-tagged until HTTP layer exists `P1` `fast`
 
 ---
 
