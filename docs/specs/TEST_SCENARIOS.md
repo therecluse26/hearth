@@ -18,7 +18,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
 | Test Infrastructure | 0/2 | 0/2 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Storage: WAL | 5/5 | -- | 3/3 | 0/1 | 0/3 | -- | -- | -- | **8/12** |
-| Storage: Memtable | 0/5 | -- | 0/2 | -- | -- | -- | -- | -- | **0/7** |
+| Storage: Memtable | 5/5 | -- | 2/2 | -- | -- | -- | -- | -- | **7/7** |
 | Storage: Persistence | 0/4 | -- | 0/2 | -- | 0/3 | -- | -- | -- | **0/9** |
 | Storage: Tiered Hot/Cold | 0/5 | -- | 0/2 | -- | 0/2 | -- | -- | 0/3 | **0/12** |
 | User CRUD | 0/5 | 0/3 | 0/2 | -- | -- | 0/2 | -- | 0/2 | **0/14** |
@@ -31,7 +31,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **5/54** | **0/24** | **3/18** | **0/5** | **0/10** | **0/23** | **0/2** | **0/12** | **8/148** |
+| **Column Total** | **10/54** | **0/24** | **5/18** | **0/5** | **0/10** | **0/23** | **0/2** | **0/12** | **15/148** |
 
 ---
 
@@ -83,16 +83,16 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Insert and retrieve key-value pairs (single and multiple) `P0` `fast`
-- [ ] Update existing key overwrites value; subsequent read returns new value `P0` `fast`
-- [ ] Delete key removes entry; subsequent lookup returns `None` `P0` `fast`
-- [ ] Flush threshold triggers when memtable reaches configured byte size `P0` `fast`
-- [ ] Iterator returns entries in sorted key order `P0` `fast`
+- [x] Insert and retrieve key-value pairs (single and multiple) `P0` `fast`
+- [x] Update existing key overwrites value; subsequent read returns new value `P0` `fast`
+- [x] Delete key removes entry; subsequent lookup returns `None` `P0` `fast`
+- [x] Flush threshold triggers when memtable reaches configured byte size `P0` `fast`
+- [x] Iterator returns entries in sorted key order `P0` `fast`
 
 #### Property
 
-- [ ] Random insert/update/delete sequences maintain correct key set (`proptest`) `P0` `extended`
-- [ ] Concurrent reads during writes see consistent snapshots (lock-free read validation) `P0` `extended`
+- [x] Random insert/update/delete sequences maintain correct key set (`proptest`) `P0` `extended`
+- [x] Concurrent reads during writes see consistent snapshots (lock-free read validation) `P0` `extended`
 
 ---
 

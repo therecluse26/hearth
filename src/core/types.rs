@@ -20,7 +20,7 @@ macro_rules! define_id_type {
         $name:ident, $prefix:literal
     ) => {
         $(#[$meta])*
-        #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         pub struct $name(Uuid);
 
         impl $name {
