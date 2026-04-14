@@ -124,6 +124,8 @@ Hot path code MUST obey all of the following:
 
 Any PR that touches hot path code MUST include benchmark results demonstrating no regression beyond the thresholds defined in [TESTING.md Section 8](./TESTING.md). A regression beyond threshold blocks merge.
 
+Hot path benchmarks MUST demonstrate that the async function wrapper has zero measurable overhead compared to a synchronous equivalent. If a regression is detected, the hot path trait MUST be split into sync/async variants.
+
 ---
 
 ## 4. API Contracts and Wire Protocols
@@ -194,6 +196,8 @@ All API contracts MUST be defined in `.proto` files. Protobuf is the single sour
 - Writes SHOULD be batched where possible to amortize `fsync` cost.
 - `fsync()` is non-optional in production builds. A `--dev` flag MAY relax this for development mode only.
 - The storage engine MUST survive `kill -9` at any point and recover to a consistent state. This is verified by deterministic simulation tests (see [TESTING.md Section 5](./TESTING.md)).
+- The storage engine MUST support **atomic batch writes**. Multiple operations (puts and deletes) MUST be writable as a single WAL entry with a single `fsync`. Either all operations in the batch are durable, or none are.
+- Identity operations that span multiple records (e.g., create user + index entry + credential) MUST use batch writes to maintain consistency.
 
 ### 6.2 Tiered Storage
 
@@ -207,6 +211,19 @@ All API contracts MUST be defined in `.proto` files. Protobuf is the single sour
 - Credentials and sensitive fields MUST be encrypted at rest using per-tenant keys.
 - Encryption keys MUST NOT appear in log output, error messages, or debug dumps.
 - The storage engine MUST support key rotation without downtime.
+
+**Envelope encryption**: Each SST file MUST be encrypted with a random Data Encryption Key (DEK) using AES-256-GCM applied to the entire data section. The DEK is wrapped by a Key Encryption Key (KEK) and stored in the SST file header.
+
+**SST header encryption fields**: KEK identifier (16 bytes), encrypted DEK (32 bytes), nonce (12 bytes), authentication tag (16 bytes).
+
+**Key rotation**: Key rotation MUST re-wrap DEKs with the new KEK. Data sections MUST NOT be re-encrypted during rotation — only the wrapped DEK in each file header changes. This makes rotation O(number of files), not O(data size).
+
+**WAL encryption**: The WAL MUST use the same envelope encryption pattern, with a per-segment DEK. Each WAL segment has its own random DEK, wrapped by the tenant's KEK.
+
+### 6.4 Format Versioning
+
+- A node MUST be able to read storage formats (WAL, SST) from the previous minor version.
+- Format version migration machinery is deferred until the first format-breaking change post-v1.0.
 
 ---
 
@@ -228,6 +245,12 @@ Tenant isolation MUST be verified by:
 - **Property-based tests**: Random sequences of operations across random tenants, asserting that data written under tenant A is never readable under tenant B. 10,000+ cases in CI.
 - **Adversarial tests**: Write data under tenant A, attempt every read operation under tenant B, assert zero results. Concurrent writes across tenants asserting no cross-contamination. Tenant deletion followed by recreation with the same ID asserting no ghost data.
 - **Debug-mode runtime assertions**: In debug builds, every value returned from the storage engine is checked — does this record's tenant ID match the requested tenant ID? A redundant tripwire on top of the key prefix guarantee.
+
+### 7.3 Tenant Lifecycle
+
+- **Creation**: Write a tenant record. No special constraints beyond standard storage operations.
+- **Suspension**: Tenant records MUST include a `status` field (`Active`, `Suspended`). The identity layer MUST check tenant status before processing any request. Suspended tenants MUST reject all authentication and authorization operations. Data is preserved.
+- **Deletion**: Tenant deletion MUST write tombstones for all tenant-prefixed keys. Compaction removes the data physically. Logical deletion (no reads return data) is immediate. Physical deletion occurs during compaction.
 
 ---
 
@@ -274,6 +297,18 @@ Each layer validates what it is responsible for. **Each layer MUST validate its 
 - An audit trail MAY be materialized asynchronously from the WAL as a background process in Phase 1+. This background job tails the WAL, extracts mutation events, and writes them into a separate append-only, queryable audit store. The write path MUST NOT block on audit trail materialization.
 - The WAL MUST NOT be truncated past the audit materialization job's read cursor.
 - When present, the audit store MUST be append-only and immutable — no update, no delete through any API.
+
+### 8.6 Rate Limiting and Brute-Force Protection
+
+- **Protocol layer**: Per-IP rate limiting MUST be enforced as middleware. Limits MUST be configurable per endpoint category (authentication endpoints stricter than read endpoints).
+- **Identity layer**: Per-account lockout policy MUST be enforced. After N failed authentication attempts within a configurable time window, the account MUST be locked or subject to escalating delays.
+- Failed attempt counts MUST be persisted (survive restarts).
+
+### 8.7 Backpressure and Admission Control
+
+- The protocol layer MUST enforce a configurable request queue depth. When the queue is full, new requests MUST be rejected with HTTP 503.
+- A configurable request timeout MUST be enforced. Requests exceeding the timeout MUST be cancelled.
+- Implementation: `tower::buffer::Buffer` for queue depth, `tower::timeout::Timeout` for request timeout.
 
 ---
 
@@ -348,6 +383,7 @@ The configuration file covers these categories:
 - **Auth**: token lifetimes, supported authentication flows, MFA policy
 - **Cluster**: node ID, peer addresses, Raft timeouts (Phase 2+)
 - **Observability**: log level, log format (human-readable or JSON), metrics endpoint
+- **Operational**: request queue depth, request timeout, connection limits, graceful shutdown timeout, backup schedule and destination
 
 ---
 
@@ -378,6 +414,13 @@ All entity IDs MUST be distinct newtypes: `struct UserId(Uuid)`, `struct Session
 - **Wire format**: JSON for REST, Protobuf for gRPC. Both generated from `.proto` definitions (see [Section 4.1](#41-protobuf-as-single-source-of-truth)).
 - **Storage format**: A compact binary format defined by the storage engine, optimized for identity access patterns. NOT JSON. NOT Protobuf. The storage format is internal and opaque to upper layers.
 - Serialization round-trips (`deserialize(serialize(x)) == x`) MUST be verified by property tests.
+
+### 12.5 Graceful Shutdown
+
+- On SIGTERM, the server MUST stop accepting new connections.
+- In-flight requests MUST be drained with a configurable timeout (default: 30 seconds).
+- After the drain timeout, remaining requests MUST be forcefully terminated.
+- In cluster mode, the node MUST initiate Raft leadership transfer before beginning the drain period.
 
 ---
 
@@ -492,6 +535,18 @@ Hearth provides the `RaftLogStorage` and `RaftStateMachine` trait implementation
 
 The cluster layer MUST be invisible in single-node mode — no configuration, no port allocation, no performance overhead. Writes go directly to the storage engine, bypassing Raft entirely.
 
+### 16.3 Cluster Read Consistency
+
+- Followers MAY serve read traffic with bounded staleness (typically 50–100ms replication lag).
+- A follower MUST stop serving reads if its replication lag exceeds a configurable threshold (default: 500ms). It MUST return an error or redirect the client to the leader.
+- Write operations MUST use the Raft leader's timestamp for consistency across nodes.
+
+### 16.4 Clock Synchronization
+
+- NTP is a deployment prerequisite for cluster mode. Deployment documentation MUST state this requirement.
+- On startup in cluster mode, a node SHOULD compare its clock with the Raft leader's clock and log a warning if skew exceeds 1 second.
+- All mutation timestamps MUST use the leader's clock, not the local node's clock.
+
 ---
 
 ## 17. Project Structure
@@ -537,6 +592,16 @@ SDK priority order is defined in [VISION.md Section 8.2](../vision/VISION.md).
 
 ---
 
+## 19. Backup and Restore
+
+- The admin API MUST expose a backup endpoint (`POST /admin/v1/backup`) that triggers a consistent snapshot of SST files and completed WAL segments and writes them to a configurable destination.
+- Backup destinations MUST support at minimum: local filesystem path. Cloud storage (S3, GCS) SHOULD be supported.
+- Scheduled automatic backups MAY be configured in `hearth.yaml` with a cron-like schedule and destination.
+- SST files and completed WAL segments MUST be safe to copy while the server is running (guaranteed by SST immutability and WAL append-only semantics).
+- In cluster mode, backups SHOULD be taken from a follower to avoid impacting the leader.
+
+---
+
 ## Appendix: Decision Log
 
 Key architectural decisions codified in this document, with rationale:
@@ -560,3 +625,12 @@ Key architectural decisions codified in this document, with rationale:
 | Unsafe code | Lean on crates | `memmap2`, `crossbeam-epoch`, `arc-swap` over custom `unsafe`. Matches Hearth's "leverage ecosystem" philosophy |
 | TDD | Strict, test-first | Database + security = zero tolerance for "I think this works." Tests define correctness before implementation. |
 | Pre-1.0 compatibility | Breaking changes permitted | Semver 0.x convention; strict compatibility rules activate at v1.0 |
+| Encryption at rest mechanism | Envelope encryption (AES-256-GCM) | Key rotation is O(DEKs) not O(data). Industry standard (AWS KMS, GCP KMS). |
+| Batch writes | Atomic multi-op WAL entries | Identity operations span multiple records; individual fsyncs are both slow and unsafe (crash between ops = inconsistency). |
+| Cluster read consistency | Follower reads, bounded staleness | 50–100ms staleness acceptable for auth; linearizable reads bottleneck the leader. Followers stop serving if lag exceeds threshold. |
+| Clock strategy | Require NTP, leader timestamps for writes | Clock sync is a solved problem (NTP). Building custom sync would reinvent it poorly. |
+| Rate limiting | Per-IP in protocol, per-account in identity | Different concerns at different layers. IP limits are wire-level; account lockout is domain logic. |
+| Backpressure | Request queue + timeout (Tower) | Prevents cascading failure under load. Tower provides both primitives. |
+| Graceful shutdown | Drain with timeout + Raft leadership transfer | Zero-downtime deployments require clean shutdown. Leadership transfer prevents cluster disruption. |
+| Tenant lifecycle | Status field + tombstone deletion | Suspension is reversible (non-payment, investigation). Tombstone deletion is consistent with LSM-tree architecture. |
+| Backup mechanism | Admin API + scheduled config | CLI impractical in containerized deployments. API-driven backups work with any orchestration tool. |
