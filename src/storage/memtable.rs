@@ -20,7 +20,7 @@ use crate::storage::wal::{WalEntry, WalOperation};
 /// Ordered by tenant UUID bytes first, then by key bytes (lexicographic).
 /// This ensures tenant-scoped ordering and makes cross-tenant reads
 /// structurally impossible without providing a different `TenantId`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct CompositeKey {
     /// The tenant that owns this key.
     tenant_id: TenantId,

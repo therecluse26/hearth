@@ -19,8 +19,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Test Infrastructure | 0/2 | 0/2 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Storage: WAL | 5/5 | -- | 3/3 | 0/1 | 0/3 | -- | -- | -- | **8/12** |
 | Storage: Memtable | 5/5 | -- | 2/2 | -- | -- | -- | -- | -- | **7/7** |
-| Storage: Persistence | 0/4 | -- | 0/2 | -- | 0/3 | -- | -- | -- | **0/9** |
-| Storage: Tiered Hot/Cold | 0/5 | -- | 0/2 | -- | 0/2 | -- | -- | 0/3 | **0/12** |
+| Storage: Persistence | 4/4 | -- | 2/2 | -- | 0/3 | -- | -- | -- | **6/9** |
+| Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 0/2 | -- | -- | 0/3 | **7/12** |
 | User CRUD | 0/5 | 0/3 | 0/2 | -- | -- | 0/2 | -- | 0/2 | **0/14** |
 | Credential Storage | 0/4 | 0/2 | 0/2 | 0/1 | -- | 0/3 | -- | -- | **0/12** |
 | Session Management | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/3 | -- | 0/2 | **0/17** |
@@ -31,7 +31,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
 | End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **10/54** | **0/24** | **5/18** | **0/5** | **0/10** | **0/23** | **0/2** | **0/12** | **15/148** |
+| **Column Total** | **19/54** | **0/24** | **9/18** | **0/5** | **0/10** | **0/23** | **0/2** | **0/12** | **28/148** |
 
 ---
 
@@ -100,15 +100,15 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Flush memtable to SST file produces valid on-disk format `P0` `fast`
-- [ ] Read data back from SST after flush matches original memtable contents `P0` `fast`
-- [ ] Compaction merges multiple SST files correctly (dedup, tombstone removal) `P0` `fast`
-- [ ] Point lookup and range scan over SST return correct results `P1` `fast`
+- [x] Flush memtable to SST file produces valid on-disk format `P0` `fast`
+- [x] Read data back from SST after flush matches original memtable contents `P0` `fast`
+- [x] Compaction merges multiple SST files correctly (dedup, tombstone removal) `P0` `fast`
+- [x] Point lookup and range scan over SST return correct results `P1` `fast`
 
 #### Property
 
-- [ ] Random write → flush → read cycles maintain full data integrity (`proptest`) `P0` `extended`
-- [ ] Compaction preserves all live keys and correctly removes tombstoned entries `P0` `extended`
+- [x] Random write → flush → read cycles maintain full data integrity (`proptest`) `P0` `extended`
+- [x] Compaction preserves all live keys and correctly removes tombstoned entries `P0` `extended`
 
 #### Simulation
 
@@ -122,16 +122,16 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Recently accessed records remain in hot tier across subsequent reads `P0` `fast`
-- [ ] Records not accessed within eviction window are demoted to cold tier `P0` `fast`
-- [ ] Cold-tier read promotes record back to hot tier; subsequent reads hit hot tier `P0` `fast`
-- [ ] Clock-based LRU approximation evicts least-recently-used records correctly `P0` `fast`
-- [ ] Hot tier auto-sizes based on available system memory / cgroup memory limit `P1` `fast`
+- [x] Recently accessed records remain in hot tier across subsequent reads `P0` `fast`
+- [x] Records not accessed within eviction window are demoted to cold tier `P0` `fast`
+- [x] Cold-tier read promotes record back to hot tier; subsequent reads hit hot tier `P0` `fast`
+- [x] Clock-based LRU approximation evicts least-recently-used records correctly `P0` `fast`
+- [x] Hot tier auto-sizes based on available system memory / cgroup memory limit `P1` `fast`
 
 #### Property
 
-- [ ] Random access patterns produce correct eviction and promotion behavior (`proptest`) `P0` `extended`
-- [ ] Power-law access distribution: hot tier converges to active working set `P0` `extended`
+- [x] Random access patterns produce correct eviction and promotion behavior (`proptest`) `P0` `extended`
+- [x] Power-law access distribution: hot tier converges to active working set `P0` `extended`
 
 #### Simulation
 

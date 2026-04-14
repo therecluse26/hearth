@@ -12,6 +12,19 @@ use std::time::SystemTime;
 pub struct Timestamp(i64);
 
 impl Timestamp {
+    /// Returns the current UTC timestamp from the system clock.
+    ///
+    /// Convenience method for code that doesn't need an injectable clock.
+    /// For testable code, prefer using the `Clock` trait.
+    pub fn now() -> Self {
+        let duration = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let micros = duration.as_micros() as i64;
+        Self(micros)
+    }
+
     /// Creates a timestamp from raw microseconds since Unix epoch.
     pub fn from_micros(micros: i64) -> Self {
         Self(micros)

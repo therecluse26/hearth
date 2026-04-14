@@ -28,6 +28,8 @@ pub enum StorageError {
         /// Description of what was invalid.
         reason: String,
     },
+    /// The hot tier is full and eviction could not free space.
+    HotTierFull,
 }
 
 impl fmt::Display for StorageError {
@@ -46,6 +48,7 @@ impl fmt::Display for StorageError {
             Self::InvalidSstFormat { reason } => {
                 write!(f, "invalid SST format: {reason}")
             }
+            Self::HotTierFull => write!(f, "hot tier is full and eviction could not free space"),
         }
     }
 }
@@ -57,7 +60,8 @@ impl std::error::Error for StorageError {
             Self::ChecksumMismatch { .. }
             | Self::DeserializationFailed { .. }
             | Self::Corrupted { .. }
-            | Self::InvalidSstFormat { .. } => None,
+            | Self::InvalidSstFormat { .. }
+            | Self::HotTierFull => None,
         }
     }
 }
