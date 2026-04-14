@@ -23,6 +23,11 @@ pub enum StorageError {
         /// Byte offset where corruption was detected.
         offset: u64,
     },
+    /// An SST file has an invalid format or structure.
+    InvalidSstFormat {
+        /// Description of what was invalid.
+        reason: String,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -38,6 +43,9 @@ impl fmt::Display for StorageError {
             Self::Corrupted { offset } => {
                 write!(f, "storage corrupted at byte offset {offset}")
             }
+            Self::InvalidSstFormat { reason } => {
+                write!(f, "invalid SST format: {reason}")
+            }
         }
     }
 }
@@ -46,7 +54,10 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
-            _ => None,
+            Self::ChecksumMismatch { .. }
+            | Self::DeserializationFailed { .. }
+            | Self::Corrupted { .. }
+            | Self::InvalidSstFormat { .. } => None,
         }
     }
 }

@@ -28,6 +28,23 @@ pub(crate) struct CompositeKey {
     key: Vec<u8>,
 }
 
+impl CompositeKey {
+    /// Creates a new composite key from a tenant ID and raw key bytes.
+    pub(crate) fn new(tenant_id: TenantId, key: Vec<u8>) -> Self {
+        Self { tenant_id, key }
+    }
+
+    /// Returns a reference to the tenant ID.
+    pub(crate) fn tenant_id(&self) -> &TenantId {
+        &self.tenant_id
+    }
+
+    /// Returns a reference to the raw key bytes.
+    pub(crate) fn key(&self) -> &[u8] {
+        &self.key
+    }
+}
+
 /// Value stored in the memtable, supporting tombstone markers for deletes.
 ///
 /// Tombstones are preserved until SST flush and compaction (Step 5+).

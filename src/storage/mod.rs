@@ -4,7 +4,9 @@
 //! auth, or authorization concepts.
 
 pub mod error;
-// Types not yet used outside tests — will be integrated in Step 5 (SST flush).
+// Internal modules not yet consumed by the public storage API (Step 7).
 #[allow(dead_code)]
 pub mod memtable;
+#[allow(dead_code)]
+pub mod sst;
 pub mod wal;
