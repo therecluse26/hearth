@@ -56,6 +56,23 @@ pub enum IdentityError {
         /// Description of why the grant was invalid.
         reason: String,
     },
+    /// The client secret is invalid.
+    ///
+    /// Intentionally vague — does not distinguish wrong vs. expired
+    /// for enumeration resistance.
+    InvalidClientSecret,
+    /// The device authorization is still pending user action.
+    AuthorizationPending,
+    /// The device is polling too frequently; must slow down.
+    SlowDown,
+    /// The device authorization code has expired.
+    DeviceCodeExpired,
+    /// The device authorization was denied by the user.
+    DeviceCodeDenied,
+    /// The token has been revoked (grant family revoked).
+    TokenRevoked,
+    /// The requested grant type is not supported for this client.
+    UnsupportedGrantType,
     /// Too many failed credential attempts; the account is temporarily locked.
     ///
     /// Intentionally vague to avoid leaking lockout state to attackers.
@@ -90,6 +107,13 @@ impl fmt::Display for IdentityError {
             Self::InvalidRedirectUri => write!(f, "invalid redirect URI"),
             Self::InvalidAuthorizationCode => write!(f, "invalid authorization code"),
             Self::InvalidGrant { reason } => write!(f, "invalid grant: {reason}"),
+            Self::InvalidClientSecret => write!(f, "invalid client secret"),
+            Self::AuthorizationPending => write!(f, "authorization pending"),
+            Self::SlowDown => write!(f, "polling too frequently"),
+            Self::DeviceCodeExpired => write!(f, "device code expired"),
+            Self::DeviceCodeDenied => write!(f, "device authorization denied"),
+            Self::TokenRevoked => write!(f, "token has been revoked"),
+            Self::UnsupportedGrantType => write!(f, "unsupported grant type"),
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
@@ -117,6 +141,13 @@ impl std::error::Error for IdentityError {
             | Self::InvalidRedirectUri
             | Self::InvalidAuthorizationCode
             | Self::InvalidGrant { .. }
+            | Self::InvalidClientSecret
+            | Self::AuthorizationPending
+            | Self::SlowDown
+            | Self::DeviceCodeExpired
+            | Self::DeviceCodeDenied
+            | Self::TokenRevoked
+            | Self::UnsupportedGrantType
             | Self::RateLimited
             | Self::Serialization { .. } => None,
         }
@@ -289,6 +320,55 @@ mod tests {
     }
 
     #[test]
+    fn display_invalid_client_secret() {
+        let err = IdentityError::InvalidClientSecret;
+        let display = format!("{err}");
+        assert!(display.contains("invalid client secret"), "got: {display}");
+    }
+
+    #[test]
+    fn display_authorization_pending() {
+        let err = IdentityError::AuthorizationPending;
+        let display = format!("{err}");
+        assert!(display.contains("authorization pending"), "got: {display}");
+    }
+
+    #[test]
+    fn display_slow_down() {
+        let err = IdentityError::SlowDown;
+        let display = format!("{err}");
+        assert!(display.contains("polling too frequently"), "got: {display}");
+    }
+
+    #[test]
+    fn display_device_code_expired() {
+        let err = IdentityError::DeviceCodeExpired;
+        let display = format!("{err}");
+        assert!(display.contains("device code expired"), "got: {display}");
+    }
+
+    #[test]
+    fn display_device_code_denied() {
+        let err = IdentityError::DeviceCodeDenied;
+        let display = format!("{err}");
+        assert!(display.contains("denied"), "got: {display}");
+    }
+
+    #[test]
+    fn display_token_revoked() {
+        let err = IdentityError::TokenRevoked;
+        let display = format!("{err}");
+        assert!(display.contains("revoked"), "got: {display}");
+    }
+
+    #[test]
+    fn display_unsupported_grant_type() {
+        let err = IdentityError::UnsupportedGrantType;
+        let display = format!("{err}");
+        assert!(display.contains("unsupported grant type"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::TenantNotFound.source().is_none());
         assert!(IdentityError::TenantSuspended.source().is_none());
@@ -302,6 +382,13 @@ mod tests {
         assert!(IdentityError::InvalidClient.source().is_none());
         assert!(IdentityError::InvalidRedirectUri.source().is_none());
         assert!(IdentityError::InvalidAuthorizationCode.source().is_none());
+        assert!(IdentityError::InvalidClientSecret.source().is_none());
+        assert!(IdentityError::AuthorizationPending.source().is_none());
+        assert!(IdentityError::SlowDown.source().is_none());
+        assert!(IdentityError::DeviceCodeExpired.source().is_none());
+        assert!(IdentityError::DeviceCodeDenied.source().is_none());
+        assert!(IdentityError::TokenRevoked.source().is_none());
+        assert!(IdentityError::UnsupportedGrantType.source().is_none());
         assert!((IdentityError::InvalidInput {
             reason: "x".to_string()
         })

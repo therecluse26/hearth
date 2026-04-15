@@ -409,12 +409,12 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 | Module | Unit | Integration | Property | Fuzz | Simulation | Adversarial | Conformance | Benchmark | **Total** |
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
-| OAuth 2.0 Complete | 0/5 | 0/3 | 0/2 | -- | -- | 0/3 | 0/2 | 0/2 | **0/17** |
+| OAuth 2.0 Complete | 5/5 | 3/3 | 2/2 | -- | -- | 3/3 | 2/2 | 2/2 | **17/17** |
 | WebAuthn / Passkeys | 0/5 | 0/2 | -- | 0/1 | -- | 0/3 | 0/1 | -- | **0/12** |
 | Magic Link / Passwordless | 0/4 | 0/2 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
 | TOTP / MFA | 0/5 | 0/3 | 0/1 | -- | -- | 0/2 | -- | -- | **0/11** |
 | Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
-| Zanzibar Authorization (Full) | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/2 | -- | 0/2 | **0/16** |
+| Zanzibar Authorization (Full) | 5/5 | 3/3 | 1/2 | -- | 0/2 | 2/2 | -- | 1/2 | **12/16** |
 | Admin API | 0/3 | 0/4 | -- | -- | -- | 0/3 | -- | -- | **0/10** |
 | Audit Logging | 4/4 | 3/3 | 2/2 | -- | 0/2 | 1/1 | -- | -- | **10/12** |
 | TLS Termination | 0/3 | 0/3 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
@@ -422,7 +422,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **9/39** | **6/36** | **5/10** | **0/1** | **0/6** | **4/24** | **0/8** | **0/6** | **24/130** |
+| **Column Total** | **19/39** | **12/36** | **8/10** | **0/1** | **0/6** | **9/24** | **2/8** | **3/6** | **53/130** |
 
 ---
 
@@ -430,38 +430,38 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Client credentials grant issues access token with correct scope and expiration `P0` `fast`
-- [ ] Device authorization (RFC 8628) generates user code and device code with correct polling interval `P0` `fast`
-- [ ] Refresh token rotation issues new refresh + access token pair and invalidates old refresh token `P0` `fast`
-- [ ] Token revocation (RFC 7009) invalidates access and refresh tokens; subsequent use rejected `P0` `fast`
-- [ ] Token introspection (RFC 7662) returns active/inactive status with correct metadata `P0` `fast`
+- [x] Client credentials grant issues access token with correct scope and expiration `P0` `fast`
+- [x] Device authorization (RFC 8628) generates user code and device code with correct polling interval `P0` `fast`
+- [x] Refresh token rotation issues new refresh + access token pair and invalidates old refresh token `P0` `fast`
+- [x] Token revocation (RFC 7009) invalidates access and refresh tokens; subsequent use rejected `P0` `fast`
+- [x] Token introspection (RFC 7662) returns active/inactive status with correct metadata `P0` `fast`
 
 #### Integration
 
-- [ ] Full client credentials flow via embedded API: register client → request token → validate → revoke `P0` `fast`
-- [ ] Full device authorization flow: device code request → user approval → token poll → access granted `P0` `fast`
-- [ ] Refresh token rotation end-to-end: issue → expire access → refresh → validate new token `P0` `fast`
+- [x] Full client credentials flow via embedded API: register client → request token → validate → revoke `P0` `fast`
+- [x] Full device authorization flow: device code request → user approval → token poll → access granted `P0` `fast`
+- [x] Refresh token rotation end-to-end: issue → expire access → refresh → validate new token `P0` `fast`
 
 #### Property
 
-- [ ] Random sequences of token issuance, refresh, and revocation maintain consistent active token set (`proptest`) `P0` `extended`
-- [ ] Refresh token rotation: no two valid refresh tokens exist simultaneously for the same grant (`proptest`) `P0` `extended`
+- [x] Random sequences of token issuance, refresh, and revocation maintain consistent active token set (`proptest`) `P0` `extended`
+- [x] Refresh token rotation: no two valid refresh tokens exist simultaneously for the same grant (`proptest`) `P0` `extended`
 
 #### Adversarial
 
-- [ ] Refresh token rotation theft detection: reuse of rotated-out refresh token revokes entire grant family `P0` `fast`
-- [ ] Client credentials with invalid or expired client secret rejected with generic error `P0` `fast`
-- [ ] Device authorization polling faster than `interval` returns `slow_down` error per RFC 8628 `P1` `fast`
+- [x] Refresh token rotation theft detection: reuse of rotated-out refresh token revokes entire grant family `P0` `fast`
+- [x] Client credentials with invalid or expired client secret rejected with generic error `P0` `fast`
+- [x] Device authorization polling faster than `interval` returns `slow_down` error per RFC 8628 `P1` `fast`
 
 #### Conformance
 
-- [ ] Token introspection response conforms to RFC 7662 (required fields, active boolean semantics) `P1` `full`
-- [ ] Device authorization flow conforms to RFC 8628 (user_code format, polling behavior, error codes) `P1` `full`
+- [x] Token introspection response conforms to RFC 7662 (required fields, active boolean semantics) `P1` `full`
+- [x] Device authorization flow conforms to RFC 8628 (user_code format, polling behavior, error codes) `P1` `full`
 
 #### Benchmark
 
-- [ ] Client credentials token issuance: p50 < 500 μs, p99 < 2 ms (regression: +20%) `P0` `standard`
-- [ ] Token introspection: p50 < 50 μs, p99 < 500 μs (regression: +20%) `P0` `standard`
+- [x] Client credentials token issuance: p50 < 500 μs, p99 < 2 ms (regression: +20%) `P0` `standard`
+- [x] Token introspection: p50 < 50 μs, p99 < 500 μs (regression: +20%) `P0` `standard`
 
 ---
 

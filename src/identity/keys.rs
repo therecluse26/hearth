@@ -37,6 +37,18 @@ const TENANT_ID_PREFIX: &str = "tenant:id:";
 /// Prefix for tenant signing key storage (stored under system tenant).
 const TENANT_KEY_PREFIX: &str = "tenant:key:";
 
+/// Prefix for grant family storage (refresh token rotation).
+const GRANT_FAMILY_PREFIX: &str = "oauth:family:";
+
+/// Prefix for device authorization code storage.
+const DEVICE_CODE_PREFIX: &str = "oauth:device:";
+
+/// Prefix for user code to device code mapping.
+const USER_CODE_PREFIX: &str = "oauth:ucode:";
+
+/// Prefix for revoked token JTI storage (sessionless token revocation).
+const REVOKED_JTI_PREFIX: &str = "oauth:revjti:";
+
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
 
@@ -165,6 +177,61 @@ pub(crate) fn tenant_id_scan_prefix() -> Vec<u8> {
 /// Stored under the system tenant namespace.
 pub(crate) fn encode_tenant_signing_key(tenant_id: &TenantId) -> Vec<u8> {
     format!("{TENANT_KEY_PREFIX}{}", tenant_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the storage key for a grant family (refresh token rotation).
+///
+/// Format: `oauth:family:{family_id}`
+pub(crate) fn encode_grant_family(family_id: &str) -> Vec<u8> {
+    format!("{GRANT_FAMILY_PREFIX}{family_id}").into_bytes()
+}
+
+/// Returns the scan prefix for all grant families.
+///
+/// Format: `oauth:family:`
+#[allow(dead_code)]
+pub(crate) fn grant_family_scan_prefix() -> Vec<u8> {
+    GRANT_FAMILY_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a device authorization code.
+///
+/// Format: `oauth:device:{device_code_hash}`
+pub(crate) fn encode_device_code(device_code_hash: &str) -> Vec<u8> {
+    format!("{DEVICE_CODE_PREFIX}{device_code_hash}").into_bytes()
+}
+
+/// Returns the scan prefix for all device codes.
+///
+/// Format: `oauth:device:`
+#[allow(dead_code)]
+pub(crate) fn device_code_scan_prefix() -> Vec<u8> {
+    DEVICE_CODE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a user code to device code mapping.
+///
+/// Format: `oauth:ucode:{user_code}`
+pub(crate) fn encode_user_code(user_code: &str) -> Vec<u8> {
+    format!("{USER_CODE_PREFIX}{user_code}").into_bytes()
+}
+
+/// Returns the scan prefix for all user codes.
+///
+/// Format: `oauth:ucode:`
+#[allow(dead_code)]
+pub(crate) fn user_code_scan_prefix() -> Vec<u8> {
+    USER_CODE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a revoked token JTI.
+///
+/// Format: `oauth:revjti:{jti}`
+///
+/// Used for revoking sessionless tokens (e.g., `client_credentials` access tokens)
+/// that cannot be revoked via session revocation.
+pub(crate) fn encode_revoked_jti(jti: &str) -> Vec<u8> {
+    format!("{REVOKED_JTI_PREFIX}{jti}").into_bytes()
 }
 
 #[cfg(test)]

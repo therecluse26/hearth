@@ -233,6 +233,13 @@ fn identity_error_to_response(
             (StatusCode::BAD_REQUEST, "invalid authorization code")
         }
         IdentityError::InvalidGrant { .. } => (StatusCode::BAD_REQUEST, "invalid grant"),
+        IdentityError::InvalidClientSecret => (StatusCode::UNAUTHORIZED, "invalid client"),
+        IdentityError::AuthorizationPending => (StatusCode::BAD_REQUEST, "authorization_pending"),
+        IdentityError::SlowDown => (StatusCode::BAD_REQUEST, "slow_down"),
+        IdentityError::DeviceCodeExpired => (StatusCode::BAD_REQUEST, "expired_token"),
+        IdentityError::DeviceCodeDenied => (StatusCode::BAD_REQUEST, "access_denied"),
+        IdentityError::TokenRevoked => (StatusCode::UNAUTHORIZED, "token revoked"),
+        IdentityError::UnsupportedGrantType => (StatusCode::BAD_REQUEST, "unsupported_grant_type"),
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)
@@ -260,6 +267,8 @@ async fn register_client(
     let request = RegisterClientRequest {
         client_name: body.client_name,
         redirect_uris: body.redirect_uris,
+        client_secret: None,
+        grant_types: vec!["authorization_code".to_string()],
     };
 
     match state.identity.register_client(&tenant_id, &request) {

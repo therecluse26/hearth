@@ -17,8 +17,11 @@ pub use credentials::{CleartextPassword, CredentialConfig};
 pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
 pub use error::IdentityError;
 pub use oidc::{
-    AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
+    AuthorizationRequest, AuthorizationResponse, ClientCredentialsRequest,
+    ClientCredentialsResponse, CodeChallengeMethod, DeviceAuthorizationRequest,
+    DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
+    TokenIntrospectionRequest, TokenRevocationRequest,
 };
 pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
@@ -276,4 +279,68 @@ pub trait IdentityEngine: Send + Sync {
     /// Contains metadata about the provider's endpoints, supported response
     /// types, signing algorithms, and PKCE methods.
     fn oidc_discovery(&self) -> OidcDiscoveryDocument;
+
+    // ===== OAuth 2.0 Extended (Step 22) =====
+
+    /// Issues an access token via the Client Credentials Grant (RFC 6749 §4.4).
+    ///
+    /// Verifies the client secret using Argon2id, then issues an access token
+    /// scoped to the client (no user context). Per RFC 6749 §4.4.3, refresh
+    /// tokens SHOULD NOT be included.
+    fn client_credentials_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &ClientCredentialsRequest,
+    ) -> Result<ClientCredentialsResponse, IdentityError>;
+
+    /// Initiates a Device Authorization Grant (RFC 8628).
+    ///
+    /// Generates a device code and a short user code, stores them, and
+    /// returns the verification URI and polling interval.
+    fn device_authorize(
+        &self,
+        tenant_id: &TenantId,
+        request: &DeviceAuthorizationRequest,
+    ) -> Result<DeviceAuthorizationResponse, IdentityError>;
+
+    /// Approves a device authorization by user code.
+    ///
+    /// Transitions the device code status from `Pending` to `Approved`.
+    fn approve_device(
+        &self,
+        tenant_id: &TenantId,
+        user_code: &str,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError>;
+
+    /// Polls for a device authorization token (RFC 8628 §3.4).
+    ///
+    /// Returns tokens if the user has approved, or an appropriate error
+    /// (`AuthorizationPending`, `SlowDown`, `DeviceCodeExpired`, `DeviceCodeDenied`).
+    fn poll_device_token(
+        &self,
+        tenant_id: &TenantId,
+        device_code: &str,
+        client_id: &crate::core::ClientId,
+    ) -> Result<OidcTokenResponse, IdentityError>;
+
+    /// Revokes a token (RFC 7009).
+    ///
+    /// For access tokens: extracts session ID and revokes the session.
+    /// For refresh tokens: looks up the grant family and marks it revoked.
+    fn revoke_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &TokenRevocationRequest,
+    ) -> Result<(), IdentityError>;
+
+    /// Introspects a token (RFC 7662).
+    ///
+    /// Returns `active: true` with metadata if the token is valid, or
+    /// `active: false` for expired, revoked, or invalid tokens.
+    fn introspect_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &TokenIntrospectionRequest,
+    ) -> Result<IntrospectionResponse, IdentityError>;
 }

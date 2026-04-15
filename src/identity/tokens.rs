@@ -68,7 +68,7 @@ struct JwtHeader {
 /// and tenant binding.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenClaims {
-    /// Subject — the user ID.
+    /// Subject — the user ID (or client ID for client credentials).
     pub sub: String,
     /// Issuer.
     pub iss: String,
@@ -84,6 +84,24 @@ pub struct TokenClaims {
     pub tid: String,
     /// Token type: `"access"` or `"refresh"`.
     pub token_type: String,
+    /// JWT ID — unique identifier for this token (RFC 7519 §4.1.7).
+    ///
+    /// Ensures each issued JWT is unique even when all other claims
+    /// are identical (e.g., during refresh token rotation within the
+    /// same clock second).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
+    /// Grant family ID — links tokens from the same authorization grant.
+    ///
+    /// Used for refresh token rotation and theft detection. When a
+    /// refresh token is rotated, the new token inherits the same `fid`.
+    /// If a previously-rotated token is reused, the entire family is
+    /// revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fid: Option<String>,
+    /// OAuth 2.0 scope string (space-delimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// A pair of access and refresh tokens.
@@ -96,6 +114,14 @@ pub struct TokenPair {
 }
 
 impl TokenPair {
+    /// Creates a new token pair from access and refresh token strings.
+    pub(crate) fn new(access_token: String, refresh_token: String) -> Self {
+        Self {
+            access_token,
+            refresh_token,
+        }
+    }
+
     /// Returns the access token string.
     pub fn access_token(&self) -> &str {
         &self.access_token
@@ -287,6 +313,9 @@ impl SigningKey {
             sid: request.sid.to_string(),
             tid: request.tid.to_string(),
             token_type: "access".to_string(),
+            jti: None,
+            fid: None,
+            scope: None,
         };
 
         let refresh_claims = TokenClaims {
@@ -298,6 +327,9 @@ impl SigningKey {
             sid: request.sid.to_string(),
             tid: request.tid.to_string(),
             token_type: "refresh".to_string(),
+            jti: None,
+            fid: None,
+            scope: None,
         };
 
         let access_token = self.issue_token(&access_claims)?;
@@ -446,6 +478,9 @@ mod tests {
             sid: "session_660e8400-e29b-41d4-a716-446655440000".to_string(),
             tid: "tenant_770e8400-e29b-41d4-a716-446655440000".to_string(),
             token_type: "access".to_string(),
+            jti: None,
+            fid: None,
+            scope: None,
         }
     }
 

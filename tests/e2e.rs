@@ -56,6 +56,8 @@ async fn developer_onramp_tenant_app_oidc_login() {
             &RegisterClientRequest {
                 client_name: "My SaaS App".to_string(),
                 redirect_uris: vec!["https://app.startup.io/callback".to_string()],
+                client_secret: None,
+                grant_types: vec!["authorization_code".to_string()],
             },
         )
         .expect("register client");

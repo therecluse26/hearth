@@ -40,6 +40,8 @@ fn setup_oidc() -> (
             &RegisterClientRequest {
                 client_name: "Bench App".to_string(),
                 redirect_uris: vec!["https://bench.example.com/callback".to_string()],
+                client_secret: None,
+                grant_types: vec!["authorization_code".to_string()],
             },
         )
         .expect("register client");

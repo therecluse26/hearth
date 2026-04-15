@@ -209,6 +209,34 @@ pub(crate) fn verify_hash(
     }
 }
 
+/// Hashes a raw secret (e.g., client secret) with Argon2id.
+///
+/// Returns the PHC-formatted hash string. Used for confidential OAuth
+/// client authentication where we don't have a `CleartextPassword` wrapper.
+pub(crate) fn hash_raw_secret(
+    secret: &[u8],
+    config: &CredentialConfig,
+) -> Result<String, IdentityError> {
+    let argon2 = config.to_argon2()?;
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = argon2
+        .hash_password(secret, &salt)
+        .map_err(|e| IdentityError::InvalidInput {
+            reason: format!("secret hashing failed: {e}"),
+        })?;
+    Ok(hash.to_string())
+}
+
+/// Verifies a raw secret against an Argon2id hash string.
+///
+/// Returns `true` if the secret matches the hash.
+pub(crate) fn verify_raw_secret(secret: &[u8], hash_str: &str) -> Result<bool, IdentityError> {
+    let parsed = PasswordHash::new(hash_str).map_err(|e| IdentityError::InvalidInput {
+        reason: format!("invalid hash format: {e}"),
+    })?;
+    Ok(Argon2::default().verify_password(secret, &parsed).is_ok())
+}
+
 /// Pre-computes a dummy hash for timing-oracle prevention.
 ///
 /// When `verify_password` is called for a nonexistent user, we verify

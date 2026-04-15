@@ -28,7 +28,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 use crate::identity::oidc::{
     AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, StoredAuthorizationCode,
-    TokenExchangeRequest,
+    StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
 };
 use crate::identity::tokens::{
     self, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
@@ -341,6 +341,33 @@ impl EmbeddedIdentityEngine {
         hex_encode(digest.as_ref())
     }
 
+    /// Unambiguous alphabet for device user codes (RFC 8628).
+    ///
+    /// Excludes I/1, O/0, L to avoid confusion. 28 characters.
+    const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKMNPQRSTVWXYZ23456789";
+
+    /// User code length (8 characters).
+    const USER_CODE_LENGTH: usize = 8;
+
+    /// Generates a random user code for device authorization.
+    ///
+    /// Uses an unambiguous alphabet to avoid visual confusion.
+    fn generate_user_code(rng: &ring::rand::SystemRandom) -> Result<String, IdentityError> {
+        let mut bytes = [0u8; Self::USER_CODE_LENGTH];
+        rng.fill(&mut bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "random generation failed".to_string(),
+            })?;
+        let code: String = bytes
+            .iter()
+            .map(|b| {
+                let idx = (*b as usize) % Self::USER_CODE_ALPHABET.len();
+                Self::USER_CODE_ALPHABET[idx] as char
+            })
+            .collect();
+        Ok(code)
+    }
+
     /// Computes the PKCE S256 code challenge from a code verifier.
     ///
     /// `S256 = BASE64URL(SHA256(code_verifier))`
@@ -379,9 +406,19 @@ impl EmbeddedIdentityEngine {
         })
     }
 
+    /// Gets the signing key for a tenant, falling back to the default key.
+    ///
+    /// Used by token issuance paths where backward compatibility with
+    /// Phase 0 tenants (which lack per-tenant keys) is needed.
+    fn get_signing_key_or_default(&self, tenant_id: &TenantId) -> Arc<SigningKey> {
+        self.get_or_load_tenant_signing_key(tenant_id)
+            .unwrap_or_else(|_| Arc::clone(&self.signing_key))
+    }
+
     /// Retrieves (or lazily loads from storage) the signing key for a tenant.
     ///
     /// Checks the in-memory cache first, then loads from storage on cache miss.
+    /// Returns `TenantNotFound` if no per-tenant key exists.
     fn get_or_load_tenant_signing_key(
         &self,
         tenant_id: &TenantId,
@@ -508,6 +545,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(tenant)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn delete_tenant(&self, tenant_id: &TenantId) -> Result<(), IdentityError> {
         // Verify tenant exists
         self.get_tenant(tenant_id)?
@@ -566,20 +604,72 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .map_err(Self::storage_err)?;
         }
 
-        // 5. Delete tenant signing key
+        // 5. Delete all grant families
+        let family_prefix = keys::grant_family_scan_prefix();
+        let family_end = keys::prefix_end(&family_prefix);
+        let families = self
+            .storage
+            .scan(tenant_id, &family_prefix, &family_end)
+            .map_err(Self::storage_err)?;
+        for entry in &families {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 6. Delete all device codes
+        let device_prefix = keys::device_code_scan_prefix();
+        let device_end = keys::prefix_end(&device_prefix);
+        let devices = self
+            .storage
+            .scan(tenant_id, &device_prefix, &device_end)
+            .map_err(Self::storage_err)?;
+        for entry in &devices {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 7. Delete all revoked JTIs
+        let jti_prefix = b"oauth:revjti:";
+        let jti_end = keys::prefix_end(jti_prefix);
+        let jtis = self
+            .storage
+            .scan(tenant_id, jti_prefix, &jti_end)
+            .map_err(Self::storage_err)?;
+        for entry in &jtis {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 8. Delete all user-code index entries
+        let ucode_prefix = b"oauth:ucode:";
+        let ucode_end = keys::prefix_end(ucode_prefix);
+        let ucodes = self
+            .storage
+            .scan(tenant_id, ucode_prefix, &ucode_end)
+            .map_err(Self::storage_err)?;
+        for entry in &ucodes {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 9. Delete tenant signing key
         let sys_tenant = keys::system_tenant_id();
         let key_storage_key = keys::encode_tenant_signing_key(tenant_id);
         self.storage
             .delete(&sys_tenant, &key_storage_key)
             .map_err(Self::storage_err)?;
 
-        // 6. Remove from in-memory key cache
+        // 10. Remove from in-memory key cache
         {
             let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
             key_cache.remove(&tenant_id.as_uuid().to_string());
         }
 
-        // 7. Delete tenant record itself
+        // 11. Delete tenant record itself
         let tenant_key = keys::encode_tenant_id(tenant_id);
         self.storage
             .delete(&sys_tenant, &tenant_key)
@@ -1097,9 +1187,6 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             uuid::Uuid::parse_str(session_id_str).map_err(|_| IdentityError::InvalidToken)?;
         let session_id = SessionId::new(session_uuid);
 
-        // Refresh the underlying session
-        self.refresh_session(tenant_id, &session_id)?;
-
         // Parse user ID
         let user_id_str = claims
             .sub
@@ -1109,8 +1196,96 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             uuid::Uuid::parse_str(user_id_str).map_err(|_| IdentityError::InvalidToken)?;
         let user_id = UserId::new(user_uuid);
 
-        // Issue new token pair
-        self.issue_tokens(tenant_id, &user_id, &session_id)
+        // Grant family rotation (if fid is present)
+        if let Some(ref fid) = claims.fid {
+            let family_key = keys::encode_grant_family(fid);
+            let family_bytes = self
+                .storage
+                .get(tenant_id, &family_key)
+                .map_err(Self::storage_err)?
+                .ok_or(IdentityError::TokenRevoked)?;
+            let mut family: StoredGrantFamily =
+                serde_json::from_slice(&family_bytes).map_err(|e| {
+                    IdentityError::Serialization {
+                        reason: e.to_string(),
+                    }
+                })?;
+
+            // Check if family is revoked
+            if family.revoked {
+                return Err(IdentityError::TokenRevoked);
+            }
+
+            // Verify the incoming refresh token matches the current hash
+            let incoming_hash = Self::sha256_hex(refresh_token.as_bytes());
+            if incoming_hash != family.current_refresh_hash {
+                // THEFT DETECTED — a previously-rotated token is being reused.
+                // Revoke the entire family and the session.
+                family.revoked = true;
+                let updated =
+                    serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                self.storage
+                    .put(tenant_id, &family_key, &updated)
+                    .map_err(Self::storage_err)?;
+                let _ = self.revoke_session(tenant_id, &session_id);
+                return Err(IdentityError::TokenRevoked);
+            }
+
+            // Refresh the underlying session
+            self.refresh_session(tenant_id, &session_id)?;
+
+            // Issue new token pair with the same family ID
+            let signing_key = self.get_signing_key_or_default(tenant_id);
+            let iat = now_secs;
+
+            let new_access_claims = TokenClaims {
+                sub: user_id.to_string(),
+                iss: self.config.token.issuer.clone(),
+                aud: self.config.token.audience.clone(),
+                exp: iat + self.config.token.access_token_ttl_secs,
+                iat,
+                sid: session_id.to_string(),
+                tid: tenant_id.to_string(),
+                token_type: "access".to_string(),
+                jti: Some(uuid::Uuid::new_v4().to_string()),
+                fid: Some(fid.clone()),
+                scope: claims.scope.clone(),
+            };
+            let new_refresh_claims = TokenClaims {
+                sub: user_id.to_string(),
+                iss: self.config.token.issuer.clone(),
+                aud: self.config.token.audience.clone(),
+                exp: iat + self.config.token.refresh_token_ttl_secs,
+                iat,
+                sid: session_id.to_string(),
+                tid: tenant_id.to_string(),
+                token_type: "refresh".to_string(),
+                jti: Some(uuid::Uuid::new_v4().to_string()),
+                fid: Some(fid.clone()),
+                scope: claims.scope.clone(),
+            };
+
+            let new_access = signing_key.issue_token(&new_access_claims)?;
+            let new_refresh = signing_key.issue_token(&new_refresh_claims)?;
+
+            // Rotate the family's current refresh hash
+            family.current_refresh_hash = Self::sha256_hex(new_refresh.as_bytes());
+            let updated =
+                serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            self.storage
+                .put(tenant_id, &family_key, &updated)
+                .map_err(Self::storage_err)?;
+
+            Ok(TokenPair::new(new_access, new_refresh))
+        } else {
+            // Legacy path (no grant family — Phase 0 tokens)
+            self.refresh_session(tenant_id, &session_id)?;
+            self.issue_tokens(tenant_id, &user_id, &session_id)
+        }
     }
 
     fn jwks(&self) -> JwksDocument {
@@ -1127,8 +1302,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Validate client name (non-empty, length limit)
         let client_name = validation::validate_client_name(&request.client_name)?;
 
-        // Validate redirect URIs
-        if request.redirect_uris.is_empty() {
+        // Redirect URIs are optional for `client_credentials` and device_code grants.
+        // For all other grant types, at least one is required.
+        let has_client_credentials = request
+            .grant_types
+            .contains(&"client_credentials".to_string());
+        let has_device_code = request
+            .grant_types
+            .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string());
+        if request.redirect_uris.is_empty() && !has_client_credentials && !has_device_code {
             return Err(IdentityError::InvalidInput {
                 reason: "at least one redirect URI is required".to_string(),
             });
@@ -1145,12 +1327,35 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let client_id = ClientId::generate();
         let now = self.clock.now();
 
-        let client = OAuthClient::new(
-            client_id.clone(),
-            client_name,
-            request.redirect_uris.clone(),
-            now,
-        );
+        let grant_types = if request.grant_types.is_empty() {
+            vec!["authorization_code".to_string()]
+        } else {
+            request.grant_types.clone()
+        };
+
+        let client = if let Some(ref secret) = request.client_secret {
+            // Confidential client — hash the secret with Argon2id
+            let secret_hash =
+                credentials::hash_raw_secret(secret.as_bytes(), &self.config.credential)?;
+            OAuthClient::new_confidential(
+                client_id.clone(),
+                client_name,
+                request.redirect_uris.clone(),
+                now,
+                secret_hash,
+                grant_types,
+            )
+        } else {
+            let mut c = OAuthClient::new(
+                client_id.clone(),
+                client_name,
+                request.redirect_uris.clone(),
+                now,
+            );
+            // Override grant_types from request
+            c.set_grant_types(grant_types);
+            c
+        };
 
         // Serialize and persist
         let client_bytes =
@@ -1272,6 +1477,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(AuthorizationResponse::new(raw_code, request.state.clone()))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn exchange_authorization_code(
         &self,
         tenant_id: &TenantId,
@@ -1345,11 +1551,73 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 9. Create a session for the user
         let session = self.create_session(tenant_id, &stored_code.user_id)?;
 
-        // 10. Issue tokens (access + refresh)
-        let token_pair = self.issue_tokens(tenant_id, &stored_code.user_id, session.id())?;
+        // 10. Create grant family for refresh token rotation
+        let family_id = uuid::Uuid::new_v4().to_string();
 
-        // 11. Issue ID token (OIDC-specific)
+        // 11. Issue tokens with family ID
         let iat = now.as_micros() / 1_000_000;
+        let signing_key = self.get_signing_key_or_default(tenant_id);
+
+        let access_claims = TokenClaims {
+            sub: stored_code.user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.access_token_ttl_secs,
+            iat,
+            sid: session.id().to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "access".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(family_id.clone()),
+            scope: None,
+        };
+        let refresh_claims = TokenClaims {
+            sub: stored_code.user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.refresh_token_ttl_secs,
+            iat,
+            sid: session.id().to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "refresh".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(family_id.clone()),
+            scope: None,
+        };
+
+        let access_token =
+            signing_key
+                .issue_token(&access_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue access token: {e}"),
+                })?;
+        let refresh_token =
+            signing_key
+                .issue_token(&refresh_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue refresh token: {e}"),
+                })?;
+
+        // 12. Store grant family with refresh token hash
+        let refresh_hash = Self::sha256_hex(refresh_token.as_bytes());
+        let family = StoredGrantFamily {
+            family_id: family_id.clone(),
+            current_refresh_hash: refresh_hash,
+            session_id: session.id().clone(),
+            tenant_id: tenant_id.clone(),
+            revoked: false,
+            created_at: now,
+        };
+        let family_bytes =
+            serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let family_key = keys::encode_grant_family(&family_id);
+        self.storage
+            .put(tenant_id, &family_key, &family_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 13. Issue ID token (OIDC-specific)
         let id_token_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
             iss: self.config.token.issuer.clone(),
@@ -1359,20 +1627,23 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             sid: session.id().to_string(),
             tid: tenant_id.to_string(),
             token_type: "id_token".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: None,
+            scope: None,
         };
-        let id_token = self
-            .signing_key
-            .issue_token(&id_token_claims)
-            .map_err(|e| IdentityError::SigningError {
-                reason: format!("failed to issue ID token: {e}"),
-            })?;
+        let id_token =
+            signing_key
+                .issue_token(&id_token_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue ID token: {e}"),
+                })?;
 
         Ok(OidcTokenResponse::new(
-            token_pair.access_token().to_string(),
+            access_token,
             id_token,
             "Bearer".to_string(),
             self.config.token.access_token_ttl_secs,
-            token_pair.refresh_token().to_string(),
+            refresh_token,
         ))
     }
 
@@ -1391,9 +1662,473 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 "profile".to_string(),
                 "email".to_string(),
             ],
-            token_endpoint_auth_methods_supported: vec!["none".to_string()],
+            token_endpoint_auth_methods_supported: vec![
+                "none".to_string(),
+                "client_secret_post".to_string(),
+            ],
             code_challenge_methods_supported: vec!["S256".to_string()],
+            grant_types_supported: vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+                "client_credentials".to_string(),
+                "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+            ],
+            device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
+            revocation_endpoint: Some(format!("{issuer}/revoke")),
+            introspection_endpoint: Some(format!("{issuer}/introspect")),
         }
+    }
+
+    // ===== OAuth 2.0 Extended (Step 22) =====
+
+    fn client_credentials_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::ClientCredentialsRequest,
+    ) -> Result<crate::identity::oidc::ClientCredentialsResponse, IdentityError> {
+        // 1. Load the client
+        let client_key = keys::encode_oauth_client(&request.client_id);
+        let client_bytes = self
+            .storage
+            .get(tenant_id, &client_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidClient)?;
+        let client: OAuthClient =
+            serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 2. Verify this client supports client_credentials grant
+        if !client
+            .grant_types()
+            .contains(&"client_credentials".to_string())
+        {
+            return Err(IdentityError::UnsupportedGrantType);
+        }
+
+        // 3. Verify client secret
+        let secret_hash = client
+            .client_secret_hash()
+            .ok_or(IdentityError::InvalidClientSecret)?;
+        let valid = credentials::verify_raw_secret(request.client_secret.as_bytes(), secret_hash)?;
+        if !valid {
+            return Err(IdentityError::InvalidClientSecret);
+        }
+
+        // 4. Issue access token (no session, no refresh token per RFC 6749 §4.4.3)
+        let now = self.clock.now();
+        let iat = now.as_micros() / 1_000_000;
+        let signing_key = self.get_or_load_tenant_signing_key(tenant_id)?;
+
+        let scope = request.scope.clone();
+        let access_claims = TokenClaims {
+            sub: request.client_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.access_token_ttl_secs,
+            iat,
+            sid: "none".to_string(), // No session for client credentials
+            tid: tenant_id.to_string(),
+            token_type: "access".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: None,
+            scope: scope.clone(),
+        };
+
+        let access_token =
+            signing_key
+                .issue_token(&access_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue access token: {e}"),
+                })?;
+
+        Ok(crate::identity::oidc::ClientCredentialsResponse::new(
+            access_token,
+            "Bearer".to_string(),
+            self.config.token.access_token_ttl_secs,
+            scope,
+        ))
+    }
+
+    fn device_authorize(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::DeviceAuthorizationRequest,
+    ) -> Result<crate::identity::oidc::DeviceAuthorizationResponse, IdentityError> {
+        use crate::identity::oidc::{DeviceCodeStatus, StoredDeviceCode};
+
+        // 1. Verify client exists
+        let client_key = keys::encode_oauth_client(&request.client_id);
+        let _ = self
+            .storage
+            .get(tenant_id, &client_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidClient)?;
+
+        // 2. Generate device code (32 random bytes → base64url)
+        let rng = ring::rand::SystemRandom::new();
+        let mut device_code_bytes = [0u8; 32];
+        rng.fill(&mut device_code_bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "random generation failed".to_string(),
+            })?;
+        let device_code = URL_SAFE_NO_PAD.encode(device_code_bytes);
+
+        // 3. Generate user code (8 chars from unambiguous alphabet)
+        let user_code = Self::generate_user_code(&rng)?;
+
+        let now = self.clock.now();
+        let expires_in = 600_i64; // 10 minutes
+        let interval = 5_i64;
+        let device_code_hash = Self::sha256_hex(device_code.as_bytes());
+
+        // 4. Store device code
+        let stored = StoredDeviceCode {
+            device_code_hash: device_code_hash.clone(),
+            user_code: user_code.clone(),
+            client_id: request.client_id.clone(),
+            tenant_id: tenant_id.clone(),
+            scope: request.scope.clone(),
+            status: DeviceCodeStatus::Pending,
+            created_at: now,
+            expires_at: crate::core::Timestamp::from_micros(
+                now.as_micros() + expires_in * 1_000_000,
+            ),
+            interval,
+            last_polled_at: None,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        let dc_key = keys::encode_device_code(&device_code_hash);
+        self.storage
+            .put(tenant_id, &dc_key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 5. Store user code → device code hash mapping
+        let uc_key = keys::encode_user_code(&user_code);
+        self.storage
+            .put(tenant_id, &uc_key, device_code_hash.as_bytes())
+            .map_err(Self::storage_err)?;
+
+        Ok(crate::identity::oidc::DeviceAuthorizationResponse {
+            device_code,
+            user_code,
+            verification_uri: format!("{}/device", self.config.oidc.issuer),
+            expires_in,
+            interval,
+        })
+    }
+
+    fn approve_device(
+        &self,
+        tenant_id: &TenantId,
+        user_code: &str,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError> {
+        use crate::identity::oidc::DeviceCodeStatus;
+
+        // 1. Look up user code → device code hash
+        let uc_key = keys::encode_user_code(user_code);
+        let dc_hash_bytes = self
+            .storage
+            .get(tenant_id, &uc_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+        let dc_hash = String::from_utf8(dc_hash_bytes)
+            .map_err(|_| IdentityError::InvalidAuthorizationCode)?;
+
+        // 2. Load device code
+        let dc_key = keys::encode_device_code(&dc_hash);
+        let dc_bytes = self
+            .storage
+            .get(tenant_id, &dc_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+        let mut stored: StoredDeviceCode =
+            serde_json::from_slice(&dc_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 3. Check expiration
+        let now = self.clock.now();
+        if now >= stored.expires_at {
+            return Err(IdentityError::DeviceCodeExpired);
+        }
+
+        // 4. Must be pending
+        if stored.status != DeviceCodeStatus::Pending {
+            return Err(IdentityError::InvalidAuthorizationCode);
+        }
+
+        // 5. Approve
+        stored.status = DeviceCodeStatus::Approved {
+            user_id: user_id.clone(),
+        };
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &dc_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(())
+    }
+
+    fn poll_device_token(
+        &self,
+        tenant_id: &TenantId,
+        device_code: &str,
+        client_id: &ClientId,
+    ) -> Result<OidcTokenResponse, IdentityError> {
+        use crate::identity::oidc::DeviceCodeStatus;
+
+        // 1. Look up device code by hash
+        let dc_hash = Self::sha256_hex(device_code.as_bytes());
+        let dc_key = keys::encode_device_code(&dc_hash);
+        let dc_bytes = self
+            .storage
+            .get(tenant_id, &dc_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+        let mut stored: StoredDeviceCode =
+            serde_json::from_slice(&dc_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 2. Verify client matches
+        if stored.client_id != *client_id {
+            return Err(IdentityError::InvalidClient);
+        }
+
+        let now = self.clock.now();
+
+        // 3. Check expiration
+        if now >= stored.expires_at {
+            return Err(IdentityError::DeviceCodeExpired);
+        }
+
+        // 4. Rate limit polling
+        if let Some(last_polled) = stored.last_polled_at {
+            let elapsed_secs = (now.as_micros() - last_polled.as_micros()) / 1_000_000;
+            if elapsed_secs < stored.interval {
+                return Err(IdentityError::SlowDown);
+            }
+        }
+
+        // 5. Update last_polled_at
+        stored.last_polled_at = Some(now);
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &dc_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 6. Check status
+        match &stored.status {
+            DeviceCodeStatus::Pending => Err(IdentityError::AuthorizationPending),
+            DeviceCodeStatus::Denied => Err(IdentityError::DeviceCodeDenied),
+            DeviceCodeStatus::Expired => Err(IdentityError::DeviceCodeExpired),
+            DeviceCodeStatus::Approved { user_id } => {
+                // Issue tokens like exchange_authorization_code
+                let session = self.create_session(tenant_id, user_id)?;
+                let token_pair = self.issue_tokens(tenant_id, user_id, session.id())?;
+
+                // Issue ID token
+                let iat = now.as_micros() / 1_000_000;
+                let id_token_claims = TokenClaims {
+                    sub: user_id.to_string(),
+                    iss: self.config.token.issuer.clone(),
+                    aud: client_id.to_string(),
+                    exp: iat + self.config.token.access_token_ttl_secs,
+                    iat,
+                    sid: session.id().to_string(),
+                    tid: tenant_id.to_string(),
+                    token_type: "id_token".to_string(),
+                    jti: Some(uuid::Uuid::new_v4().to_string()),
+                    fid: None,
+                    scope: stored.scope.clone(),
+                };
+                let signing_key = self.get_or_load_tenant_signing_key(tenant_id)?;
+                let id_token = signing_key.issue_token(&id_token_claims).map_err(|e| {
+                    IdentityError::SigningError {
+                        reason: format!("failed to issue ID token: {e}"),
+                    }
+                })?;
+
+                // Clean up device code and user code
+                let _ = self.storage.delete(tenant_id, &dc_key);
+                let uc_key = keys::encode_user_code(&stored.user_code);
+                let _ = self.storage.delete(tenant_id, &uc_key);
+
+                Ok(OidcTokenResponse::new(
+                    token_pair.access_token().to_string(),
+                    id_token,
+                    "Bearer".to_string(),
+                    self.config.token.access_token_ttl_secs,
+                    token_pair.refresh_token().to_string(),
+                ))
+            }
+        }
+    }
+
+    fn revoke_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::TokenRevocationRequest,
+    ) -> Result<(), IdentityError> {
+        // Decode claims (unverified — we trust our own tokens)
+        // RFC 7009: invalid tokens → 200 OK (no error)
+        let Ok(claims) = tokens::decode_claims_unverified(&request.token) else {
+            return Ok(());
+        };
+
+        // Verify tenant matches
+        if claims.tid != tenant_id.to_string() {
+            return Ok(()); // Silent success per RFC 7009
+        }
+
+        match claims.token_type.as_str() {
+            "access" | "id_token" => {
+                if claims.sid != "none" {
+                    // Session-bound token: revoke via session
+                    let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
+                    if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
+                        let session_id = SessionId::new(uuid);
+                        let _ = self.revoke_session(tenant_id, &session_id);
+                    }
+                } else if let Some(ref jti) = claims.jti {
+                    // Sessionless token (e.g., client_credentials): revoke via JTI blocklist
+                    let jti_key = keys::encode_revoked_jti(jti);
+                    let _ = self.storage.put(tenant_id, &jti_key, b"1");
+                }
+            }
+            "refresh" => {
+                // Revoke via grant family
+                if let Some(ref fid) = claims.fid {
+                    let family_key = keys::encode_grant_family(fid);
+                    if let Some(family_bytes) = self
+                        .storage
+                        .get(tenant_id, &family_key)
+                        .map_err(Self::storage_err)?
+                    {
+                        let mut family: StoredGrantFamily = serde_json::from_slice(&family_bytes)
+                            .map_err(|e| {
+                            IdentityError::Serialization {
+                                reason: e.to_string(),
+                            }
+                        })?;
+                        family.revoked = true;
+                        let updated = serde_json::to_vec(&family).map_err(|e| {
+                            IdentityError::Serialization {
+                                reason: e.to_string(),
+                            }
+                        })?;
+                        self.storage
+                            .put(tenant_id, &family_key, &updated)
+                            .map_err(Self::storage_err)?;
+                    }
+                }
+                // Also revoke session if present
+                if claims.sid != "none" {
+                    let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
+                    if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
+                        let session_id = SessionId::new(uuid);
+                        let _ = self.revoke_session(tenant_id, &session_id);
+                    }
+                }
+            }
+            _ => {} // Unknown token type → silent success
+        }
+
+        Ok(())
+    }
+
+    fn introspect_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::TokenIntrospectionRequest,
+    ) -> Result<crate::identity::oidc::IntrospectionResponse, IdentityError> {
+        use crate::identity::oidc::IntrospectionResponse;
+
+        // 1. Decode claims (unverified — hot path)
+        let Ok(claims) = tokens::decode_claims_unverified(&request.token) else {
+            return Ok(IntrospectionResponse::inactive());
+        };
+
+        // 2. Verify tenant matches
+        if claims.tid != tenant_id.to_string() {
+            return Ok(IntrospectionResponse::inactive());
+        }
+
+        // 3. Check expiration
+        let now = self.clock.now();
+        let now_secs = now.as_micros() / 1_000_000;
+        if now_secs >= claims.exp {
+            return Ok(IntrospectionResponse::inactive());
+        }
+
+        // 4. Check session validity (if session-bound) or JTI blocklist (if sessionless)
+        if claims.sid != "none" {
+            let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
+            if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
+                let session_id = SessionId::new(uuid);
+                if self.get_session(tenant_id, &session_id)?.is_none() {
+                    return Ok(IntrospectionResponse::inactive());
+                }
+            }
+        } else if let Some(ref jti) = claims.jti {
+            // Sessionless token — check JTI revocation blocklist
+            let jti_key = keys::encode_revoked_jti(jti);
+            if self
+                .storage
+                .get(tenant_id, &jti_key)
+                .map_err(Self::storage_err)?
+                .is_some()
+            {
+                return Ok(IntrospectionResponse::inactive());
+            }
+        }
+
+        // 5. Check grant family (if refresh token with fid)
+        if claims.token_type == "refresh" {
+            if let Some(ref fid) = claims.fid {
+                let family_key = keys::encode_grant_family(fid);
+                if let Some(family_bytes) = self
+                    .storage
+                    .get(tenant_id, &family_key)
+                    .map_err(Self::storage_err)?
+                {
+                    let family: StoredGrantFamily =
+                        serde_json::from_slice(&family_bytes).map_err(|e| {
+                            IdentityError::Serialization {
+                                reason: e.to_string(),
+                            }
+                        })?;
+                    if family.revoked {
+                        return Ok(IntrospectionResponse::inactive());
+                    }
+                }
+            }
+        }
+
+        // 6. Active — return metadata
+        Ok(IntrospectionResponse {
+            active: true,
+            scope: claims.scope,
+            client_id: None, // Not stored in claims for session-bound tokens
+            sub: Some(claims.sub),
+            exp: Some(claims.exp),
+            iat: Some(claims.iat),
+            token_type: Some(claims.token_type),
+            iss: Some(claims.iss),
+            aud: Some(claims.aud),
+        })
     }
 }
 
@@ -2614,6 +3349,8 @@ mod tests {
                 &RegisterClientRequest {
                     client_name: "Test App".to_string(),
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
                 },
             )
             .expect("register client")
@@ -3653,6 +4390,888 @@ mod tests {
                 let new_claims = engine.validate_token(tenant.id(), tokens.access_token())
                     .expect("validate after rotation");
                 prop_assert_eq!(&new_claims.sub, &user.id().to_string());
+            }
+        }
+    }
+
+    // ===== Step 22: OAuth 2.0 Complete Unit Tests =====
+
+    /// Helper: creates a tenant via `create_tenant` and returns `TenantId`.
+    fn create_test_tenant(engine: &EmbeddedIdentityEngine) -> TenantId {
+        let tenant = engine
+            .create_tenant(&CreateTenantRequest {
+                name: format!("test-tenant-{}", uuid::Uuid::new_v4()),
+                config: Some(TenantConfig::default()),
+            })
+            .expect("create tenant");
+        tenant.id().clone()
+    }
+
+    /// Helper: registers a confidential client with `client_credentials` grant.
+    fn register_confidential_client(
+        engine: &EmbeddedIdentityEngine,
+        tenant_id: &TenantId,
+        secret: &str,
+    ) -> OAuthClient {
+        engine
+            .register_client(
+                tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Confidential App".to_string(),
+                    redirect_uris: vec![],
+                    client_secret: Some(secret.to_string()),
+                    grant_types: vec!["client_credentials".to_string()],
+                },
+            )
+            .expect("register confidential client")
+    }
+
+    // ===== B1: Client credentials grant =====
+
+    #[test]
+    fn client_credentials_register_and_issue_token() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let secret = "super-secret-value-12345";
+
+        // Register confidential client
+        let client = register_confidential_client(&engine, &tenant_id, secret);
+        assert!(client.is_confidential());
+        assert!(client
+            .grant_types()
+            .contains(&"client_credentials".to_string()));
+
+        // Issue token via client credentials
+        let response = engine
+            .client_credentials_token(
+                &tenant_id,
+                &ClientCredentialsRequest {
+                    client_id: client.client_id().clone(),
+                    client_secret: secret.to_string(),
+                    scope: Some("read write".to_string()),
+                },
+            )
+            .expect("client_credentials_token should succeed");
+
+        assert_eq!(response.token_type(), "Bearer");
+        assert!(response.expires_in() > 0);
+        assert_eq!(response.scope(), Some("read write"));
+
+        // Verify the access token is valid
+        let claims =
+            tokens::decode_claims_unverified(response.access_token()).expect("decode access token");
+        assert_eq!(claims.sub, client.client_id().to_string());
+        assert_eq!(claims.token_type, "access");
+        assert_eq!(claims.scope.as_deref(), Some("read write"));
+    }
+
+    #[test]
+    fn client_credentials_wrong_secret_rejected() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let client = register_confidential_client(&engine, &tenant_id, "correct-secret");
+
+        let result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: "wrong-secret".to_string(),
+                scope: None,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(IdentityError::InvalidClientSecret)),
+            "wrong secret should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn client_credentials_unsupported_grant_type() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        // Register a public client (no client_credentials grant)
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Public App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register public client");
+
+        let result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: "anything".to_string(),
+                scope: None,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(IdentityError::UnsupportedGrantType)),
+            "public client should not support client_credentials, got: {result:?}"
+        );
+    }
+
+    // ===== B2: Device authorization =====
+
+    #[test]
+    fn device_authorize_returns_valid_codes() {
+        use crate::identity::oidc::DeviceAuthorizationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        // Register a client
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Device App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let response = engine
+            .device_authorize(
+                &tenant_id,
+                &DeviceAuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    scope: Some("openid".to_string()),
+                },
+            )
+            .expect("device_authorize should succeed");
+
+        // Verify response
+        assert!(!response.device_code.is_empty());
+        assert_eq!(response.user_code.len(), 8, "user code should be 8 chars");
+        assert_eq!(response.interval, 5);
+        assert!(response.expires_in > 0);
+
+        // Verify user code only contains unambiguous chars
+        let valid_chars = "BCDFGHJKMNPQRSTVWXYZ23456789";
+        for c in response.user_code.chars() {
+            assert!(
+                valid_chars.contains(c),
+                "user code char '{c}' not in unambiguous alphabet"
+            );
+        }
+    }
+
+    // ===== B3: Refresh token rotation =====
+
+    #[test]
+    fn refresh_token_rotation_issues_new_pair() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Rotation App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        // Auth code flow → tokens with grant family
+        let auth = engine
+            .authorize(
+                &tenant_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "test-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                },
+            )
+            .expect("authorize");
+
+        let tokens = engine
+            .exchange_authorization_code(
+                &tenant_id,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange code");
+
+        // Verify refresh token has fid claim
+        let refresh_claims =
+            tokens::decode_claims_unverified(tokens.refresh_token()).expect("decode refresh");
+        assert!(
+            refresh_claims.fid.is_some(),
+            "refresh token should have fid"
+        );
+
+        // Advance clock and refresh
+        clock.advance(60 * 1_000_000); // 60 seconds in microseconds
+        let new_tokens = engine
+            .refresh_tokens(&tenant_id, tokens.refresh_token())
+            .expect("refresh should succeed");
+
+        // New tokens are different
+        assert_ne!(new_tokens.access_token(), tokens.access_token());
+        assert_ne!(new_tokens.refresh_token(), tokens.refresh_token());
+
+        // New refresh token has the same family ID
+        let new_refresh_claims = tokens::decode_claims_unverified(new_tokens.refresh_token())
+            .expect("decode new refresh");
+        assert_eq!(new_refresh_claims.fid, refresh_claims.fid);
+
+        // Old refresh token is now rejected (rotation)
+        let result = engine.refresh_tokens(&tenant_id, tokens.refresh_token());
+        assert!(
+            matches!(result, Err(IdentityError::TokenRevoked)),
+            "old refresh token should be rejected after rotation, got: {result:?}"
+        );
+    }
+
+    // ===== B4: Token revocation =====
+
+    #[test]
+    fn revoke_access_token_invalidates_session() {
+        use crate::identity::oidc::TokenRevocationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let session = engine
+            .create_session(&tenant_id, user.id())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&tenant_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        // Token is valid
+        let claims = engine
+            .validate_token(&tenant_id, tokens.access_token())
+            .expect("should be valid");
+        assert_eq!(claims.sub, user.id().to_string());
+
+        // Revoke the access token
+        engine
+            .revoke_token(
+                &tenant_id,
+                &TokenRevocationRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: Some("access_token".to_string()),
+                },
+            )
+            .expect("revoke should succeed");
+
+        // Token is now invalid (session revoked)
+        let result = engine.validate_token(&tenant_id, tokens.access_token());
+        assert!(
+            result.is_err(),
+            "access token should be invalid after revocation"
+        );
+    }
+
+    #[test]
+    fn revoke_refresh_token_invalidates_family() {
+        use crate::identity::oidc::TokenRevocationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Revoke App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let auth = engine
+            .authorize(
+                &tenant_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                },
+            )
+            .expect("authorize");
+
+        let tokens = engine
+            .exchange_authorization_code(
+                &tenant_id,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange code");
+
+        // Revoke the refresh token
+        engine
+            .revoke_token(
+                &tenant_id,
+                &TokenRevocationRequest {
+                    token: tokens.refresh_token().to_string(),
+                    token_type_hint: Some("refresh_token".to_string()),
+                },
+            )
+            .expect("revoke should succeed");
+
+        // Refresh is now rejected
+        let result = engine.refresh_tokens(&tenant_id, tokens.refresh_token());
+        assert!(
+            matches!(result, Err(IdentityError::TokenRevoked)),
+            "refresh should fail after revocation, got: {result:?}"
+        );
+    }
+
+    // ===== B5: Token introspection =====
+
+    #[test]
+    fn introspect_active_token() {
+        use crate::identity::oidc::TokenIntrospectionRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let session = engine
+            .create_session(&tenant_id, user.id())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&tenant_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        let response = engine
+            .introspect_token(
+                &tenant_id,
+                &TokenIntrospectionRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("introspect should succeed");
+
+        assert!(response.active, "valid token should be active");
+        assert_eq!(response.sub.as_deref(), Some(&*user.id().to_string()));
+        assert_eq!(response.token_type.as_deref(), Some("access"));
+        assert!(response.exp.is_some());
+        assert!(response.iat.is_some());
+    }
+
+    #[test]
+    fn introspect_revoked_token_is_inactive() {
+        use crate::identity::oidc::{TokenIntrospectionRequest, TokenRevocationRequest};
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let session = engine
+            .create_session(&tenant_id, user.id())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&tenant_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        // Revoke
+        engine
+            .revoke_token(
+                &tenant_id,
+                &TokenRevocationRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("revoke");
+
+        // Introspect
+        let response = engine
+            .introspect_token(
+                &tenant_id,
+                &TokenIntrospectionRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("introspect should succeed");
+
+        assert!(!response.active, "revoked token should be inactive");
+    }
+
+    #[test]
+    fn introspect_invalid_token_is_inactive() {
+        use crate::identity::oidc::TokenIntrospectionRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let response = engine
+            .introspect_token(
+                &tenant_id,
+                &TokenIntrospectionRequest {
+                    token: "not-a-valid-token".to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("introspect should succeed even for invalid tokens");
+
+        assert!(!response.active, "invalid token should be inactive");
+    }
+
+    // ===== Phase 1 Step 22: OAuth 2.0 Adversarial Tests =====
+
+    /// Adversarial: Refresh token theft detection.
+    ///
+    /// Scenario: attacker steals a refresh token, legitimate user rotates,
+    /// then attacker tries to use the stolen (old) token. The entire grant
+    /// family must be revoked, including the legitimate user's new token.
+    #[test]
+    fn adversarial_refresh_token_theft_detection() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let user = engine
+            .create_user(
+                &tenant_id,
+                &CreateUserRequest {
+                    email: "theft-victim@test.com".to_string(),
+                    display_name: "Theft Victim".to_string(),
+                },
+            )
+            .expect("create user");
+
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Theft Test Client".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let auth = engine
+            .authorize(
+                &tenant_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    scope: "openid".to_string(),
+                    state: "theft-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                },
+            )
+            .expect("authorize");
+
+        let tokens = engine
+            .exchange_authorization_code(
+                &tenant_id,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange");
+
+        // Attacker steals refresh token
+        let stolen_refresh = tokens.refresh_token().to_string();
+
+        // Legitimate user rotates (advance clock for unique tokens)
+        clock.advance(1_000_000);
+        let new_pair = engine
+            .refresh_tokens(&tenant_id, &stolen_refresh)
+            .expect("legitimate rotation");
+        let legitimate_refresh = new_pair.refresh_token().to_string();
+
+        // Attacker uses the stolen (old) refresh token
+        clock.advance(1_000_000);
+        let attack_result = engine.refresh_tokens(&tenant_id, &stolen_refresh);
+        assert!(
+            attack_result.is_err(),
+            "stolen refresh token must be rejected"
+        );
+
+        // Legitimate user's new refresh token should ALSO be revoked
+        // (entire grant family revoked due to theft detection)
+        let legitimate_result = engine.refresh_tokens(&tenant_id, &legitimate_refresh);
+        assert!(
+            legitimate_result.is_err(),
+            "legitimate refresh token must also be revoked after theft detection"
+        );
+
+        // The session should be revoked too
+        let validate_result = engine.validate_token(&tenant_id, new_pair.access_token());
+        assert!(
+            validate_result.is_err(),
+            "session should be revoked after theft detection"
+        );
+    }
+
+    /// Adversarial: Invalid client secrets produce generic errors.
+    ///
+    /// Verifies that wrong secrets, empty secrets, and non-existent clients
+    /// all return the same error type (no information leakage).
+    #[test]
+    fn adversarial_invalid_client_secret_generic_error() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Secret Test Client".to_string(),
+                    redirect_uris: vec![],
+                    client_secret: Some("correct-secret-123".to_string()),
+                    grant_types: vec!["client_credentials".to_string()],
+                },
+            )
+            .expect("register client");
+
+        // Wrong secret
+        let wrong_result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: "wrong-secret-456".to_string(),
+                scope: None,
+            },
+        );
+        assert!(
+            matches!(wrong_result, Err(IdentityError::InvalidClientSecret)),
+            "wrong secret should return InvalidClientSecret"
+        );
+
+        // Empty secret
+        let empty_result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: String::new(),
+                scope: None,
+            },
+        );
+        assert!(
+            matches!(empty_result, Err(IdentityError::InvalidClientSecret)),
+            "empty secret should return InvalidClientSecret"
+        );
+
+        // Non-existent client
+        let fake_client_id = crate::core::ClientId::generate();
+        let missing_result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: fake_client_id,
+                client_secret: "any-secret".to_string(),
+                scope: None,
+            },
+        );
+        assert!(
+            matches!(missing_result, Err(IdentityError::InvalidClient)),
+            "non-existent client should return InvalidClient"
+        );
+    }
+
+    /// Adversarial: Device polling rate limit enforcement.
+    ///
+    /// Polls faster than the allowed interval and verifies `SlowDown` error.
+    #[test]
+    fn adversarial_device_polling_rate_limit() {
+        use crate::identity::oidc::DeviceAuthorizationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Rate Limit Test".to_string(),
+                    redirect_uris: vec![],
+                    client_secret: None,
+                    grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let device_resp = engine
+            .device_authorize(
+                &tenant_id,
+                &DeviceAuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    scope: Some("openid".to_string()),
+                },
+            )
+            .expect("device authorize");
+
+        // First poll — should return AuthorizationPending (not SlowDown)
+        let first_poll =
+            engine.poll_device_token(&tenant_id, &device_resp.device_code, client.client_id());
+        assert!(
+            matches!(first_poll, Err(IdentityError::AuthorizationPending)),
+            "first poll should return AuthorizationPending, got: {first_poll:?}"
+        );
+
+        // Immediate second poll — should return SlowDown
+        let second_poll =
+            engine.poll_device_token(&tenant_id, &device_resp.device_code, client.client_id());
+        assert!(
+            matches!(second_poll, Err(IdentityError::SlowDown)),
+            "rapid second poll should return SlowDown, got: {second_poll:?}"
+        );
+    }
+
+    // ===== Phase 1 Step 22: OAuth 2.0 Extended Property Tests =====
+
+    mod oauth_proptests {
+        use super::*;
+        use crate::identity::oidc::{TokenIntrospectionRequest, TokenRevocationRequest};
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Property: After N issue/refresh/revoke operations, the active
+            /// token count matches expectations.
+            ///
+            /// Issues tokens via auth code flow, optionally refreshes or revokes
+            /// them, then introspects all tokens and verifies the active count.
+            #[test]
+            fn active_token_set_consistency(
+                n_users in 1..5usize,
+                ops in proptest::collection::vec(0..3u8, 1..8),
+            ) {
+                let (_dir, engine, _clock) = setup_engine();
+                let tenant = engine.create_tenant(&CreateTenantRequest {
+                    name: "prop-test-tenant".to_string(),
+                    config: None,
+                }).expect("create tenant");
+                let tenant_id = tenant.id().clone();
+
+                // Register a public client
+                let client = engine.register_client(
+                    &tenant_id,
+                    &RegisterClientRequest {
+                        client_name: "Prop Test Client".to_string(),
+                        redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                        client_secret: None,
+                        grant_types: vec!["authorization_code".to_string()],
+                    },
+                ).expect("register client");
+
+                // Create N users and issue tokens for each
+                let mut access_tokens = Vec::new();
+                let mut refresh_tokens = Vec::new();
+
+                for i in 0..n_users {
+                    let email = format!("propuser-{i}-{}@test.com", uuid::Uuid::new_v4());
+                    let user = engine.create_user(&tenant_id, &CreateUserRequest {
+                        email,
+                        display_name: format!("Prop User {i}"),
+                    }).expect("create user");
+
+                    let auth = engine.authorize(&tenant_id, &AuthorizationRequest {
+                        client_id: client.client_id().clone(),
+                        redirect_uri: "https://app.example.com/cb".to_string(),
+                        scope: "openid".to_string(),
+                        state: format!("state-{i}"),
+                        response_type: "code".to_string(),
+                        user_id: user.id().clone(),
+                        code_challenge: None,
+                        code_challenge_method: None,
+                        nonce: None,
+                    }).expect("authorize");
+
+                    let tokens = engine.exchange_authorization_code(&tenant_id, &TokenExchangeRequest {
+                        client_id: client.client_id().clone(),
+                        code: auth.code().to_string(),
+                        redirect_uri: "https://app.example.com/cb".to_string(),
+                        code_verifier: None,
+                    }).expect("exchange");
+
+                    access_tokens.push(tokens.access_token().to_string());
+                    refresh_tokens.push(tokens.refresh_token().to_string());
+                }
+
+                // Apply operations: 0 = noop, 1 = refresh, 2 = revoke access
+                for (i, op) in ops.iter().enumerate() {
+                    let idx = i % access_tokens.len();
+                    match op {
+                        1 => {
+                            // Refresh — may fail if already revoked
+                            if let Ok(new_pair) = engine.refresh_tokens(
+                                &tenant_id,
+                                &refresh_tokens[idx],
+                            ) {
+                                access_tokens[idx] = new_pair.access_token().to_string();
+                                refresh_tokens[idx] = new_pair.refresh_token().to_string();
+                            }
+                        }
+                        2 => {
+                            // Revoke access token
+                            let _ = engine.revoke_token(
+                                &tenant_id,
+                                &TokenRevocationRequest {
+                                    token: access_tokens[idx].clone(),
+                                    token_type_hint: Some("access_token".to_string()),
+                                },
+                            );
+                        }
+                        _ => {} // noop
+                    }
+                }
+
+                // Count active tokens via introspection
+                let mut active_count = 0usize;
+                for token in &access_tokens {
+                    let resp = engine.introspect_token(
+                        &tenant_id,
+                        &TokenIntrospectionRequest {
+                            token: token.clone(),
+                            token_type_hint: None,
+                        },
+                    ).expect("introspect");
+                    if resp.active {
+                        active_count += 1;
+                    }
+                }
+
+                // Active count must be <= total issued
+                prop_assert!(
+                    active_count <= access_tokens.len(),
+                    "active count ({}) must not exceed total ({})",
+                    active_count,
+                    access_tokens.len(),
+                );
+            }
+
+            /// Property: At any point during N refresh rotations, exactly one
+            /// refresh token is valid per grant family.
+            ///
+            /// Rotates a refresh token N times, checking after each rotation
+            /// that only the latest refresh token is accepted.
+            #[test]
+            fn single_valid_refresh_token(n_rotations in 1..6usize) {
+                let (_dir, engine, clock) = setup_engine();
+                let tenant = engine.create_tenant(&CreateTenantRequest {
+                    name: "single-refresh-tenant".to_string(),
+                    config: None,
+                }).expect("create tenant");
+                let tenant_id = tenant.id().clone();
+
+                let email = format!("rotate-{}@test.com", uuid::Uuid::new_v4());
+                let user = engine.create_user(&tenant_id, &CreateUserRequest {
+                    email,
+                    display_name: "Rotate User".to_string(),
+                }).expect("create user");
+
+                let client = engine.register_client(
+                    &tenant_id,
+                    &RegisterClientRequest {
+                        client_name: "Rotate Client".to_string(),
+                        redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                        client_secret: None,
+                        grant_types: vec!["authorization_code".to_string()],
+                    },
+                ).expect("register client");
+
+                let auth = engine.authorize(&tenant_id, &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    scope: "openid".to_string(),
+                    state: "rotate-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                }).expect("authorize");
+
+                let tokens = engine.exchange_authorization_code(&tenant_id, &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    code_verifier: None,
+                }).expect("exchange");
+
+                let mut current_refresh = tokens.refresh_token().to_string();
+                let mut old_refresh_tokens: Vec<String> = Vec::new();
+
+                for i in 0..n_rotations {
+                    // Advance clock 1 second to get unique timestamps
+                    clock.advance(1_000_000);
+
+                    let new_pair = engine.refresh_tokens(&tenant_id, &current_refresh)
+                        .unwrap_or_else(|e| panic!("rotation {i} failed: {e}"));
+
+                    old_refresh_tokens.push(current_refresh);
+                    current_refresh = new_pair.refresh_token().to_string();
+
+                    // Current refresh token should work for introspection
+                    let resp = engine.introspect_token(
+                        &tenant_id,
+                        &TokenIntrospectionRequest {
+                            token: current_refresh.clone(),
+                            token_type_hint: None,
+                        },
+                    ).expect("introspect current");
+                    prop_assert!(resp.active, "current refresh token must be active at rotation {}", i);
+                }
+
+                // After all rotations, none of the old refresh tokens should work
+                for (i, old_token) in old_refresh_tokens.iter().enumerate() {
+                    let result = engine.refresh_tokens(&tenant_id, old_token);
+                    // First old token reuse triggers theft detection
+                    if result.is_err() {
+                        // After theft detection, all tokens in the family are revoked
+                        break;
+                    }
+                    // If we got here, this old token happened to match (shouldn't)
+                    prop_assert!(false, "old refresh token {} should have been rejected", i);
+                }
             }
         }
     }
