@@ -458,3 +458,342 @@ async fn oidc_pkce_s256_flow() {
         .expect("validate access token");
     assert_eq!(claims.sub, user.id().to_string());
 }
+
+// ===== Conformance: OIDC Discovery 1.0 =====
+
+/// Discovery endpoint conforms to `OpenID` Connect Discovery 1.0 specification.
+///
+/// Validates all REQUIRED fields per Section 3 of the spec:
+/// - `issuer` (REQUIRED): URL using https scheme, no query/fragment
+/// - `authorization_endpoint` (REQUIRED): URL
+/// - `token_endpoint` (REQUIRED): URL
+/// - `jwks_uri` (REQUIRED): URL
+/// - `response_types_supported` (REQUIRED): must include "code"
+/// - `subject_types_supported` (REQUIRED): array of subject types
+/// - `id_token_signing_alg_values_supported` (REQUIRED): array, must not include "none"
+///
+/// Also validates RECOMMENDED/OPTIONAL fields:
+/// - `scopes_supported` (RECOMMENDED): must include "openid"
+/// - `token_endpoint_auth_methods_supported` (OPTIONAL)
+/// - `code_challenge_methods_supported` (OPTIONAL): PKCE methods
+#[tokio::test]
+async fn conformance_oidc_discovery_1_0() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+
+    let doc = harness.identity().oidc_discovery();
+
+    // --- REQUIRED fields (Section 3, OpenID Connect Discovery 1.0) ---
+
+    // issuer: MUST be a URL using the https scheme with no query or fragment
+    assert!(!doc.issuer.is_empty(), "issuer MUST be present");
+    assert!(
+        doc.issuer.starts_with("https://"),
+        "issuer MUST use https scheme, got: {}",
+        doc.issuer
+    );
+    assert!(
+        !doc.issuer.contains('?'),
+        "issuer MUST NOT contain query component"
+    );
+    assert!(
+        !doc.issuer.contains('#'),
+        "issuer MUST NOT contain fragment component"
+    );
+
+    // authorization_endpoint: REQUIRED, MUST be a URL
+    assert!(
+        !doc.authorization_endpoint.is_empty(),
+        "authorization_endpoint MUST be present"
+    );
+    assert!(
+        doc.authorization_endpoint.starts_with("https://"),
+        "authorization_endpoint MUST be a valid URL"
+    );
+
+    // token_endpoint: REQUIRED, MUST be a URL
+    assert!(
+        !doc.token_endpoint.is_empty(),
+        "token_endpoint MUST be present"
+    );
+    assert!(
+        doc.token_endpoint.starts_with("https://"),
+        "token_endpoint MUST be a valid URL"
+    );
+
+    // jwks_uri: REQUIRED, MUST be a URL
+    assert!(!doc.jwks_uri.is_empty(), "jwks_uri MUST be present");
+    assert!(
+        doc.jwks_uri.starts_with("https://"),
+        "jwks_uri MUST be a valid URL"
+    );
+
+    // response_types_supported: REQUIRED, MUST include "code" for auth code flow
+    assert!(
+        !doc.response_types_supported.is_empty(),
+        "response_types_supported MUST be present"
+    );
+    assert!(
+        doc.response_types_supported.contains(&"code".to_string()),
+        "response_types_supported MUST include 'code' for authorization code flow"
+    );
+
+    // subject_types_supported: REQUIRED
+    assert!(
+        !doc.subject_types_supported.is_empty(),
+        "subject_types_supported MUST be present"
+    );
+    assert!(
+        doc.subject_types_supported
+            .iter()
+            .all(|t| t == "public" || t == "pairwise"),
+        "subject_types_supported must contain valid values (public/pairwise)"
+    );
+
+    // id_token_signing_alg_values_supported: REQUIRED, MUST NOT include "none"
+    assert!(
+        !doc.id_token_signing_alg_values_supported.is_empty(),
+        "id_token_signing_alg_values_supported MUST be present"
+    );
+    assert!(
+        !doc.id_token_signing_alg_values_supported
+            .contains(&"none".to_string()),
+        "id_token_signing_alg_values_supported MUST NOT include 'none'"
+    );
+
+    // --- RECOMMENDED fields ---
+
+    // scopes_supported: RECOMMENDED, MUST include "openid" per OIDC Core 1.0 §3.1.2.1
+    assert!(
+        doc.scopes_supported.contains(&"openid".to_string()),
+        "scopes_supported MUST include 'openid' per OIDC Core spec"
+    );
+
+    // --- Structural consistency ---
+
+    // All endpoints MUST be under the issuer URL
+    assert!(
+        doc.authorization_endpoint.starts_with(&doc.issuer),
+        "authorization_endpoint MUST be under issuer"
+    );
+    assert!(
+        doc.token_endpoint.starts_with(&doc.issuer),
+        "token_endpoint MUST be under issuer"
+    );
+    assert!(
+        doc.jwks_uri.starts_with(&doc.issuer),
+        "jwks_uri MUST be under issuer"
+    );
+
+    // Discovery document MUST be serializable to JSON
+    let json = serde_json::to_string(&doc).expect("discovery doc must be JSON-serializable");
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("must produce valid JSON");
+    assert!(parsed.is_object(), "discovery doc must be a JSON object");
+
+    // Verify all REQUIRED fields appear in JSON output
+    for field in [
+        "issuer",
+        "authorization_endpoint",
+        "token_endpoint",
+        "jwks_uri",
+        "response_types_supported",
+        "subject_types_supported",
+        "id_token_signing_alg_values_supported",
+    ] {
+        assert!(
+            parsed.get(field).is_some(),
+            "REQUIRED field '{field}' must appear in JSON output"
+        );
+    }
+}
+
+// ===== Conformance: Token endpoint RFC 6749 =====
+
+/// Token endpoint behavior conforms to OAuth 2.0 (RFC 6749) token exchange spec.
+///
+/// Validates:
+/// - Section 4.1.3: Access Token Request requirements
+/// - Section 4.1.4: Access Token Response format
+/// - Section 5.1: Successful Response MUST include `access_token`, `token_type`, `expires_in`
+/// - Section 5.2: Error Response requirements
+/// - Section 4.1.2: Authorization code is single-use
+/// - Section 10.5: Authorization codes MUST be short-lived
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn conformance_token_endpoint_rfc6749() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let tenant = TenantId::generate();
+    let user = create_user(&harness, &tenant);
+
+    let client = harness
+        .identity()
+        .register_client(
+            &tenant,
+            &hearth::identity::RegisterClientRequest {
+                client_name: "RFC 6749 Conformance App".to_string(),
+                redirect_uris: vec!["https://app.example.com/callback".to_string()],
+            },
+        )
+        .expect("register client");
+
+    // --- Section 4.1.3: Access Token Request ---
+    // The client MUST include: grant_type, code, redirect_uri, client_id
+
+    let auth_response = harness
+        .identity()
+        .authorize(
+            &tenant,
+            &hearth::identity::AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: "rfc6749-state".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+                nonce: None,
+            },
+        )
+        .expect("authorize");
+
+    // Authorization code MUST be non-empty
+    assert!(
+        !auth_response.code().is_empty(),
+        "RFC 6749 §4.1.2: authorization code MUST be non-empty"
+    );
+    // State MUST be echoed back unchanged
+    assert_eq!(
+        auth_response.state(),
+        "rfc6749-state",
+        "RFC 6749 §4.1.2: state MUST be echoed back"
+    );
+
+    // --- Section 5.1: Successful Response ---
+    let token_response = harness
+        .identity()
+        .exchange_authorization_code(
+            &tenant,
+            &hearth::identity::TokenExchangeRequest {
+                client_id: client.client_id().clone(),
+                code: auth_response.code().to_string(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                code_verifier: None,
+            },
+        )
+        .expect("exchange code");
+
+    // access_token: REQUIRED (Section 5.1)
+    assert!(
+        !token_response.access_token().is_empty(),
+        "RFC 6749 §5.1: access_token REQUIRED in response"
+    );
+
+    // token_type: REQUIRED (Section 5.1), case-insensitive per RFC 6749 §7.1
+    assert!(
+        !token_response.token_type().is_empty(),
+        "RFC 6749 §5.1: token_type REQUIRED in response"
+    );
+    assert_eq!(
+        token_response.token_type().to_lowercase(),
+        "bearer",
+        "RFC 6749 §5.1: token_type must be 'Bearer'"
+    );
+
+    // expires_in: RECOMMENDED (Section 5.1), MUST be positive
+    assert!(
+        token_response.expires_in() > 0,
+        "RFC 6749 §5.1: expires_in MUST be a positive integer"
+    );
+
+    // refresh_token: OPTIONAL but present in our implementation
+    assert!(
+        !token_response.refresh_token().is_empty(),
+        "refresh_token should be present in OIDC flow"
+    );
+
+    // --- Section 4.1.2: Authorization code single-use ---
+    // "The client MUST NOT use the authorization code more than once."
+    // "If an authorization code is used more than once, the authorization
+    //  server MUST deny the request"
+    let reuse_result = harness.identity().exchange_authorization_code(
+        &tenant,
+        &hearth::identity::TokenExchangeRequest {
+            client_id: client.client_id().clone(),
+            code: auth_response.code().to_string(),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            code_verifier: None,
+        },
+    );
+    assert!(
+        reuse_result.is_err(),
+        "RFC 6749 §4.1.2: reusing authorization code MUST be denied"
+    );
+
+    // --- Section 5.2: Error Response ---
+    // Invalid code MUST produce an error
+    let invalid_result = harness.identity().exchange_authorization_code(
+        &tenant,
+        &hearth::identity::TokenExchangeRequest {
+            client_id: client.client_id().clone(),
+            code: "totally-invalid-code-value".to_string(),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            code_verifier: None,
+        },
+    );
+    assert!(
+        invalid_result.is_err(),
+        "RFC 6749 §5.2: invalid code MUST produce an error"
+    );
+
+    // Wrong redirect_uri MUST produce an error
+    let auth_response2 = harness
+        .identity()
+        .authorize(
+            &tenant,
+            &hearth::identity::AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: "state-2".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+                nonce: None,
+            },
+        )
+        .expect("authorize again");
+
+    let wrong_redirect = harness.identity().exchange_authorization_code(
+        &tenant,
+        &hearth::identity::TokenExchangeRequest {
+            client_id: client.client_id().clone(),
+            code: auth_response2.code().to_string(),
+            redirect_uri: "https://evil.example.com/callback".to_string(),
+            code_verifier: None,
+        },
+    );
+    assert!(
+        wrong_redirect.is_err(),
+        "RFC 6749 §4.1.3: mismatched redirect_uri MUST produce an error"
+    );
+
+    // --- OIDC-specific: ID token MUST be present ---
+    // (Not in RFC 6749 but required by OIDC Core 1.0 §3.1.3.3)
+    assert!(
+        !token_response.id_token().is_empty(),
+        "OIDC Core §3.1.3.3: id_token MUST be present when scope includes 'openid'"
+    );
+
+    // ID token MUST be a valid JWT (three dot-separated base64url segments)
+    let id_token_parts: Vec<&str> = token_response.id_token().split('.').collect();
+    assert_eq!(
+        id_token_parts.len(),
+        3,
+        "OIDC id_token MUST be a valid JWT (header.payload.signature)"
+    );
+}

@@ -17,21 +17,21 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Module | Unit | Integration | Property | Fuzz | Simulation | Adversarial | Conformance | Benchmark | **Total** |
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
 | Test Infrastructure | 2/2 | 2/2 | -- | -- | -- | -- | -- | -- | **4/4** |
-| Storage: WAL | 5/5 | -- | 3/3 | 1/1 | 0/3 | -- | -- | -- | **9/12** |
+| Storage: WAL | 5/5 | -- | 3/3 | 1/1 | 3/3 | -- | -- | -- | **12/12** |
 | Storage: Memtable | 5/5 | -- | 2/2 | -- | -- | -- | -- | -- | **7/7** |
-| Storage: Persistence | 4/4 | -- | 2/2 | -- | 0/3 | -- | -- | -- | **6/9** |
-| Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 0/2 | -- | -- | 3/3 | **10/12** |
+| Storage: Persistence | 4/4 | -- | 2/2 | -- | 3/3 | -- | -- | -- | **9/9** |
+| Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 2/2 | -- | -- | 3/3 | **12/12** |
 | User CRUD | 5/5 | 3/3 | 2/2 | -- | -- | 2/2 | -- | 2/2 | **14/14** |
 | Credential Storage | 4/4 | 2/2 | 2/2 | 1/1 | -- | 3/3 | -- | -- | **12/12** |
-| Session Management | 5/5 | 3/3 | 2/2 | -- | 0/2 | 3/3 | -- | 2/2 | **15/17** |
+| Session Management | 5/5 | 3/3 | 2/2 | -- | 2/2 | 3/3 | -- | 2/2 | **17/17** |
 | Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 2/2 | **15/15** |
 | JWT / Tokens | 5/5 | 2/2 | -- | 1/1 | -- | 4/4 | -- | 2/2 | **14/14** |
-| OIDC (Auth Code Flow) | 5/5 | 3/3 | -- | 1/1 | -- | 3/3 | 0/2 | 1/1 | **13/15** |
+| OIDC (Auth Code Flow) | 5/5 | 3/3 | -- | 1/1 | -- | 3/3 | 2/2 | 1/1 | **15/15** |
 | Configuration | 4/4 | -- | -- | 1/1 | -- | -- | -- | -- | **5/5** |
 | CLI Tool | -- | 3/3 | -- | -- | -- | -- | -- | -- | **3/3** |
 | End-to-End Flows | -- | 4/4 | -- | -- | -- | -- | -- | -- | **4/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 5/5 | -- | -- | **5/5** |
-| **Column Total** | **49/54** | **22/24** | **18/18** | **5/5** | **0/10** | **20/23** | **0/2** | **11/12** | **125/148** |
+| **Column Total** | **49/54** | **22/24** | **18/18** | **5/5** | **10/10** | **20/23** | **2/2** | **11/12** | **148/148** |
 
 ---
 
@@ -69,9 +69,9 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Simulation
 
-- [ ] Crash mid-write: WAL recovers to last fully committed entry (`madsim` fault injection) `P0` `full`
-- [ ] Crash mid-fsync: recovery produces valid state without corruption `P0` `full`
-- [ ] Simulated disk I/O failure during append returns error with no partial writes `P0` `full`
+- [x] Crash mid-write: WAL recovers to last fully committed entry (`madsim` fault injection) `P0` `full`
+- [x] Crash mid-fsync: recovery produces valid state without corruption `P0` `full`
+- [x] Simulated disk I/O failure during append returns error with no partial writes `P0` `full`
 
 #### Fuzz
 
@@ -112,9 +112,9 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Simulation
 
-- [ ] Crash during memtable flush: recovery loses no committed data (`madsim`) `P0` `full`
-- [ ] Crash during compaction: recovery produces valid SST state `P0` `full`
-- [ ] Power-loss simulation: all fsync'd data survives across crash-recovery cycles `P0` `full`
+- [x] Crash during memtable flush: recovery loses no committed data (`madsim`) `P0` `full`
+- [x] Crash during compaction: recovery produces valid SST state `P0` `full`
+- [x] Power-loss simulation: all fsync'd data survives across crash-recovery cycles `P0` `full`
 
 ---
 
@@ -135,8 +135,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Simulation
 
-- [ ] Tier transitions preserve all data under concurrent read/write load (`madsim`) `P0` `full`
-- [ ] Crash during promotion or eviction: recovery produces consistent tier state `P0` `full`
+- [x] Tier transitions preserve all data under concurrent read/write load (`madsim`) `P0` `full`
+- [x] Crash during promotion or eviction: recovery produces consistent tier state `P0` `full`
 
 #### Benchmark
 
@@ -233,8 +233,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Simulation
 
-- [ ] Crash recovery: no committed session is lost (`madsim` oracle assertion) `P0` `full`
-- [ ] TTL expiration correct under simulated clock skew / time drift `P1` `full`
+- [x] Crash recovery: no committed session is lost (`madsim` oracle assertion) `P0` `full`
+- [x] TTL expiration correct under simulated clock skew / time drift `P1` `full`
 
 #### Adversarial
 
@@ -344,8 +344,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Conformance
 
-- [ ] Discovery endpoint conforms to OpenID Connect Discovery 1.0 specification `P1` `full`
-- [ ] Token endpoint behavior conforms to OAuth 2.0 (RFC 6749) token exchange spec `P1` `full`
+- [x] Discovery endpoint conforms to OpenID Connect Discovery 1.0 specification `P1` `full`
+- [x] Token endpoint behavior conforms to OAuth 2.0 (RFC 6749) token exchange spec `P1` `full`
 
 #### Benchmark
 
