@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use hearth::config::Config;
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
 use hearth::protocol::http::{self, AppState};
+use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Hearth — a purpose-built identity database.
@@ -187,18 +188,99 @@ async fn run_serve(
         .parse()
         .map_err(|e| format!("invalid bind address: {e}"))?;
 
+    // Check for TLS configuration
+    if let (Some(cert_path), Some(key_path)) =
+        (&config.server.tls_cert_path, &config.server.tls_key_path)
+    {
+        run_serve_tls(addr, &config, app_state, cert_path, key_path).await?;
+    } else {
+        let shutdown = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install Ctrl+C handler");
+            info!("shutdown signal received, stopping server");
+        };
+        http::serve(addr, app_state, shutdown).await?;
+    }
+
+    info!("Hearth server stopped");
+    Ok(())
+}
+
+/// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert reload.
+async fn run_serve_tls(
+    addr: SocketAddr,
+    config: &Config,
+    app_state: Arc<AppState>,
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reloadable = ReloadableTlsConfig::load(cert_path.to_path_buf(), key_path.to_path_buf())
+        .map_err(|e| format!("failed to load TLS certificates: {e}"))?;
+
+    let params = TlsConfigParams {
+        resolver: Arc::new(reloadable.resolver()),
+        client_ca_path: config.server.tls_client_ca_path.clone(),
+        require_client_cert: config.server.tls_require_client_cert,
+    };
+    let server_config =
+        build_server_config(params).map_err(|e| format!("failed to build TLS config: {e}"))?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+
+    // Spawn HTTP→HTTPS redirect listener
+    let redirect_port = if config.server.port == 443 {
+        80
+    } else {
+        config.server.port.saturating_sub(1)
+    };
+    let redirect_addr: SocketAddr = format!("{}:{redirect_port}", config.server.bind_address)
+        .parse()
+        .map_err(|e| format!("invalid redirect bind address: {e}"))?;
+    let https_port = config.server.port;
+    let mut redirect_shutdown_rx = shutdown_rx.clone();
+    let redirect_handle = tokio::spawn(async move {
+        let shutdown = async move {
+            let _ = redirect_shutdown_rx.changed().await;
+        };
+        if let Err(e) = http::serve_redirect(redirect_addr, https_port, shutdown).await {
+            warn!(error = %e, "HTTP redirect server failed");
+        }
+    });
+
+    // Register SIGHUP handler for cert hot-reload
+    #[cfg(unix)]
+    {
+        let reloadable = Arc::new(reloadable);
+        let reloadable_clone = Arc::clone(&reloadable);
+        tokio::spawn(async move {
+            let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("failed to register SIGHUP handler");
+            loop {
+                sig.recv().await;
+                info!("SIGHUP received, reloading TLS certificates");
+                if let Err(e) = reloadable_clone.reload() {
+                    error!(error = %e, "TLS certificate reload failed, keeping old cert");
+                }
+            }
+        });
+    }
+
     // Set up graceful shutdown on Ctrl+C
-    let shutdown = async {
+    tokio::spawn(async move {
         tokio::signal::ctrl_c()
             .await
             .expect("failed to install Ctrl+C handler");
         info!("shutdown signal received, stopping server");
-    };
+        drop(shutdown_tx);
+    });
 
-    // Start HTTP server
-    http::serve(addr, app_state, shutdown).await?;
+    // Start HTTPS server
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    http::serve_tls(listener, app_state, acceptor, shutdown_rx).await?;
 
-    info!("Hearth server stopped");
+    let _ = redirect_handle.await;
     Ok(())
 }
 

@@ -20,6 +20,11 @@ pub struct ServerConfig {
     pub tls_cert_path: Option<PathBuf>,
     /// Path to TLS private key file (optional; no TLS if absent).
     pub tls_key_path: Option<PathBuf>,
+    /// Path to a CA certificate for client certificate verification (mTLS).
+    pub tls_client_ca_path: Option<PathBuf>,
+    /// Whether to require a client certificate (mTLS). Requires `tls_client_ca_path`.
+    #[serde(default)]
+    pub tls_require_client_cert: bool,
 }
 
 impl ServerConfig {
@@ -39,6 +44,8 @@ impl Default for ServerConfig {
             port: Self::default_port(),
             tls_cert_path: None,
             tls_key_path: None,
+            tls_client_ca_path: None,
+            tls_require_client_cert: false,
         }
     }
 }

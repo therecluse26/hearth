@@ -17,7 +17,7 @@ use axum::response::IntoResponse;
 use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{debug, error, info};
 
 use crate::core::{ClientId, TenantId, UserId};
 use crate::identity::{
@@ -63,6 +63,122 @@ pub async fn serve(
     let local_addr = listener.local_addr()?;
 
     info!(%local_addr, "HTTP server listening");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+
+    Ok(())
+}
+
+/// Starts the HTTPS server on a pre-bound listener with TLS termination.
+///
+/// Accepts TCP connections, performs TLS handshakes using the provided
+/// `TlsAcceptor`, then serves HTTP/1.1 and HTTP/2 requests via the axum
+/// router. Each connection is spawned independently — a failed handshake
+/// does not block other connections.
+pub async fn serve_tls(
+    listener: TcpListener,
+    state: Arc<AppState>,
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+    shutdown: tokio::sync::watch::Receiver<()>,
+) -> Result<(), std::io::Error> {
+    let app = router(state);
+    let local_addr = listener.local_addr()?;
+
+    info!(%local_addr, "HTTPS server listening");
+
+    let mut shutdown_rx = shutdown;
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, peer_addr) = match result {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        error!(error = %e, "failed to accept TCP connection");
+                        continue;
+                    }
+                };
+
+                let acceptor = tls_acceptor.clone();
+                let app = app.clone();
+
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            debug!(peer = %peer_addr, error = %e, "TLS handshake failed");
+                            return;
+                        }
+                    };
+
+                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                    let service = hyper_util::service::TowerToHyperService::new(
+                        app.into_service(),
+                    );
+
+                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, service)
+                    .await
+                    {
+                        debug!(peer = %peer_addr, error = %e, "connection error");
+                    }
+                });
+            }
+            _ = shutdown_rx.changed() => {
+                info!("HTTPS server shutting down");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Starts an HTTP server that redirects all requests to HTTPS via 301.
+///
+/// Binds to the specified address and responds to every request with a
+/// `301 Moved Permanently` redirect to the HTTPS equivalent URL on the
+/// given `https_port`.
+pub async fn serve_redirect(
+    addr: SocketAddr,
+    https_port: u16,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), std::io::Error> {
+    let app = Router::new().fallback(move |req: axum::extract::Request| async move {
+        let host = req
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("localhost");
+
+        // Strip port from host if present
+        let hostname = host.split(':').next().unwrap_or(host);
+        let path = req.uri().path();
+        let query = req
+            .uri()
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+
+        let location = if https_port == 443 {
+            format!("https://{hostname}{path}{query}")
+        } else {
+            format!("https://{hostname}:{https_port}{path}{query}")
+        };
+
+        (
+            StatusCode::MOVED_PERMANENTLY,
+            [(axum::http::header::LOCATION, location)],
+        )
+    });
+
+    let listener = TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
+
+    info!(%local_addr, "HTTP→HTTPS redirect server listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)

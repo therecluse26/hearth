@@ -417,12 +417,12 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Zanzibar Authorization (Full) | 5/5 | 3/3 | 1/2 | -- | 0/2 | 2/2 | -- | 1/2 | **12/16** |
 | Admin API | 0/3 | 0/4 | -- | -- | -- | 0/3 | -- | -- | **0/10** |
 | Audit Logging | 4/4 | 3/3 | 2/2 | -- | 0/2 | 1/1 | -- | -- | **10/12** |
-| TLS Termination | 0/3 | 0/3 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
+| TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | SDK Integration (TS & Go) | -- | 0/6 | -- | -- | -- | -- | -- | -- | **0/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **29/39** | **17/36** | **9/10** | **1/1** | **0/6** | **14/24** | **3/8** | **3/6** | **76/130** |
+| **Column Total** | **32/39** | **20/36** | **9/10** | **1/1** | **0/6** | **16/24** | **3/8** | **3/6** | **84/130** |
 
 ---
 
@@ -675,20 +675,20 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Load TLS certificate and private key from PEM files `P0` `fast`
-- [ ] Certificate hot-reload: new cert loaded without server restart or connection drop `P0` `fast`
-- [ ] TLS 1.3 negotiation: server correctly negotiates TLS 1.3 with compliant client `P0` `fast`
+- [x] Load TLS certificate and private key from PEM files `P0` `fast`
+- [x] Certificate hot-reload: new cert loaded without server restart or connection drop `P0` `fast`
+- [x] TLS 1.3 negotiation: server correctly negotiates TLS 1.3 with compliant client `P0` `fast`
 
 #### Integration
 
-- [ ] HTTPS endpoint serves valid TLS: client connects and completes handshake `P0` `fast`
-- [ ] HTTP to HTTPS redirect: plaintext request receives 301 redirect to HTTPS equivalent `P0` `fast`
-- [ ] Mutual TLS (mTLS): server requests and validates client certificate when configured `P1` `fast`
+- [x] HTTPS endpoint serves valid TLS: client connects and completes handshake `P0` `fast`
+- [x] HTTP to HTTPS redirect: plaintext request receives 301 redirect to HTTPS equivalent `P0` `fast`
+- [x] Mutual TLS (mTLS): server requests and validates client certificate when configured `P1` `fast`
 
 #### Adversarial
 
-- [ ] TLS downgrade prevention: connection attempts with TLS 1.1 or below rejected `P0` `fast`
-- [ ] Weak cipher rejection: server refuses connections using deprecated cipher suites `P0` `fast`
+- [x] TLS downgrade prevention: connection attempts with TLS 1.1 or below rejected `P0` `fast`
+- [x] Weak cipher rejection: server refuses connections using deprecated cipher suites `P0` `fast`
 
 ---
 

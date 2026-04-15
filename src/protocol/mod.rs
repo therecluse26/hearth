@@ -4,3 +4,4 @@
 //! calls and serialize responses.
 
 pub mod http;
+pub mod tls;

@@ -73,6 +73,8 @@ impl Config {
                 port: 8420,
                 tls_cert_path: None,
                 tls_key_path: None,
+                tls_client_ca_path: None,
+                tls_require_client_cert: false,
             },
             storage: StorageSection {
                 data_dir: String::new(),
@@ -100,6 +102,32 @@ impl Config {
             return Err(ConfigError::ValidationError {
                 field: "server.port".to_string(),
                 reason: "must be between 1 and 65535".to_string(),
+            });
+        }
+
+        // TLS: cert and key must both be present or both absent
+        match (&self.server.tls_cert_path, &self.server.tls_key_path) {
+            (Some(_), None) => {
+                return Err(ConfigError::ValidationError {
+                    field: "server.tls_key_path".to_string(),
+                    reason: "tls_key_path is required when tls_cert_path is set".to_string(),
+                });
+            }
+            (None, Some(_)) => {
+                return Err(ConfigError::ValidationError {
+                    field: "server.tls_cert_path".to_string(),
+                    reason: "tls_cert_path is required when tls_key_path is set".to_string(),
+                });
+            }
+            _ => {}
+        }
+
+        // mTLS: require_client_cert needs a CA path
+        if self.server.tls_require_client_cert && self.server.tls_client_ca_path.is_none() {
+            return Err(ConfigError::ValidationError {
+                field: "server.tls_client_ca_path".to_string(),
+                reason: "tls_client_ca_path is required when tls_require_client_cert is true"
+                    .to_string(),
             });
         }
 
@@ -405,6 +433,67 @@ storage:
         assert_eq!(config.storage.data_dir, "/opt/hearth/data");
         std::env::remove_var("HEARTH_CFG_PORT");
         std::env::remove_var("HEARTH_CFG_DIR");
+    }
+
+    // === TLS config validation ===
+
+    #[test]
+    fn reject_cert_without_key() {
+        let yaml = r#"
+server:
+  tls_cert_path: "/etc/hearth/cert.pem"
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("tls_key_path"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_key_without_cert() {
+        let yaml = r#"
+server:
+  tls_key_path: "/etc/hearth/key.pem"
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("tls_cert_path"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_require_client_cert_without_ca() {
+        let yaml = r#"
+server:
+  tls_cert_path: "/etc/hearth/cert.pem"
+  tls_key_path: "/etc/hearth/key.pem"
+  tls_require_client_cert: true
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("tls_client_ca_path"), "got: {display}");
+    }
+
+    #[test]
+    fn accept_valid_tls_config() {
+        let yaml = r#"
+server:
+  tls_cert_path: "/etc/hearth/cert.pem"
+  tls_key_path: "/etc/hearth/key.pem"
+  tls_client_ca_path: "/etc/hearth/ca.pem"
+  tls_require_client_cert: true
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_ok(), "valid TLS config should pass: {result:?}");
     }
 
     // === Config is Send + Sync (for Arc<Config>) ===
