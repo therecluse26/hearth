@@ -24,6 +24,12 @@ pub struct OidcConfig {
     ///
     /// Must match the `iss` claim in issued tokens.
     pub issuer: String,
+
+    /// Whether to enforce nonce uniqueness in authorization requests.
+    ///
+    /// When enabled, duplicate nonces in authorization requests are
+    /// rejected to prevent replay attacks.
+    pub enforce_nonces: bool,
 }
 
 impl Default for OidcConfig {
@@ -31,6 +37,7 @@ impl Default for OidcConfig {
         Self {
             authorization_code_ttl_secs: 600, // 10 minutes
             issuer: "https://hearth.local".to_string(),
+            enforce_nonces: false,
         }
     }
 }
@@ -123,6 +130,11 @@ pub struct AuthorizationRequest {
     pub code_challenge: Option<String>,
     /// PKCE code challenge method (must be S256 if present).
     pub code_challenge_method: Option<CodeChallengeMethod>,
+    /// Optional nonce for replay protection.
+    ///
+    /// When nonce enforcement is enabled (`OidcConfig::enforce_nonces`),
+    /// duplicate nonces are rejected.
+    pub nonce: Option<String>,
 }
 
 /// Response from a successful authorization request.

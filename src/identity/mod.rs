@@ -14,7 +14,7 @@ mod types;
 mod validation;
 
 pub use credentials::{CleartextPassword, CredentialConfig};
-pub use engine::{EmbeddedIdentityEngine, IdentityConfig, SessionConfig};
+pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
 pub use error::IdentityError;
 pub use oidc::{
     AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,

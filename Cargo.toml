@@ -36,6 +36,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
+ureq = { version = "3", features = ["json"] }
 unicode-normalization = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -62,6 +63,14 @@ harness = false
 
 [[bench]]
 name = "oidc_exchange"
+harness = false
+
+[[bench]]
+name = "session_lookup"
+harness = false
+
+[[bench]]
+name = "tiered_storage"
 harness = false
 
 [lints.clippy]

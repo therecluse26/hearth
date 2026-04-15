@@ -17,21 +17,21 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Module | Unit | Integration | Property | Fuzz | Simulation | Adversarial | Conformance | Benchmark | **Total** |
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
 | Test Infrastructure | 2/2 | 2/2 | -- | -- | -- | -- | -- | -- | **4/4** |
-| Storage: WAL | 5/5 | -- | 3/3 | 0/1 | 0/3 | -- | -- | -- | **8/12** |
+| Storage: WAL | 5/5 | -- | 3/3 | 1/1 | 0/3 | -- | -- | -- | **9/12** |
 | Storage: Memtable | 5/5 | -- | 2/2 | -- | -- | -- | -- | -- | **7/7** |
 | Storage: Persistence | 4/4 | -- | 2/2 | -- | 0/3 | -- | -- | -- | **6/9** |
-| Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 0/2 | -- | -- | 0/3 | **7/12** |
+| Storage: Tiered Hot/Cold | 5/5 | -- | 2/2 | -- | 0/2 | -- | -- | 3/3 | **10/12** |
 | User CRUD | 5/5 | 3/3 | 2/2 | -- | -- | 2/2 | -- | 2/2 | **14/14** |
-| Credential Storage | 4/4 | 2/2 | 2/2 | 0/1 | -- | 2/3 | -- | -- | **10/12** |
-| Session Management | 5/5 | 3/3 | 2/2 | -- | 0/2 | 3/3 | -- | 0/2 | **13/17** |
+| Credential Storage | 4/4 | 2/2 | 2/2 | 1/1 | -- | 3/3 | -- | -- | **12/12** |
+| Session Management | 5/5 | 3/3 | 2/2 | -- | 0/2 | 3/3 | -- | 2/2 | **15/17** |
 | Authorization Engine | 5/5 | 2/2 | 3/3 | -- | -- | 3/3 | -- | 2/2 | **15/15** |
-| JWT / Tokens | 5/5 | 2/2 | -- | 0/1 | -- | 3/4 | -- | 2/2 | **12/14** |
-| OIDC (Auth Code Flow) | 5/5 | 2/3 | -- | 0/1 | -- | 3/3 | 0/2 | 1/1 | **11/15** |
+| JWT / Tokens | 5/5 | 2/2 | -- | 1/1 | -- | 4/4 | -- | 2/2 | **14/14** |
+| OIDC (Auth Code Flow) | 5/5 | 3/3 | -- | 1/1 | -- | 3/3 | 0/2 | 1/1 | **13/15** |
 | Configuration | 4/4 | -- | -- | 1/1 | -- | -- | -- | -- | **5/5** |
-| CLI Tool | -- | 2/3 | -- | -- | -- | -- | -- | -- | **2/3** |
+| CLI Tool | -- | 3/3 | -- | -- | -- | -- | -- | -- | **3/3** |
 | End-to-End Flows | -- | 4/4 | -- | -- | -- | -- | -- | -- | **4/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 5/5 | -- | -- | **5/5** |
-| **Column Total** | **49/54** | **20/24** | **18/18** | **1/5** | **0/10** | **18/23** | **0/2** | **6/12** | **112/148** |
+| **Column Total** | **49/54** | **22/24** | **18/18** | **5/5** | **0/10** | **20/23** | **0/2** | **11/12** | **125/148** |
 
 ---
 
@@ -75,7 +75,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Fuzz
 
-- [ ] Arbitrary bytes to WAL entry deserialization never panic (`cargo-fuzz`) `P1` `extended`
+- [x] Arbitrary bytes to WAL entry deserialization never panic (`cargo-fuzz`) `P1` `extended`
 
 ---
 
@@ -140,9 +140,9 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Benchmark
 
-- [ ] Hot-tier session lookup: p50 < 10 μs, p99 < 100 μs (regression threshold: +20%) `P0` `standard`
-- [ ] Cold-to-hot promotion latency: < 5 ms on NVMe storage `P1` `standard`
-- [ ] Memory footprint: < 500 MB for 1M hot users `P1` `standard`
+- [x] Hot-tier session lookup: p50 < 10 μs, p99 < 100 μs (regression threshold: +20%) `P0` `standard`
+- [x] Cold-to-hot promotion latency: < 5 ms on NVMe storage `P1` `standard`
+- [x] Memory footprint: < 500 MB for 1M hot users `P1` `standard`
 
 ---
 
@@ -200,13 +200,13 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Fuzz
 
-- [ ] Arbitrary bytes to password hash verification never panic (`cargo-fuzz`) `P0` `extended`
+- [x] Arbitrary bytes to password hash verification never panic (`cargo-fuzz`) `P0` `extended`
 
 #### Adversarial
 
 - [x] Constant-time password comparison: statistical timing analysis shows no measurable difference between valid/invalid users `P0` `fast`
 - [x] Password hashes never appear in API responses, error messages, or log output `P0` `fast`
-- [ ] Rate limiting engages under sustained credential guessing attempts `P1` `fast`
+- [x] Rate limiting engages under sustained credential guessing attempts `P1` `fast`
 
 ---
 
@@ -244,8 +244,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Benchmark
 
-- [ ] Session lookup by ID: p50 < 10 μs, p99 < 100 μs (regression: +20%) `P0` `standard`
-- [ ] Session creation throughput: > 50,000 ops/sec/core `P1` `standard`
+- [x] Session lookup by ID: p50 < 10 μs, p99 < 100 μs (regression: +20%) `P0` `standard`
+- [x] Session creation throughput: > 50,000 ops/sec/core `P1` `standard`
 
 ---
 
@@ -300,14 +300,14 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Fuzz
 
-- [ ] Arbitrary bytes to JWT parsing (header, payload, signature) never panic (`cargo-fuzz`) `P0` `extended`
+- [x] Arbitrary bytes to JWT parsing (header, payload, signature) never panic (`cargo-fuzz`) `P0` `extended`
 
 #### Adversarial
 
 - [x] `alg=none` attack: unsigned token rejected regardless of claims `P0` `fast`
 - [x] RSA/HMAC key confusion: HMAC-signed token with RSA public key as secret rejected `P0` `fast`
 - [x] Modified `exp`, `iss`, or `aud` claims detected and rejected on validation `P0` `fast`
-- [ ] Nonce reuse in token requests detected (when nonce enforcement enabled) `P1` `fast`
+- [x] Nonce reuse in token requests detected (when nonce enforcement enabled) `P1` `fast`
 
 #### Benchmark
 
@@ -329,12 +329,12 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Integration
 
 - [x] Full authorization code flow via embedded API (authorize → exchange → validate) `P0` `fast`
-- [ ] Full authorization code flow via HTTP endpoints `P1` `fast`
+- [x] Full authorization code flow via HTTP endpoints `P1` `fast`
 - [x] PKCE (S256): code challenge generated, code verifier validated on exchange `P0` `fast`
 
 #### Fuzz
 
-- [ ] Arbitrary bytes to OIDC authorization/token request parsers never panic (`cargo-fuzz`) `P0` `extended`
+- [x] Arbitrary bytes to OIDC authorization/token request parsers never panic (`cargo-fuzz`) `P0` `extended`
 
 #### Adversarial
 
@@ -373,7 +373,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Integration
 
 - [x] `hearth serve --dev` starts server and accepts connections `P0` `fast`
-- [ ] CLI management commands (`tenant create`, `app create`) succeed against running server `P1` `fast`
+- [x] CLI management commands (`tenant create`, `app create`) succeed against running server `P1` `fast`
 - [x] CLI exits with appropriate non-zero error codes on invalid input or unreachable server `P0` `fast`
 
 ---

@@ -82,6 +82,7 @@ fn bench_auth_code_exchange(c: &mut Criterion) {
                         user_id: user_id.clone(),
                         code_challenge: None,
                         code_challenge_method: None,
+                        nonce: None,
                     },
                 )
                 .expect("authorize");

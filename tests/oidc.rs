@@ -67,6 +67,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
                 user_id: user.id().clone(),
                 code_challenge: None,
                 code_challenge_method: None,
+                nonce: None,
             },
         )
         .expect("authorize");
@@ -127,6 +128,192 @@ async fn oidc_authorization_code_flow_roundtrip() {
     assert!(!doc.jwks_uri.is_empty());
 }
 
+// ===== Scenario: Full authorization code flow via HTTP endpoints =====
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn oidc_authorization_code_flow_via_http() {
+    use std::net::TcpListener;
+    use std::process::Command;
+    use std::time::Duration;
+
+    // Find available port
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+
+    // Start server
+    let hearth_bin = {
+        let mut path = std::env::current_exe()
+            .expect("current exe")
+            .parent()
+            .expect("parent dir")
+            .parent()
+            .expect("grandparent dir")
+            .to_path_buf();
+        path.push("hearth");
+        path
+    };
+
+    let mut child = Command::new(hearth_bin)
+        .args(["serve", "--dev", "--port", &port.to_string()])
+        .env("RUST_LOG", "info")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn hearth server");
+
+    // Wait for server to be ready
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(10);
+    while start.elapsed() < timeout {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let base = format!("http://127.0.0.1:{port}");
+    let http_client = reqwest::Client::new();
+    let tenant_id = uuid::Uuid::new_v4().to_string();
+
+    // 1. Create a user via HTTP
+    let user_resp = http_client
+        .post(format!("{base}/users"))
+        .header("X-Tenant-ID", &tenant_id)
+        .json(&serde_json::json!({
+            "email": "http-oidc@example.com",
+            "display_name": "HTTP OIDC Test User"
+        }))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("create user request");
+    assert_eq!(user_resp.status(), 201, "create user should return 201");
+    let user_body: serde_json::Value = user_resp.json().await.expect("parse user json");
+    let user_id = user_body["id"].as_str().expect("user id in response");
+
+    // 2. Register an OAuth client via HTTP
+    let register_resp = http_client
+        .post(format!("{base}/clients"))
+        .header("X-Tenant-ID", &tenant_id)
+        .json(&serde_json::json!({
+            "client_name": "HTTP Integration Test App",
+            "redirect_uris": ["https://app.example.com/callback"]
+        }))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("register client request");
+    assert_eq!(register_resp.status(), 201, "register should return 201");
+    let register_body: serde_json::Value = register_resp.json().await.expect("parse register json");
+    let client_id = register_body["client_id"]
+        .as_str()
+        .expect("client_id in response");
+
+    // 3. Authorize: generate authorization code via HTTP
+    let auth_resp = http_client
+        .post(format!("{base}/authorize"))
+        .header("X-Tenant-ID", &tenant_id)
+        .json(&serde_json::json!({
+            "client_id": client_id,
+            "redirect_uri": "https://app.example.com/callback",
+            "scope": "openid",
+            "state": "http-test-state",
+            "response_type": "code",
+            "user_id": user_id
+        }))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("authorize request");
+    assert_eq!(auth_resp.status(), 200, "authorize should return 200");
+    let auth_body: serde_json::Value = auth_resp.json().await.expect("parse auth json");
+    let code = auth_body["code"].as_str().expect("code in response");
+    assert!(!code.is_empty(), "auth code should be non-empty");
+    assert_eq!(
+        auth_body["state"].as_str().expect("state"),
+        "http-test-state"
+    );
+
+    // 4. Exchange code for tokens via HTTP
+    let token_resp = http_client
+        .post(format!("{base}/token"))
+        .header("X-Tenant-ID", &tenant_id)
+        .json(&serde_json::json!({
+            "client_id": client_id,
+            "code": code,
+            "redirect_uri": "https://app.example.com/callback"
+        }))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("token exchange request");
+    assert_eq!(token_resp.status(), 200, "token exchange should return 200");
+    let token_body: serde_json::Value = token_resp.json().await.expect("parse token json");
+
+    // 5. Verify token response contains all expected fields
+    assert!(
+        !token_body["access_token"].as_str().unwrap_or("").is_empty(),
+        "access_token should be non-empty"
+    );
+    assert!(
+        !token_body["id_token"].as_str().unwrap_or("").is_empty(),
+        "id_token should be non-empty"
+    );
+    assert!(
+        !token_body["refresh_token"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty(),
+        "refresh_token should be non-empty"
+    );
+    assert_eq!(
+        token_body["token_type"].as_str().unwrap_or(""),
+        "Bearer",
+        "token_type should be Bearer"
+    );
+    assert!(
+        token_body["expires_in"].as_i64().unwrap_or(0) > 0,
+        "expires_in should be positive"
+    );
+
+    // 6. Verify JWKS endpoint returns keys
+    let jwks_resp = http_client
+        .get(format!("{base}/jwks"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("jwks request");
+    assert_eq!(jwks_resp.status(), 200);
+    let jwks_body: serde_json::Value = jwks_resp.json().await.expect("parse jwks");
+    assert!(
+        jwks_body["keys"].as_array().is_some_and(|k| !k.is_empty()),
+        "JWKS should have at least one key"
+    );
+
+    // 7. Test missing tenant header returns 400
+    let no_tenant_resp = http_client
+        .post(format!("{base}/clients"))
+        .json(&serde_json::json!({
+            "client_name": "No Tenant App",
+            "redirect_uris": ["https://app.example.com/callback"]
+        }))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("request without tenant");
+    assert_eq!(
+        no_tenant_resp.status(),
+        400,
+        "missing tenant header should return 400"
+    );
+
+    // Cleanup: kill the server
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 // ===== Scenario: PKCE (S256) flow =====
 
 #[tokio::test]
@@ -173,6 +360,7 @@ async fn oidc_pkce_s256_flow() {
                 user_id: user.id().clone(),
                 code_challenge: Some(code_challenge),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
+                nonce: None,
             },
         )
         .expect("authorize with PKCE");
@@ -206,6 +394,7 @@ async fn oidc_pkce_s256_flow() {
                 user_id: user.id().clone(),
                 code_challenge: Some(URL_SAFE_NO_PAD.encode(digest.as_ref())),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
+                nonce: None,
             },
         )
         .expect("authorize with PKCE again");
@@ -239,6 +428,7 @@ async fn oidc_pkce_s256_flow() {
                 user_id: user.id().clone(),
                 code_challenge: Some(URL_SAFE_NO_PAD.encode(digest.as_ref())),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
+                nonce: None,
             },
         )
         .expect("authorize with PKCE third time");

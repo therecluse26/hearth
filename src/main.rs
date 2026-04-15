@@ -41,6 +41,46 @@ enum Commands {
         #[arg(long)]
         bind: Option<String>,
     },
+    /// Manage tenants.
+    Tenant {
+        #[command(subcommand)]
+        action: TenantAction,
+    },
+    /// Manage OAuth 2.0 applications (clients).
+    App {
+        #[command(subcommand)]
+        action: AppAction,
+    },
+}
+
+/// Tenant management subcommands.
+#[derive(Subcommand)]
+enum TenantAction {
+    /// Create a new tenant (generates a UUID).
+    Create,
+}
+
+/// Application (OAuth client) management subcommands.
+#[derive(Subcommand)]
+enum AppAction {
+    /// Register a new OAuth 2.0 client against a running Hearth server.
+    Create {
+        /// URL of the running Hearth server (e.g. `http://127.0.0.1:8080`).
+        #[arg(long)]
+        server: String,
+
+        /// Tenant UUID to register the application under.
+        #[arg(long)]
+        tenant_id: String,
+
+        /// Human-readable name for the application.
+        #[arg(long)]
+        name: String,
+
+        /// OAuth 2.0 redirect URI for the application.
+        #[arg(long)]
+        redirect_uri: String,
+    },
 }
 
 #[tokio::main]
@@ -59,6 +99,22 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Tenant { action } => match action {
+            TenantAction::Create => run_tenant_create(),
+        },
+        Commands::App { action } => match action {
+            AppAction::Create {
+                server,
+                tenant_id,
+                name,
+                redirect_uri,
+            } => {
+                if let Err(e) = run_app_create(&server, &tenant_id, &name, &redirect_uri) {
+                    error!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        },
     }
 }
 
@@ -166,4 +222,39 @@ fn load_config(
     }
 
     Ok(Config::default())
+}
+
+/// Runs the `hearth tenant create` command.
+///
+/// Generates a new tenant UUID and prints it as JSON to stdout.
+fn run_tenant_create() {
+    let tenant_id = uuid::Uuid::new_v4();
+    let output = serde_json::json!({ "tenant_id": tenant_id.to_string() });
+    println!("{output}");
+}
+
+/// Runs the `hearth app create` command.
+///
+/// Registers an OAuth 2.0 client against a running Hearth server via HTTP.
+fn run_app_create(
+    server: &str,
+    tenant_id: &str,
+    name: &str,
+    redirect_uri: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("{server}/clients");
+    let body = serde_json::json!({
+        "client_name": name,
+        "redirect_uris": [redirect_uri],
+    });
+
+    let response: serde_json::Value = ureq::post(&url)
+        .header("X-Tenant-ID", tenant_id)
+        .header("Content-Type", "application/json")
+        .send_json(&body)?
+        .body_mut()
+        .read_json()?;
+
+    println!("{response}");
+    Ok(())
 }

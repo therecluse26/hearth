@@ -84,7 +84,10 @@ impl WalEntry {
     }
 
     /// Deserializes a binary payload into a `WalEntry`.
-    pub(crate) fn deserialize(data: &[u8]) -> Result<Self, StorageError> {
+    ///
+    /// Returns `Err` for any malformed or truncated input. This function
+    /// is guaranteed not to panic on arbitrary input.
+    pub fn deserialize(data: &[u8]) -> Result<Self, StorageError> {
         // Minimum size: 8 (ts) + 16 (uuid) + 1 (op) + 4 (key_len) + 4 (val_len) = 33
         if data.len() < 33 {
             return Err(StorageError::DeserializationFailed {

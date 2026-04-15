@@ -88,6 +88,7 @@ async fn developer_onramp_tenant_app_oidc_login() {
                 user_id: user.id().clone(),
                 code_challenge: Some(code_challenge),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
+                nonce: None,
             },
         )
         .expect("authorize");

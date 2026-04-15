@@ -1,20 +1,29 @@
 //! HTTP server and route definitions.
 //!
-//! Builds an [`axum::Router`] with health, OIDC discovery, and JWKS endpoints.
-//! The server is configured with shared application state containing the
-//! identity engine.
+//! Builds an [`axum::Router`] with health, OIDC discovery, JWKS, and OAuth 2.0
+//! endpoints. The server is configured with shared application state containing
+//! the identity engine.
+//!
+//! The protocol layer is a thin, stateless adapter: it translates HTTP requests
+//! into domain calls on `IdentityEngine` and maps `IdentityError` to HTTP
+//! status codes. No business logic lives here.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, Router};
+use serde::Deserialize;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::identity::IdentityEngine;
+use crate::core::{ClientId, TenantId, UserId};
+use crate::identity::{
+    AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, IdentityEngine,
+    RegisterClientRequest, TokenExchangeRequest,
+};
 
 /// Shared application state passed to all route handlers.
 pub struct AppState {
@@ -33,6 +42,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(oidc_discovery),
         )
         .route("/jwks", axum::routing::get(jwks))
+        .route("/users", axum::routing::post(create_user))
+        .route("/clients", axum::routing::post(register_client))
+        .route("/authorize", axum::routing::post(authorize))
+        .route("/token", axum::routing::post(token_exchange))
         .with_state(state)
 }
 
@@ -84,6 +97,264 @@ async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse
 async fn jwks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let doc = state.identity.jwks();
     (StatusCode::OK, Json(doc))
+}
+
+// === User management endpoints ===
+
+/// HTTP request body for user creation.
+#[derive(Debug, Deserialize)]
+struct HttpCreateUserRequest {
+    email: String,
+    display_name: String,
+}
+
+/// Create a new user.
+///
+/// Requires `X-Tenant-ID` header. Returns the created user record.
+async fn create_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpCreateUserRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = CreateUserRequest {
+        email: body.email,
+        display_name: body.display_name,
+    };
+
+    match state.identity.create_user(&tenant_id, &request) {
+        Ok(user) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "id": user.id().as_uuid(),
+                "email": user.email(),
+                "display_name": user.display_name(),
+                "status": format!("{:?}", user.status()),
+            })),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// === OIDC / OAuth 2.0 endpoints ===
+
+/// HTTP request body for client registration.
+#[derive(Debug, Deserialize)]
+struct HttpRegisterClientRequest {
+    client_name: String,
+    redirect_uris: Vec<String>,
+}
+
+/// HTTP request body for authorization code flow initiation.
+#[derive(Debug, Deserialize)]
+struct HttpAuthorizeRequest {
+    client_id: ClientId,
+    redirect_uri: String,
+    scope: String,
+    state: String,
+    response_type: String,
+    user_id: UserId,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
+    nonce: Option<String>,
+}
+
+/// HTTP request body for token exchange.
+#[derive(Debug, Deserialize)]
+struct HttpTokenRequest {
+    client_id: ClientId,
+    code: String,
+    redirect_uri: String,
+    code_verifier: Option<String>,
+}
+
+/// Extracts a `TenantId` from the `X-Tenant-ID` header.
+///
+/// Returns a `(StatusCode, Json)` error if the header is missing or invalid.
+fn extract_tenant_id(
+    headers: &HeaderMap,
+) -> Result<TenantId, (StatusCode, Json<serde_json::Value>)> {
+    let header_value = headers
+        .get("x-tenant-id")
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing X-Tenant-ID header"})),
+            )
+        })?
+        .to_str()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid X-Tenant-ID header"})),
+            )
+        })?;
+
+    let uuid: uuid::Uuid = header_value.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "X-Tenant-ID must be a valid UUID"})),
+        )
+    })?;
+
+    Ok(TenantId::new(uuid))
+}
+
+/// Maps an `IdentityError` to an HTTP status code and safe error message.
+///
+/// Error messages are intentionally vague to prevent information leakage
+/// per the cross-cutting security requirements.
+fn identity_error_to_response(
+    err: &crate::identity::IdentityError,
+) -> (StatusCode, Json<serde_json::Value>) {
+    use crate::identity::IdentityError;
+
+    let (status, message) = match err {
+        IdentityError::UserNotFound => (StatusCode::NOT_FOUND, "not found"),
+        IdentityError::DuplicateEmail => (StatusCode::CONFLICT, "duplicate email"),
+        IdentityError::InvalidInput { .. } => (StatusCode::BAD_REQUEST, "invalid input"),
+        IdentityError::CredentialNotFound => (StatusCode::NOT_FOUND, "credential not found"),
+        IdentityError::InvalidCredential { .. } => (StatusCode::UNAUTHORIZED, "invalid credential"),
+        IdentityError::SessionNotFound => (StatusCode::NOT_FOUND, "session not found"),
+        IdentityError::InvalidToken => (StatusCode::UNAUTHORIZED, "invalid token"),
+        IdentityError::TokenExpired => (StatusCode::UNAUTHORIZED, "token expired"),
+        IdentityError::InvalidClient => (StatusCode::BAD_REQUEST, "invalid client"),
+        IdentityError::InvalidRedirectUri => (StatusCode::BAD_REQUEST, "invalid redirect URI"),
+        IdentityError::InvalidAuthorizationCode => {
+            (StatusCode::BAD_REQUEST, "invalid authorization code")
+        }
+        IdentityError::InvalidGrant { .. } => (StatusCode::BAD_REQUEST, "invalid grant"),
+        IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
+        IdentityError::SigningError { .. }
+        | IdentityError::Storage(_)
+        | IdentityError::Serialization { .. } => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    };
+
+    (status, Json(serde_json::json!({"error": message})))
+}
+
+/// Register an OAuth 2.0 client.
+///
+/// Requires `X-Tenant-ID` header. Returns the created client record.
+async fn register_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpRegisterClientRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = RegisterClientRequest {
+        client_name: body.client_name,
+        redirect_uris: body.redirect_uris,
+    };
+
+    match state.identity.register_client(&tenant_id, &request) {
+        Ok(client) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(client).unwrap_or_default()),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Initiate an OAuth 2.0 authorization code flow.
+///
+/// Requires `X-Tenant-ID` header. Returns an authorization code and state.
+async fn authorize(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpAuthorizeRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let code_challenge_method = match body.code_challenge_method.as_deref() {
+        Some("S256") => Some(CodeChallengeMethod::S256),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "unsupported code_challenge_method"})),
+            )
+                .into_response();
+        }
+        None => None,
+    };
+
+    let request = AuthorizationRequest {
+        client_id: body.client_id,
+        redirect_uri: body.redirect_uri,
+        scope: body.scope,
+        state: body.state,
+        response_type: body.response_type,
+        user_id: body.user_id,
+        code_challenge: body.code_challenge,
+        code_challenge_method,
+        nonce: body.nonce,
+    };
+
+    match state.identity.authorize(&tenant_id, &request) {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "code": response.code(),
+                "state": response.state(),
+            })),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Exchange an authorization code for tokens.
+///
+/// Requires `X-Tenant-ID` header. Returns access, ID, and refresh tokens.
+async fn token_exchange(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpTokenRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = TokenExchangeRequest {
+        client_id: body.client_id,
+        code: body.code,
+        redirect_uri: body.redirect_uri,
+        code_verifier: body.code_verifier,
+    };
+
+    match state
+        .identity
+        .exchange_authorization_code(&tenant_id, &request)
+    {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "access_token": response.access_token(),
+                "id_token": response.id_token(),
+                "token_type": response.token_type(),
+                "expires_in": response.expires_in(),
+                "refresh_token": response.refresh_token(),
+            })),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
 }
 
 #[cfg(test)]

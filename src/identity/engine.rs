@@ -3,7 +3,8 @@
 //! Implements `IdentityEngine` using the `StorageEngine` trait for persistence
 //! and `Clock` trait for deterministic timestamps.
 
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -37,6 +38,29 @@ use crate::identity::validation;
 use crate::identity::IdentityEngine;
 use crate::storage::StorageEngine;
 
+/// Configuration for credential rate limiting.
+///
+/// Limits the number of consecutive failed password verification attempts
+/// per user. After `max_failed_attempts` failures, the account is temporarily
+/// locked for `lockout_duration_micros`.
+#[derive(Debug, Clone)]
+pub struct RateLimitConfig {
+    /// Maximum consecutive failed attempts before lockout.
+    pub max_failed_attempts: u32,
+    /// Lockout duration in microseconds.
+    pub lockout_duration_micros: i64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_failed_attempts: 5,
+            // 15 minutes in microseconds
+            lockout_duration_micros: 15 * 60 * 1_000_000,
+        }
+    }
+}
+
 /// Configuration for session management.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -68,6 +92,8 @@ pub struct IdentityConfig {
     pub token: TokenConfig,
     /// OIDC / OAuth 2.0 parameters.
     pub oidc: OidcConfig,
+    /// Rate limiting for credential verification.
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for IdentityConfig {
@@ -78,8 +104,18 @@ impl Default for IdentityConfig {
             session: SessionConfig::default(),
             token: TokenConfig::default(),
             oidc: OidcConfig::default(),
+            rate_limit: RateLimitConfig::default(),
         }
     }
+}
+
+/// Tracks failed credential verification attempts for a single user.
+#[derive(Debug, Clone)]
+struct AttemptTracker {
+    /// Number of consecutive failed attempts.
+    failed_count: u32,
+    /// Timestamp (Unix micros) of the most recent failure.
+    last_failure_micros: i64,
 }
 
 /// Embedded identity engine backed by a `StorageEngine`.
@@ -101,6 +137,13 @@ pub struct EmbeddedIdentityEngine {
     dummy_hash: String,
     /// Ed25519 signing key for JWT token issuance.
     signing_key: Arc<SigningKey>,
+    /// Per-user failed attempt trackers for rate limiting.
+    ///
+    /// Key is `(TenantId, UserId)` serialized as a string to avoid
+    /// requiring `Hash` on the newtype wrappers.
+    attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Used nonces for replay protection (when nonce enforcement is enabled).
+    used_nonces: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for EmbeddedIdentityEngine {
@@ -130,6 +173,8 @@ impl EmbeddedIdentityEngine {
             config,
             dummy_hash,
             signing_key,
+            attempt_trackers: Mutex::new(HashMap::new()),
+            used_nonces: Mutex::new(HashSet::new()),
         })
     }
 
@@ -149,12 +194,67 @@ impl EmbeddedIdentityEngine {
             config,
             dummy_hash,
             signing_key,
+            attempt_trackers: Mutex::new(HashMap::new()),
+            used_nonces: Mutex::new(HashSet::new()),
         }
     }
 
     /// Returns a reference to the signing key.
     pub fn signing_key(&self) -> &SigningKey {
         &self.signing_key
+    }
+
+    // ===== Rate limiting helpers =====
+
+    /// Builds a tracker key from tenant and user IDs.
+    fn tracker_key(tenant_id: &TenantId, user_id: &UserId) -> String {
+        format!("{}:{}", tenant_id.as_uuid(), user_id.as_uuid())
+    }
+
+    /// Checks whether the given user is currently rate-limited.
+    ///
+    /// Returns `Err(RateLimited)` if the user has exceeded the maximum
+    /// number of consecutive failed attempts and the lockout window
+    /// has not yet expired. Otherwise returns `Ok(())`.
+    fn check_rate_limit(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError> {
+        let key = Self::tracker_key(tenant_id, user_id);
+        let trackers = self.attempt_trackers.lock().expect("tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= self.config.rate_limit.max_failed_attempts {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < self.config.rate_limit.lockout_duration_micros {
+                    return Err(IdentityError::RateLimited);
+                }
+                // Lockout window has expired — fall through and allow the attempt.
+                // The tracker will be cleared on success or updated on failure.
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a failed verification attempt for the given user.
+    fn record_failed_attempt(&self, tenant_id: &TenantId, user_id: &UserId) {
+        let key = Self::tracker_key(tenant_id, user_id);
+        let now = self.clock.now().as_micros();
+        let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
+        let tracker = trackers.entry(key).or_insert(AttemptTracker {
+            failed_count: 0,
+            last_failure_micros: now,
+        });
+        tracker.failed_count += 1;
+        tracker.last_failure_micros = now;
+    }
+
+    /// Clears the failed attempt tracker for the given user (on success).
+    fn clear_attempts(&self, tenant_id: &TenantId, user_id: &UserId) {
+        let key = Self::tracker_key(tenant_id, user_id);
+        let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
+        trackers.remove(&key);
     }
 
     /// Serializes a user to JSON bytes.
@@ -512,6 +612,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<bool, IdentityError> {
+        // Rate limit check: reject early if account is locked out
+        self.check_rate_limit(tenant_id, user_id)?;
+
         // Check user exists
         let user = self.get_user(tenant_id, user_id)?;
         if user.is_none() {
@@ -519,6 +622,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // indistinguishable from a real failed verification.
             // Return generic error to prevent user enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
+            self.record_failed_attempt(tenant_id, user_id);
             return Err(IdentityError::InvalidCredential {
                 reason: "verification failed".to_string(),
             });
@@ -535,6 +639,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // Timing defense: same as above.
             // Return generic error to prevent credential enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
+            self.record_failed_attempt(tenant_id, user_id);
             return Err(IdentityError::InvalidCredential {
                 reason: "verification failed".to_string(),
             });
@@ -543,14 +648,21 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let cred = Self::deserialize_credential(&cred_bytes)?;
         let matches = credentials::verify_password(password, &cred)?;
 
-        // Auto-upgrade legacy algorithms on successful verification
-        if matches && cred.algorithm != credentials::PasswordAlgorithm::Argon2id {
-            let now = self.clock.now().as_micros();
-            let upgraded = credentials::hash_password(password, &self.config.credential, now)?;
-            let upgraded_bytes = Self::serialize_credential(&upgraded)?;
-            self.storage
-                .put(tenant_id, &cred_key, &upgraded_bytes)
-                .map_err(Self::storage_err)?;
+        if matches {
+            // Clear failed attempts on success
+            self.clear_attempts(tenant_id, user_id);
+
+            // Auto-upgrade legacy algorithms on successful verification
+            if cred.algorithm != credentials::PasswordAlgorithm::Argon2id {
+                let now = self.clock.now().as_micros();
+                let upgraded = credentials::hash_password(password, &self.config.credential, now)?;
+                let upgraded_bytes = Self::serialize_credential(&upgraded)?;
+                self.storage
+                    .put(tenant_id, &cred_key, &upgraded_bytes)
+                    .map_err(Self::storage_err)?;
+            }
+        } else {
+            self.record_failed_attempt(tenant_id, user_id);
         }
 
         Ok(matches)
@@ -829,6 +941,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::InvalidGrant {
                 reason: "state parameter is required for CSRF protection".to_string(),
             });
+        }
+
+        // 2b. Nonce replay protection (when enforcement is enabled)
+        if self.config.oidc.enforce_nonces {
+            if let Some(ref nonce) = request.nonce {
+                let mut nonces = self.used_nonces.lock().expect("nonce lock");
+                if !nonces.insert(nonce.clone()) {
+                    return Err(IdentityError::InvalidGrant {
+                        reason: "nonce has already been used".to_string(),
+                    });
+                }
+            }
         }
 
         // 3. Load and validate client
@@ -2274,6 +2398,7 @@ mod tests {
                     user_id: user.id().clone(),
                     code_challenge: None,
                     code_challenge_method: None,
+                    nonce: None,
                 },
             )
             .expect("authorize should succeed");
@@ -2305,6 +2430,7 @@ mod tests {
                     user_id: user.id().clone(),
                     code_challenge: None,
                     code_challenge_method: None,
+                    nonce: None,
                 },
             )
             .expect("authorize");
@@ -2361,6 +2487,7 @@ mod tests {
                     user_id: user.id().clone(),
                     code_challenge: None,
                     code_challenge_method: None,
+                    nonce: None,
                 },
             )
             .expect("authorize");
@@ -2414,6 +2541,7 @@ mod tests {
                     user_id: user.id().clone(),
                     code_challenge: None,
                     code_challenge_method: None,
+                    nonce: None,
                 },
             )
             .expect("authorize");
@@ -2485,6 +2613,7 @@ mod tests {
                     user_id: user.id().clone(),
                     code_challenge: None,
                     code_challenge_method: None,
+                    nonce: None,
                 },
             )
             .expect("authorize");
@@ -2539,6 +2668,7 @@ mod tests {
                 user_id: user.id().clone(),
                 code_challenge: None,
                 code_challenge_method: None,
+                nonce: None,
             },
         );
         assert!(
@@ -2568,11 +2698,267 @@ mod tests {
                 user_id: user.id().clone(),
                 code_challenge: None,
                 code_challenge_method: None,
+                nonce: None,
             },
         );
         assert!(
             matches!(result, Err(IdentityError::InvalidGrant { .. })),
             "missing state must be rejected, got: {result:?}"
         );
+    }
+
+    // ===== Adversarial: Credential rate limiting =====
+
+    fn setup_engine_with_rate_limit(
+        max_attempts: u32,
+        lockout_micros: i64,
+    ) -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            rate_limit: RateLimitConfig {
+                max_failed_attempts: max_attempts,
+                lockout_duration_micros: lockout_micros,
+            },
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            identity_config,
+        )
+        .expect("engine creation");
+        (dir, engine, clock)
+    }
+
+    #[test]
+    fn rate_limiting_engages_after_max_failures() {
+        // Configure: lockout after 3 failed attempts, 10-second lockout
+        let lockout_micros = 10_000_000; // 10 seconds
+        let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("correct-pw".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        // 3 wrong attempts
+        for i in 0..3 {
+            let wrong = CleartextPassword::from_string(format!("wrong-{i}"));
+            let result = engine.verify_password(&tenant, user.id(), &wrong);
+            assert!(
+                result.is_ok(),
+                "attempt {i} should not be rate limited yet: {result:?}"
+            );
+            assert!(!result.expect("ok"), "wrong password should not verify");
+        }
+
+        // 4th attempt: should be rate limited even with the correct password
+        let correct = CleartextPassword::from_string("correct-pw".to_string());
+        let result = engine.verify_password(&tenant, user.id(), &correct);
+        assert!(
+            matches!(result, Err(IdentityError::RateLimited)),
+            "should be rate limited after 3 failures, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn rate_limiting_resets_on_successful_verification() {
+        let lockout_micros = 10_000_000;
+        let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("my-password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        // 2 wrong attempts (below threshold)
+        for _ in 0..2 {
+            let wrong = CleartextPassword::from_string("wrong".to_string());
+            let result = engine
+                .verify_password(&tenant, user.id(), &wrong)
+                .expect("should not be rate limited");
+            assert!(!result);
+        }
+
+        // Correct password resets the counter
+        let correct = CleartextPassword::from_string("my-password".to_string());
+        let result = engine
+            .verify_password(&tenant, user.id(), &correct)
+            .expect("should succeed");
+        assert!(result);
+
+        // 2 more wrong attempts should succeed (counter was reset)
+        for _ in 0..2 {
+            let wrong = CleartextPassword::from_string("wrong".to_string());
+            let result = engine
+                .verify_password(&tenant, user.id(), &wrong)
+                .expect("should not be rate limited after reset");
+            assert!(!result);
+        }
+    }
+
+    #[test]
+    fn rate_limiting_expires_after_lockout_window() {
+        let lockout_micros = 10_000_000; // 10 seconds
+        let (_dir, engine, clock) = setup_engine_with_rate_limit(3, lockout_micros);
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let pw = CleartextPassword::from_string("my-password".to_string());
+        engine
+            .set_password(&tenant, user.id(), &pw)
+            .expect("set password");
+
+        // Trigger lockout: 3 failures
+        for i in 0..3 {
+            let wrong = CleartextPassword::from_string(format!("wrong-{i}"));
+            let _ = engine.verify_password(&tenant, user.id(), &wrong);
+        }
+
+        // Confirm locked out
+        let correct = CleartextPassword::from_string("my-password".to_string());
+        assert!(
+            matches!(
+                engine.verify_password(&tenant, user.id(), &correct),
+                Err(IdentityError::RateLimited)
+            ),
+            "should be locked out"
+        );
+
+        // Advance clock past lockout window
+        clock.advance(lockout_micros + 1);
+
+        // Should be able to verify again
+        let correct = CleartextPassword::from_string("my-password".to_string());
+        let result = engine
+            .verify_password(&tenant, user.id(), &correct)
+            .expect("should be allowed after lockout expires");
+        assert!(result, "correct password should verify after lockout");
+    }
+
+    // ===== Adversarial: Nonce reuse detection =====
+
+    fn setup_engine_with_nonce_enforcement(
+    ) -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            oidc: OidcConfig {
+                enforce_nonces: true,
+                ..OidcConfig::default()
+            },
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            identity_config,
+        )
+        .expect("engine creation");
+        (dir, engine, clock)
+    }
+
+    #[test]
+    fn nonce_reuse_in_authorization_request_rejected() {
+        let (_dir, engine, _clock) = setup_engine_with_nonce_enforcement();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        // First request with nonce succeeds
+        let result = engine.authorize(
+            &tenant,
+            &AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: "state-1".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+                nonce: Some("unique-nonce-abc".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "first use of nonce should succeed");
+
+        // Second request with same nonce should be rejected
+        let result = engine.authorize(
+            &tenant,
+            &AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: "state-2".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+                nonce: Some("unique-nonce-abc".to_string()),
+            },
+        );
+        assert!(
+            matches!(result, Err(IdentityError::InvalidGrant { .. })),
+            "reused nonce must be rejected, got: {result:?}"
+        );
+
+        // Different nonce should succeed
+        let result = engine.authorize(
+            &tenant,
+            &AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: "state-3".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+                nonce: Some("different-nonce-xyz".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "different nonce should succeed");
+    }
+
+    #[test]
+    fn nonce_not_enforced_when_disabled() {
+        // Default config has enforce_nonces: false
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let client = register_test_client(&engine, &tenant);
+        let user = create_test_user(&engine, &tenant);
+
+        // Same nonce used twice should succeed when enforcement is off
+        for state_suffix in ["1", "2"] {
+            let result = engine.authorize(
+                &tenant,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: format!("state-{state_suffix}"),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: Some("same-nonce".to_string()),
+                },
+            );
+            assert!(
+                result.is_ok(),
+                "nonce reuse should be allowed when enforcement is off"
+            );
+        }
     }
 }

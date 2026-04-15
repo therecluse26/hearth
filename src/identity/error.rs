@@ -50,6 +50,10 @@ pub enum IdentityError {
         /// Description of why the grant was invalid.
         reason: String,
     },
+    /// Too many failed credential attempts; the account is temporarily locked.
+    ///
+    /// Intentionally vague to avoid leaking lockout state to attackers.
+    RateLimited,
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -77,6 +81,7 @@ impl fmt::Display for IdentityError {
             Self::InvalidRedirectUri => write!(f, "invalid redirect URI"),
             Self::InvalidAuthorizationCode => write!(f, "invalid authorization code"),
             Self::InvalidGrant { reason } => write!(f, "invalid grant: {reason}"),
+            Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -100,6 +105,7 @@ impl std::error::Error for IdentityError {
             | Self::InvalidRedirectUri
             | Self::InvalidAuthorizationCode
             | Self::InvalidGrant { .. }
+            | Self::RateLimited
             | Self::Serialization { .. } => None,
         }
     }
@@ -280,6 +286,7 @@ mod tests {
         })
         .source()
         .is_none());
+        assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {
             reason: "x".to_string()
         })

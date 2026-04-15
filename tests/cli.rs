@@ -193,3 +193,93 @@ fn cli_serve_missing_config_file_exits_with_error() {
         "hearth serve with missing config file should exit non-zero"
     );
 }
+
+// === TEST_SCENARIOS: CLI management commands ===
+
+#[test]
+fn cli_tenant_create_generates_uuid() {
+    let output = Command::new(hearth_bin())
+        .args(["tenant", "create"])
+        .output()
+        .expect("run hearth tenant create");
+
+    assert!(
+        output.status.success(),
+        "tenant create should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should output valid JSON with a tenant_id UUID
+    let body: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("tenant create output should be JSON");
+    let tenant_id = body["tenant_id"].as_str().expect("should have tenant_id");
+    assert!(
+        uuid::Uuid::parse_str(tenant_id).is_ok(),
+        "tenant_id should be a valid UUID, got: {tenant_id}"
+    );
+}
+
+#[tokio::test]
+async fn cli_app_create_against_running_server() {
+    let port = find_available_port();
+    let _guard = start_server_dev(port);
+
+    assert!(
+        wait_for_server(port, Duration::from_secs(10)),
+        "server should accept TCP connections within 10s"
+    );
+
+    // First create a tenant ID
+    let tenant_output = Command::new(hearth_bin())
+        .args(["tenant", "create"])
+        .output()
+        .expect("run hearth tenant create");
+    assert!(
+        tenant_output.status.success(),
+        "tenant create should exit 0"
+    );
+    let tenant_body: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&tenant_output.stdout).trim())
+            .expect("parse tenant JSON");
+    let tenant_id = tenant_body["tenant_id"]
+        .as_str()
+        .expect("tenant_id")
+        .to_string();
+
+    // Register an app (OAuth client) via CLI
+    let output = Command::new(hearth_bin())
+        .args([
+            "app",
+            "create",
+            "--server",
+            &format!("http://127.0.0.1:{port}"),
+            "--tenant-id",
+            &tenant_id,
+            "--name",
+            "CLI Test App",
+            "--redirect-uri",
+            "https://cli-test.example.com/callback",
+        ])
+        .output()
+        .expect("run hearth app create");
+
+    assert!(
+        output.status.success(),
+        "app create should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let body: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("app create output should be JSON");
+    assert!(
+        body["client_id"].as_str().is_some(),
+        "should have client_id in output"
+    );
+    assert_eq!(
+        body["client_name"].as_str().unwrap_or(""),
+        "CLI Test App",
+        "client_name should match"
+    );
+}
