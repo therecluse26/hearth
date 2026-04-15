@@ -10,6 +10,7 @@ pub mod error;
 pub(crate) mod keys;
 pub mod oidc;
 pub mod tokens;
+pub(crate) mod totp;
 mod types;
 mod validation;
 
@@ -27,6 +28,7 @@ pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
     Jwk, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
 };
+pub use totp::TotpEnrollment;
 pub use types::{
     CreateTenantRequest, CreateUserRequest, Session, Tenant, TenantConfig, TenantStatus,
     UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
@@ -343,4 +345,56 @@ pub trait IdentityEngine: Send + Sync {
         tenant_id: &TenantId,
         request: &TokenIntrospectionRequest,
     ) -> Result<IntrospectionResponse, IdentityError>;
+
+    // ===== MFA / TOTP (Step 23) =====
+
+    /// Begins TOTP enrollment for a user.
+    ///
+    /// Generates a secret, provisioning URI, and 8 recovery codes.
+    /// The MFA state is stored in a disabled state until verified via
+    /// `verify_totp_enrollment()`.
+    fn enroll_totp(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<TotpEnrollment, IdentityError>;
+
+    /// Verifies the initial TOTP setup code and enables MFA.
+    ///
+    /// The user must have a pending enrollment (from `enroll_totp()`).
+    /// After success, MFA is active and `verify_totp()` must be used
+    /// for subsequent authentication.
+    fn verify_totp_enrollment(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError>;
+
+    /// Verifies a TOTP code for an authenticated user.
+    ///
+    /// Enforces rate limiting (5 attempts / 5 min lockout) and
+    /// replay protection (rejects codes for already-used time steps).
+    fn verify_totp(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError>;
+
+    /// Verifies a single-use recovery code.
+    ///
+    /// On success, the code is consumed and cannot be reused.
+    fn verify_recovery_code(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError>;
+
+    /// Disables MFA for a user, removing all TOTP state.
+    fn disable_mfa(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError>;
+
+    /// Returns whether MFA is currently enabled for a user.
+    fn mfa_enabled(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<bool, IdentityError>;
 }

@@ -49,6 +49,9 @@ const USER_CODE_PREFIX: &str = "oauth:ucode:";
 /// Prefix for revoked token JTI storage (sessionless token revocation).
 const REVOKED_JTI_PREFIX: &str = "oauth:revjti:";
 
+/// Prefix for MFA TOTP state per user.
+const MFA_TOTP_PREFIX: &str = "mfa:totp:";
+
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
 
@@ -222,6 +225,13 @@ pub(crate) fn encode_user_code(user_code: &str) -> Vec<u8> {
 #[allow(dead_code)]
 pub(crate) fn user_code_scan_prefix() -> Vec<u8> {
     USER_CODE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a user's MFA TOTP state.
+///
+/// Format: `mfa:totp:{user_uuid}`
+pub(crate) fn encode_mfa_totp_key(user_id: &UserId) -> Vec<u8> {
+    format!("{MFA_TOTP_PREFIX}{}", user_id.as_uuid()).into_bytes()
 }
 
 /// Encodes the storage key for a revoked token JTI.
@@ -420,6 +430,15 @@ mod tests {
         let key = encode_tenant_signing_key(&tenant_id);
         let key_str = std::str::from_utf8(&key).expect("utf8");
         assert_eq!(key_str, "tenant:key:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn encode_mfa_totp_key_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let user_id = UserId::new(uuid);
+        let key = encode_mfa_totp_key(&user_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "mfa:totp:550e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]

@@ -412,7 +412,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | OAuth 2.0 Complete | 5/5 | 3/3 | 2/2 | -- | -- | 3/3 | 2/2 | 2/2 | **17/17** |
 | WebAuthn / Passkeys | 0/5 | 0/2 | -- | 0/1 | -- | 0/3 | 0/1 | -- | **0/12** |
 | Magic Link / Passwordless | 0/4 | 0/2 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
-| TOTP / MFA | 0/5 | 0/3 | 0/1 | -- | -- | 0/2 | -- | -- | **0/11** |
+| TOTP / MFA | 5/5 | 3/3 | 1/1 | -- | -- | 2/2 | -- | -- | **11/11** |
 | Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
 | Zanzibar Authorization (Full) | 5/5 | 3/3 | 1/2 | -- | 0/2 | 2/2 | -- | 1/2 | **12/16** |
 | Admin API | 0/3 | 0/4 | -- | -- | -- | 0/3 | -- | -- | **0/10** |
@@ -422,7 +422,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **19/39** | **12/36** | **8/10** | **0/1** | **0/6** | **9/24** | **2/8** | **3/6** | **53/130** |
+| **Column Total** | **24/39** | **15/36** | **9/10** | **0/1** | **0/6** | **11/24** | **2/8** | **3/6** | **64/130** |
 
 ---
 
@@ -521,26 +521,26 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Generate TOTP secret with correct provisioning URI (issuer, account, algorithm, digits, period) `P0` `fast`
-- [ ] Validate TOTP code for current time window succeeds `P0` `fast`
-- [ ] TOTP time window tolerance: codes for T-1 and T+1 windows accepted `P0` `fast`
-- [ ] Generate recovery codes: correct count, sufficient entropy, each usable exactly once `P0` `fast`
-- [ ] Recovery code redemption: valid code succeeds; reused code rejected `P0` `fast`
+- [x] Generate TOTP secret with correct provisioning URI (issuer, account, algorithm, digits, period) `P0` `fast`
+- [x] Validate TOTP code for current time window succeeds `P0` `fast`
+- [x] TOTP time window tolerance: codes for T-1 and T+1 windows accepted `P0` `fast`
+- [x] Generate recovery codes: correct count, sufficient entropy, each usable exactly once `P0` `fast`
+- [x] Recovery code redemption: valid code succeeds; reused code rejected `P0` `fast`
 
 #### Integration
 
-- [ ] MFA enrollment flow: enable TOTP → verify setup code → login requires MFA → provide code → session issued `P0` `fast`
-- [ ] Recovery code flow: lose authenticator → use recovery code → authenticate → re-enroll TOTP `P0` `fast`
-- [ ] MFA disable flow: authenticated user disables MFA → subsequent login no longer requires second factor `P0` `fast`
+- [x] MFA enrollment flow: enable TOTP → verify setup code → login requires MFA → provide code → session issued `P0` `fast`
+- [x] Recovery code flow: lose authenticator → use recovery code → authenticate → re-enroll TOTP `P0` `fast`
+- [x] MFA disable flow: authenticated user disables MFA → subsequent login no longer requires second factor `P0` `fast`
 
 #### Property
 
-- [ ] Random clock offsets within tolerance window always validate; offsets outside window always reject (`proptest`) `P0` `extended`
+- [x] Random clock offsets within tolerance window always validate; offsets outside window always reject (`proptest`) `P0` `extended`
 
 #### Adversarial
 
-- [ ] TOTP brute-force protection: excessive failed attempts within window trigger lockout `P0` `fast`
-- [ ] TOTP replay protection: same code cannot be used twice within the same time window `P0` `fast`
+- [x] TOTP brute-force protection: excessive failed attempts within window trigger lockout `P0` `fast`
+- [x] TOTP replay protection: same code cannot be used twice within the same time window `P0` `fast`
 
 ---
 

@@ -33,6 +33,7 @@ use crate::identity::oidc::{
 use crate::identity::tokens::{
     self, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
 };
+use crate::identity::totp::{self, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
     CreateTenantRequest, CreateUserRequest, Session, Tenant, TenantStatus, UpdateTenantRequest,
     UpdateUserRequest, User, UserStatus,
@@ -151,6 +152,10 @@ pub struct EmbeddedIdentityEngine {
     /// Key is `(TenantId, UserId)` serialized as a string to avoid
     /// requiring `Hash` on the newtype wrappers.
     attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Per-user failed MFA attempt trackers (separate from password rate limiting).
+    ///
+    /// Stricter limits: 5 attempts, 5-minute lockout. Key format: `mfa:{tenant}:{user}`.
+    mfa_attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Used nonces for replay protection (when nonce enforcement is enabled).
     used_nonces: Mutex<HashSet<String>>,
 }
@@ -184,6 +189,7 @@ impl EmbeddedIdentityEngine {
             signing_key,
             tenant_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
+            mfa_attempt_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
         })
     }
@@ -206,6 +212,7 @@ impl EmbeddedIdentityEngine {
             signing_key,
             tenant_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
+            mfa_attempt_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
         }
     }
@@ -266,6 +273,97 @@ impl EmbeddedIdentityEngine {
         let key = Self::tracker_key(tenant_id, user_id);
         let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
         trackers.remove(&key);
+    }
+
+    // ===== MFA rate limiting helpers =====
+
+    /// MFA rate limit: 5 attempts, 5-minute lockout.
+    const MFA_MAX_ATTEMPTS: u32 = 5;
+    /// MFA lockout duration: 5 minutes in microseconds.
+    const MFA_LOCKOUT_MICROS: i64 = 5 * 60 * 1_000_000;
+
+    /// Builds an MFA tracker key from tenant and user IDs.
+    fn mfa_tracker_key(tenant_id: &TenantId, user_id: &UserId) -> String {
+        format!("mfa:{}:{}", tenant_id.as_uuid(), user_id.as_uuid())
+    }
+
+    /// Checks whether the given user is currently MFA-rate-limited.
+    fn check_mfa_rate_limit(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError> {
+        let key = Self::mfa_tracker_key(tenant_id, user_id);
+        let trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= Self::MFA_MAX_ATTEMPTS {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < Self::MFA_LOCKOUT_MICROS {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a failed MFA attempt.
+    fn record_mfa_failed_attempt(&self, tenant_id: &TenantId, user_id: &UserId) {
+        let key = Self::mfa_tracker_key(tenant_id, user_id);
+        let now = self.clock.now().as_micros();
+        let mut trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
+        let tracker = trackers.entry(key).or_insert(AttemptTracker {
+            failed_count: 0,
+            last_failure_micros: now,
+        });
+        tracker.failed_count += 1;
+        tracker.last_failure_micros = now;
+    }
+
+    /// Clears MFA failed attempts on success.
+    fn clear_mfa_attempts(&self, tenant_id: &TenantId, user_id: &UserId) {
+        let key = Self::mfa_tracker_key(tenant_id, user_id);
+        let mut trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
+        trackers.remove(&key);
+    }
+
+    /// Loads the stored MFA state for a user.
+    fn load_mfa_state(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Option<StoredMfaState>, IdentityError> {
+        let key = keys::encode_mfa_totp_key(user_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+        match bytes {
+            Some(b) => {
+                let state: StoredMfaState =
+                    serde_json::from_slice(&b).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Persists MFA state for a user.
+    fn save_mfa_state(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        state: &StoredMfaState,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_mfa_totp_key(user_id);
+        let bytes = serde_json::to_vec(state).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(tenant_id, &key, &bytes)
+            .map_err(Self::storage_err)
     }
 
     /// Serializes a user to JSON bytes.
@@ -875,6 +973,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let cred_key = keys::encode_credential_key(user_id);
         self.storage
             .delete(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?;
+
+        // 4b. Delete MFA state (if any — best effort)
+        let mfa_key = keys::encode_mfa_totp_key(user_id);
+        self.storage
+            .delete(tenant_id, &mfa_key)
             .map_err(Self::storage_err)?;
 
         // 5. Delete all sessions for this user
@@ -2129,6 +2233,164 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iss: Some(claims.iss),
             aud: Some(claims.aud),
         })
+    }
+
+    // ===== MFA / TOTP (Step 23) =====
+
+    fn enroll_totp(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<TotpEnrollment, IdentityError> {
+        // Ensure user exists
+        let user = self
+            .get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Check not already enrolled
+        if let Some(existing) = self.load_mfa_state(tenant_id, user_id)? {
+            if existing.enabled {
+                return Err(IdentityError::MfaAlreadyEnabled);
+            }
+        }
+
+        // Generate secret + recovery codes
+        let secret = TotpSecret::generate()?;
+        let secret_base32 = secret.to_base32();
+        let provisioning_uri =
+            totp::generate_provisioning_uri(&secret_base32, user.email(), "Hearth");
+        let recovery_codes = totp::generate_recovery_codes()?;
+        let recovery_hashes = totp::hash_recovery_codes(&recovery_codes, &self.config.credential)?;
+
+        // Store disabled state
+        let state = StoredMfaState {
+            secret_base32: secret_base32.clone(),
+            enabled: false,
+            recovery_code_hashes: recovery_hashes,
+            last_used_step: None,
+            enabled_at: None,
+        };
+        self.save_mfa_state(tenant_id, user_id, &state)?;
+
+        Ok(TotpEnrollment {
+            secret_base32,
+            provisioning_uri,
+            recovery_codes,
+        })
+    }
+
+    #[allow(clippy::cast_sign_loss)] // Timestamps are always positive
+    fn verify_totp_enrollment(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError> {
+        let mut state = self
+            .load_mfa_state(tenant_id, user_id)?
+            .ok_or(IdentityError::MfaNotEnabled)?;
+
+        if state.enabled {
+            return Err(IdentityError::MfaAlreadyEnabled);
+        }
+
+        // Validate code against the stored secret
+        let secret = TotpSecret::from_base32(&state.secret_base32)?;
+        let now_secs = (self.clock.now().as_micros() / 1_000_000) as u64;
+        let matched_step = totp::validate_totp(secret.as_bytes(), code, now_secs, None);
+
+        if let Some(step) = matched_step {
+            state.enabled = true;
+            state.last_used_step = Some(step);
+            state.enabled_at = Some(self.clock.now().as_micros());
+            self.save_mfa_state(tenant_id, user_id, &state)?;
+            Ok(())
+        } else {
+            Err(IdentityError::InvalidMfaCode)
+        }
+    }
+
+    #[allow(clippy::cast_sign_loss)] // Timestamps are always positive
+    fn verify_totp(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError> {
+        // Rate limit check
+        self.check_mfa_rate_limit(tenant_id, user_id)?;
+
+        let mut state = self
+            .load_mfa_state(tenant_id, user_id)?
+            .ok_or(IdentityError::MfaNotEnabled)?;
+
+        if !state.enabled {
+            return Err(IdentityError::MfaNotEnabled);
+        }
+
+        let secret = TotpSecret::from_base32(&state.secret_base32)?;
+        let now_secs = (self.clock.now().as_micros() / 1_000_000) as u64;
+        let matched_step =
+            totp::validate_totp(secret.as_bytes(), code, now_secs, state.last_used_step);
+
+        if let Some(step) = matched_step {
+            state.last_used_step = Some(step);
+            self.save_mfa_state(tenant_id, user_id, &state)?;
+            self.clear_mfa_attempts(tenant_id, user_id);
+            Ok(())
+        } else {
+            self.record_mfa_failed_attempt(tenant_id, user_id);
+            Err(IdentityError::InvalidMfaCode)
+        }
+    }
+
+    fn verify_recovery_code(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError> {
+        let mut state = self
+            .load_mfa_state(tenant_id, user_id)?
+            .ok_or(IdentityError::MfaNotEnabled)?;
+
+        if !state.enabled {
+            return Err(IdentityError::MfaNotEnabled);
+        }
+
+        let idx = totp::verify_recovery_code(code, &state.recovery_code_hashes)?;
+        match idx {
+            Some(i) => {
+                // Mark recovery code as used
+                state.recovery_code_hashes[i] = None;
+                self.save_mfa_state(tenant_id, user_id, &state)?;
+                self.clear_mfa_attempts(tenant_id, user_id);
+                Ok(())
+            }
+            None => Err(IdentityError::InvalidMfaCode),
+        }
+    }
+
+    fn disable_mfa(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError> {
+        let state = self.load_mfa_state(tenant_id, user_id)?;
+        match state {
+            Some(s) if s.enabled => {
+                let key = keys::encode_mfa_totp_key(user_id);
+                self.storage
+                    .delete(tenant_id, &key)
+                    .map_err(Self::storage_err)?;
+                self.clear_mfa_attempts(tenant_id, user_id);
+                Ok(())
+            }
+            _ => Err(IdentityError::MfaNotEnabled),
+        }
+    }
+
+    fn mfa_enabled(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<bool, IdentityError> {
+        match self.load_mfa_state(tenant_id, user_id)? {
+            Some(state) => Ok(state.enabled),
+            None => Ok(false),
+        }
     }
 }
 
@@ -5274,5 +5536,110 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ===== Adversarial: MFA brute-force lockout (Scenario F1) =====
+
+    #[test]
+    #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
+    fn mfa_brute_force_lockout() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        // Enroll TOTP
+        let enrollment = engine.enroll_totp(&tenant, user.id()).expect("enroll");
+
+        // Activate MFA
+        let now_secs = (clock.now().as_micros() / 1_000_000) as u64;
+        let secret_bytes = data_encoding::BASE32_NOPAD
+            .decode(enrollment.secret_base32.as_bytes())
+            .expect("decode");
+        let code = crate::identity::totp::compute_totp(&secret_bytes, now_secs / 30);
+        engine
+            .verify_totp_enrollment(&tenant, user.id(), &code)
+            .expect("verify enrollment");
+
+        // 5 wrong codes
+        for _ in 0..5 {
+            let err = engine.verify_totp(&tenant, user.id(), "000000");
+            assert!(
+                matches!(err, Err(IdentityError::InvalidMfaCode)),
+                "should be InvalidMfaCode"
+            );
+        }
+
+        // 6th attempt (correct code) should be rate limited
+        // Advance time just slightly so we get a fresh step
+        clock.advance(30_000_000); // 30 seconds
+        let now_secs2 = (clock.now().as_micros() / 1_000_000) as u64;
+        let correct_code = crate::identity::totp::compute_totp(&secret_bytes, now_secs2 / 30);
+        let err = engine
+            .verify_totp(&tenant, user.id(), &correct_code)
+            .expect_err("should be rate limited");
+        assert!(
+            matches!(err, IdentityError::RateLimited),
+            "should be RateLimited, got: {err:?}"
+        );
+
+        // Advance clock past 5 min lockout (5 * 60 * 1_000_000 = 300_000_000 μs)
+        clock.advance(300_000_000);
+        let now_secs3 = (clock.now().as_micros() / 1_000_000) as u64;
+        let correct_code2 = crate::identity::totp::compute_totp(&secret_bytes, now_secs3 / 30);
+        engine
+            .verify_totp(&tenant, user.id(), &correct_code2)
+            .expect("should succeed after lockout expires");
+    }
+
+    // ===== Adversarial: TOTP replay protection (Scenario F2) =====
+
+    #[test]
+    #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
+    fn mfa_replay_protection() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        // Enroll + activate TOTP
+        let enrollment = engine.enroll_totp(&tenant, user.id()).expect("enroll");
+        let secret_bytes = data_encoding::BASE32_NOPAD
+            .decode(enrollment.secret_base32.as_bytes())
+            .expect("decode");
+
+        let now_secs = (clock.now().as_micros() / 1_000_000) as u64;
+        let step = now_secs / 30;
+        let code = crate::identity::totp::compute_totp(&secret_bytes, step);
+        engine
+            .verify_totp_enrollment(&tenant, user.id(), &code)
+            .expect("verify enrollment");
+
+        // Advance to next step so we have a fresh code
+        clock.advance(30_000_000); // 30 seconds
+        let now_secs2 = (clock.now().as_micros() / 1_000_000) as u64;
+        let step2 = now_secs2 / 30;
+        let code2 = crate::identity::totp::compute_totp(&secret_bytes, step2);
+
+        // First use succeeds
+        engine
+            .verify_totp(&tenant, user.id(), &code2)
+            .expect("first use should succeed");
+
+        // Replay same code — should fail
+        let err = engine
+            .verify_totp(&tenant, user.id(), &code2)
+            .expect_err("replay should fail");
+        assert!(
+            matches!(err, IdentityError::InvalidMfaCode),
+            "replay should be InvalidMfaCode, got: {err:?}"
+        );
+
+        // Advance to next step — new code should work
+        clock.advance(30_000_000);
+        let now_secs3 = (clock.now().as_micros() / 1_000_000) as u64;
+        let step3 = now_secs3 / 30;
+        let code3 = crate::identity::totp::compute_totp(&secret_bytes, step3);
+        engine
+            .verify_totp(&tenant, user.id(), &code3)
+            .expect("next step should succeed");
     }
 }

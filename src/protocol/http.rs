@@ -240,6 +240,10 @@ fn identity_error_to_response(
         IdentityError::DeviceCodeDenied => (StatusCode::BAD_REQUEST, "access_denied"),
         IdentityError::TokenRevoked => (StatusCode::UNAUTHORIZED, "token revoked"),
         IdentityError::UnsupportedGrantType => (StatusCode::BAD_REQUEST, "unsupported_grant_type"),
+        IdentityError::MfaRequired => (StatusCode::FORBIDDEN, "MFA verification required"),
+        IdentityError::InvalidMfaCode => (StatusCode::UNAUTHORIZED, "invalid MFA code"),
+        IdentityError::MfaNotEnabled => (StatusCode::BAD_REQUEST, "MFA not enabled"),
+        IdentityError::MfaAlreadyEnabled => (StatusCode::CONFLICT, "MFA already enabled"),
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)

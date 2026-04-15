@@ -73,6 +73,14 @@ pub enum IdentityError {
     TokenRevoked,
     /// The requested grant type is not supported for this client.
     UnsupportedGrantType,
+    /// Password authentication succeeded but MFA verification is required.
+    MfaRequired,
+    /// The TOTP code or recovery code is invalid.
+    InvalidMfaCode,
+    /// MFA is not enabled for this user.
+    MfaNotEnabled,
+    /// MFA is already enabled; disable it before re-enrolling.
+    MfaAlreadyEnabled,
     /// Too many failed credential attempts; the account is temporarily locked.
     ///
     /// Intentionally vague to avoid leaking lockout state to attackers.
@@ -114,6 +122,10 @@ impl fmt::Display for IdentityError {
             Self::DeviceCodeDenied => write!(f, "device authorization denied"),
             Self::TokenRevoked => write!(f, "token has been revoked"),
             Self::UnsupportedGrantType => write!(f, "unsupported grant type"),
+            Self::MfaRequired => write!(f, "MFA verification required"),
+            Self::InvalidMfaCode => write!(f, "invalid MFA code"),
+            Self::MfaNotEnabled => write!(f, "MFA is not enabled for this user"),
+            Self::MfaAlreadyEnabled => write!(f, "MFA is already enabled"),
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
@@ -148,6 +160,10 @@ impl std::error::Error for IdentityError {
             | Self::DeviceCodeDenied
             | Self::TokenRevoked
             | Self::UnsupportedGrantType
+            | Self::MfaRequired
+            | Self::InvalidMfaCode
+            | Self::MfaNotEnabled
+            | Self::MfaAlreadyEnabled
             | Self::RateLimited
             | Self::Serialization { .. } => None,
         }
@@ -369,6 +385,37 @@ mod tests {
     }
 
     #[test]
+    fn display_mfa_required() {
+        let err = IdentityError::MfaRequired;
+        let display = format!("{err}");
+        assert!(
+            display.contains("MFA verification required"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_invalid_mfa_code() {
+        let err = IdentityError::InvalidMfaCode;
+        let display = format!("{err}");
+        assert!(display.contains("invalid MFA code"), "got: {display}");
+    }
+
+    #[test]
+    fn display_mfa_not_enabled() {
+        let err = IdentityError::MfaNotEnabled;
+        let display = format!("{err}");
+        assert!(display.contains("not enabled"), "got: {display}");
+    }
+
+    #[test]
+    fn display_mfa_already_enabled() {
+        let err = IdentityError::MfaAlreadyEnabled;
+        let display = format!("{err}");
+        assert!(display.contains("already enabled"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::TenantNotFound.source().is_none());
         assert!(IdentityError::TenantSuspended.source().is_none());
@@ -409,6 +456,10 @@ mod tests {
         })
         .source()
         .is_none());
+        assert!(IdentityError::MfaRequired.source().is_none());
+        assert!(IdentityError::InvalidMfaCode.source().is_none());
+        assert!(IdentityError::MfaNotEnabled.source().is_none());
+        assert!(IdentityError::MfaAlreadyEnabled.source().is_none());
         assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {
             reason: "x".to_string()
