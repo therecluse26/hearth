@@ -8,4 +8,4 @@ mod types;
 
 pub use error::CoreError;
 pub use time::{Clock, FakeClock, SystemClock, Timestamp};
-pub use types::{ClientId, SessionId, TenantId, UserId};
+pub use types::{AuditEventId, ClientId, SessionId, TenantId, UserId};

@@ -416,13 +416,13 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
 | Zanzibar Authorization (Full) | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/2 | -- | 0/2 | **0/16** |
 | Admin API | 0/3 | 0/4 | -- | -- | -- | 0/3 | -- | -- | **0/10** |
-| Audit Logging | 0/4 | 0/3 | 0/2 | -- | 0/2 | 0/1 | -- | -- | **0/12** |
+| Audit Logging | 4/4 | 3/3 | 2/2 | -- | 0/2 | 1/1 | -- | -- | **10/12** |
 | TLS Termination | 0/3 | 0/3 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
 | SDK Integration (TS & Go) | -- | 0/6 | -- | -- | -- | -- | -- | -- | **0/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **5/39** | **3/36** | **3/10** | **0/1** | **0/6** | **3/24** | **0/8** | **0/6** | **14/130** |
+| **Column Total** | **9/39** | **6/36** | **5/10** | **0/1** | **0/6** | **4/24** | **0/8** | **0/6** | **24/130** |
 
 ---
 
@@ -644,21 +644,21 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Security-critical mutations emit structured audit events with correct fields (actor, action, resource, timestamp) `P0` `fast`
-- [ ] Audit log is append-only: no API to update or delete audit entries `P0` `fast`
-- [ ] Audit log query by time range, actor, action type returns correct results `P0` `fast`
-- [ ] Audit events include tenant context: all entries scoped to originating tenant `P0` `fast`
+- [x] Security-critical mutations emit structured audit events with correct fields (actor, action, resource, timestamp) `P0` `fast`
+- [x] Audit log is append-only: no API to update or delete audit entries `P0` `fast`
+- [x] Audit log query by time range, actor, action type returns correct results `P0` `fast`
+- [x] Audit events include tenant context: all entries scoped to originating tenant `P0` `fast`
 
 #### Integration
 
-- [ ] Full audit lifecycle: perform mutations → query audit log → verify complete event trail `P0` `fast`
-- [ ] Audit log persistence: entries survive server restart `P0` `fast`
-- [ ] Compliance query: retrieve all authentication events for a user within date range `P1` `fast`
+- [x] Full audit lifecycle: perform mutations → query audit log → verify complete event trail `P0` `fast`
+- [x] Audit log persistence: entries survive server restart `P0` `fast`
+- [x] Compliance query: retrieve all authentication events for a user within date range `P1` `fast`
 
 #### Property
 
-- [ ] Random mutation sequences produce audit logs where event count equals mutation count (`proptest`) `P0` `extended`
-- [ ] Audit log ordering: events are strictly ordered by timestamp across concurrent writers (`proptest`) `P0` `extended`
+- [x] Random mutation sequences produce audit logs where event count equals mutation count (`proptest`) `P0` `extended`
+- [x] Audit log ordering: events are strictly ordered by timestamp across concurrent writers (`proptest`) `P0` `extended`
 
 #### Simulation
 
@@ -667,7 +667,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] Audit log tamper detection: modification of stored entries detected on read `P0` `fast`
+- [x] Audit log tamper detection: modification of stored entries detected on read `P0` `fast`
 
 ---
 
