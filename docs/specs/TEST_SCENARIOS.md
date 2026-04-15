@@ -28,10 +28,10 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | JWT / Tokens | 5/5 | 2/2 | -- | 0/1 | -- | 3/4 | -- | 2/2 | **12/14** |
 | OIDC (Auth Code Flow) | 5/5 | 2/3 | -- | 0/1 | -- | 3/3 | 0/2 | 1/1 | **11/15** |
 | Configuration | 4/4 | -- | -- | 1/1 | -- | -- | -- | -- | **5/5** |
-| CLI Tool | -- | 0/3 | -- | -- | -- | -- | -- | -- | **0/3** |
-| End-to-End Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
-| Cross-Cutting Concerns | -- | -- | -- | -- | -- | 0/5 | -- | -- | **0/5** |
-| **Column Total** | **49/54** | **14/24** | **18/18** | **1/5** | **0/10** | **13/23** | **0/2** | **6/12** | **101/148** |
+| CLI Tool | -- | 2/3 | -- | -- | -- | -- | -- | -- | **2/3** |
+| End-to-End Flows | -- | 4/4 | -- | -- | -- | -- | -- | -- | **4/4** |
+| Cross-Cutting Concerns | -- | -- | -- | -- | -- | 5/5 | -- | -- | **5/5** |
+| **Column Total** | **49/54** | **20/24** | **18/18** | **1/5** | **0/10** | **18/23** | **0/2** | **6/12** | **112/148** |
 
 ---
 
@@ -372,9 +372,9 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Integration
 
-- [ ] `hearth serve --dev` starts server and accepts connections `P0` `fast`
+- [x] `hearth serve --dev` starts server and accepts connections `P0` `fast`
 - [ ] CLI management commands (`tenant create`, `app create`) succeed against running server `P1` `fast`
-- [ ] CLI exits with appropriate non-zero error codes on invalid input or unreachable server `P0` `fast`
+- [x] CLI exits with appropriate non-zero error codes on invalid input or unreachable server `P0` `fast`
 
 ---
 
@@ -382,10 +382,10 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Integration
 
-- [ ] Developer on-ramp: start server → create tenant → create app → complete OIDC login `P0` `fast`
-- [ ] User lifecycle: register → authenticate → receive session → validate token `P0` `fast`
-- [ ] Auth + authz: authenticate → write permission → check permission → authorized action succeeds `P0` `fast`
-- [ ] Cascading invalidation: delete user → sessions invalidated → token validation fails `P0` `fast`
+- [x] Developer on-ramp: start server → create tenant → create app → complete OIDC login `P0` `fast`
+- [x] User lifecycle: register → authenticate → receive session → validate token `P0` `fast`
+- [x] Auth + authz: authenticate → write permission → check permission → authorized action succeeds `P0` `fast`
+- [x] Cascading invalidation: delete user → sessions invalidated → token validation fails `P0` `fast`
 
 ---
 
@@ -393,11 +393,11 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] All API error responses leak no internal state (no stack traces, internal paths, or query details) `P0` `fast`
-- [ ] Constant-time comparisons used for all secret-derived values (tokens, session IDs, auth codes) `P0` `fast`
-- [ ] No credential material, tokens, or session IDs appear in log output at any log level `P0` `fast`
-- [ ] Sensitive data (passwords, keys, tokens) zeroed from memory after use `P0` `fast`
-- [ ] Input size limits enforced across all API endpoints (request body, header, URL length) `P0` `fast`
+- [x] All API error responses leak no internal state (no stack traces, internal paths, or query details) `P0` `fast`
+- [x] Constant-time comparisons used for all secret-derived values (tokens, session IDs, auth codes) `P0` `fast`
+- [x] No credential material, tokens, or session IDs appear in log output at any log level `P0` `fast`
+- [x] Sensitive data (passwords, keys, tokens) zeroed from memory after use `P0` `fast`
+- [x] Input size limits enforced across all API endpoints (request body, header, URL length) `P0` `fast`
 
 ---
 

@@ -17,8 +17,10 @@ path = "src/main.rs"
 [dependencies]
 arc-swap = "1"
 argon2 = "0.5"
+axum = "0.8"
 base64 = "0.22"
 bcrypt = "0.16"
+clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 crossbeam-epoch = "0.9"
 memmap2 = "0.9"
@@ -29,8 +31,10 @@ scrypt = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 unicode-normalization = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -40,6 +44,7 @@ zeroize = { version = "1", features = ["derive"] }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
 

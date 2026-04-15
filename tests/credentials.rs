@@ -32,15 +32,15 @@ async fn credential_lifecycle_set_verify_change() {
     let tenant = TenantId::generate();
     let user = create_user(&harness, &tenant);
 
-    // 1. No credential initially
+    // 1. No credential initially — returns generic error (enumeration resistance)
     let pw = CleartextPassword::from_string("initial-password".to_string());
     let err = harness
         .identity()
         .verify_password(&tenant, user.id(), &pw)
         .expect_err("should fail — no credential");
     assert!(
-        format!("{err}").contains("no credential"),
-        "should indicate missing credential: {err}"
+        format!("{err}").contains("credential"),
+        "should indicate credential failure: {err}"
     );
 
     // 2. Set password
@@ -172,14 +172,15 @@ async fn credentials_are_tenant_isolated() {
         .expect("set password");
 
     // Cannot verify from tenant B (user doesn't exist there)
+    // Returns generic credential error for enumeration resistance
     let pw = CleartextPassword::from_string("tenant-a-password".to_string());
     let err = harness
         .identity()
         .verify_password(&tenant_b, user_a.id(), &pw)
         .expect_err("should fail");
     assert!(
-        format!("{err}").contains("user not found"),
-        "should indicate user not found in different tenant: {err}"
+        format!("{err}").contains("credential"),
+        "should indicate credential failure in different tenant: {err}"
     );
 }
 
@@ -206,14 +207,14 @@ async fn delete_user_removes_credential() {
         .delete_user(&tenant, user.id())
         .expect("delete user");
 
-    // Verify should fail (user gone)
+    // Verify should fail (user gone) — returns generic credential error
     let pw = CleartextPassword::from_string("delete-me".to_string());
     let err = harness
         .identity()
         .verify_password(&tenant, user.id(), &pw)
         .expect_err("should fail");
     assert!(
-        format!("{err}").contains("user not found"),
-        "should indicate user not found: {err}"
+        format!("{err}").contains("credential"),
+        "should indicate credential failure after deletion: {err}"
     );
 }

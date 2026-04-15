@@ -487,6 +487,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<(), IdentityError> {
+        // Validate password length
+        validation::validate_password_length(password.as_bytes())?;
+
         // Ensure the user exists
         self.get_user(tenant_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
@@ -513,9 +516,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let user = self.get_user(tenant_id, user_id)?;
         if user.is_none() {
             // Timing defense: verify against dummy hash so timing is
-            // indistinguishable from a real failed verification
+            // indistinguishable from a real failed verification.
+            // Return generic error to prevent user enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
-            return Err(IdentityError::UserNotFound);
+            return Err(IdentityError::InvalidCredential {
+                reason: "verification failed".to_string(),
+            });
         }
 
         // Load credential
@@ -526,9 +532,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
 
         let Some(cred_bytes) = cred_bytes else {
-            // Timing defense: same as above
+            // Timing defense: same as above.
+            // Return generic error to prevent credential enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
-            return Err(IdentityError::CredentialNotFound);
+            return Err(IdentityError::InvalidCredential {
+                reason: "verification failed".to_string(),
+            });
         };
 
         let cred = Self::deserialize_credential(&cred_bytes)?;
@@ -762,13 +771,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         tenant_id: &TenantId,
         request: &RegisterClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
-        // Validate client name
-        let client_name = request.client_name.trim();
-        if client_name.is_empty() {
-            return Err(IdentityError::InvalidInput {
-                reason: "client name must not be empty".to_string(),
-            });
-        }
+        // Validate client name (non-empty, length limit)
+        let client_name = validation::validate_client_name(&request.client_name)?;
 
         // Validate redirect URIs
         if request.redirect_uris.is_empty() {
@@ -782,6 +786,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     reason: "redirect URIs must not be empty".to_string(),
                 });
             }
+            validation::validate_redirect_uri(uri)?;
         }
 
         let client_id = ClientId::generate();
@@ -789,7 +794,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let client = OAuthClient::new(
             client_id.clone(),
-            client_name.to_string(),
+            client_name,
             request.redirect_uris.clone(),
             now,
         );
@@ -1668,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_password_nonexistent_user_returns_error() {
+    fn verify_password_nonexistent_user_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
         let tenant = TenantId::generate();
         let pw = CleartextPassword::from_string("password".to_string());
@@ -1676,11 +1681,12 @@ mod tests {
         let err = engine
             .verify_password(&tenant, &UserId::generate(), &pw)
             .expect_err("should fail");
-        assert!(matches!(err, IdentityError::UserNotFound));
+        // Returns generic InvalidCredential to prevent user enumeration
+        assert!(matches!(err, IdentityError::InvalidCredential { .. }));
     }
 
     #[test]
-    fn verify_password_no_credential_returns_error() {
+    fn verify_password_no_credential_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
         let tenant = TenantId::generate();
         let user = create_test_user(&engine, &tenant);
@@ -1689,7 +1695,8 @@ mod tests {
         let err = engine
             .verify_password(&tenant, user.id(), &pw)
             .expect_err("should fail");
-        assert!(matches!(err, IdentityError::CredentialNotFound));
+        // Returns generic InvalidCredential to prevent credential enumeration
+        assert!(matches!(err, IdentityError::InvalidCredential { .. }));
     }
 
     // ===== Credential Scenario 3: Password change =====
@@ -1767,12 +1774,12 @@ mod tests {
 
         engine.delete_user(&tenant, user.id()).expect("delete");
 
-        // Verify should fail with UserNotFound, not CredentialNotFound
+        // Verify should fail with generic InvalidCredential (enumeration resistance)
         let pw_check = CleartextPassword::from_string("password".to_string());
         let err = engine
             .verify_password(&tenant, user.id(), &pw_check)
             .expect_err("should fail");
-        assert!(matches!(err, IdentityError::UserNotFound));
+        assert!(matches!(err, IdentityError::InvalidCredential { .. }));
     }
 
     // ===== Adversarial: Timing oracle prevention =====

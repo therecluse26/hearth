@@ -13,6 +13,18 @@ const MAX_EMAIL_LENGTH: usize = 254;
 /// Maximum length for a display name.
 const MAX_DISPLAY_NAME_LENGTH: usize = 256;
 
+/// Maximum length for a password in bytes.
+///
+/// Prevents CPU-based denial-of-service via extremely large inputs to Argon2id.
+/// 1 KiB is generous for any reasonable password while capping cost.
+const MAX_PASSWORD_LENGTH: usize = 1024;
+
+/// Maximum length for an OAuth client name.
+const MAX_CLIENT_NAME_LENGTH: usize = 256;
+
+/// Maximum length for a redirect URI.
+const MAX_REDIRECT_URI_LENGTH: usize = 2048;
+
 /// Validates and normalizes an email address.
 ///
 /// Normalization: trim whitespace, lowercase, NFC normalize.
@@ -113,6 +125,59 @@ pub(crate) fn validate_display_name(name: &str) -> Result<String, IdentityError>
     }
 
     Ok(normalized)
+}
+
+/// Validates a password length.
+///
+/// Passwords must be between 1 and 1024 bytes. The upper bound prevents
+/// CPU-based denial-of-service via expensive Argon2id hashing on extremely large inputs.
+pub(crate) fn validate_password_length(password_bytes: &[u8]) -> Result<(), IdentityError> {
+    if password_bytes.is_empty() {
+        return Err(IdentityError::InvalidInput {
+            reason: "password must not be empty".to_string(),
+        });
+    }
+    if password_bytes.len() > MAX_PASSWORD_LENGTH {
+        return Err(IdentityError::InvalidInput {
+            reason: format!("password exceeds maximum length of {MAX_PASSWORD_LENGTH} bytes"),
+        });
+    }
+    Ok(())
+}
+
+/// Validates an OAuth client name.
+pub(crate) fn validate_client_name(name: &str) -> Result<String, IdentityError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(IdentityError::InvalidInput {
+            reason: "client name must not be empty".to_string(),
+        });
+    }
+    if trimmed.len() > MAX_CLIENT_NAME_LENGTH {
+        return Err(IdentityError::InvalidInput {
+            reason: format!(
+                "client name exceeds maximum length of {MAX_CLIENT_NAME_LENGTH} characters"
+            ),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Validates a redirect URI.
+pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), IdentityError> {
+    if uri.is_empty() {
+        return Err(IdentityError::InvalidInput {
+            reason: "redirect URI must not be empty".to_string(),
+        });
+    }
+    if uri.len() > MAX_REDIRECT_URI_LENGTH {
+        return Err(IdentityError::InvalidInput {
+            reason: format!(
+                "redirect URI exceeds maximum length of {MAX_REDIRECT_URI_LENGTH} characters"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Returns `true` if the string contains null bytes or ASCII control characters.
