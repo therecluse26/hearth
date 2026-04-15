@@ -8,6 +8,7 @@ pub(crate) mod credentials;
 mod engine;
 pub mod error;
 pub(crate) mod keys;
+pub(crate) mod magic_link;
 pub mod oidc;
 pub mod tokens;
 pub(crate) mod totp;
@@ -18,6 +19,7 @@ pub(crate) mod webauthn;
 pub use credentials::{CleartextPassword, CredentialConfig};
 pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
 pub use error::IdentityError;
+pub use magic_link::MagicLinkResponse;
 pub use oidc::{
     AuthorizationRequest, AuthorizationResponse, ClientCredentialsRequest,
     ClientCredentialsResponse, CodeChallengeMethod, DeviceAuthorizationRequest,
@@ -465,4 +467,36 @@ pub trait IdentityEngine: Send + Sync {
         user_id: &UserId,
         credential_id: &[u8],
     ) -> Result<(), IdentityError>;
+
+    // ===== Magic Link / Passwordless (Step 25) =====
+
+    /// Requests a magic link token for the given email address.
+    ///
+    /// Generates a random 32-byte token, stores its SHA-256 hash, and
+    /// returns the plaintext token exactly once. The consuming application
+    /// is responsible for delivering the token to the user (e.g., via email).
+    ///
+    /// For enumeration resistance, this method always succeeds regardless
+    /// of whether the email is registered. If the email is unknown, the
+    /// link is still created — account creation happens at validation time.
+    fn request_magic_link(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<MagicLinkResponse, IdentityError>;
+
+    /// Validates a magic link token and returns the associated user.
+    ///
+    /// On success, marks the token as used (single-use enforcement).
+    /// If the email was not registered at request time, a new user account
+    /// is created automatically.
+    ///
+    /// Returns `Err(MagicLinkTokenInvalid)` if the token is not found,
+    /// expired, or already used. The error is intentionally vague for
+    /// enumeration resistance.
+    fn validate_magic_link(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<UserId, IdentityError>;
 }

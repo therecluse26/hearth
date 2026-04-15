@@ -257,6 +257,9 @@ fn identity_error_to_response(
             (StatusCode::BAD_REQUEST, "invalid attestation")
         }
         IdentityError::InvalidAssertion { .. } => (StatusCode::UNAUTHORIZED, "invalid assertion"),
+        IdentityError::MagicLinkTokenInvalid => {
+            (StatusCode::UNAUTHORIZED, "invalid or expired link")
+        }
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)

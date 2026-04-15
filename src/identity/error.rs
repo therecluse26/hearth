@@ -103,6 +103,11 @@ pub enum IdentityError {
         /// Description of the assertion failure.
         reason: String,
     },
+    /// The magic link token is invalid, expired, or already used.
+    ///
+    /// Intentionally conflates not-found, expired, and already-used for
+    /// enumeration resistance — callers cannot distinguish the three.
+    MagicLinkTokenInvalid,
     /// Too many failed credential attempts; the account is temporarily locked.
     ///
     /// Intentionally vague to avoid leaking lockout state to attackers.
@@ -161,6 +166,7 @@ impl fmt::Display for IdentityError {
             Self::InvalidAssertion { reason } => {
                 write!(f, "invalid assertion: {reason}")
             }
+            Self::MagicLinkTokenInvalid => write!(f, "invalid or expired magic link"),
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
@@ -204,6 +210,7 @@ impl std::error::Error for IdentityError {
             | Self::WebAuthnCredentialNotFound
             | Self::InvalidAttestation { .. }
             | Self::InvalidAssertion { .. }
+            | Self::MagicLinkTokenInvalid
             | Self::RateLimited
             | Self::Serialization { .. } => None,
         }
@@ -509,6 +516,16 @@ mod tests {
     }
 
     #[test]
+    fn display_magic_link_token_invalid() {
+        let err = IdentityError::MagicLinkTokenInvalid;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid or expired magic link"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::TenantNotFound.source().is_none());
         assert!(IdentityError::TenantSuspended.source().is_none());
@@ -574,6 +591,7 @@ mod tests {
         })
         .source()
         .is_none());
+        assert!(IdentityError::MagicLinkTokenInvalid.source().is_none());
         assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {
             reason: "x".to_string()

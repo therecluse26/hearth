@@ -411,7 +411,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
 | OAuth 2.0 Complete | 5/5 | 3/3 | 2/2 | -- | -- | 3/3 | 2/2 | 2/2 | **17/17** |
 | WebAuthn / Passkeys | 5/5 | 2/2 | -- | 1/1 | -- | 3/3 | 1/1 | -- | **12/12** |
-| Magic Link / Passwordless | 0/4 | 0/2 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
+| Magic Link / Passwordless | 4/4 | 2/2 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | TOTP / MFA | 5/5 | 3/3 | 1/1 | -- | -- | 2/2 | -- | -- | **11/11** |
 | Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
 | Zanzibar Authorization (Full) | 5/5 | 3/3 | 1/2 | -- | 0/2 | 2/2 | -- | 1/2 | **12/16** |
@@ -500,20 +500,20 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Generate magic link token bound to email with correct expiration `P0` `fast`
-- [ ] Validate magic link token: correct token returns associated user `P0` `fast`
-- [ ] Expired magic link token rejected with appropriate error `P0` `fast`
-- [ ] Magic link token is single-use: second validation attempt rejected `P0` `fast`
+- [x] Generate magic link token bound to email with correct expiration `P0` `fast`
+- [x] Validate magic link token: correct token returns associated user `P0` `fast`
+- [x] Expired magic link token rejected with appropriate error `P0` `fast`
+- [x] Magic link token is single-use: second validation attempt rejected `P0` `fast`
 
 #### Integration
 
-- [ ] Full passwordless flow via embedded API: request link → validate token → receive session `P0` `fast`
-- [ ] Magic link with existing user authenticates; with new email triggers account creation `P1` `fast`
+- [x] Full passwordless flow via embedded API: request link → validate token → receive session `P0` `fast`
+- [x] Magic link with existing user authenticates; with new email triggers account creation `P1` `fast`
 
 #### Adversarial
 
-- [ ] Rate limiting: excessive magic link requests for same email throttled `P0` `fast`
-- [ ] Enumeration resistance: response is identical whether email exists or not `P0` `fast`
+- [x] Rate limiting: excessive magic link requests for same email throttled `P0` `fast`
+- [x] Enumeration resistance: response is identical whether email exists or not `P0` `fast`
 
 ---
 

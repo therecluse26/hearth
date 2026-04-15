@@ -25,6 +25,9 @@ fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
+use crate::identity::magic_link::{
+    self, MagicLinkResponse, StoredMagicLink, MAGIC_LINK_EXPIRY_MICROS,
+};
 use crate::identity::oidc::{
     AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, StoredAuthorizationCode,
@@ -163,6 +166,11 @@ pub struct EmbeddedIdentityEngine {
     mfa_attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Used nonces for replay protection (when nonce enforcement is enabled).
     used_nonces: Mutex<HashSet<String>>,
+    /// Per-email magic link rate trackers.
+    ///
+    /// Limits the number of magic link requests per email per hour.
+    /// Key format: `magic:{tenant}:{email}`.
+    magic_link_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Pending `WebAuthn` challenges awaiting completion.
     webauthn_challenges: WebAuthnChallengeStore,
 }
@@ -197,6 +205,7 @@ impl EmbeddedIdentityEngine {
             tenant_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
+            magic_link_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
         })
@@ -221,6 +230,7 @@ impl EmbeddedIdentityEngine {
             tenant_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
+            magic_link_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
         }
@@ -334,6 +344,57 @@ impl EmbeddedIdentityEngine {
         let key = Self::mfa_tracker_key(tenant_id, user_id);
         let mut trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
         trackers.remove(&key);
+    }
+
+    // ===== Magic link rate limiting helpers =====
+
+    /// Magic link rate limit: 3 requests per email per hour.
+    const MAGIC_LINK_MAX_REQUESTS: u32 = 3;
+    /// Magic link rate limit window: 1 hour in microseconds.
+    const MAGIC_LINK_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
+
+    /// Builds a magic link rate tracker key from tenant and email.
+    fn magic_link_tracker_key(tenant_id: &TenantId, email: &str) -> String {
+        format!("magic:{}:{email}", tenant_id.as_uuid())
+    }
+
+    /// Checks whether magic link requests for this email are rate-limited.
+    fn check_magic_link_rate_limit(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<(), IdentityError> {
+        let key = Self::magic_link_tracker_key(tenant_id, email);
+        let trackers = self
+            .magic_link_rate_trackers
+            .lock()
+            .expect("magic link tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= Self::MAGIC_LINK_MAX_REQUESTS {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < Self::MAGIC_LINK_RATE_WINDOW_MICROS {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a magic link request for rate limiting.
+    fn record_magic_link_request(&self, tenant_id: &TenantId, email: &str) {
+        let key = Self::magic_link_tracker_key(tenant_id, email);
+        let now = self.clock.now().as_micros();
+        let mut trackers = self
+            .magic_link_rate_trackers
+            .lock()
+            .expect("magic link tracker lock");
+        let tracker = trackers.entry(key).or_insert(AttemptTracker {
+            failed_count: 0,
+            last_failure_micros: now,
+        });
+        tracker.failed_count += 1;
+        tracker.last_failure_micros = now;
     }
 
     /// Loads the stored MFA state for a user.
@@ -2736,6 +2797,118 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         Ok(())
+    }
+
+    // ===== Magic Link / Passwordless (Step 25) =====
+
+    fn request_magic_link(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<MagicLinkResponse, IdentityError> {
+        // 1. Normalize email
+        let normalized = validation::validate_email(email)?;
+
+        // 2. Check per-email rate limit (3 per hour)
+        self.check_magic_link_rate_limit(tenant_id, &normalized)?;
+
+        // 3. Look up user by email — capture user_id if exists (enumeration resistance: always succeed)
+        let user_id = self
+            .get_user_by_email(tenant_id, &normalized)?
+            .map(|u| u.id().as_uuid().to_string());
+
+        // 4. Generate random token
+        let token = magic_link::generate_magic_link_token()?;
+
+        // 5. SHA-256 hash the token
+        let token_hash = Self::sha256_hex(token.as_str().as_bytes());
+
+        // 6. Store the magic link record
+        let now = self.clock.now().as_micros();
+        let stored = StoredMagicLink {
+            email: normalized.clone(),
+            user_id,
+            created_at_micros: now,
+            used: false,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let key = keys::encode_magic_link_token(&token_hash);
+        self.storage
+            .put(tenant_id, &key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 7. Record rate limit event
+        self.record_magic_link_request(tenant_id, &normalized);
+
+        // 8. Return plaintext token (shown once)
+        Ok(MagicLinkResponse::new(token.as_str().to_string()))
+    }
+
+    fn validate_magic_link(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<UserId, IdentityError> {
+        // 1. SHA-256 hash the incoming token
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let key = keys::encode_magic_link_token(&token_hash);
+
+        // 2. Look up stored record
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::MagicLinkTokenInvalid)?;
+
+        let mut stored: StoredMagicLink =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 3. Check if already used
+        if stored.used {
+            return Err(IdentityError::MagicLinkTokenInvalid);
+        }
+
+        // 4. Check expiry
+        let now = self.clock.now().as_micros();
+        if now - stored.created_at_micros > MAGIC_LINK_EXPIRY_MICROS {
+            // Clean up stale record
+            self.storage
+                .delete(tenant_id, &key)
+                .map_err(Self::storage_err)?;
+            return Err(IdentityError::MagicLinkTokenInvalid);
+        }
+
+        // 5. Mark as used
+        stored.used = true;
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 6. Return existing user or create new one
+        if let Some(user_id_str) = &stored.user_id {
+            let uuid =
+                uuid::Uuid::parse_str(user_id_str).map_err(|e| IdentityError::Serialization {
+                    reason: format!("invalid stored user_id: {e}"),
+                })?;
+            Ok(UserId::new(uuid))
+        } else {
+            // Email not registered at request time — create user now
+            let request = crate::identity::types::CreateUserRequest {
+                email: stored.email.clone(),
+                display_name: stored.email.clone(),
+            };
+            let user = self.create_user(tenant_id, &request)?;
+            Ok(user.id().clone())
+        }
     }
 }
 
@@ -5986,5 +6159,190 @@ mod tests {
         engine
             .verify_totp(&tenant, user.id(), &code3)
             .expect("next step should succeed");
+    }
+
+    // ===== Magic Link / Passwordless (Step 25) unit tests =====
+
+    /// Helper: creates a tenant and user with email for magic link tests.
+    fn setup_magic_link_user(
+        engine: &EmbeddedIdentityEngine,
+    ) -> (TenantId, crate::identity::types::User) {
+        let tenant = engine
+            .create_tenant(&crate::identity::types::CreateTenantRequest {
+                name: format!("ml-test-{}", uuid::Uuid::new_v4()),
+                config: None,
+            })
+            .expect("create tenant");
+        let user = engine
+            .create_user(
+                tenant.id(),
+                &crate::identity::types::CreateUserRequest {
+                    email: format!("ml-{}@example.com", uuid::Uuid::new_v4()),
+                    display_name: "ML Test User".to_string(),
+                },
+            )
+            .expect("create user");
+        (tenant.id().clone(), user)
+    }
+
+    // Test A: Generate magic link token bound to email with correct expiration
+    #[test]
+    fn magic_link_request_returns_nonempty_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock.clone() as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request magic link
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+
+        // Token should be non-empty
+        assert!(
+            !response.token().is_empty(),
+            "magic link token should not be empty"
+        );
+
+        // Verify stored record
+        let token_hash = EmbeddedIdentityEngine::sha256_hex(response.token().as_bytes());
+        let key = keys::encode_magic_link_token(&token_hash);
+        let stored_bytes = engine
+            .storage
+            .get(&tenant, &key)
+            .expect("storage get")
+            .expect("stored record should exist");
+        let stored: StoredMagicLink = serde_json::from_slice(&stored_bytes).expect("deserialize");
+        assert_eq!(stored.email, user.email().to_lowercase());
+        assert!(stored.user_id.is_some(), "user_id should be set");
+        assert!(!stored.used, "should not be marked as used");
+        assert_eq!(
+            stored.created_at_micros,
+            clock.now().as_micros(),
+            "created_at should match clock"
+        );
+    }
+
+    // Test B: Validate magic link token — correct token returns associated user
+    #[test]
+    fn magic_link_validate_returns_correct_user() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request and validate
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+        let returned_user_id = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect("validate_magic_link");
+
+        assert_eq!(
+            returned_user_id.as_uuid(),
+            user.id().as_uuid(),
+            "returned user ID should match"
+        );
+    }
+
+    // Test C: Expired magic link token rejected
+    #[test]
+    fn magic_link_expired_token_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock.clone() as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request magic link
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+
+        // Advance clock past 15-minute expiry
+        clock.advance(MAGIC_LINK_EXPIRY_MICROS + 1_000_000);
+
+        // Validate should fail
+        let err = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect_err("should fail for expired token");
+        assert!(
+            matches!(err, IdentityError::MagicLinkTokenInvalid),
+            "should be MagicLinkTokenInvalid, got: {err:?}"
+        );
+    }
+
+    // Test D: Single-use — second validation rejected
+    #[test]
+    fn magic_link_single_use_enforced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request and validate once (succeeds)
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+        let _user_id = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect("first validation should succeed");
+
+        // Second validation should fail
+        let err = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect_err("second validation should fail");
+        assert!(
+            matches!(err, IdentityError::MagicLinkTokenInvalid),
+            "should be MagicLinkTokenInvalid, got: {err:?}"
+        );
     }
 }

@@ -58,6 +58,9 @@ const WEBAUTHN_CRED_PREFIX: &str = "webauthn:cred:";
 /// Prefix for `WebAuthn` discoverable credential index.
 const WEBAUTHN_DISC_PREFIX: &str = "webauthn:disc:";
 
+/// Prefix for magic link token storage (stored by SHA-256 hash of token).
+const MAGIC_LINK_PREFIX: &str = "magic:link:";
+
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
 
@@ -267,6 +270,16 @@ pub(crate) fn encode_webauthn_credentials_prefix(user_id: &UserId) -> Vec<u8> {
 /// Maps a credential ID to a user UUID for username-less authentication.
 pub(crate) fn encode_webauthn_discoverable(credential_id_b64: &str) -> Vec<u8> {
     format!("{WEBAUTHN_DISC_PREFIX}{credential_id_b64}").into_bytes()
+}
+
+/// Encodes the storage key for a magic link token.
+///
+/// Format: `magic:link:{sha256_hex_of_token}`
+///
+/// The token hash is the SHA-256 hex digest of the plaintext token.
+/// The plaintext is never stored.
+pub(crate) fn encode_magic_link_token(token_hash: &str) -> Vec<u8> {
+    format!("{MAGIC_LINK_PREFIX}{token_hash}").into_bytes()
 }
 
 /// Encodes the storage key for a revoked token JTI.
