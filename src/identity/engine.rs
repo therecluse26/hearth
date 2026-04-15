@@ -509,6 +509,102 @@ impl EmbeddedIdentityEngine {
         hex_encode(digest.as_ref())
     }
 
+    /// Performs grant family rotation during refresh token exchange.
+    ///
+    /// Validates the incoming refresh token against the family's current hash,
+    /// detects theft (replayed previously-rotated tokens), issues a new token
+    /// pair, and rotates the family's stored hash.
+    #[allow(clippy::too_many_arguments)]
+    fn rotate_grant_family(
+        &self,
+        tenant_id: &TenantId,
+        fid: &str,
+        refresh_token: &str,
+        session_id: &SessionId,
+        user_id: &UserId,
+        now_secs: i64,
+        claims: &TokenClaims,
+    ) -> Result<TokenPair, IdentityError> {
+        let family_key = keys::encode_grant_family(fid);
+        let family_bytes = self
+            .storage
+            .get(tenant_id, &family_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::TokenRevoked)?;
+        let mut family: StoredGrantFamily =
+            serde_json::from_slice(&family_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if family.revoked {
+            return Err(IdentityError::TokenRevoked);
+        }
+
+        // Verify the incoming refresh token matches the current hash
+        let incoming_hash = Self::sha256_hex(refresh_token.as_bytes());
+        if incoming_hash != family.current_refresh_hash {
+            // THEFT DETECTED — a previously-rotated token is being reused.
+            family.revoked = true;
+            let updated =
+                serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            self.storage
+                .put(tenant_id, &family_key, &updated)
+                .map_err(Self::storage_err)?;
+            let _ = self.revoke_session(tenant_id, session_id);
+            return Err(IdentityError::TokenRevoked);
+        }
+
+        self.refresh_session(tenant_id, session_id)?;
+
+        let signing_key = self.get_signing_key_or_default(tenant_id);
+        let iat = now_secs;
+
+        let new_access_claims = TokenClaims {
+            sub: user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.access_token_ttl_secs,
+            iat,
+            sid: session_id.to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "access".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(fid.to_string()),
+            scope: claims.scope.clone(),
+            nonce: None,
+        };
+        let new_refresh_claims = TokenClaims {
+            sub: user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.refresh_token_ttl_secs,
+            iat,
+            sid: session_id.to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "refresh".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(fid.to_string()),
+            scope: claims.scope.clone(),
+            nonce: None,
+        };
+
+        let new_access = signing_key.issue_token(&new_access_claims)?;
+        let new_refresh = signing_key.issue_token(&new_refresh_claims)?;
+
+        // Rotate the family's current refresh hash
+        family.current_refresh_hash = Self::sha256_hex(new_refresh.as_bytes());
+        let updated = serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(tenant_id, &family_key, &updated)
+            .map_err(Self::storage_err)?;
+
+        Ok(TokenPair::new(new_access, new_refresh))
+    }
+
     /// Unambiguous alphabet for device user codes (RFC 8628).
     ///
     /// Excludes I/1, O/0, L to avoid confusion. 28 characters.
@@ -1396,89 +1492,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Grant family rotation (if fid is present)
         if let Some(ref fid) = claims.fid {
-            let family_key = keys::encode_grant_family(fid);
-            let family_bytes = self
-                .storage
-                .get(tenant_id, &family_key)
-                .map_err(Self::storage_err)?
-                .ok_or(IdentityError::TokenRevoked)?;
-            let mut family: StoredGrantFamily =
-                serde_json::from_slice(&family_bytes).map_err(|e| {
-                    IdentityError::Serialization {
-                        reason: e.to_string(),
-                    }
-                })?;
-
-            // Check if family is revoked
-            if family.revoked {
-                return Err(IdentityError::TokenRevoked);
-            }
-
-            // Verify the incoming refresh token matches the current hash
-            let incoming_hash = Self::sha256_hex(refresh_token.as_bytes());
-            if incoming_hash != family.current_refresh_hash {
-                // THEFT DETECTED — a previously-rotated token is being reused.
-                // Revoke the entire family and the session.
-                family.revoked = true;
-                let updated =
-                    serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
-                        reason: e.to_string(),
-                    })?;
-                self.storage
-                    .put(tenant_id, &family_key, &updated)
-                    .map_err(Self::storage_err)?;
-                let _ = self.revoke_session(tenant_id, &session_id);
-                return Err(IdentityError::TokenRevoked);
-            }
-
-            // Refresh the underlying session
-            self.refresh_session(tenant_id, &session_id)?;
-
-            // Issue new token pair with the same family ID
-            let signing_key = self.get_signing_key_or_default(tenant_id);
-            let iat = now_secs;
-
-            let new_access_claims = TokenClaims {
-                sub: user_id.to_string(),
-                iss: self.config.token.issuer.clone(),
-                aud: self.config.token.audience.clone(),
-                exp: iat + self.config.token.access_token_ttl_secs,
-                iat,
-                sid: session_id.to_string(),
-                tid: tenant_id.to_string(),
-                token_type: "access".to_string(),
-                jti: Some(uuid::Uuid::new_v4().to_string()),
-                fid: Some(fid.clone()),
-                scope: claims.scope.clone(),
-            };
-            let new_refresh_claims = TokenClaims {
-                sub: user_id.to_string(),
-                iss: self.config.token.issuer.clone(),
-                aud: self.config.token.audience.clone(),
-                exp: iat + self.config.token.refresh_token_ttl_secs,
-                iat,
-                sid: session_id.to_string(),
-                tid: tenant_id.to_string(),
-                token_type: "refresh".to_string(),
-                jti: Some(uuid::Uuid::new_v4().to_string()),
-                fid: Some(fid.clone()),
-                scope: claims.scope.clone(),
-            };
-
-            let new_access = signing_key.issue_token(&new_access_claims)?;
-            let new_refresh = signing_key.issue_token(&new_refresh_claims)?;
-
-            // Rotate the family's current refresh hash
-            family.current_refresh_hash = Self::sha256_hex(new_refresh.as_bytes());
-            let updated =
-                serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
-                    reason: e.to_string(),
-                })?;
-            self.storage
-                .put(tenant_id, &family_key, &updated)
-                .map_err(Self::storage_err)?;
-
-            Ok(TokenPair::new(new_access, new_refresh))
+            self.rotate_grant_family(
+                tenant_id,
+                fid,
+                refresh_token,
+                &session_id,
+                &user_id,
+                now_secs,
+                &claims,
+            )
         } else {
             // Legacy path (no grant family — Phase 0 tokens)
             self.refresh_session(tenant_id, &session_id)?;
@@ -1660,6 +1682,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             created_at: now,
             expires_at,
             used: false,
+            nonce: request.nonce.clone(),
         };
 
         // 9. Persist the code
@@ -1768,6 +1791,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
             scope: None,
+            nonce: None,
         };
         let refresh_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
@@ -1781,6 +1805,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
             scope: None,
+            nonce: None,
         };
 
         let access_token =
@@ -1815,10 +1840,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(tenant_id, &family_key, &family_bytes)
             .map_err(Self::storage_err)?;
 
-        // 13. Issue ID token (OIDC-specific)
+        // 13. Issue ID token (OIDC-specific, nonce echoed per OIDC Core §2)
+        // iss MUST match the discovery document's issuer (OIDC Core §2)
         let id_token_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
-            iss: self.config.token.issuer.clone(),
+            iss: self.config.oidc.issuer.clone(),
             aud: request.client_id.to_string(),
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
@@ -1828,6 +1854,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
             scope: None,
+            nonce: stored_code.nonce.clone(),
         };
         let id_token =
             signing_key
@@ -1852,13 +1879,26 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             authorization_endpoint: format!("{issuer}/authorize"),
             token_endpoint: format!("{issuer}/token"),
             jwks_uri: format!("{issuer}/.well-known/jwks.json"),
+            userinfo_endpoint: format!("{issuer}/userinfo"),
             response_types_supported: vec!["code".to_string()],
+            response_modes_supported: vec!["query".to_string(), "fragment".to_string()],
             subject_types_supported: vec!["public".to_string()],
             id_token_signing_alg_values_supported: vec!["EdDSA".to_string()],
             scopes_supported: vec![
                 "openid".to_string(),
                 "profile".to_string(),
                 "email".to_string(),
+            ],
+            claims_supported: vec![
+                "sub".to_string(),
+                "iss".to_string(),
+                "aud".to_string(),
+                "exp".to_string(),
+                "iat".to_string(),
+                "nonce".to_string(),
+                "email".to_string(),
+                "email_verified".to_string(),
+                "name".to_string(),
             ],
             token_endpoint_auth_methods_supported: vec![
                 "none".to_string(),
@@ -1871,6 +1911,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 "client_credentials".to_string(),
                 "urn:ietf:params:oauth:grant-type:device_code".to_string(),
             ],
+            registration_endpoint: Some(format!("{issuer}/register")),
             device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
             revocation_endpoint: Some(format!("{issuer}/revoke")),
             introspection_endpoint: Some(format!("{issuer}/introspect")),
@@ -1931,6 +1972,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
             scope: scope.clone(),
+            nonce: None,
         };
 
         let access_token =
@@ -2138,10 +2180,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 let token_pair = self.issue_tokens(tenant_id, user_id, session.id())?;
 
                 // Issue ID token
+                // iss MUST match the discovery document's issuer (OIDC Core §2)
                 let iat = now.as_micros() / 1_000_000;
                 let id_token_claims = TokenClaims {
                     sub: user_id.to_string(),
-                    iss: self.config.token.issuer.clone(),
+                    iss: self.config.oidc.issuer.clone(),
                     aud: client_id.to_string(),
                     exp: iat + self.config.token.access_token_ttl_secs,
                     iat,
@@ -2151,6 +2194,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     jti: Some(uuid::Uuid::new_v4().to_string()),
                     fid: None,
                     scope: stored.scope.clone(),
+                    nonce: None,
                 };
                 let signing_key = self.get_or_load_tenant_signing_key(tenant_id)?;
                 let id_token = signing_key.issue_token(&id_token_claims).map_err(|e| {
@@ -2909,6 +2953,66 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let user = self.create_user(tenant_id, &request)?;
             Ok(user.id().clone())
         }
+    }
+
+    // ===== UserInfo (OIDC Core §5.3) =====
+
+    fn userinfo(
+        &self,
+        tenant_id: &TenantId,
+        access_token: &str,
+    ) -> Result<crate::identity::oidc::UserInfoResponse, IdentityError> {
+        // 1. Validate the access token
+        let claims = self.validate_token(tenant_id, access_token)?;
+
+        // 2. Ensure it's an access token
+        if claims.token_type != "access" {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        // 3. Parse user_id from sub claim
+        let user_id_str = claims
+            .sub
+            .strip_prefix("user_")
+            .ok_or(IdentityError::InvalidToken)?;
+        let user_uuid =
+            uuid::Uuid::parse_str(user_id_str).map_err(|_| IdentityError::InvalidToken)?;
+        let user_id = crate::core::UserId::new(user_uuid);
+
+        // 4. Look up the user
+        let user = self
+            .get_user(tenant_id, &user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // 5. Build response based on scopes
+        let scopes: Vec<&str> = claims
+            .scope
+            .as_deref()
+            .unwrap_or("openid")
+            .split_whitespace()
+            .collect();
+
+        let has_email_scope = scopes.contains(&"email");
+        let has_profile_scope = scopes.contains(&"profile");
+
+        Ok(crate::identity::oidc::UserInfoResponse {
+            sub: claims.sub,
+            email: if has_email_scope {
+                Some(user.email().to_string())
+            } else {
+                None
+            },
+            email_verified: if has_email_scope {
+                Some(true) // Hearth-created users have verified emails
+            } else {
+                None
+            },
+            name: if has_profile_scope {
+                Some(user.display_name().to_string())
+            } else {
+                None
+            },
+        })
     }
 
     // ===== Admin API (Step 27) =====

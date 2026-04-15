@@ -25,7 +25,7 @@ pub use oidc::{
     ClientCredentialsResponse, CodeChallengeMethod, DeviceAuthorizationRequest,
     DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
-    TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest,
+    TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest, UserInfoResponse,
 };
 pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
@@ -499,6 +499,21 @@ pub trait IdentityEngine: Send + Sync {
         tenant_id: &TenantId,
         token: &str,
     ) -> Result<UserId, IdentityError>;
+
+    // ===== UserInfo (OIDC Core §5.3) =====
+
+    /// Returns user claims for the `UserInfo` endpoint.
+    ///
+    /// Validates the access token, looks up the user, and returns claims
+    /// filtered by the token's granted scopes. Per OIDC Core §5.3, the
+    /// `sub` claim is always included; other claims depend on scope:
+    /// - `profile`: `name`
+    /// - `email`: `email`, `email_verified`
+    fn userinfo(
+        &self,
+        tenant_id: &TenantId,
+        access_token: &str,
+    ) -> Result<UserInfoResponse, IdentityError>;
 
     // ===== Admin API (Step 27) =====
 

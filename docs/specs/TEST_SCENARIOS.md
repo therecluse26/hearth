@@ -419,10 +419,10 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Audit Logging | 4/4 | 3/3 | 2/2 | -- | 0/2 | 1/1 | -- | -- | **10/12** |
 | TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | SDK Integration (TS & Go) | -- | 0/6 | -- | -- | -- | -- | -- | -- | **0/6** |
-| OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
+| OIDC Conformance | -- | -- | -- | -- | -- | -- | 5/5 | -- | **5/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **35/39** | **24/36** | **9/10** | **1/1** | **0/6** | **19/24** | **3/8** | **3/6** | **94/130** |
+| **Column Total** | **35/39** | **24/36** | **9/10** | **1/1** | **0/6** | **19/24** | **8/8** | **3/6** | **99/130** |
 
 ---
 
@@ -709,11 +709,11 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Conformance
 
-- [ ] OpenID Connect Core 1.0: all required claims present, correct ID token signing, scope handling `P0` `full`
-- [ ] OpenID Connect Discovery 1.0: well-known endpoint returns all required metadata fields `P0` `full`
-- [ ] OpenID Connect Dynamic Client Registration 1.0: register, read, and update client metadata `P1` `full`
-- [ ] UserInfo endpoint: returns correct claims for authenticated user with valid access token `P0` `full`
-- [ ] ID Token validation: all required claims (iss, sub, aud, exp, iat, nonce) verified `P0` `full`
+- [x] OpenID Connect Core 1.0: all required claims present, correct ID token signing, scope handling `P0` `full`
+- [x] OpenID Connect Discovery 1.0: well-known endpoint returns all required metadata fields `P0` `full`
+- [x] OpenID Connect Dynamic Client Registration 1.0: register, read, and update client metadata `P1` `full`
+- [x] UserInfo endpoint: returns correct claims for authenticated user with valid access token `P0` `full`
+- [x] ID Token validation: all required claims (iss, sub, aud, exp, iat, nonce) verified `P0` `full`
 
 ---
 

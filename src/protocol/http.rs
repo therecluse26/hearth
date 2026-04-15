@@ -252,6 +252,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/clients", axum::routing::post(register_client))
         .route("/authorize", axum::routing::post(authorize))
         .route("/token", axum::routing::post(token_exchange))
+        .route("/userinfo", axum::routing::get(userinfo))
+        .route("/register", axum::routing::post(dynamic_register_client))
         .nest("/admin", admin_routes)
         .with_state(state)
 }
@@ -713,6 +715,83 @@ async fn token_exchange(
             .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+// === UserInfo endpoint (OIDC Core §5.3) ===
+
+/// GET /userinfo — returns claims about the authenticated user.
+async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    // Extract Bearer token from Authorization header
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid_token"})),
+        )
+            .into_response();
+    };
+
+    match state.identity.userinfo(&tenant_id, token) {
+        Ok(info) => (StatusCode::OK, Json(serde_json::json!(info))).into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// === Dynamic Client Registration (RFC 7591) ===
+
+/// POST /register — dynamically register a new OAuth 2.0 client.
+async fn dynamic_register_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpDynamicRegisterRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = RegisterClientRequest {
+        client_name: body.client_name.unwrap_or_default(),
+        redirect_uris: body.redirect_uris.unwrap_or_default(),
+        client_secret: None, // Dynamic registration creates public clients
+        grant_types: body
+            .grant_types
+            .unwrap_or_else(|| vec!["authorization_code".to_string()]),
+    };
+
+    match state.identity.register_client(&tenant_id, &request) {
+        Ok(client) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "client_id": client.client_id().to_string(),
+                "client_name": client.client_name(),
+                "redirect_uris": client.redirect_uris(),
+                "grant_types": client.grant_types(),
+                "registration_client_uri": format!("/register/{}", client.client_id().as_uuid()),
+            })),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Request body for dynamic client registration (RFC 7591).
+#[derive(Debug, Deserialize)]
+struct HttpDynamicRegisterRequest {
+    /// Human-readable client name.
+    client_name: Option<String>,
+    /// Redirect URIs for the client.
+    redirect_uris: Option<Vec<String>>,
+    /// Grant types the client will use.
+    grant_types: Option<Vec<String>>,
 }
 
 // === Admin API endpoints ===

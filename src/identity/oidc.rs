@@ -341,11 +341,15 @@ pub(crate) struct StoredAuthorizationCode {
     pub(crate) expires_at: Timestamp,
     /// Whether the code has already been used.
     pub(crate) used: bool,
+    /// The nonce from the authorization request (echoed in ID token per OIDC Core §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) nonce: Option<String>,
 }
 
 /// OIDC Discovery document (`OpenID` Connect Discovery 1.0).
 ///
 /// Contains metadata about the `OpenID` Provider's configuration.
+/// All REQUIRED fields per `OpenID` Connect Discovery 1.0 §3 are included.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OidcDiscoveryDocument {
     /// The issuer identifier URL.
@@ -356,20 +360,29 @@ pub struct OidcDiscoveryDocument {
     pub token_endpoint: String,
     /// URL of the JWKS endpoint.
     pub jwks_uri: String,
+    /// URL of the `UserInfo` endpoint (OIDC Core §5.3).
+    pub userinfo_endpoint: String,
     /// Supported response types.
     pub response_types_supported: Vec<String>,
+    /// Supported response modes (OIDC Core §3).
+    pub response_modes_supported: Vec<String>,
     /// Supported subject identifier types.
     pub subject_types_supported: Vec<String>,
     /// Supported ID token signing algorithms.
     pub id_token_signing_alg_values_supported: Vec<String>,
     /// Supported scopes.
     pub scopes_supported: Vec<String>,
+    /// Claims supported by this provider.
+    pub claims_supported: Vec<String>,
     /// Supported token endpoint auth methods.
     pub token_endpoint_auth_methods_supported: Vec<String>,
     /// Supported PKCE code challenge methods.
     pub code_challenge_methods_supported: Vec<String>,
     /// Supported grant types.
     pub grant_types_supported: Vec<String>,
+    /// URL of the dynamic client registration endpoint (RFC 7591).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_endpoint: Option<String>,
     /// URL of the device authorization endpoint (RFC 8628).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_authorization_endpoint: Option<String>,
@@ -609,6 +622,27 @@ impl IntrospectionResponse {
     }
 }
 
+// ===== UserInfo (OIDC Core §5.3) =====
+
+/// Response from the `UserInfo` endpoint (OIDC Core §5.3).
+///
+/// The `sub` claim is always returned. Other claims are filtered by
+/// the access token's granted scopes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserInfoResponse {
+    /// Subject — the user ID. Always present.
+    pub sub: String,
+    /// User's email address. Present when scope includes `email`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Whether the email is verified. Present when scope includes `email`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_verified: Option<bool>,
+    /// User's display name. Present when scope includes `profile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,6 +724,7 @@ mod tests {
             created_at: Timestamp::from_micros(1_000_000),
             expires_at: Timestamp::from_micros(2_000_000),
             used: false,
+            nonce: Some("test-nonce-abc".to_string()),
         };
 
         let json = serde_json::to_string(&code).expect("serialize");
@@ -706,16 +741,20 @@ mod tests {
             authorization_endpoint: "https://hearth.local/authorize".to_string(),
             token_endpoint: "https://hearth.local/token".to_string(),
             jwks_uri: "https://hearth.local/.well-known/jwks.json".to_string(),
+            userinfo_endpoint: "https://hearth.local/userinfo".to_string(),
             response_types_supported: vec!["code".to_string()],
+            response_modes_supported: vec!["query".to_string()],
             subject_types_supported: vec!["public".to_string()],
             id_token_signing_alg_values_supported: vec!["EdDSA".to_string()],
             scopes_supported: vec!["openid".to_string()],
+            claims_supported: vec!["sub".to_string()],
             token_endpoint_auth_methods_supported: vec!["none".to_string()],
             code_challenge_methods_supported: vec!["S256".to_string()],
             grant_types_supported: vec![
                 "authorization_code".to_string(),
                 "client_credentials".to_string(),
             ],
+            registration_endpoint: Some("https://hearth.local/register".to_string()),
             device_authorization_endpoint: Some(
                 "https://hearth.local/device/authorize".to_string(),
             ),

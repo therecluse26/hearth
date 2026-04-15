@@ -102,6 +102,12 @@ pub struct TokenClaims {
     /// OAuth 2.0 scope string (space-delimited).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// OIDC nonce — echoed from the authorization request into the ID token.
+    ///
+    /// Per `OpenID` Connect Core 1.0 §2, when a nonce is provided in the
+    /// authorization request, the ID token MUST include it unmodified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 /// A pair of access and refresh tokens.
@@ -316,6 +322,7 @@ impl SigningKey {
             jti: None,
             fid: None,
             scope: None,
+            nonce: None,
         };
 
         let refresh_claims = TokenClaims {
@@ -330,6 +337,7 @@ impl SigningKey {
             jti: None,
             fid: None,
             scope: None,
+            nonce: None,
         };
 
         let access_token = self.issue_token(&access_claims)?;
@@ -481,6 +489,7 @@ mod tests {
             jti: None,
             fid: None,
             scope: None,
+            nonce: None,
         }
     }
 
