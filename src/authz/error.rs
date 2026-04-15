@@ -18,6 +18,24 @@ pub enum AuthzError {
         /// Description of what was invalid.
         reason: String,
     },
+    /// A conditional write precondition was not met.
+    ///
+    /// Returned when `TouchIfAbsent` finds an existing tuple or
+    /// `DeleteIfPresent` finds no tuple. The entire batch is rejected.
+    PreconditionFailed {
+        /// Description of which precondition failed.
+        reason: String,
+    },
+    /// The namespace configuration is invalid or a tuple violates the schema.
+    InvalidNamespace {
+        /// Description of the namespace violation.
+        reason: String,
+    },
+    /// The caller is not authorized to perform this operation.
+    Unauthorized {
+        /// Description of the authorization failure.
+        reason: String,
+    },
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -28,6 +46,9 @@ impl fmt::Display for AuthzError {
             Self::InvalidTuple { reason } => write!(f, "invalid tuple: {reason}"),
             Self::MaxDepthExceeded => write!(f, "graph traversal exceeded maximum depth"),
             Self::InvalidReference { reason } => write!(f, "invalid reference: {reason}"),
+            Self::PreconditionFailed { reason } => write!(f, "precondition failed: {reason}"),
+            Self::InvalidNamespace { reason } => write!(f, "invalid namespace: {reason}"),
+            Self::Unauthorized { reason } => write!(f, "unauthorized: {reason}"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
         }
     }
@@ -37,9 +58,12 @@ impl std::error::Error for AuthzError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Storage(err) => Some(&**err),
-            Self::InvalidTuple { .. } | Self::MaxDepthExceeded | Self::InvalidReference { .. } => {
-                None
-            }
+            Self::InvalidTuple { .. }
+            | Self::MaxDepthExceeded
+            | Self::InvalidReference { .. }
+            | Self::PreconditionFailed { .. }
+            | Self::InvalidNamespace { .. }
+            | Self::Unauthorized { .. } => None,
         }
     }
 }
@@ -100,6 +124,36 @@ mod tests {
     }
 
     #[test]
+    fn authz_error_display_precondition_failed() {
+        let err = AuthzError::PreconditionFailed {
+            reason: "tuple already exists".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("precondition failed"), "got: {display}");
+        assert!(display.contains("tuple already exists"), "got: {display}");
+    }
+
+    #[test]
+    fn authz_error_display_invalid_namespace() {
+        let err = AuthzError::InvalidNamespace {
+            reason: "unknown type".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid namespace"), "got: {display}");
+        assert!(display.contains("unknown type"), "got: {display}");
+    }
+
+    #[test]
+    fn authz_error_display_unauthorized() {
+        let err = AuthzError::Unauthorized {
+            reason: "missing tenant".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("unauthorized"), "got: {display}");
+        assert!(display.contains("missing tenant"), "got: {display}");
+    }
+
+    #[test]
     fn authz_error_source_others_none() {
         let err = AuthzError::InvalidTuple {
             reason: "bad".to_string(),
@@ -110,6 +164,21 @@ mod tests {
         assert!(err.source().is_none());
 
         let err = AuthzError::InvalidReference {
+            reason: "bad".to_string(),
+        };
+        assert!(err.source().is_none());
+
+        let err = AuthzError::PreconditionFailed {
+            reason: "bad".to_string(),
+        };
+        assert!(err.source().is_none());
+
+        let err = AuthzError::InvalidNamespace {
+            reason: "bad".to_string(),
+        };
+        assert!(err.source().is_none());
+
+        let err = AuthzError::Unauthorized {
             reason: "bad".to_string(),
         };
         assert!(err.source().is_none());

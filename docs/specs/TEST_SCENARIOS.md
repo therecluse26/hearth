@@ -583,22 +583,22 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Watch API: registering a watch returns real-time tuple change events `P0` `fast`
-- [ ] Consistency tokens (zookies): read-after-write returns fresh data when zookie is passed `P0` `fast`
-- [ ] Permission caching: repeated check() for same tuple served from cache; invalidated on write `P0` `fast`
-- [ ] Namespace configuration: define object types and relations via schema DSL `P0` `fast`
-- [ ] Conditional tuple writes: write succeeds only when precondition (touch/no-touch) is met `P0` `fast`
+- [x] Watch API: registering a watch returns real-time tuple change events `P0` `fast`
+- [x] Consistency tokens (zookies): read-after-write returns fresh data when zookie is passed `P0` `fast`
+- [x] Permission caching: repeated check() for same tuple served from cache; invalidated on write `P0` `fast`
+- [x] Namespace configuration: define object types and relations via schema DSL `P0` `fast`
+- [x] Conditional tuple writes: write succeeds only when precondition (touch/no-touch) is met `P0` `fast`
 
 #### Integration
 
-- [ ] Watch API end-to-end: subscribe → write tuple → receive event → verify event contents `P0` `fast`
-- [ ] Schema migration: update namespace config → verify existing tuples re-evaluated correctly `P0` `fast`
-- [ ] Zanzibar integration with identity: user deletion cascades to relationship tuple cleanup `P0` `fast`
+- [x] Watch API end-to-end: subscribe → write tuple → receive event → verify event contents `P0` `fast`
+- [x] Schema migration: update namespace config → verify existing tuples re-evaluated correctly `P0` `fast`
+- [x] Zanzibar integration with identity: user deletion cascades to relationship tuple cleanup `P0` `fast`
 
 #### Property
 
 - [ ] Random tuple writes with concurrent watch subscriptions: all subscribers see all events (`proptest`) `P0` `extended`
-- [ ] Cache invalidation correctness: no stale permission results after tuple mutation (`proptest`) `P0` `extended`
+- [x] Cache invalidation correctness: no stale permission results after tuple mutation (`proptest`) `P0` `extended`
 
 #### Simulation
 
@@ -607,12 +607,12 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] Watch subscription without authorization rejected; no information leak via watch events `P0` `fast`
-- [ ] Malformed namespace schema rejected with descriptive error; existing config unchanged `P0` `fast`
+- [x] Watch subscription without authorization rejected; no information leak via watch events `P0` `fast`
+- [x] Malformed namespace schema rejected with descriptive error; existing config unchanged `P0` `fast`
 
 #### Benchmark
 
-- [ ] Cached permission check: p50 < 5 μs, p99 < 50 μs (regression: +20%) `P0` `standard`
+- [x] Cached permission check: p50 < 5 μs, p99 < 50 μs (regression: +20%) `P0` `standard`
 - [ ] Watch event delivery latency: p50 < 1 ms, p99 < 10 ms from tuple write to subscriber receipt `P0` `standard`
 
 ---

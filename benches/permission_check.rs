@@ -3,6 +3,7 @@
 //! Covers `TEST_SCENARIOS.md` § Authorization Engine — Benchmark:
 //! 1. Direct permission check: p50 < 20 μs, p99 < 200 μs
 //! 2. 3-hop graph traversal: p50 < 100 μs, p99 < 1 ms
+//! 3. Cached permission check: p50 < 5 μs (`ArcSwap` cache hit)
 
 use std::sync::Arc;
 
@@ -92,7 +93,9 @@ fn bench_direct_check(c: &mut Criterion) {
 
     c.bench_function("authz_direct_check", |b| {
         b.iter(|| {
-            let result = engine.check(&tenant, &obj, "viewer", &subj).expect("check");
+            let result = engine
+                .check(&tenant, &obj, "viewer", &subj, None)
+                .expect("check");
             assert!(result);
         });
     });
@@ -104,12 +107,36 @@ fn bench_3_hop_traversal(c: &mut Criterion) {
     c.bench_function("authz_3_hop_traversal", |b| {
         b.iter(|| {
             let result = engine
-                .check(&tenant, &doc, "viewer", &alice)
+                .check(&tenant, &doc, "viewer", &alice, None)
                 .expect("check");
             assert!(result);
         });
     });
 }
 
-criterion_group!(benches, bench_direct_check, bench_3_hop_traversal);
+fn bench_cached_check(c: &mut Criterion) {
+    let (_dir, engine, tenant, obj, subj) = setup_direct();
+
+    // Prime the cache with an initial check
+    let result = engine
+        .check(&tenant, &obj, "viewer", &subj, None)
+        .expect("check");
+    assert!(result);
+
+    c.bench_function("authz_cached_check", |b| {
+        b.iter(|| {
+            let result = engine
+                .check(&tenant, &obj, "viewer", &subj, None)
+                .expect("check");
+            assert!(result);
+        });
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_direct_check,
+    bench_3_hop_traversal,
+    bench_cached_check
+);
 criterion_main!(benches);

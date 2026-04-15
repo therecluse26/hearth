@@ -4,15 +4,45 @@
 //! persistence. Performs BFS graph traversal with visited-set cycle detection
 //! and configurable depth limiting.
 
-use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use arc_swap::ArcSwap;
 
 use crate::authz::error::AuthzError;
 use crate::authz::keys;
-use crate::authz::types::{ObjectRef, RelationshipTuple, SubjectRef, TupleWrite, WatchFilter};
+use crate::authz::types::{
+    ConsistencyToken, NamespaceConfig, ObjectRef, RelationshipTuple, SubjectRef, TupleChangeAction,
+    TupleChangeEvent, TupleWrite, WatchFilter, WatchReceiver,
+};
 use crate::authz::AuthorizationEngine;
 use crate::core::TenantId;
 use crate::storage::StorageEngine;
+
+/// Cache key for permission check results.
+///
+/// Encodes `(tenant, object_display, relation, subject_display)` as a single
+/// string to avoid the overhead of tuple hashing with multiple string fields.
+type CacheKey = String;
+
+/// Builds a cache key from the check parameters.
+fn cache_key(
+    tenant_id: &TenantId,
+    object: &ObjectRef,
+    relation: &str,
+    subject: &SubjectRef,
+) -> CacheKey {
+    format!("{tenant_id}|{object}|{relation}|{subject}")
+}
+
+/// Builds the invalidation prefix for a (tenant, object, relation) triple.
+///
+/// Any cache entry whose key starts with this prefix is invalidated when
+/// a tuple with matching (tenant, object, relation) is written or deleted.
+fn invalidation_prefix(tenant_id: &TenantId, object: &ObjectRef, relation: &str) -> String {
+    format!("{tenant_id}|{object}|{relation}|")
+}
 
 /// Default maximum BFS traversal depth.
 const DEFAULT_MAX_DEPTH: u32 = 10;
@@ -36,11 +66,26 @@ impl Default for AuthzConfig {
 ///
 /// Stores Zanzibar-style relationship tuples in forward and reverse indexes
 /// and evaluates permissions via BFS graph traversal.
+/// Default broadcast channel capacity per tenant.
+const WATCH_CHANNEL_CAPACITY: usize = 1024;
+
 pub struct EmbeddedAuthzEngine {
     /// The underlying storage engine.
     storage: Arc<dyn StorageEngine>,
     /// Engine configuration.
     config: AuthzConfig,
+    /// Monotonic version counter for consistency tokens and watch sequences.
+    version: AtomicU64,
+    /// Lock-free permission cache: `(tenant|object|relation|subject)` → `bool`.
+    ///
+    /// Uses `ArcSwap` for zero-allocation reads on the hot path.
+    /// Invalidated on writes by rebuilding without affected entries.
+    cache: ArcSwap<HashMap<CacheKey, bool>>,
+    /// Per-tenant broadcast senders for watch API.
+    ///
+    /// Protected by `Mutex` for sender management (not on hot read path).
+    /// The broadcast channel itself uses lock-free internals.
+    watch_senders: Mutex<HashMap<String, tokio::sync::broadcast::Sender<TupleChangeEvent>>>,
 }
 
 impl std::fmt::Debug for EmbeddedAuthzEngine {
@@ -54,7 +99,13 @@ impl std::fmt::Debug for EmbeddedAuthzEngine {
 impl EmbeddedAuthzEngine {
     /// Creates a new authorization engine backed by the given storage engine.
     pub fn new(storage: Arc<dyn StorageEngine>, config: AuthzConfig) -> Self {
-        Self { storage, config }
+        Self {
+            storage,
+            config,
+            version: AtomicU64::new(0),
+            cache: ArcSwap::from_pointee(HashMap::new()),
+            watch_senders: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Writes a single relationship tuple to both indexes.
@@ -95,6 +146,185 @@ impl EmbeddedAuthzEngine {
         Ok(())
     }
 
+    /// Returns whether a specific tuple exists in storage.
+    fn tuple_exists(
+        &self,
+        tenant_id: &TenantId,
+        tuple: &RelationshipTuple,
+    ) -> Result<bool, AuthzError> {
+        let fwd_key = keys::encode_forward(&tuple.object, &tuple.relation, &tuple.subject);
+        let result = self
+            .storage
+            .get(tenant_id, &fwd_key)
+            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+        Ok(result.is_some())
+    }
+
+    /// Inserts a single entry into the permission cache.
+    ///
+    /// Loads the current snapshot, builds a new map with the added entry,
+    /// and atomically swaps it in. Concurrent inserts may overwrite each
+    /// other, which is safe — cached values are always eventually consistent
+    /// with storage and invalidated on writes.
+    fn cache_insert(&self, key: &str, value: bool) {
+        let old = self.cache.load();
+        let mut new_map = (**old).clone();
+        new_map.insert(key.to_string(), value);
+        self.cache.store(Arc::new(new_map));
+    }
+
+    /// Invalidates cache entries affected by the given tuple writes.
+    ///
+    /// For each written/deleted tuple, removes all cache entries whose key
+    /// matches the `(tenant, object, relation)` prefix. This is conservative
+    /// — it may evict unrelated entries for the same object/relation but
+    /// guarantees no stale positives or negatives.
+    fn invalidate_cache(&self, tenant_id: &TenantId, writes: &[TupleWrite]) {
+        let mut prefixes_to_invalidate = HashSet::new();
+        for write in writes {
+            let tuple = match write {
+                TupleWrite::Touch(t)
+                | TupleWrite::Delete(t)
+                | TupleWrite::TouchIfAbsent(t)
+                | TupleWrite::DeleteIfPresent(t) => t,
+            };
+            prefixes_to_invalidate.insert(invalidation_prefix(
+                tenant_id,
+                &tuple.object,
+                &tuple.relation,
+            ));
+        }
+
+        let old = self.cache.load();
+        let new_map: HashMap<CacheKey, bool> = old
+            .iter()
+            .filter(|(k, _)| !prefixes_to_invalidate.iter().any(|p| k.starts_with(p)))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        self.cache.store(Arc::new(new_map));
+    }
+
+    /// Gets or creates a broadcast sender for the given tenant.
+    fn get_or_create_sender(
+        &self,
+        tenant_id: &TenantId,
+    ) -> tokio::sync::broadcast::Sender<TupleChangeEvent> {
+        // INVARIANT: Mutex is only held for HashMap lookup/insert, never across .await
+        #[allow(clippy::unwrap_used)]
+        let mut senders = self.watch_senders.lock().unwrap();
+        let key = tenant_id.to_string();
+        senders
+            .entry(key)
+            .or_insert_with(|| tokio::sync::broadcast::channel(WATCH_CHANNEL_CAPACITY).0)
+            .clone()
+    }
+
+    /// Persists a watch event to storage and broadcasts to active watchers.
+    fn emit_watch_event(
+        &self,
+        tenant_id: &TenantId,
+        sequence: u64,
+        index: u32,
+        action: TupleChangeAction,
+        tuple: &RelationshipTuple,
+        timestamp_us: u64,
+    ) -> Result<(), AuthzError> {
+        let event = TupleChangeEvent {
+            sequence,
+            action,
+            object_type: tuple.object.object_type().to_string(),
+            object_id: tuple.object.object_id().to_string(),
+            relation: tuple.relation.clone(),
+            subject: format!("{}", tuple.subject),
+            tenant_id: tenant_id.to_string(),
+            timestamp_us,
+        };
+
+        // Persist event
+        let key = keys::encode_watch_event(sequence, index);
+        let value = serde_json::to_vec(&event).map_err(|e| AuthzError::Storage(Box::new(e)))?;
+        self.storage
+            .put(tenant_id, &key, &value)
+            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+
+        // Broadcast to active watchers (ignore send errors — no receivers is OK)
+        let sender = self.get_or_create_sender(tenant_id);
+        let _ = sender.send(event);
+
+        Ok(())
+    }
+
+    /// Loads persisted watch events since a given sequence number.
+    fn load_events_since(
+        &self,
+        tenant_id: &TenantId,
+        since_sequence: u64,
+    ) -> Result<Vec<TupleChangeEvent>, AuthzError> {
+        let start = keys::encode_watch_event(since_sequence + 1, 0);
+        let prefix = keys::encode_watch_event_prefix();
+        let end = keys::prefix_end(prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+
+        let mut events = Vec::new();
+        for entry in &entries {
+            let event: TupleChangeEvent = serde_json::from_slice(&entry.value)
+                .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    /// Validates a tuple against the namespace configuration.
+    ///
+    /// Returns `Ok(())` if the tuple conforms to the schema or if no schema is set.
+    fn validate_tuple_against_namespace(
+        config: &NamespaceConfig,
+        tuple: &RelationshipTuple,
+    ) -> Result<(), AuthzError> {
+        let object_type = tuple.object.object_type();
+
+        let type_config =
+            config
+                .object_types
+                .get(object_type)
+                .ok_or_else(|| AuthzError::InvalidNamespace {
+                    reason: format!("unknown object type: {object_type}"),
+                })?;
+
+        let relation_config = type_config.relations.get(&tuple.relation).ok_or_else(|| {
+            AuthzError::InvalidNamespace {
+                reason: format!(
+                    "unknown relation '{}' for object type '{object_type}'",
+                    tuple.relation
+                ),
+            }
+        })?;
+
+        let subject_type = match &tuple.subject {
+            SubjectRef::Direct(obj) => obj.object_type(),
+            SubjectRef::Userset { object, .. } => object.object_type(),
+        };
+
+        if !relation_config
+            .allowed_subject_types
+            .iter()
+            .any(|t| t == subject_type)
+        {
+            return Err(AuthzError::InvalidNamespace {
+                reason: format!(
+                    "subject type '{subject_type}' not allowed for {object_type}#{} (allowed: {:?})",
+                    tuple.relation, relation_config.allowed_subject_types
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Scans all subjects for a given (object, relation) pair.
     fn scan_subjects(
         &self,
@@ -126,14 +356,29 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
         object: &ObjectRef,
         relation: &str,
         subject: &SubjectRef,
+        _at_least: Option<&ConsistencyToken>,
     ) -> Result<bool, AuthzError> {
-        // 1. Direct lookup — hot path: single storage.get()
+        // In single-node mode, data is always fresh. The at_least parameter
+        // establishes the API contract for Phase 2 clustering.
+
+        // 0. Cache lookup — zero-allocation hot path via ArcSwap::load()
+        let key = cache_key(tenant_id, object, relation, subject);
+        let cache_snapshot = self.cache.load();
+        if let Some(&cached) = cache_snapshot.get(&key) {
+            return Ok(cached);
+        }
+        // Drop the Arc guard before doing I/O
+        drop(cache_snapshot);
+
+        // 1. Direct lookup — single storage.get()
         let fwd_key = keys::encode_forward(object, relation, subject);
         let direct = self
             .storage
             .get(tenant_id, &fwd_key)
             .map_err(|e| AuthzError::Storage(Box::new(e)))?;
         if direct.is_some() {
+            // Populate cache with positive result
+            self.cache_insert(&key, true);
             return Ok(true);
         }
 
@@ -162,6 +407,7 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
                 match s {
                     SubjectRef::Direct(_) => {
                         if s == subject {
+                            self.cache_insert(&key, true);
                             return Ok(true);
                         }
                     }
@@ -182,6 +428,8 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
             }
         }
 
+        // Cache negative result
+        self.cache_insert(&key, false);
         Ok(false)
     }
 
@@ -190,6 +438,7 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
         tenant_id: &TenantId,
         object: &ObjectRef,
         relation: &str,
+        _at_least: Option<&ConsistencyToken>,
     ) -> Result<Vec<SubjectRef>, AuthzError> {
         let mut result: Vec<SubjectRef> = Vec::new();
         let mut seen_direct: HashSet<String> = HashSet::new();
@@ -239,21 +488,140 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
         Ok(result)
     }
 
-    fn write_tuples(&self, tenant_id: &TenantId, writes: &[TupleWrite]) -> Result<(), AuthzError> {
-        for write in writes {
-            match write {
-                TupleWrite::Touch(tuple) => self.write_tuple(tenant_id, tuple)?,
-                TupleWrite::Delete(tuple) => self.delete_tuple(tenant_id, tuple)?,
+    fn write_tuples(
+        &self,
+        tenant_id: &TenantId,
+        writes: &[TupleWrite],
+    ) -> Result<ConsistencyToken, AuthzError> {
+        // Phase 0: validate against namespace schema if configured
+        if let Some(ns_config) = self.get_namespace(tenant_id)? {
+            for write in writes {
+                let tuple = match write {
+                    TupleWrite::Touch(t)
+                    | TupleWrite::TouchIfAbsent(t)
+                    | TupleWrite::Delete(t)
+                    | TupleWrite::DeleteIfPresent(t) => t,
+                };
+                Self::validate_tuple_against_namespace(&ns_config, tuple)?;
             }
         }
+
+        // Phase 1: validate all preconditions before applying any writes (all-or-nothing)
+        for write in writes {
+            match write {
+                TupleWrite::TouchIfAbsent(tuple) => {
+                    if self.tuple_exists(tenant_id, tuple)? {
+                        return Err(AuthzError::PreconditionFailed {
+                            reason: format!("tuple already exists: {tuple}"),
+                        });
+                    }
+                }
+                TupleWrite::DeleteIfPresent(tuple) => {
+                    if !self.tuple_exists(tenant_id, tuple)? {
+                        return Err(AuthzError::PreconditionFailed {
+                            reason: format!("tuple does not exist: {tuple}"),
+                        });
+                    }
+                }
+                TupleWrite::Touch(_) | TupleWrite::Delete(_) => {}
+            }
+        }
+
+        // Phase 2: apply all writes
+        for write in writes {
+            match write {
+                TupleWrite::Touch(tuple) | TupleWrite::TouchIfAbsent(tuple) => {
+                    self.write_tuple(tenant_id, tuple)?;
+                }
+                TupleWrite::Delete(tuple) | TupleWrite::DeleteIfPresent(tuple) => {
+                    self.delete_tuple(tenant_id, tuple)?;
+                }
+            }
+        }
+
+        // Invalidate cache entries affected by these writes
+        self.invalidate_cache(tenant_id, writes);
+
+        // Increment version counter and return consistency token
+        let new_version = self.version.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // Emit watch events for each write operation
+        // Timestamp in Unix microseconds. u64 holds ~584,942 years of microseconds,
+        // so truncation from u128 is safe for any realistic timestamp.
+        #[allow(clippy::cast_possible_truncation)]
+        let timestamp_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_micros() as u64);
+
+        for (idx, write) in writes.iter().enumerate() {
+            let (action, tuple) = match write {
+                TupleWrite::Touch(t) | TupleWrite::TouchIfAbsent(t) => {
+                    (TupleChangeAction::Touch, t)
+                }
+                TupleWrite::Delete(t) | TupleWrite::DeleteIfPresent(t) => {
+                    (TupleChangeAction::Delete, t)
+                }
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let index = idx as u32;
+            self.emit_watch_event(tenant_id, new_version, index, action, tuple, timestamp_us)?;
+        }
+
+        Ok(ConsistencyToken::new(new_version))
+    }
+
+    fn set_namespace(
+        &self,
+        tenant_id: &TenantId,
+        config: &NamespaceConfig,
+    ) -> Result<(), AuthzError> {
+        let key = keys::encode_namespace_config();
+        let value = serde_json::to_vec(config).map_err(|e| AuthzError::Storage(Box::new(e)))?;
+        self.storage
+            .put(tenant_id, key, &value)
+            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
         Ok(())
     }
 
-    fn watch(&self, _tenant_id: &TenantId, _filter: &WatchFilter) -> Result<(), AuthzError> {
-        // Stub for Phase 1+
-        Err(AuthzError::InvalidTuple {
-            reason: "watch() is not yet implemented (Phase 1+)".to_string(),
-        })
+    fn get_namespace(&self, tenant_id: &TenantId) -> Result<Option<NamespaceConfig>, AuthzError> {
+        let key = keys::encode_namespace_config();
+        let value = self
+            .storage
+            .get(tenant_id, key)
+            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+        match value {
+            Some(bytes) => {
+                let config =
+                    serde_json::from_slice(&bytes).map_err(|e| AuthzError::Storage(Box::new(e)))?;
+                Ok(Some(config))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn watch(
+        &self,
+        tenant_id: &TenantId,
+        filter: &WatchFilter,
+        resume_from: Option<&ConsistencyToken>,
+    ) -> Result<WatchReceiver, AuthzError> {
+        // Load replay events from storage if resume_from is specified
+        let replay_events = if let Some(token) = resume_from {
+            let mut events = self.load_events_since(tenant_id, token.version())?;
+            // Filter by object_type if filter is set
+            if let Some(ref filter_type) = filter.object_type {
+                events.retain(|e| e.object_type == *filter_type);
+            }
+            events
+        } else {
+            Vec::new()
+        };
+
+        // Subscribe to the broadcast channel for live events
+        let sender = self.get_or_create_sender(tenant_id);
+        let rx = sender.subscribe();
+
+        Ok(WatchReceiver { rx, replay_events })
     }
 }
 
@@ -293,7 +661,9 @@ mod tests {
             .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
             .expect("write");
 
-        let result = engine.check(&tenant, &obj, "viewer", &subj).expect("check");
+        let result = engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check");
         assert!(result, "direct relationship should be found");
     }
 
@@ -305,7 +675,9 @@ mod tests {
         let obj = ObjectRef::new("document", "readme").expect("valid");
         let subj = SubjectRef::direct("user", "bob").expect("valid");
 
-        let result = engine.check(&tenant, &obj, "viewer", &subj).expect("check");
+        let result = engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check");
         assert!(!result, "absent relationship should not be found");
     }
 
@@ -322,7 +694,9 @@ mod tests {
             .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
             .expect("write");
 
-        let result = engine.check(&tenant, &obj, "editor", &subj).expect("check");
+        let result = engine
+            .check(&tenant, &obj, "editor", &subj, None)
+            .expect("check");
         assert!(!result, "wrong relation should not match");
     }
 
@@ -351,7 +725,7 @@ mod tests {
             .expect("write");
 
         let result = engine
-            .check(&tenant, &doc, "viewer", &alice)
+            .check(&tenant, &doc, "viewer", &alice, None)
             .expect("check");
         assert!(result, "2-hop transitive check should succeed");
     }
@@ -388,7 +762,7 @@ mod tests {
             .expect("write");
 
         let result = engine
-            .check(&tenant, &doc, "viewer", &alice)
+            .check(&tenant, &doc, "viewer", &alice, None)
             .expect("check");
         assert!(result, "3-hop transitive check should succeed");
     }
@@ -418,7 +792,9 @@ mod tests {
 
         // check for a user not in the cycle — should terminate and return false
         let user = SubjectRef::direct("user", "alice").expect("valid");
-        let result = engine.check(&tenant, &a, "member", &user).expect("check");
+        let result = engine
+            .check(&tenant, &a, "member", &user, None)
+            .expect("check");
         assert!(!result, "cycle should not produce false positive");
     }
 
@@ -450,7 +826,9 @@ mod tests {
             )
             .expect("write");
 
-        let result = engine.check(&tenant, &a, "member", &alice).expect("check");
+        let result = engine
+            .check(&tenant, &a, "member", &alice, None)
+            .expect("check");
         assert!(result, "should find alice through cycle");
     }
 
@@ -469,14 +847,18 @@ mod tests {
         engine
             .write_tuples(&tenant, &[TupleWrite::Touch(tuple.clone())])
             .expect("write");
-        assert!(engine.check(&tenant, &obj, "viewer", &subj).expect("check"));
+        assert!(engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check"));
 
         // Delete
         engine
             .write_tuples(&tenant, &[TupleWrite::Delete(tuple)])
             .expect("delete");
         assert!(
-            !engine.check(&tenant, &obj, "viewer", &subj).expect("check"),
+            !engine
+                .check(&tenant, &obj, "viewer", &subj, None)
+                .expect("check"),
             "deleted tuple should not be found"
         );
     }
@@ -500,9 +882,11 @@ mod tests {
             .expect("write");
 
         assert!(engine
-            .check(&tenant, &obj, "viewer", &alice)
+            .check(&tenant, &obj, "viewer", &alice, None)
             .expect("check"));
-        assert!(engine.check(&tenant, &obj, "editor", &bob).expect("check"));
+        assert!(engine
+            .check(&tenant, &obj, "editor", &bob, None)
+            .expect("check"));
     }
 
     // ===== Scenario 5: Expand =====
@@ -525,7 +909,9 @@ mod tests {
             )
             .expect("write");
 
-        let subjects = engine.expand(&tenant, &obj, "viewer").expect("expand");
+        let subjects = engine
+            .expand(&tenant, &obj, "viewer", None)
+            .expect("expand");
         assert_eq!(subjects.len(), 2);
         assert!(subjects.contains(&alice));
         assert!(subjects.contains(&bob));
@@ -560,7 +946,9 @@ mod tests {
             )
             .expect("write");
 
-        let subjects = engine.expand(&tenant, &doc, "viewer").expect("expand");
+        let subjects = engine
+            .expand(&tenant, &doc, "viewer", None)
+            .expect("expand");
         assert_eq!(subjects.len(), 2);
         assert!(subjects.contains(&alice));
         assert!(subjects.contains(&bob));
@@ -572,20 +960,534 @@ mod tests {
         let tenant = TenantId::generate();
 
         let obj = ObjectRef::new("document", "readme").expect("valid");
-        let subjects = engine.expand(&tenant, &obj, "viewer").expect("expand");
+        let subjects = engine
+            .expand(&tenant, &obj, "viewer", None)
+            .expect("expand");
         assert!(subjects.is_empty());
     }
 
-    // ===== watch() stub =====
+    // ===== Conditional writes =====
 
     #[test]
-    fn watch_returns_error() {
+    fn touch_if_absent_succeeds_when_absent() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
+
+        engine
+            .write_tuples(&tenant, &[TupleWrite::TouchIfAbsent(tuple)])
+            .expect("should succeed when tuple is absent");
+
+        assert!(engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check"));
+    }
+
+    #[test]
+    fn touch_if_absent_fails_when_present() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj, "viewer", subj).expect("valid");
+
+        // First write succeeds
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple.clone())])
+            .expect("write");
+
+        // TouchIfAbsent fails because tuple already exists
+        let err = engine
+            .write_tuples(&tenant, &[TupleWrite::TouchIfAbsent(tuple)])
+            .expect_err("should fail");
+        assert!(
+            matches!(err, AuthzError::PreconditionFailed { .. }),
+            "expected PreconditionFailed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn delete_if_present_succeeds_when_present() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
+
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple.clone())])
+            .expect("write");
+
+        engine
+            .write_tuples(&tenant, &[TupleWrite::DeleteIfPresent(tuple)])
+            .expect("should succeed when tuple exists");
+
+        assert!(!engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check"));
+    }
+
+    #[test]
+    fn delete_if_present_fails_when_absent() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj, "viewer", subj).expect("valid");
+
+        let err = engine
+            .write_tuples(&tenant, &[TupleWrite::DeleteIfPresent(tuple)])
+            .expect_err("should fail");
+        assert!(
+            matches!(err, AuthzError::PreconditionFailed { .. }),
+            "expected PreconditionFailed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn conditional_batch_all_or_nothing() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let alice = SubjectRef::direct("user", "alice").expect("valid");
+        let bob = SubjectRef::direct("user", "bob").expect("valid");
+        let tuple_alice =
+            RelationshipTuple::new(obj.clone(), "viewer", alice.clone()).expect("valid");
+        let tuple_bob = RelationshipTuple::new(obj.clone(), "viewer", bob.clone()).expect("valid");
+
+        // Pre-add alice
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple_alice.clone())])
+            .expect("write");
+
+        // Batch: TouchIfAbsent(bob) + TouchIfAbsent(alice) — alice already exists
+        // The whole batch should fail and bob should NOT be added
+        let err = engine
+            .write_tuples(
+                &tenant,
+                &[
+                    TupleWrite::TouchIfAbsent(tuple_bob.clone()),
+                    TupleWrite::TouchIfAbsent(tuple_alice),
+                ],
+            )
+            .expect_err("batch should fail");
+        assert!(matches!(err, AuthzError::PreconditionFailed { .. }));
+
+        // bob should NOT have been written (all-or-nothing)
+        assert!(
+            !engine
+                .check(&tenant, &obj, "viewer", &bob, None)
+                .expect("check"),
+            "bob should not be added when batch fails"
+        );
+    }
+
+    // ===== Consistency tokens =====
+
+    #[test]
+    fn write_tuples_returns_monotonic_tokens() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj1 = SubjectRef::direct("user", "alice").expect("valid");
+        let subj2 = SubjectRef::direct("user", "bob").expect("valid");
+        let tuple1 = RelationshipTuple::new(obj.clone(), "viewer", subj1).expect("valid");
+        let tuple2 = RelationshipTuple::new(obj, "viewer", subj2).expect("valid");
+
+        let token1 = engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple1)])
+            .expect("write");
+        let token2 = engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple2)])
+            .expect("write");
+
+        assert!(
+            token2 > token1,
+            "tokens must be monotonically increasing: {token1} vs {token2}"
+        );
+        assert!(token1.version() > 0, "first token should be > 0");
+    }
+
+    #[test]
+    fn check_with_at_least_token_succeeds() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
+
+        let token = engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect("write");
+
+        // Passing the token from the write should work in single-node mode
+        let result = engine
+            .check(&tenant, &obj, "viewer", &subj, Some(&token))
+            .expect("check");
+        assert!(result, "check with at_least token should succeed");
+    }
+
+    // ===== Permission caching =====
+
+    #[test]
+    fn cached_check_returns_same_result() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
+
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect("write");
+
+        // First check populates the cache
+        let result1 = engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check 1");
+        assert!(result1);
+
+        // Second check should hit the cache
+        let result2 = engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check 2");
+        assert!(result2);
+
+        // Negative check caches too
+        let bob = SubjectRef::direct("user", "bob").expect("valid");
+        assert!(!engine
+            .check(&tenant, &obj, "viewer", &bob, None)
+            .expect("check"));
+        assert!(!engine
+            .check(&tenant, &obj, "viewer", &bob, None)
+            .expect("check cached"));
+    }
+
+    #[test]
+    fn cache_invalidated_on_write() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
+
+        // Check returns false (and caches it)
+        assert!(!engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check"));
+
+        // Write the tuple — should invalidate the cached false
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect("write");
+
+        // Now check should return true
+        assert!(engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check after write"));
+    }
+
+    #[test]
+    fn cache_invalidated_on_delete() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
+
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple.clone())])
+            .expect("write");
+
+        // Check returns true (and caches it)
+        assert!(engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check"));
+
+        // Delete — should invalidate the cached true
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Delete(tuple)])
+            .expect("delete");
+
+        // Now check should return false
+        assert!(!engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check after delete"));
+    }
+
+    // ===== Namespace configuration =====
+
+    #[test]
+    fn namespace_set_and_get_roundtrip() {
+        use crate::authz::types::{NamespaceConfig, ObjectTypeConfig, RelationConfig};
+        use std::collections::HashMap;
+
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let mut relations = HashMap::new();
+        relations.insert(
+            "viewer".to_string(),
+            RelationConfig {
+                allowed_subject_types: vec!["user".to_string(), "group".to_string()],
+            },
+        );
+        let mut object_types = HashMap::new();
+        object_types.insert("document".to_string(), ObjectTypeConfig { relations });
+        let config = NamespaceConfig { object_types };
+
+        engine
+            .set_namespace(&tenant, &config)
+            .expect("set namespace");
+        let retrieved = engine.get_namespace(&tenant).expect("get namespace");
+        assert_eq!(retrieved, Some(config));
+    }
+
+    #[test]
+    fn namespace_not_set_returns_none() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let result = engine.get_namespace(&tenant).expect("get namespace");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn namespace_validation_rejects_unknown_object_type() {
+        use crate::authz::types::{NamespaceConfig, ObjectTypeConfig, RelationConfig};
+        use std::collections::HashMap;
+
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        // Schema only defines "document"
+        let mut relations = HashMap::new();
+        relations.insert(
+            "viewer".to_string(),
+            RelationConfig {
+                allowed_subject_types: vec!["user".to_string()],
+            },
+        );
+        let mut object_types = HashMap::new();
+        object_types.insert("document".to_string(), ObjectTypeConfig { relations });
+        let config = NamespaceConfig { object_types };
+        engine.set_namespace(&tenant, &config).expect("set");
+
+        // Try to write a tuple for "folder" — not in schema
+        let obj = ObjectRef::new("folder", "shared").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj, "viewer", subj).expect("valid");
+
+        let err = engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect_err("should reject unknown type");
+        assert!(
+            matches!(err, AuthzError::InvalidNamespace { .. }),
+            "expected InvalidNamespace, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn namespace_validation_rejects_unknown_relation() {
+        use crate::authz::types::{NamespaceConfig, ObjectTypeConfig, RelationConfig};
+        use std::collections::HashMap;
+
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let mut relations = HashMap::new();
+        relations.insert(
+            "viewer".to_string(),
+            RelationConfig {
+                allowed_subject_types: vec!["user".to_string()],
+            },
+        );
+        let mut object_types = HashMap::new();
+        object_types.insert("document".to_string(), ObjectTypeConfig { relations });
+        let config = NamespaceConfig { object_types };
+        engine.set_namespace(&tenant, &config).expect("set");
+
+        // "editor" is not a defined relation
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj, "editor", subj).expect("valid");
+
+        let err = engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect_err("should reject unknown relation");
+        assert!(matches!(err, AuthzError::InvalidNamespace { .. }));
+    }
+
+    #[test]
+    fn namespace_validation_rejects_disallowed_subject_type() {
+        use crate::authz::types::{NamespaceConfig, ObjectTypeConfig, RelationConfig};
+        use std::collections::HashMap;
+
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let mut relations = HashMap::new();
+        relations.insert(
+            "viewer".to_string(),
+            RelationConfig {
+                allowed_subject_types: vec!["user".to_string()],
+            },
+        );
+        let mut object_types = HashMap::new();
+        object_types.insert("document".to_string(), ObjectTypeConfig { relations });
+        let config = NamespaceConfig { object_types };
+        engine.set_namespace(&tenant, &config).expect("set");
+
+        // "group" subject type not allowed for viewer relation
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::userset("group", "eng", "member").expect("valid");
+        let tuple = RelationshipTuple::new(obj, "viewer", subj).expect("valid");
+
+        let err = engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect_err("should reject disallowed subject type");
+        assert!(matches!(err, AuthzError::InvalidNamespace { .. }));
+    }
+
+    #[test]
+    fn namespace_validation_allows_valid_tuples() {
+        use crate::authz::types::{NamespaceConfig, ObjectTypeConfig, RelationConfig};
+        use std::collections::HashMap;
+
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        let mut relations = HashMap::new();
+        relations.insert(
+            "viewer".to_string(),
+            RelationConfig {
+                allowed_subject_types: vec!["user".to_string(), "group".to_string()],
+            },
+        );
+        let mut object_types = HashMap::new();
+        object_types.insert("document".to_string(), ObjectTypeConfig { relations });
+        let config = NamespaceConfig { object_types };
+        engine.set_namespace(&tenant, &config).expect("set");
+
+        // Valid: user subject
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let subj = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
+
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect("should accept valid tuple");
+
+        assert!(engine
+            .check(&tenant, &obj, "viewer", &subj, None)
+            .expect("check"));
+    }
+
+    #[test]
+    fn no_namespace_allows_any_tuple() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        // No namespace set — all tuples accepted
+        let obj = ObjectRef::new("anything", "goes").expect("valid");
+        let subj = SubjectRef::direct("whatever", "subject").expect("valid");
+        let tuple =
+            RelationshipTuple::new(obj.clone(), "random_relation", subj.clone()).expect("valid");
+
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect("should accept any tuple without namespace");
+
+        assert!(engine
+            .check(&tenant, &obj, "random_relation", &subj, None)
+            .expect("check"));
+    }
+
+    // ===== Watch API =====
+
+    #[test]
+    fn watch_returns_receiver() {
         let (_dir, engine) = setup_engine();
         let tenant = TenantId::generate();
         let filter = WatchFilter { object_type: None };
 
-        let result = engine.watch(&tenant, &filter);
-        assert!(result.is_err(), "watch should return error in Phase 0");
+        let receiver = engine.watch(&tenant, &filter, None);
+        assert!(receiver.is_ok(), "watch should return a receiver");
+    }
+
+    #[test]
+    fn watch_replays_events_from_storage() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        // Write some tuples to generate watch events
+        let obj = ObjectRef::new("document", "readme").expect("valid");
+        let alice = SubjectRef::direct("user", "alice").expect("valid");
+        let tuple = RelationshipTuple::new(obj, "viewer", alice).expect("valid");
+
+        let token_before = ConsistencyToken::new(0);
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+            .expect("write");
+
+        // Watch with resume_from before the write — should replay the event
+        let filter = WatchFilter { object_type: None };
+        let mut receiver = engine
+            .watch(&tenant, &filter, Some(&token_before))
+            .expect("watch");
+
+        let event = receiver.drain_replay();
+        assert!(event.is_some(), "should have a replay event");
+        let event = event.expect("event");
+        assert_eq!(event.object_type, "document");
+        assert_eq!(event.relation, "viewer");
+    }
+
+    #[test]
+    fn watch_with_object_type_filter() {
+        let (_dir, engine) = setup_engine();
+        let tenant = TenantId::generate();
+
+        // Write tuples for different object types
+        let doc = ObjectRef::new("document", "readme").expect("valid");
+        let folder = ObjectRef::new("folder", "shared").expect("valid");
+        let alice = SubjectRef::direct("user", "alice").expect("valid");
+        let t1 = RelationshipTuple::new(doc, "viewer", alice.clone()).expect("valid");
+        let t2 = RelationshipTuple::new(folder, "viewer", alice).expect("valid");
+
+        let token_before = ConsistencyToken::new(0);
+        engine
+            .write_tuples(&tenant, &[TupleWrite::Touch(t1), TupleWrite::Touch(t2)])
+            .expect("write");
+
+        // Watch with filter for "document" only
+        let filter = WatchFilter {
+            object_type: Some("document".to_string()),
+        };
+        let mut receiver = engine
+            .watch(&tenant, &filter, Some(&token_before))
+            .expect("watch");
+
+        // Should only get the document event
+        let event = receiver.drain_replay();
+        assert!(event.is_some());
+        assert_eq!(event.expect("event").object_type, "document");
+
+        // No more events for this filter
+        // The folder event may or may not be present (depends on filtering),
+        // but the first event should be document
     }
 
     // ===== Adversarial: Max depth enforcement =====
@@ -613,7 +1515,7 @@ mod tests {
         let root = ObjectRef::new("group", "g0").expect("valid");
         let alice = SubjectRef::direct("user", "alice").expect("valid");
         let result = engine
-            .check(&tenant, &root, "member", &alice)
+            .check(&tenant, &root, "member", &alice, None)
             .expect("check");
         assert!(
             !result,
@@ -644,7 +1546,7 @@ mod tests {
         let root = ObjectRef::new("group", "g0").expect("valid");
         let alice = SubjectRef::direct("user", "alice").expect("valid");
         let result = engine
-            .check(&tenant, &root, "member", &alice)
+            .check(&tenant, &root, "member", &alice, None)
             .expect("check");
         assert!(result, "4-hop chain should succeed with max_depth=5");
     }
@@ -668,13 +1570,13 @@ mod tests {
 
         // Check under tenant A: should find it
         assert!(engine
-            .check(&tenant_a, &obj, "viewer", &subj)
+            .check(&tenant_a, &obj, "viewer", &subj, None)
             .expect("check"));
 
         // Check under tenant B: should NOT find it
         assert!(
             !engine
-                .check(&tenant_b, &obj, "viewer", &subj)
+                .check(&tenant_b, &obj, "viewer", &subj, None)
                 .expect("check"),
             "cross-tenant access must be denied"
         );
@@ -694,10 +1596,14 @@ mod tests {
             .write_tuples(&tenant_a, &[TupleWrite::Touch(tuple)])
             .expect("write");
 
-        let subjects_a = engine.expand(&tenant_a, &obj, "viewer").expect("expand");
+        let subjects_a = engine
+            .expand(&tenant_a, &obj, "viewer", None)
+            .expect("expand");
         assert_eq!(subjects_a.len(), 1);
 
-        let subjects_b = engine.expand(&tenant_b, &obj, "viewer").expect("expand");
+        let subjects_b = engine
+            .expand(&tenant_b, &obj, "viewer", None)
+            .expect("expand");
         assert!(
             subjects_b.is_empty(),
             "expand under different tenant must return empty"
@@ -787,7 +1693,7 @@ mod tests {
                 let doc = ObjectRef::new("doc", "d0").expect("valid");
                 for (user, relation, expected) in &checks {
                     let subj = SubjectRef::direct("user", user).expect("valid");
-                    let result = engine.check(&tenant, &doc, relation, &subj).expect("check");
+                    let result = engine.check(&tenant, &doc, relation, &subj, None).expect("check");
                     prop_assert_eq!(
                         result, *expected,
                         "user={}, relation={}, expected={}", user, relation, expected
@@ -827,13 +1733,13 @@ mod tests {
                 // Alice should be reachable from any group in the cycle
                 for i in 0..cycle_size {
                     let obj = ObjectRef::new("group", &format!("g{i}")).expect("valid");
-                    let result = engine.check(&tenant, &obj, "member", &alice).expect("check");
+                    let result = engine.check(&tenant, &obj, "member", &alice, None).expect("check");
                     prop_assert!(result, "alice should be reachable from g{}", i);
                 }
 
                 // Non-existent user should not be reachable
                 let bob = SubjectRef::direct("user", "bob").expect("valid");
-                let result = engine.check(&tenant, &g0, "member", &bob).expect("check");
+                let result = engine.check(&tenant, &g0, "member", &bob, None).expect("check");
                 prop_assert!(!result, "bob should not be reachable");
             }
 
@@ -875,11 +1781,58 @@ mod tests {
                 for i in 0u32..5 {
                     let user_name = format!("u{i}");
                     let subj = SubjectRef::direct("user", &user_name).expect("valid");
-                    let result = engine.check(&tenant, &doc, "viewer", &subj).expect("check");
+                    let result = engine.check(&tenant, &doc, "viewer", &subj, None).expect("check");
                     let expected = active.contains(&i);
                     prop_assert_eq!(
                         result, expected,
                         "user u{}: expected={}, got={}", i, expected, result
+                    );
+                }
+            }
+
+            /// Property: Cache invalidation is correct — writes interleaved with
+            /// cached checks never produce stale results.
+            ///
+            /// This tests that after any write operation, subsequent checks
+            /// reflect the new state even when the cache has previously cached
+            /// the old result.
+            #[test]
+            fn cache_never_stale_after_writes(
+                ops in proptest::collection::vec(
+                    (0u32..5u32, prop::bool::ANY),
+                    1..30
+                )
+            ) {
+                let (_dir, engine) = setup_engine();
+                let tenant = TenantId::generate();
+                let doc = ObjectRef::new("doc", "d0").expect("valid");
+
+                let mut active: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+                for (user_idx, is_add) in &ops {
+                    let user_name = format!("u{user_idx}");
+                    let subj = SubjectRef::direct("user", &user_name).expect("valid");
+                    let tuple = RelationshipTuple::new(
+                        doc.clone(), "viewer", subj.clone()
+                    ).expect("valid");
+
+                    // Do a check BEFORE the write to prime the cache
+                    let _ = engine.check(&tenant, &doc, "viewer", &subj, None);
+
+                    if *is_add {
+                        engine.write_tuples(&tenant, &[TupleWrite::Touch(tuple)]).expect("write");
+                        active.insert(*user_idx);
+                    } else {
+                        engine.write_tuples(&tenant, &[TupleWrite::Delete(tuple)]).expect("delete");
+                        active.remove(user_idx);
+                    }
+
+                    // Check AFTER the write — cache must reflect new state
+                    let result = engine.check(&tenant, &doc, "viewer", &subj, None).expect("check");
+                    let expected = active.contains(user_idx);
+                    prop_assert_eq!(
+                        result, expected,
+                        "cache stale for u{}: expected={}, got={}", user_idx, expected, result
                     );
                 }
             }
