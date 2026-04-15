@@ -215,7 +215,11 @@ fn identity_error_to_response(
     use crate::identity::IdentityError;
 
     let (status, message) = match err {
-        IdentityError::UserNotFound => (StatusCode::NOT_FOUND, "not found"),
+        IdentityError::TenantNotFound | IdentityError::UserNotFound => {
+            (StatusCode::NOT_FOUND, "not found")
+        }
+        IdentityError::TenantSuspended => (StatusCode::FORBIDDEN, "tenant suspended"),
+        IdentityError::DuplicateTenantName => (StatusCode::CONFLICT, "duplicate tenant name"),
         IdentityError::DuplicateEmail => (StatusCode::CONFLICT, "duplicate email"),
         IdentityError::InvalidInput { .. } => (StatusCode::BAD_REQUEST, "invalid input"),
         IdentityError::CredentialNotFound => (StatusCode::NOT_FOUND, "credential not found"),

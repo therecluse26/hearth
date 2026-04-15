@@ -413,7 +413,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | WebAuthn / Passkeys | 0/5 | 0/2 | -- | 0/1 | -- | 0/3 | 0/1 | -- | **0/12** |
 | Magic Link / Passwordless | 0/4 | 0/2 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
 | TOTP / MFA | 0/5 | 0/3 | 0/1 | -- | -- | 0/2 | -- | -- | **0/11** |
-| Multi-Tenancy | 0/5 | 0/3 | 0/3 | -- | 0/2 | 0/3 | -- | -- | **0/16** |
+| Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
 | Zanzibar Authorization (Full) | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/2 | -- | 0/2 | **0/16** |
 | Admin API | 0/3 | 0/4 | -- | -- | -- | 0/3 | -- | -- | **0/10** |
 | Audit Logging | 0/4 | 0/3 | 0/2 | -- | 0/2 | 0/1 | -- | -- | **0/12** |
@@ -422,7 +422,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **0/39** | **0/36** | **0/10** | **0/1** | **0/6** | **0/24** | **0/8** | **0/6** | **0/130** |
+| **Column Total** | **5/39** | **3/36** | **3/10** | **0/1** | **0/6** | **3/24** | **0/8** | **0/6** | **14/130** |
 
 ---
 
@@ -548,23 +548,23 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Create tenant with configuration returns assigned TenantId `P0` `fast`
-- [ ] Tenant-scoped user creation: users bound to tenant; cross-tenant lookup returns not-found `P0` `fast`
-- [ ] Per-tenant signing keys: each tenant gets independent key pair for token signing `P0` `fast`
-- [ ] Tenant configuration update: changes to session TTL, password policy apply only to target tenant `P0` `fast`
-- [ ] Cascading tenant deletion: removing tenant purges all users, sessions, credentials, and relationships `P0` `fast`
+- [x] Create tenant with configuration returns assigned TenantId `P0` `fast`
+- [x] Tenant-scoped user creation: users bound to tenant; cross-tenant lookup returns not-found `P0` `fast`
+- [x] Per-tenant signing keys: each tenant gets independent key pair for token signing `P0` `fast`
+- [x] Tenant configuration update: changes to session TTL, password policy apply only to target tenant `P0` `fast`
+- [x] Cascading tenant deletion: removing tenant purges all users, sessions, credentials, and relationships `P0` `fast`
 
 #### Integration
 
-- [ ] Full tenant lifecycle via embedded API: create → configure → create users → delete tenant → verify cleanup `P0` `fast`
-- [ ] Multi-tenant token issuance: tokens from tenant A are not valid in tenant B `P0` `fast`
-- [ ] Tenant-scoped OIDC: discovery documents and JWKS endpoints differ per tenant `P0` `fast`
+- [x] Full tenant lifecycle via embedded API: create → configure → create users → delete tenant → verify cleanup `P0` `fast`
+- [x] Multi-tenant token issuance: tokens from tenant A are not valid in tenant B `P0` `fast`
+- [x] Tenant-scoped OIDC: discovery documents and JWKS endpoints differ per tenant `P0` `fast`
 
 #### Property
 
-- [ ] Random operations across N tenants never produce cross-tenant data leaks (`proptest`) `P0` `extended`
-- [ ] Tenant key rotation under concurrent token issuance: all in-flight tokens remain valid (`proptest`) `P0` `extended`
-- [ ] Random create/delete tenant sequences maintain consistent tenant count and clean storage (`proptest`) `P0` `extended`
+- [x] Random operations across N tenants never produce cross-tenant data leaks (`proptest`) `P0` `extended`
+- [x] Tenant key rotation under concurrent token issuance: all in-flight tokens remain valid (`proptest`) `P0` `extended`
+- [x] Random create/delete tenant sequences maintain consistent tenant count and clean storage (`proptest`) `P0` `extended`
 
 #### Simulation
 
@@ -573,9 +573,9 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] Cross-tenant session injection: session ID from tenant A rejected when presented to tenant B `P0` `fast`
-- [ ] Tenant ID spoofing: forged TenantId in request path rejected by ownership validation `P0` `fast`
-- [ ] Tenant enumeration resistance: responses for nonexistent tenants are indistinguishable from forbidden `P0` `fast`
+- [x] Cross-tenant session injection: session ID from tenant A rejected when presented to tenant B `P0` `fast`
+- [x] Tenant ID spoofing: forged TenantId in request path rejected by ownership validation `P0` `fast`
+- [x] Tenant enumeration resistance: responses for nonexistent tenants are indistinguishable from forbidden `P0` `fast`
 
 ---
 

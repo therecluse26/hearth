@@ -1,13 +1,20 @@
-//! Storage key encoding for user records.
+//! Storage key encoding for identity records.
 //!
-//! Two indexes are maintained, both tenant-scoped via `StorageEngine`:
+//! Indexes maintained, all tenant-scoped via `StorageEngine`:
 //!
-//! - **Primary**: `usr:id:{uuid}` → JSON-serialized `User`
-//! - **Email index**: `usr:email:{normalized_email}` → `UserId` UUID string bytes
+//! - **User primary**: `usr:id:{uuid}` → JSON-serialized `User`
+//! - **User email index**: `usr:email:{normalized_email}` → `UserId` UUID bytes
+//! - **Session primary**: `ses:id:{uuid}` → JSON-serialized `Session`
+//! - **Session user index**: `ses:user:{user_uuid}:{session_uuid}` → empty
+//! - **Credential**: `cred:user:{uuid}` → JSON-serialized `StoredCredential`
+//! - **OAuth client**: `oauth:client:{uuid}` → JSON-serialized `OAuthClient`
+//! - **OAuth code**: `oauth:code:{sha256_hex}` → JSON-serialized code
+//! - **Tenant primary**: `tenant:id:{uuid}` → JSON-serialized `Tenant` (system tenant scope)
+//! - **Tenant signing key**: `tenant:key:{uuid}` → PKCS#8 DER bytes (system tenant scope)
 //!
 //! Scan prefix `usr:id:` enables listing all users in a tenant.
 
-use crate::core::{ClientId, SessionId, UserId};
+use crate::core::{ClientId, SessionId, TenantId, UserId};
 
 /// Prefix for user primary keys.
 const USER_ID_PREFIX: &str = "usr:id:";
@@ -23,6 +30,12 @@ const OAUTH_CLIENT_PREFIX: &str = "oauth:client:";
 
 /// Prefix for OAuth authorization code keys (stored by hash).
 const OAUTH_CODE_PREFIX: &str = "oauth:code:";
+
+/// Prefix for tenant primary keys (stored under system tenant).
+const TENANT_ID_PREFIX: &str = "tenant:id:";
+
+/// Prefix for tenant signing key storage (stored under system tenant).
+const TENANT_KEY_PREFIX: &str = "tenant:key:";
 
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
@@ -117,10 +130,47 @@ pub(crate) fn encode_oauth_code(code_hash: &str) -> Vec<u8> {
     format!("{OAUTH_CODE_PREFIX}{code_hash}").into_bytes()
 }
 
+// ===== Tenant key encoding =====
+
+/// The well-known system `TenantId` used for storing tenant metadata.
+///
+/// Uses the nil UUID (`00000000-0000-0000-0000-000000000000`) as a
+/// reserved namespace. Real tenants use random v4 UUIDs and will
+/// never collide with this.
+pub(crate) fn system_tenant_id() -> TenantId {
+    TenantId::new(uuid::Uuid::nil())
+}
+
+/// Encodes the primary key for a tenant record.
+///
+/// Format: `tenant:id:{uuid}`
+///
+/// Stored under the system tenant namespace.
+pub(crate) fn encode_tenant_id(tenant_id: &TenantId) -> Vec<u8> {
+    format!("{TENANT_ID_PREFIX}{}", tenant_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for listing all tenant records.
+///
+/// Format: `tenant:id:`
+#[allow(dead_code)]
+pub(crate) fn tenant_id_scan_prefix() -> Vec<u8> {
+    TENANT_ID_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a tenant's signing key material.
+///
+/// Format: `tenant:key:{uuid}`
+///
+/// Stored under the system tenant namespace.
+pub(crate) fn encode_tenant_signing_key(tenant_id: &TenantId) -> Vec<u8> {
+    format!("{TENANT_KEY_PREFIX}{}", tenant_id.as_uuid()).into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ClientId, SessionId};
+    use crate::core::{ClientId, SessionId, TenantId};
     use uuid::Uuid;
 
     #[test]
@@ -264,5 +314,55 @@ mod tests {
         let key1 = encode_oauth_client(&id1);
         let key2 = encode_oauth_client(&id2);
         assert_ne!(key1, key2);
+    }
+
+    // ===== Tenant key tests =====
+
+    #[test]
+    fn system_tenant_id_is_nil_uuid() {
+        let sys = system_tenant_id();
+        assert_eq!(*sys.as_uuid(), Uuid::nil());
+    }
+
+    #[test]
+    fn system_tenant_id_is_stable() {
+        assert_eq!(system_tenant_id(), system_tenant_id());
+    }
+
+    #[test]
+    fn encode_tenant_id_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let tenant_id = TenantId::new(uuid);
+        let key = encode_tenant_id(&tenant_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "tenant:id:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn tenant_id_key_starts_with_scan_prefix() {
+        let tenant_id = TenantId::generate();
+        let key = encode_tenant_id(&tenant_id);
+        let prefix = tenant_id_scan_prefix();
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn encode_tenant_signing_key_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let tenant_id = TenantId::new(uuid);
+        let key = encode_tenant_signing_key(&tenant_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "tenant:key:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn different_tenants_produce_different_keys() {
+        let id1 = TenantId::generate();
+        let id2 = TenantId::generate();
+        assert_ne!(encode_tenant_id(&id1), encode_tenant_id(&id2));
+        assert_ne!(
+            encode_tenant_signing_key(&id1),
+            encode_tenant_signing_key(&id2)
+        );
     }
 }

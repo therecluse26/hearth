@@ -24,7 +24,10 @@ pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
     Jwk, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
 };
-pub use types::{CreateUserRequest, Session, UpdateUserRequest, User, UserStatus};
+pub use types::{
+    CreateTenantRequest, CreateUserRequest, Session, Tenant, TenantConfig, TenantStatus,
+    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+};
 
 use crate::core::{SessionId, TenantId, UserId};
 
@@ -32,7 +35,45 @@ use crate::core::{SessionId, TenantId, UserId};
 ///
 /// Synchronous for Phase 0 — callers should use `spawn_blocking` for async
 /// contexts. All operations require a `TenantId` for multi-tenant isolation.
+///
+/// # Tenant lifecycle
+///
+/// Phase 1 adds first-class tenant management. Tenants are stored in a
+/// system namespace and each tenant gets an independent Ed25519 signing
+/// key for token issuance.
 pub trait IdentityEngine: Send + Sync {
+    // ===== Tenant lifecycle =====
+
+    /// Creates a new tenant with the given configuration.
+    ///
+    /// Generates a `TenantId`, creates a per-tenant Ed25519 signing key,
+    /// and persists both the tenant record and key material.
+    fn create_tenant(&self, request: &CreateTenantRequest) -> Result<Tenant, IdentityError>;
+
+    /// Retrieves a tenant by ID. Returns `None` if not found.
+    fn get_tenant(&self, tenant_id: &TenantId) -> Result<Option<Tenant>, IdentityError>;
+
+    /// Updates an existing tenant's fields.
+    ///
+    /// Only non-`None` fields in the request are applied.
+    fn update_tenant(
+        &self,
+        tenant_id: &TenantId,
+        request: &UpdateTenantRequest,
+    ) -> Result<Tenant, IdentityError>;
+
+    /// Deletes a tenant and all associated data.
+    ///
+    /// Cascading deletion removes all users, sessions, credentials,
+    /// authorization tuples, OAuth clients, and the tenant's signing key.
+    fn delete_tenant(&self, tenant_id: &TenantId) -> Result<(), IdentityError>;
+
+    /// Returns the JWKS document for a specific tenant.
+    ///
+    /// Each tenant has its own signing key, so its JWKS document contains
+    /// only that tenant's public key.
+    fn tenant_jwks(&self, tenant_id: &TenantId) -> Result<JwksDocument, IdentityError>;
+
     /// Creates a new user in the given tenant.
     ///
     /// Validates input, normalizes the email, checks uniqueness, generates

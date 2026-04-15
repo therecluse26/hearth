@@ -6,6 +6,12 @@ use std::fmt;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum IdentityError {
+    /// The requested tenant was not found.
+    TenantNotFound,
+    /// The tenant is suspended; operations are denied.
+    TenantSuspended,
+    /// A tenant with the given name already exists.
+    DuplicateTenantName,
     /// The requested user was not found.
     UserNotFound,
     /// A user with the given email already exists in this tenant.
@@ -66,6 +72,9 @@ pub enum IdentityError {
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TenantNotFound => write!(f, "tenant not found"),
+            Self::TenantSuspended => write!(f, "tenant is suspended"),
+            Self::DuplicateTenantName => write!(f, "a tenant with this name already exists"),
             Self::UserNotFound => write!(f, "user not found"),
             Self::DuplicateEmail => write!(f, "a user with this email already exists"),
             Self::InvalidInput { reason } => write!(f, "invalid input: {reason}"),
@@ -92,7 +101,10 @@ impl std::error::Error for IdentityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Storage(err) => Some(&**err),
-            Self::UserNotFound
+            Self::TenantNotFound
+            | Self::TenantSuspended
+            | Self::DuplicateTenantName
+            | Self::UserNotFound
             | Self::DuplicateEmail
             | Self::InvalidInput { .. }
             | Self::CredentialNotFound
@@ -116,6 +128,27 @@ mod tests {
     use std::error::Error;
 
     use super::*;
+
+    #[test]
+    fn display_tenant_not_found() {
+        let err = IdentityError::TenantNotFound;
+        let display = format!("{err}");
+        assert!(display.contains("tenant not found"), "got: {display}");
+    }
+
+    #[test]
+    fn display_tenant_suspended() {
+        let err = IdentityError::TenantSuspended;
+        let display = format!("{err}");
+        assert!(display.contains("suspended"), "got: {display}");
+    }
+
+    #[test]
+    fn display_duplicate_tenant_name() {
+        let err = IdentityError::DuplicateTenantName;
+        let display = format!("{err}");
+        assert!(display.contains("already exists"), "got: {display}");
+    }
 
     #[test]
     fn display_user_not_found() {
@@ -257,6 +290,9 @@ mod tests {
 
     #[test]
     fn source_others_none() {
+        assert!(IdentityError::TenantNotFound.source().is_none());
+        assert!(IdentityError::TenantSuspended.source().is_none());
+        assert!(IdentityError::DuplicateTenantName.source().is_none());
         assert!(IdentityError::UserNotFound.source().is_none());
         assert!(IdentityError::DuplicateEmail.source().is_none());
         assert!(IdentityError::CredentialNotFound.source().is_none());
