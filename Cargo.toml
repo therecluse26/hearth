@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "simulation"]
+
 [package]
 name = "hearth"
 version = "0.1.0"

@@ -6,12 +6,13 @@
 //! - **Recovery**: WAL replay into fresh memtable on open
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 
 use crate::core::TenantId;
 use crate::storage::error::StorageError;
+use crate::storage::fs::{Fs, RealFs};
 use crate::storage::memtable::{Memtable, MemtableConfig, MemtableValue};
 use crate::storage::sst::{SstReader, SstWriter};
 use crate::storage::tiered::{HotTier, TieredConfig};
@@ -87,6 +88,8 @@ pub struct EmbeddedStorageEngine {
     flush_lock: Mutex<()>,
     /// Monotonically increasing SST file counter.
     sst_counter: std::sync::atomic::AtomicU64,
+    /// Filesystem abstraction for fault injection in simulation tests.
+    fs: Arc<dyn Fs>,
 }
 
 impl EmbeddedStorageEngine {
@@ -95,12 +98,19 @@ impl EmbeddedStorageEngine {
     /// Creates the directory if needed, discovers existing SST files,
     /// opens the WAL, and replays it into a fresh memtable.
     pub fn open(config: StorageConfig) -> Result<Self, StorageError> {
-        std::fs::create_dir_all(&config.data_dir)?;
+        Self::open_with_fs(config, Arc::new(RealFs))
+    }
+
+    /// Opens the storage engine with a custom filesystem implementation.
+    ///
+    /// Used by the simulation crate to inject faults via a `FaultFs`.
+    pub fn open_with_fs(config: StorageConfig, fs: Arc<dyn Fs>) -> Result<Self, StorageError> {
+        fs.create_dir_all(&config.data_dir)?;
 
         // Discover existing SST files, sorted newest-first by filename
-        let mut sst_paths: Vec<PathBuf> = std::fs::read_dir(&config.data_dir)?
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
+        let mut sst_paths: Vec<PathBuf> = fs
+            .read_dir(&config.data_dir)?
+            .into_iter()
             .filter(|p| p.extension().is_some_and(|ext| ext == "sst"))
             .collect();
         sst_paths.sort();
@@ -109,7 +119,7 @@ impl EmbeddedStorageEngine {
         let mut sst_readers = Vec::new();
         let mut max_sst_num: u64 = 0;
         for path in &sst_paths {
-            if let Ok(reader) = SstReader::open(path) {
+            if let Ok(reader) = SstReader::open_with_fs(path, &*fs) {
                 // Extract number from filename like "000001.sst"
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     if let Ok(num) = stem.parse::<u64>() {
@@ -123,7 +133,7 @@ impl EmbeddedStorageEngine {
 
         // Open WAL and replay into fresh memtable
         let wal_path = config.data_dir.join("hearth.wal");
-        let wal = Wal::open(&wal_path, config.wal_config)?;
+        let wal = Wal::open_with_fs(&wal_path, config.wal_config, Arc::clone(&fs))?;
         let memtable = Memtable::new(config.memtable_config);
 
         let entries = wal.read_all()?;
@@ -141,6 +151,7 @@ impl EmbeddedStorageEngine {
             data_dir: config.data_dir,
             flush_lock: Mutex::new(()),
             sst_counter: std::sync::atomic::AtomicU64::new(max_sst_num + 1),
+            fs,
         })
     }
 
@@ -163,14 +174,15 @@ impl EmbeddedStorageEngine {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let sst_path = self.data_dir.join(format!("{sst_num:06}.sst"));
 
-        SstWriter::write_sst(&sst_path, &entries)?;
+        SstWriter::write_sst_with_fs(&sst_path, &entries, &*self.fs)?;
 
         // Rebuild SST reader list from disk (re-open all files).
         // SstReader is not Clone, so we re-open. This is acceptable for Phase 0
         // since flush is off the hot path.
-        let mut all_sst_paths: Vec<PathBuf> = std::fs::read_dir(&self.data_dir)?
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
+        let mut all_sst_paths: Vec<PathBuf> = self
+            .fs
+            .read_dir(&self.data_dir)?
+            .into_iter()
             .filter(|p| p.extension().is_some_and(|ext| ext == "sst"))
             .collect();
         all_sst_paths.sort();
@@ -178,11 +190,11 @@ impl EmbeddedStorageEngine {
 
         let mut rebuilt_readers = Vec::new();
         for path in &all_sst_paths {
-            if let Ok(reader) = SstReader::open(path) {
+            if let Ok(reader) = SstReader::open_with_fs(path, &*self.fs) {
                 rebuilt_readers.push(reader);
             }
         }
-        self.sst_readers.store(std::sync::Arc::new(rebuilt_readers));
+        self.sst_readers.store(Arc::new(rebuilt_readers));
 
         // Clear the memtable after successful flush
         self.active_memtable.clear()?;

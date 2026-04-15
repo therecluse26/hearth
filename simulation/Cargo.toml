@@ -1,0 +1,16 @@
+[package]
+name = "hearth-simulation"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic simulation tests for Hearth storage and identity engines"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+hearth = { path = ".." }
+madsim = "0.2"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+proptest = "1"

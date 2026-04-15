@@ -22,14 +22,13 @@
 //!   [4B] footer magic = b"HEND"
 //! ```
 
-use std::fs::File;
-use std::io::{Read, Write};
 use std::path::Path;
 
 use uuid::Uuid;
 
 use crate::core::TenantId;
 use crate::storage::error::StorageError;
+use crate::storage::fs::{Fs, RealFs};
 use crate::storage::memtable::{CompositeKey, MemtableValue};
 
 /// SST file magic bytes.
@@ -68,7 +67,16 @@ impl SstWriter {
         path: &Path,
         entries: &[(CompositeKey, MemtableValue)],
     ) -> Result<SstMetadata, StorageError> {
-        let mut file = File::create(path)?;
+        Self::write_sst_with_fs(path, entries, &RealFs)
+    }
+
+    /// Writes an SST file using a custom filesystem implementation.
+    pub(crate) fn write_sst_with_fs(
+        path: &Path,
+        entries: &[(CompositeKey, MemtableValue)],
+        fs: &dyn Fs,
+    ) -> Result<SstMetadata, StorageError> {
+        let mut file = fs.create(path)?;
 
         // --- Header ---
         file.write_all(SST_MAGIC)?;
@@ -150,9 +158,12 @@ pub(crate) struct SstReader {
 impl SstReader {
     /// Opens and validates an SST file, loading all entries into memory.
     pub(crate) fn open(path: &Path) -> Result<Self, StorageError> {
-        let mut file = File::open(path)?;
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)?;
+        Self::open_with_fs(path, &RealFs)
+    }
+
+    /// Opens an SST file using a custom filesystem implementation.
+    pub(crate) fn open_with_fs(path: &Path, fs: &dyn Fs) -> Result<Self, StorageError> {
+        let data = fs.read(path)?;
 
         // Minimum file size: header + footer
         if data.len() < HEADER_SIZE + FOOTER_SIZE {
@@ -371,6 +382,15 @@ pub(crate) fn compact(
     input_ssts: &[&SstReader],
     output_path: &Path,
 ) -> Result<SstMetadata, StorageError> {
+    compact_with_fs(input_ssts, output_path, &RealFs)
+}
+
+/// Compacts SST files using a custom filesystem implementation.
+pub(crate) fn compact_with_fs(
+    input_ssts: &[&SstReader],
+    output_path: &Path,
+    fs: &dyn Fs,
+) -> Result<SstMetadata, StorageError> {
     // Merge all entries, newest-last wins for duplicates
     let mut merged = std::collections::BTreeMap::new();
     for sst in input_ssts {
@@ -385,7 +405,7 @@ pub(crate) fn compact(
         .filter(|(_, v)| !matches!(v, MemtableValue::Tombstone))
         .collect();
 
-    SstWriter::write_sst(output_path, &live_entries)
+    SstWriter::write_sst_with_fs(output_path, &live_entries, fs)
 }
 
 #[cfg(test)]
@@ -393,7 +413,6 @@ mod tests {
     use super::*;
     use crate::core::TenantId;
     use crate::storage::memtable::{Memtable, MemtableConfig};
-
     // ===== Phase A: P0 Fast Unit Tests =====
 
     // TEST_SCENARIOS.md: "Flush memtable to SST produces valid binary format"
@@ -880,244 +899,5 @@ mod tests {
         }
     }
 
-    // ===== Phase C: Simulation stubs (P0 full — #[ignore]) =====
-
-    /// Crash during memtable flush: a corrupt SST is detected and
-    /// discarded on recovery; WAL replay recovers all committed data.
-    ///
-    /// Simulates by writing data through the storage engine (WAL + memtable),
-    /// then injecting a corrupt SST file, and re-opening. The engine must
-    /// skip the bad SST and recover from WAL replay.
-    #[test]
-    fn simulation_crash_during_memtable_flush() {
-        use crate::storage::engine::{EmbeddedStorageEngine, StorageConfig};
-        use crate::storage::memtable::MemtableConfig;
-        use crate::storage::tiered::TieredConfig;
-        use crate::storage::wal::SyncMode;
-        use crate::storage::StorageEngine;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let tenant = TenantId::generate();
-
-        // Write data through the engine (WAL is the durable copy)
-        {
-            let config = StorageConfig {
-                data_dir: dir.path().to_path_buf(),
-                wal_config: crate::storage::wal::WalConfig {
-                    max_size: u64::MAX,
-                    sync_mode: SyncMode::None,
-                },
-                memtable_config: MemtableConfig::default(),
-                tiered_config: TieredConfig::default(),
-            };
-            let engine = EmbeddedStorageEngine::open(config).expect("open");
-            engine.put(&tenant, b"flush-key-1", b"val-1").expect("put");
-            engine.put(&tenant, b"flush-key-2", b"val-2").expect("put");
-        }
-
-        // Inject a corrupt SST file — simulates crash mid-flush that left
-        // a partial/corrupt file on disk
-        {
-            let corrupt_sst_path = dir.path().join("000001.sst");
-            let mut file = std::fs::File::create(&corrupt_sst_path).expect("create corrupt sst");
-            // Write valid header but truncated data section and no footer
-            file.write_all(b"HSST").expect("magic");
-            file.write_all(&[0x01]).expect("version");
-            file.write_all(&2u32.to_le_bytes()).expect("count");
-            file.write_all(&[0u8; 3]).expect("reserved");
-            // No data section, no footer — crash happened here
-            file.sync_all().expect("sync");
-        }
-
-        // Re-open: engine should skip corrupt SST and recover from WAL
-        {
-            let config = StorageConfig {
-                data_dir: dir.path().to_path_buf(),
-                wal_config: crate::storage::wal::WalConfig {
-                    max_size: u64::MAX,
-                    sync_mode: SyncMode::None,
-                },
-                memtable_config: MemtableConfig::default(),
-                tiered_config: TieredConfig::default(),
-            };
-            let engine = EmbeddedStorageEngine::open(config).expect("recovery");
-
-            assert_eq!(
-                engine.get(&tenant, b"flush-key-1").expect("get"),
-                Some(b"val-1".to_vec()),
-                "data must survive crash during flush via WAL replay"
-            );
-            assert_eq!(
-                engine.get(&tenant, b"flush-key-2").expect("get"),
-                Some(b"val-2".to_vec()),
-                "data must survive crash during flush via WAL replay"
-            );
-        }
-    }
-
-    /// Crash during compaction: source SSTs remain intact when the
-    /// output SST is corrupt/incomplete.
-    ///
-    /// Simulates by writing two valid SSTs (sources), then creating a
-    /// corrupt output SST. Opens each source independently and verifies
-    /// all original entries are still readable.
-    #[test]
-    fn simulation_crash_during_compaction() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let tenant = TenantId::generate();
-
-        let mt1 = Memtable::new(MemtableConfig::default());
-        mt1.put(&tenant, b"key-a", b"val-a").expect("put");
-        mt1.put(&tenant, b"key-b", b"val-b").expect("put");
-
-        let mt2 = Memtable::new(MemtableConfig::default());
-        mt2.put(&tenant, b"key-c", b"val-c").expect("put");
-        mt2.put(&tenant, b"key-d", b"val-d").expect("put");
-
-        // Write two valid source SSTs
-        let sst1_path = dir.path().join("000001.sst");
-        let sst2_path = dir.path().join("000002.sst");
-        SstWriter::write_sst(&sst1_path, &mt1.iter_all()).expect("write sst1");
-        SstWriter::write_sst(&sst2_path, &mt2.iter_all()).expect("write sst2");
-
-        // Simulate crash during compaction: create a corrupt output SST.
-        // The compaction output file has header but invalid CRC (crash
-        // happened before footer was fully written).
-        let compacted_path = dir.path().join("000003.sst");
-        {
-            let mut file = std::fs::File::create(&compacted_path).expect("create");
-            file.write_all(b"HSST").expect("magic");
-            file.write_all(&[0x01]).expect("version");
-            file.write_all(&4u32.to_le_bytes()).expect("count");
-            file.write_all(&[0u8; 3]).expect("reserved");
-            // Write some garbage data section
-            file.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).expect("data");
-            // Write bad footer
-            file.write_all(&[0xFF; 4]).expect("bad crc");
-            file.write_all(b"HEND").expect("footer magic");
-            file.sync_all().expect("sync");
-        }
-
-        // Source SSTs must still be valid and readable
-        let reader1 = SstReader::open(&sst1_path).expect("source sst1 still valid");
-        let reader2 = SstReader::open(&sst2_path).expect("source sst2 still valid");
-
-        // Corrupt output SST must be detected and rejected
-        let bad_result = SstReader::open(&compacted_path);
-        assert!(
-            bad_result.is_err(),
-            "corrupt compaction output must fail to open"
-        );
-
-        // All original data is still accessible from source SSTs
-        assert_eq!(
-            reader1.get(&tenant, b"key-a"),
-            Some(MemtableValue::Data(b"val-a".to_vec()))
-        );
-        assert_eq!(
-            reader1.get(&tenant, b"key-b"),
-            Some(MemtableValue::Data(b"val-b".to_vec()))
-        );
-        assert_eq!(
-            reader2.get(&tenant, b"key-c"),
-            Some(MemtableValue::Data(b"val-c".to_vec()))
-        );
-        assert_eq!(
-            reader2.get(&tenant, b"key-d"),
-            Some(MemtableValue::Data(b"val-d".to_vec()))
-        );
-
-        assert_eq!(reader1.entry_count(), 2);
-        assert_eq!(reader2.entry_count(), 2);
-    }
-
-    /// Power-loss simulation: WAL replay + SST recovery produces correct
-    /// state after simulated power loss at any point in the write path.
-    ///
-    /// Scenario: write data, flush to SST, write more data, then simulate
-    /// power loss that corrupts the latest WAL tail. Recovery must produce
-    /// correct state from valid SSTs + valid WAL prefix.
-    #[test]
-    fn simulation_power_loss() {
-        use crate::storage::engine::{EmbeddedStorageEngine, StorageConfig};
-        use crate::storage::memtable::MemtableConfig;
-        use crate::storage::tiered::TieredConfig;
-        use crate::storage::wal::SyncMode;
-        use crate::storage::StorageEngine;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let tenant = TenantId::generate();
-
-        // Phase 1: Write data and flush to SST via small flush threshold
-        {
-            let config = StorageConfig {
-                data_dir: dir.path().to_path_buf(),
-                wal_config: crate::storage::wal::WalConfig {
-                    max_size: u64::MAX,
-                    sync_mode: SyncMode::None,
-                },
-                memtable_config: MemtableConfig {
-                    flush_threshold_bytes: 50, // tiny threshold triggers flush
-                },
-                tiered_config: TieredConfig::default(),
-            };
-            let engine = EmbeddedStorageEngine::open(config).expect("open");
-
-            // Write enough data to trigger at least one flush
-            for i in 0u32..10 {
-                let key = format!("power-{i:04}");
-                let val = format!("val-{i:04}");
-                engine
-                    .put(&tenant, key.as_bytes(), val.as_bytes())
-                    .expect("put");
-            }
-        }
-
-        // Verify SST files were created
-        let sst_count: usize = std::fs::read_dir(dir.path())
-            .expect("read_dir")
-            .filter_map(std::result::Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "sst"))
-            .count();
-        assert!(sst_count > 0, "flush should have produced SST files");
-
-        // Phase 2: Simulate power loss — corrupt the WAL tail
-        {
-            let wal_path = dir.path().join("hearth.wal");
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&wal_path)
-                .expect("open wal for corruption");
-            // Append garbage to simulate partial in-flight write at power loss
-            file.write_all(b"POWER_LOSS_GARBAGE_PARTIAL_RECORD")
-                .expect("corrupt wal tail");
-            file.sync_all().expect("sync");
-        }
-
-        // Phase 3: Recovery from valid SSTs + valid WAL prefix
-        {
-            let config = StorageConfig {
-                data_dir: dir.path().to_path_buf(),
-                wal_config: crate::storage::wal::WalConfig {
-                    max_size: u64::MAX,
-                    sync_mode: SyncMode::None,
-                },
-                memtable_config: MemtableConfig::default(),
-                tiered_config: TieredConfig::default(),
-            };
-            let engine = EmbeddedStorageEngine::open(config).expect("recovery after power loss");
-
-            // All 10 entries should be recoverable (from SST + WAL replay)
-            for i in 0u32..10 {
-                let key = format!("power-{i:04}");
-                let expected = format!("val-{i:04}");
-                let actual = engine.get(&tenant, key.as_bytes()).expect("get");
-                assert_eq!(
-                    actual,
-                    Some(expected.into_bytes()),
-                    "key {key} must survive power-loss recovery"
-                );
-            }
-        }
-    }
+    // ===== Phase C: Simulation tests — see simulation/ crate =====
 }

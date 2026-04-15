@@ -11,6 +11,7 @@
 
 mod engine;
 pub mod error;
+pub mod fs;
 #[allow(dead_code)]
 pub(crate) mod memtable;
 #[allow(dead_code)]
@@ -21,6 +22,7 @@ pub mod wal;
 
 pub use engine::{EmbeddedStorageEngine, StorageConfig};
 pub use error::StorageError;
+pub use fs::{Fs, FsFile, RealFs};
 
 use crate::core::TenantId;
 

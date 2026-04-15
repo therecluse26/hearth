@@ -31,7 +31,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 3/3 | -- | -- | -- | -- | -- | -- | **3/3** |
 | End-to-End Flows | -- | 4/4 | -- | -- | -- | -- | -- | -- | **4/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 5/5 | -- | -- | **5/5** |
-| **Column Total** | **49/54** | **22/24** | **18/18** | **5/5** | **10/10** | **20/23** | **2/2** | **11/12** | **148/148** |
+| **Column Total** | **54/54** | **24/24** | **18/18** | **5/5** | **10/10** | **23/23** | **2/2** | **12/12** | **148/148** |
 
 ---
 
@@ -401,23 +401,351 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 ---
 
-## Phases 1–3+
+## Phase 1: Production Single-Node
+
+### Phase 1 Progress Matrix
+
+Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `--` = not applicable.
+
+| Module | Unit | Integration | Property | Fuzz | Simulation | Adversarial | Conformance | Benchmark | **Total** |
+|--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
+| OAuth 2.0 Complete | 0/5 | 0/3 | 0/2 | -- | -- | 0/3 | 0/2 | 0/2 | **0/17** |
+| WebAuthn / Passkeys | 0/5 | 0/2 | -- | 0/1 | -- | 0/3 | 0/1 | -- | **0/12** |
+| Magic Link / Passwordless | 0/4 | 0/2 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
+| TOTP / MFA | 0/5 | 0/3 | 0/1 | -- | -- | 0/2 | -- | -- | **0/11** |
+| Multi-Tenancy | 0/5 | 0/3 | 0/3 | -- | 0/2 | 0/3 | -- | -- | **0/16** |
+| Zanzibar Authorization (Full) | 0/5 | 0/3 | 0/2 | -- | 0/2 | 0/2 | -- | 0/2 | **0/16** |
+| Admin API | 0/3 | 0/4 | -- | -- | -- | 0/3 | -- | -- | **0/10** |
+| Audit Logging | 0/4 | 0/3 | 0/2 | -- | 0/2 | 0/1 | -- | -- | **0/12** |
+| TLS Termination | 0/3 | 0/3 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
+| SDK Integration (TS & Go) | -- | 0/6 | -- | -- | -- | -- | -- | -- | **0/6** |
+| OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
+| Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
+| Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
+| **Column Total** | **0/39** | **0/36** | **0/10** | **0/1** | **0/6** | **0/24** | **0/8** | **0/6** | **0/130** |
+
+---
+
+### OAuth 2.0 Complete
+
+#### Unit
+
+- [ ] Client credentials grant issues access token with correct scope and expiration `P0` `fast`
+- [ ] Device authorization (RFC 8628) generates user code and device code with correct polling interval `P0` `fast`
+- [ ] Refresh token rotation issues new refresh + access token pair and invalidates old refresh token `P0` `fast`
+- [ ] Token revocation (RFC 7009) invalidates access and refresh tokens; subsequent use rejected `P0` `fast`
+- [ ] Token introspection (RFC 7662) returns active/inactive status with correct metadata `P0` `fast`
+
+#### Integration
+
+- [ ] Full client credentials flow via embedded API: register client → request token → validate → revoke `P0` `fast`
+- [ ] Full device authorization flow: device code request → user approval → token poll → access granted `P0` `fast`
+- [ ] Refresh token rotation end-to-end: issue → expire access → refresh → validate new token `P0` `fast`
+
+#### Property
+
+- [ ] Random sequences of token issuance, refresh, and revocation maintain consistent active token set (`proptest`) `P0` `extended`
+- [ ] Refresh token rotation: no two valid refresh tokens exist simultaneously for the same grant (`proptest`) `P0` `extended`
+
+#### Adversarial
+
+- [ ] Refresh token rotation theft detection: reuse of rotated-out refresh token revokes entire grant family `P0` `fast`
+- [ ] Client credentials with invalid or expired client secret rejected with generic error `P0` `fast`
+- [ ] Device authorization polling faster than `interval` returns `slow_down` error per RFC 8628 `P1` `fast`
+
+#### Conformance
+
+- [ ] Token introspection response conforms to RFC 7662 (required fields, active boolean semantics) `P1` `full`
+- [ ] Device authorization flow conforms to RFC 8628 (user_code format, polling behavior, error codes) `P1` `full`
+
+#### Benchmark
+
+- [ ] Client credentials token issuance: p50 < 500 μs, p99 < 2 ms (regression: +20%) `P0` `standard`
+- [ ] Token introspection: p50 < 50 μs, p99 < 500 μs (regression: +20%) `P0` `standard`
+
+---
+
+### WebAuthn / Passkeys
+
+#### Unit
+
+- [ ] Registration ceremony: generate challenge, parse attestation response, store credential `P0` `fast`
+- [ ] Authentication ceremony: generate challenge, verify assertion response, update sign counter `P0` `fast`
+- [ ] Multi-credential support: user registers multiple passkeys, each authenticates independently `P0` `fast`
+- [ ] Resident key (discoverable credential) registration and username-less authentication `P0` `fast`
+- [ ] Attestation format validation: packed, TPM, and none attestation types handled correctly `P1` `fast`
+
+#### Integration
+
+- [ ] Full registration + authentication lifecycle via embedded API `P0` `fast`
+- [ ] Credential management: register → authenticate → add second key → revoke first key → authenticate with second `P0` `fast`
+
+#### Fuzz
+
+- [ ] Arbitrary bytes to CBOR attestation/assertion parser never panic (`cargo-fuzz`) `P0` `extended`
+
+#### Adversarial
+
+- [ ] Sign counter replay: assertion with non-incrementing counter rejected (cloned authenticator detection) `P0` `fast`
+- [ ] RP ID mismatch: assertion from wrong relying party origin rejected `P0` `fast`
+- [ ] Tampered client data JSON: modified challenge or origin in clientDataJSON causes verification failure `P0` `fast`
+
+#### Conformance
+
+- [ ] WebAuthn Level 2 registration and authentication ceremony conformance `P1` `full`
+
+---
+
+### Magic Link / Passwordless
+
+#### Unit
+
+- [ ] Generate magic link token bound to email with correct expiration `P0` `fast`
+- [ ] Validate magic link token: correct token returns associated user `P0` `fast`
+- [ ] Expired magic link token rejected with appropriate error `P0` `fast`
+- [ ] Magic link token is single-use: second validation attempt rejected `P0` `fast`
+
+#### Integration
+
+- [ ] Full passwordless flow via embedded API: request link → validate token → receive session `P0` `fast`
+- [ ] Magic link with existing user authenticates; with new email triggers account creation `P1` `fast`
+
+#### Adversarial
+
+- [ ] Rate limiting: excessive magic link requests for same email throttled `P0` `fast`
+- [ ] Enumeration resistance: response is identical whether email exists or not `P0` `fast`
+
+---
+
+### TOTP / MFA
+
+#### Unit
+
+- [ ] Generate TOTP secret with correct provisioning URI (issuer, account, algorithm, digits, period) `P0` `fast`
+- [ ] Validate TOTP code for current time window succeeds `P0` `fast`
+- [ ] TOTP time window tolerance: codes for T-1 and T+1 windows accepted `P0` `fast`
+- [ ] Generate recovery codes: correct count, sufficient entropy, each usable exactly once `P0` `fast`
+- [ ] Recovery code redemption: valid code succeeds; reused code rejected `P0` `fast`
+
+#### Integration
+
+- [ ] MFA enrollment flow: enable TOTP → verify setup code → login requires MFA → provide code → session issued `P0` `fast`
+- [ ] Recovery code flow: lose authenticator → use recovery code → authenticate → re-enroll TOTP `P0` `fast`
+- [ ] MFA disable flow: authenticated user disables MFA → subsequent login no longer requires second factor `P0` `fast`
+
+#### Property
+
+- [ ] Random clock offsets within tolerance window always validate; offsets outside window always reject (`proptest`) `P0` `extended`
+
+#### Adversarial
+
+- [ ] TOTP brute-force protection: excessive failed attempts within window trigger lockout `P0` `fast`
+- [ ] TOTP replay protection: same code cannot be used twice within the same time window `P0` `fast`
+
+---
+
+### Multi-Tenancy
+
+#### Unit
+
+- [ ] Create tenant with configuration returns assigned TenantId `P0` `fast`
+- [ ] Tenant-scoped user creation: users bound to tenant; cross-tenant lookup returns not-found `P0` `fast`
+- [ ] Per-tenant signing keys: each tenant gets independent key pair for token signing `P0` `fast`
+- [ ] Tenant configuration update: changes to session TTL, password policy apply only to target tenant `P0` `fast`
+- [ ] Cascading tenant deletion: removing tenant purges all users, sessions, credentials, and relationships `P0` `fast`
+
+#### Integration
+
+- [ ] Full tenant lifecycle via embedded API: create → configure → create users → delete tenant → verify cleanup `P0` `fast`
+- [ ] Multi-tenant token issuance: tokens from tenant A are not valid in tenant B `P0` `fast`
+- [ ] Tenant-scoped OIDC: discovery documents and JWKS endpoints differ per tenant `P0` `fast`
+
+#### Property
+
+- [ ] Random operations across N tenants never produce cross-tenant data leaks (`proptest`) `P0` `extended`
+- [ ] Tenant key rotation under concurrent token issuance: all in-flight tokens remain valid (`proptest`) `P0` `extended`
+- [ ] Random create/delete tenant sequences maintain consistent tenant count and clean storage (`proptest`) `P0` `extended`
+
+#### Simulation
+
+- [ ] Crash during cascading tenant deletion: recovery completes deletion or fully rolls back (`madsim`) `P0` `full`
+- [ ] Concurrent tenant operations under simulated I/O delays produce no data corruption (`madsim`) `P1` `full`
+
+#### Adversarial
+
+- [ ] Cross-tenant session injection: session ID from tenant A rejected when presented to tenant B `P0` `fast`
+- [ ] Tenant ID spoofing: forged TenantId in request path rejected by ownership validation `P0` `fast`
+- [ ] Tenant enumeration resistance: responses for nonexistent tenants are indistinguishable from forbidden `P0` `fast`
+
+---
+
+### Zanzibar Authorization (Full)
+
+#### Unit
+
+- [ ] Watch API: registering a watch returns real-time tuple change events `P0` `fast`
+- [ ] Consistency tokens (zookies): read-after-write returns fresh data when zookie is passed `P0` `fast`
+- [ ] Permission caching: repeated check() for same tuple served from cache; invalidated on write `P0` `fast`
+- [ ] Namespace configuration: define object types and relations via schema DSL `P0` `fast`
+- [ ] Conditional tuple writes: write succeeds only when precondition (touch/no-touch) is met `P0` `fast`
+
+#### Integration
+
+- [ ] Watch API end-to-end: subscribe → write tuple → receive event → verify event contents `P0` `fast`
+- [ ] Schema migration: update namespace config → verify existing tuples re-evaluated correctly `P0` `fast`
+- [ ] Zanzibar integration with identity: user deletion cascades to relationship tuple cleanup `P0` `fast`
+
+#### Property
+
+- [ ] Random tuple writes with concurrent watch subscriptions: all subscribers see all events (`proptest`) `P0` `extended`
+- [ ] Cache invalidation correctness: no stale permission results after tuple mutation (`proptest`) `P0` `extended`
+
+#### Simulation
+
+- [ ] Watch API under network partition: reconnected watchers receive missed events or full resync (`madsim`) `P0` `full`
+- [ ] Cache stampede simulation: thundering herd on cache miss produces correct results without excessive load (`madsim`) `P1` `full`
+
+#### Adversarial
+
+- [ ] Watch subscription without authorization rejected; no information leak via watch events `P0` `fast`
+- [ ] Malformed namespace schema rejected with descriptive error; existing config unchanged `P0` `fast`
+
+#### Benchmark
+
+- [ ] Cached permission check: p50 < 5 μs, p99 < 50 μs (regression: +20%) `P0` `standard`
+- [ ] Watch event delivery latency: p50 < 1 ms, p99 < 10 ms from tuple write to subscriber receipt `P0` `standard`
+
+---
+
+### Admin API
+
+#### Unit
+
+- [ ] Admin role enforcement: only users with admin role can access management endpoints `P0` `fast`
+- [ ] Pagination and filtering: list endpoints return correct pages with cursor-based pagination `P0` `fast`
+- [ ] Bulk operations: batch user create/disable processes all entries and returns per-item results `P1` `fast`
+
+#### Integration
+
+- [ ] REST CRUD for users: create, read, update, disable, list via admin endpoints `P0` `fast`
+- [ ] REST CRUD for tenants: create, read, update, delete via admin endpoints `P0` `fast`
+- [ ] REST CRUD for applications: create, read, update, delete via admin endpoints `P0` `fast`
+- [ ] Admin audit trail: all admin mutations appear in audit log with actor identity `P0` `fast`
+
+#### Adversarial
+
+- [ ] Privilege escalation: non-admin user accessing admin endpoints receives 403 with no data leak `P0` `fast`
+- [ ] Admin endpoint rate limiting: excessive requests from single admin trigger throttling `P1` `fast`
+- [ ] Mass enumeration via admin listing: response times constant regardless of result count (no timing leak) `P0` `fast`
+
+---
+
+### Audit Logging
+
+#### Unit
+
+- [ ] Security-critical mutations emit structured audit events with correct fields (actor, action, resource, timestamp) `P0` `fast`
+- [ ] Audit log is append-only: no API to update or delete audit entries `P0` `fast`
+- [ ] Audit log query by time range, actor, action type returns correct results `P0` `fast`
+- [ ] Audit events include tenant context: all entries scoped to originating tenant `P0` `fast`
+
+#### Integration
+
+- [ ] Full audit lifecycle: perform mutations → query audit log → verify complete event trail `P0` `fast`
+- [ ] Audit log persistence: entries survive server restart `P0` `fast`
+- [ ] Compliance query: retrieve all authentication events for a user within date range `P1` `fast`
+
+#### Property
+
+- [ ] Random mutation sequences produce audit logs where event count equals mutation count (`proptest`) `P0` `extended`
+- [ ] Audit log ordering: events are strictly ordered by timestamp across concurrent writers (`proptest`) `P0` `extended`
+
+#### Simulation
+
+- [ ] Crash during audit write: recovery produces no partial or duplicate entries (`madsim`) `P0` `full`
+- [ ] Audit log integrity under sustained write load: no events lost or reordered (`madsim`) `P0` `full`
+
+#### Adversarial
+
+- [ ] Audit log tamper detection: modification of stored entries detected on read `P0` `fast`
+
+---
+
+### TLS Termination
+
+#### Unit
+
+- [ ] Load TLS certificate and private key from PEM files `P0` `fast`
+- [ ] Certificate hot-reload: new cert loaded without server restart or connection drop `P0` `fast`
+- [ ] TLS 1.3 negotiation: server correctly negotiates TLS 1.3 with compliant client `P0` `fast`
+
+#### Integration
+
+- [ ] HTTPS endpoint serves valid TLS: client connects and completes handshake `P0` `fast`
+- [ ] HTTP to HTTPS redirect: plaintext request receives 301 redirect to HTTPS equivalent `P0` `fast`
+- [ ] Mutual TLS (mTLS): server requests and validates client certificate when configured `P1` `fast`
+
+#### Adversarial
+
+- [ ] TLS downgrade prevention: connection attempts with TLS 1.1 or below rejected `P0` `fast`
+- [ ] Weak cipher rejection: server refuses connections using deprecated cipher suites `P0` `fast`
+
+---
+
+### SDK Integration (TypeScript & Go)
+
+#### Integration
+
+- [ ] TypeScript SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
+- [ ] TypeScript SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
+- [ ] TypeScript SDK: JWKS validation — tokens verified using fetched public keys `P0` `fast`
+- [ ] Go SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
+- [ ] Go SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
+- [ ] Go SDK: transparent token refresh — expired access token triggers automatic refresh `P0` `fast`
+
+---
+
+### OIDC Conformance
+
+#### Conformance
+
+- [ ] OpenID Connect Core 1.0: all required claims present, correct ID token signing, scope handling `P0` `full`
+- [ ] OpenID Connect Discovery 1.0: well-known endpoint returns all required metadata fields `P0` `full`
+- [ ] OpenID Connect Dynamic Client Registration 1.0: register, read, and update client metadata `P1` `full`
+- [ ] UserInfo endpoint: returns correct claims for authenticated user with valid access token `P0` `full`
+- [ ] ID Token validation: all required claims (iss, sub, aud, exp, iat, nonce) verified `P0` `full`
+
+---
+
+### Phase 1 End-to-End Flows
+
+#### Integration
+
+- [ ] Keycloak migration: import users/clients from Keycloak export → authenticate migrated user → verify session `P1` `fast`
+- [ ] MFA enrollment + login: register → enable TOTP → authenticate with password + TOTP → receive session `P0` `fast`
+- [ ] Passkey-only authentication: register passkey → passwordless login → receive session → validate token `P0` `fast`
+- [ ] Multi-tenant isolation round-trip: create 2 tenants → create users in each → verify complete data isolation `P0` `fast`
+
+---
+
+### Phase 1 Cross-Cutting Concerns
+
+#### Adversarial
+
+- [ ] Error response sanitization: Phase 1 endpoints leak no internal state (no stack traces, query details, or internal paths) `P0` `fast`
+- [ ] Zeroize enforcement: all Phase 1 sensitive types (TOTP secrets, magic link tokens, recovery codes) zeroed after use `P0` `fast`
+- [ ] Input size limits: Phase 1 endpoints enforce request body, header, and URL length limits `P0` `fast`
+
+#### Benchmark
+
+- [ ] Admin user listing: p50 < 5 ms, p99 < 50 ms for 10K users with pagination (regression: +20%) `P0` `standard`
+- [ ] Audit log query: p50 < 10 ms, p99 < 100 ms for 100K entries with time range filter (regression: +20%) `P0` `standard`
+
+---
+
+## Phases 2–3+
 
 High-level test categories for future phases. Individual checkboxes will be expanded as each phase begins development.
-
-### Phase 1: Production Single-Node
-
-- **OAuth 2.0 complete** — client credentials, device authorization, refresh token rotation (Integration, Property, Adversarial, Benchmark)
-- **WebAuthn / Passkeys** — registration, authentication, attestation validation (Integration, Fuzz, Adversarial)
-- **Magic link / passwordless** — email-based authentication flow (Integration, Adversarial)
-- **TOTP / MFA** — setup, validation, recovery codes (Unit, Integration, Adversarial)
-- **Multi-tenancy** — tenant isolation, per-tenant configuration, cross-tenant prevention (Unit, Integration, Property, Adversarial)
-- **Zanzibar authorization** — full Check/Expand/Write/Watch API (Unit, Integration, Property, Simulation, Adversarial, Benchmark)
-- **Admin API** — REST + gRPC management endpoints (Integration, Adversarial)
-- **Audit logging** — append-only mutation log, compliance queries (Unit, Integration, Property)
-- **TLS termination** — certificate handling, protocol negotiation (Integration, Adversarial)
-- **TypeScript and Go SDKs** — client library correctness against all supported flows (Integration)
-- **OIDC conformance** — OpenID Connect certification test suite (Conformance)
 
 ### Phase 2: Production Clustering
 
@@ -453,6 +781,17 @@ All benchmark thresholds from VISION.md §7.1. Regression threshold for all oper
 | Session creation | — | — | N/A (write) | 50K+ ops/sec/core |
 | Cold-to-hot promotion | — | — | < 5 ms (NVMe) | — |
 
+### Phase 1 Benchmark Targets
+
+| Operation | p50 | p99 | Throughput Target |
+|-----------|-----|-----|-------------------|
+| Client credentials token issuance | < 500 μs | < 2 ms | — |
+| Token introspection | < 50 μs | < 500 μs | — |
+| Cached permission check | < 5 μs | < 50 μs | 500K+ ops/sec/core |
+| Watch event delivery | < 1 ms | < 10 ms | — |
+| Admin user listing (10K users) | < 5 ms | < 50 ms | — |
+| Audit log query (100K entries) | < 10 ms | < 100 ms | — |
+
 **Capacity targets** (single node):
 
 | Metric | Target |
@@ -469,13 +808,16 @@ All benchmark thresholds from VISION.md §7.1. Regression threshold for all oper
 
 ## Adversarial Test Categories Reference
 
-All categories from TESTING.md §6, mapped to Phase 0 modules where applicable.
+All categories from TESTING.md §6, mapped to Phase 0 and Phase 1 modules where applicable.
 
-| Category | Phase 0 Coverage |
-|----------|-----------------|
-| Timing attacks | Credential Storage, Cross-Cutting Concerns |
-| Token forgery | JWT / Tokens (`alg=none`, key confusion, claim tampering) |
-| Privilege escalation | Authorization Engine (malformed tuples, namespace traversal, depth limits) |
-| Replay attacks | Session Management (replayed tokens), OIDC (code reuse) |
-| Input injection | User CRUD (null bytes, unicode), Cross-Cutting (size limits) |
-| Credential stuffing | Credential Storage (rate limiting) |
+| Category | Phase 0 Coverage | Phase 1 Coverage |
+|----------|-----------------|------------------|
+| Timing attacks | Credential Storage, Cross-Cutting Concerns | Admin API (enumeration timing) |
+| Token forgery | JWT / Tokens (`alg=none`, key confusion, claim tampering) | OAuth 2.0 (rotation theft detection) |
+| Privilege escalation | Authorization Engine (malformed tuples, namespace traversal, depth limits) | Admin API (non-admin access), Multi-Tenancy (tenant ID spoofing) |
+| Replay attacks | Session Management (replayed tokens), OIDC (code reuse) | WebAuthn (sign counter replay), TOTP (code reuse), OAuth 2.0 (refresh reuse) |
+| Input injection | User CRUD (null bytes, unicode), Cross-Cutting (size limits) | Phase 1 Cross-Cutting (size limits) |
+| Credential stuffing | Credential Storage (rate limiting) | TOTP (brute-force lockout), Magic Link (rate limiting) |
+| Enumeration attacks | — | Magic Link (email enumeration), Multi-Tenancy (tenant enumeration) |
+| Protocol downgrade | — | TLS Termination (downgrade prevention, weak ciphers) |
+| Tamper detection | — | Audit Logging (tamper detection on read) |
