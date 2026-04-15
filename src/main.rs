@@ -6,6 +6,8 @@ use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use hearth::audit::EmbeddedAuditEngine;
+use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
 use hearth::config::Config;
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
@@ -175,13 +177,23 @@ async fn run_serve(
 
     let identity_engine = EmbeddedIdentityEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        clock,
+        Arc::clone(&clock),
         identity_config,
     )?;
 
-    let app_state = Arc::new(AppState {
-        identity: Arc::new(identity_engine),
-    });
+    let authz_engine = EmbeddedAuthzEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        AuthzConfig::default(),
+    );
+
+    let audit_engine =
+        EmbeddedAuditEngine::new(Arc::clone(&storage) as Arc<dyn StorageEngine>, clock);
+
+    let app_state = Arc::new(AppState::new(
+        Arc::new(identity_engine),
+        Arc::new(authz_engine),
+        Arc::new(audit_engine),
+    ));
 
     // Build server address
     let addr: SocketAddr = format!("{}:{}", config.server.bind_address, config.server.port)

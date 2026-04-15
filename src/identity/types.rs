@@ -4,6 +4,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{SessionId, TenantId, Timestamp, UserId};
 
+/// A cursor-based page of results.
+///
+/// The `next_cursor` is an opaque token that the client passes back to
+/// fetch the next page. When `next_cursor` is `None`, there are no more
+/// results.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Page<T> {
+    /// The items on this page.
+    pub items: Vec<T>,
+    /// Cursor for the next page, or `None` if this is the last page.
+    pub next_cursor: Option<String>,
+}
+
+/// Result of a single item within a bulk operation.
+///
+/// The `index` field identifies which item in the original request
+/// this result corresponds to.
+#[derive(Clone, Debug)]
+pub struct BulkResult<T> {
+    /// Zero-based index into the original request array.
+    pub index: usize,
+    /// Success value or error description.
+    pub result: Result<T, String>,
+}
+
 /// The lifecycle status of a user account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UserStatus {

@@ -1,17 +1,18 @@
 //! HTTP server and route definitions.
 //!
-//! Builds an [`axum::Router`] with health, OIDC discovery, JWKS, and OAuth 2.0
-//! endpoints. The server is configured with shared application state containing
-//! the identity engine.
+//! Builds an [`axum::Router`] with health, OIDC discovery, JWKS, OAuth 2.0,
+//! and Admin API endpoints. The server is configured with shared application
+//! state containing the identity, authorization, and audit engines.
 //!
 //! The protocol layer is a thin, stateless adapter: it translates HTTP requests
 //! into domain calls on `IdentityEngine` and maps `IdentityError` to HTTP
 //! status codes. No business logic lives here.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, Router};
@@ -19,22 +20,227 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
+use crate::audit::{AuditEngine, CreateAuditEvent};
+use crate::authz::{AuthorizationEngine, ObjectRef, SubjectRef};
 use crate::core::{ClientId, TenantId, UserId};
 use crate::identity::{
-    AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, IdentityEngine,
-    RegisterClientRequest, TokenExchangeRequest,
+    AuthorizationRequest, CodeChallengeMethod, CreateTenantRequest, CreateUserRequest,
+    IdentityEngine, RegisterClientRequest, TokenExchangeRequest, UpdateClientRequest,
+    UpdateTenantRequest, UpdateUserRequest, UserStatus,
 };
+
+/// Tracks admin API rate limiting per user.
+#[derive(Debug, Clone)]
+struct AdminRateTracker {
+    /// Number of requests in the current window.
+    count: u32,
+    /// Start of the current window (Unix microseconds).
+    window_start_micros: i64,
+}
+
+/// Maximum admin API requests per minute per user.
+const ADMIN_RATE_LIMIT: u32 = 100;
+/// Rate limit window in microseconds (1 minute).
+const ADMIN_RATE_WINDOW_MICROS: i64 = 60 * 1_000_000;
 
 /// Shared application state passed to all route handlers.
 pub struct AppState {
     /// The identity engine for all domain operations.
     pub identity: Arc<dyn IdentityEngine>,
+    /// The authorization engine for permission checks.
+    pub authz: Arc<dyn AuthorizationEngine>,
+    /// The audit engine for mutation logging.
+    pub audit: Arc<dyn AuditEngine>,
+    /// Per-admin-user rate trackers. Key: user UUID string.
+    admin_rate_trackers: Mutex<HashMap<String, AdminRateTracker>>,
+}
+
+impl AppState {
+    /// Creates a new `AppState` with all three engines.
+    pub fn new(
+        identity: Arc<dyn IdentityEngine>,
+        authz: Arc<dyn AuthorizationEngine>,
+        audit: Arc<dyn AuditEngine>,
+    ) -> Self {
+        Self {
+            identity,
+            authz,
+            audit,
+            admin_rate_trackers: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+/// Authenticated admin context extracted from request headers.
+///
+/// Contains the tenant and user that passed both token validation
+/// and Zanzibar admin role check.
+#[derive(Debug, Clone)]
+struct AdminAuth {
+    tenant_id: TenantId,
+    user_id: UserId,
+}
+
+/// Extracts and validates admin authentication from request headers.
+///
+/// 1. Extracts `Authorization: Bearer <token>` and `X-Tenant-ID`
+/// 2. Validates the token via `identity.validate_token()`
+/// 3. Checks admin role via `authz.check(hearth#admin@user:uuid)`
+/// 4. Checks rate limit (100 req/min per admin user)
+fn extract_admin_auth(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AdminAuth, (StatusCode, Json<serde_json::Value>)> {
+    let tenant_id = extract_tenant_id(headers)?;
+
+    // Extract bearer token
+    let auth_header = headers
+        .get("authorization")
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "missing authorization header"})),
+            )
+        })?
+        .to_str()
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid authorization header"})),
+            )
+        })?;
+
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid authorization scheme"})),
+        )
+    })?;
+
+    // Validate token
+    let claims = state
+        .identity
+        .validate_token(&tenant_id, token)
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid token"})),
+            )
+        })?;
+
+    // sub is "user_{uuid}" — strip prefix to get raw UUID
+    let uuid_str = claims.sub.strip_prefix("user_").unwrap_or(&claims.sub);
+    let user_uuid: uuid::Uuid = uuid_str.parse().map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid token"})),
+        )
+    })?;
+    let user_id = UserId::new(user_uuid);
+
+    // Check admin role via Zanzibar
+    // INVARIANT: "hearth"/"admin"/"user" are valid ObjectRef fields (short ASCII strings)
+    #[allow(clippy::unwrap_used)]
+    let object = ObjectRef::new("hearth", "admin").unwrap();
+    #[allow(clippy::unwrap_used)]
+    let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
+    let is_admin = state
+        .authz
+        .check(&tenant_id, &object, "admin", &subject, None)
+        .unwrap_or(false);
+
+    if !is_admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "forbidden"})),
+        ));
+    }
+
+    // Rate limiting
+    check_admin_rate_limit(state, &user_id)?;
+
+    Ok(AdminAuth { tenant_id, user_id })
+}
+
+/// Checks the admin API rate limit for a user.
+///
+/// Returns 429 if the user has exceeded 100 requests in the current
+/// 1-minute window.
+fn check_admin_rate_limit(
+    state: &AppState,
+    user_id: &UserId,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    #[allow(clippy::cast_possible_truncation)]
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as i64;
+
+    let key = user_id.as_uuid().to_string();
+    let mut trackers = state
+        .admin_rate_trackers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    let tracker = trackers.entry(key).or_insert(AdminRateTracker {
+        count: 0,
+        window_start_micros: now,
+    });
+
+    // Reset window if expired
+    if now - tracker.window_start_micros > ADMIN_RATE_WINDOW_MICROS {
+        tracker.count = 0;
+        tracker.window_start_micros = now;
+    }
+
+    tracker.count += 1;
+    if tracker.count > ADMIN_RATE_LIMIT {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": "rate limit exceeded"})),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Builds the HTTP router with all configured routes.
 ///
 /// The returned router is ready to be served with [`serve`].
 pub fn router(state: Arc<AppState>) -> Router {
+    let admin_routes = Router::new()
+        .route(
+            "/users",
+            axum::routing::get(admin_list_users).post(admin_create_user),
+        )
+        .route("/users/bulk", axum::routing::post(admin_bulk_users))
+        .route(
+            "/users/{id}",
+            axum::routing::get(admin_get_user)
+                .put(admin_update_user)
+                .delete(admin_delete_user),
+        )
+        .route(
+            "/tenants",
+            axum::routing::get(admin_list_tenants).post(admin_create_tenant),
+        )
+        .route(
+            "/tenants/{id}",
+            axum::routing::get(admin_get_tenant)
+                .put(admin_update_tenant)
+                .delete(admin_delete_tenant),
+        )
+        .route(
+            "/applications",
+            axum::routing::get(admin_list_clients).post(admin_register_client),
+        )
+        .route(
+            "/applications/{id}",
+            axum::routing::get(admin_get_client)
+                .put(admin_update_client)
+                .delete(admin_delete_client),
+        );
+
     Router::new()
         .route("/health", axum::routing::get(health))
         .route(
@@ -46,6 +252,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/clients", axum::routing::post(register_client))
         .route("/authorize", axum::routing::post(authorize))
         .route("/token", axum::routing::post(token_exchange))
+        .nest("/admin", admin_routes)
         .with_state(state)
 }
 
@@ -373,6 +580,8 @@ fn identity_error_to_response(
             (StatusCode::BAD_REQUEST, "invalid attestation")
         }
         IdentityError::InvalidAssertion { .. } => (StatusCode::UNAUTHORIZED, "invalid assertion"),
+        IdentityError::Unauthorized => (StatusCode::FORBIDDEN, "forbidden"),
+        IdentityError::ClientNotFound => (StatusCode::NOT_FOUND, "not found"),
         IdentityError::MagicLinkTokenInvalid => {
             (StatusCode::UNAUTHORIZED, "invalid or expired link")
         }
@@ -506,14 +715,821 @@ async fn token_exchange(
     }
 }
 
+// === Admin API endpoints ===
+
+/// Serializes a user to a JSON value for API responses.
+fn user_to_json(user: &crate::identity::User) -> serde_json::Value {
+    serde_json::json!({
+        "id": user.id().as_uuid(),
+        "email": user.email(),
+        "display_name": user.display_name(),
+        "status": format!("{:?}", user.status()),
+        "created_at": user.created_at().as_micros(),
+        "updated_at": user.updated_at().as_micros(),
+    })
+}
+
+/// Serializes a tenant to a JSON value for API responses.
+fn tenant_to_json(tenant: &crate::identity::Tenant) -> serde_json::Value {
+    serde_json::json!({
+        "id": tenant.id().as_uuid(),
+        "name": tenant.name(),
+        "status": format!("{:?}", tenant.status()),
+        "config": tenant.config(),
+        "created_at": tenant.created_at().as_micros(),
+        "updated_at": tenant.updated_at().as_micros(),
+    })
+}
+
+/// Pagination query parameters.
+#[derive(Debug, Deserialize)]
+struct PaginationParams {
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+impl PaginationParams {
+    /// Returns the limit clamped to [1, 100] with a default of 20.
+    fn effective_limit(&self) -> usize {
+        self.limit.unwrap_or(20).clamp(1, 100)
+    }
+}
+
+/// Admin: list users (paginated).
+async fn admin_list_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<PaginationParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    match state.identity.list_users(
+        &auth.tenant_id,
+        params.cursor.as_deref(),
+        params.effective_limit(),
+    ) {
+        Ok(page) => {
+            let items: Vec<_> = page.items.iter().map(user_to_json).collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "items": items,
+                    "next_cursor": page.next_cursor,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: create user.
+async fn admin_create_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpCreateUserRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = CreateUserRequest {
+        email: body.email,
+        display_name: body.display_name,
+    };
+
+    match state.identity.create_user(&auth.tenant_id, &request) {
+        Ok(user) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::UserCreated,
+                resource_type: "user".to_string(),
+                resource_id: user.id().as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            (StatusCode::CREATED, Json(user_to_json(&user))).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: get user by ID.
+async fn admin_get_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let user_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid user ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state
+        .identity
+        .get_user(&auth.tenant_id, &UserId::new(user_uuid))
+    {
+        Ok(Some(user)) => (StatusCode::OK, Json(user_to_json(&user))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// HTTP request body for user update (admin).
+#[derive(Debug, Deserialize)]
+struct HttpUpdateUserRequest {
+    email: Option<String>,
+    display_name: Option<String>,
+    status: Option<String>,
+}
+
+/// Admin: update user by ID.
+async fn admin_update_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<HttpUpdateUserRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let user_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid user ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    let status = match body.status.as_deref() {
+        Some("Active") => Some(UserStatus::Active),
+        Some("Disabled") => Some(UserStatus::Disabled),
+        Some("PendingVerification") => Some(UserStatus::PendingVerification),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid status"})),
+            )
+                .into_response()
+        }
+        None => None,
+    };
+
+    let request = UpdateUserRequest {
+        email: body.email,
+        display_name: body.display_name,
+        status,
+    };
+    let uid = UserId::new(user_uuid);
+
+    match state.identity.update_user(&auth.tenant_id, &uid, &request) {
+        Ok(user) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::UserUpdated,
+                resource_type: "user".to_string(),
+                resource_id: uid.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            (StatusCode::OK, Json(user_to_json(&user))).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: delete user by ID.
+async fn admin_delete_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let user_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid user ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state
+        .identity
+        .delete_user(&auth.tenant_id, &UserId::new(user_uuid))
+    {
+        Ok(()) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::UserDeleted,
+                resource_type: "user".to_string(),
+                resource_id: user_uuid.to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// HTTP request body for bulk user operations.
+#[derive(Debug, Deserialize)]
+struct HttpBulkUsersRequest {
+    operation: String,
+    #[serde(default)]
+    users: Vec<HttpCreateUserRequest>,
+    #[serde(default)]
+    user_ids: Vec<String>,
+}
+
+/// Admin: bulk user operations (create or disable).
+#[allow(clippy::too_many_lines)]
+async fn admin_bulk_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpBulkUsersRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    match body.operation.as_str() {
+        "create" => {
+            let requests: Vec<CreateUserRequest> = body
+                .users
+                .iter()
+                .map(|u| CreateUserRequest {
+                    email: u.email.clone(),
+                    display_name: u.display_name.clone(),
+                })
+                .collect();
+
+            match state.identity.bulk_create_users(&auth.tenant_id, &requests) {
+                Ok(results) => {
+                    let _ = state.audit.append(&CreateAuditEvent {
+                        tenant_id: auth.tenant_id.clone(),
+                        actor: auth.user_id.as_uuid().to_string(),
+                        action: crate::audit::AuditAction::BulkUsersCreated,
+                        resource_type: "user".to_string(),
+                        resource_id: format!("batch:{}", results.len()),
+                        metadata: Some(serde_json::json!({"via": "admin_api"})),
+                    });
+
+                    let json_results: Vec<_> = results
+                        .iter()
+                        .map(|r| match &r.result {
+                            Ok(user) => serde_json::json!({
+                                "index": r.index,
+                                "success": true,
+                                "user": user_to_json(user),
+                            }),
+                            Err(err) => serde_json::json!({
+                                "index": r.index,
+                                "success": false,
+                                "error": err,
+                            }),
+                        })
+                        .collect();
+
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({"results": json_results})),
+                    )
+                        .into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "disable" => {
+            let mut user_ids = Vec::new();
+            for id_str in &body.user_ids {
+                match id_str.parse::<uuid::Uuid>() {
+                    Ok(uuid) => user_ids.push(UserId::new(uuid)),
+                    Err(_) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({"error": "invalid user ID in list"})),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+
+            match state
+                .identity
+                .bulk_disable_users(&auth.tenant_id, &user_ids)
+            {
+                Ok(results) => {
+                    let _ = state.audit.append(&CreateAuditEvent {
+                        tenant_id: auth.tenant_id.clone(),
+                        actor: auth.user_id.as_uuid().to_string(),
+                        action: crate::audit::AuditAction::BulkUsersDisabled,
+                        resource_type: "user".to_string(),
+                        resource_id: format!("batch:{}", results.len()),
+                        metadata: Some(serde_json::json!({"via": "admin_api"})),
+                    });
+
+                    let json_results: Vec<_> = results
+                        .iter()
+                        .map(|r| match &r.result {
+                            Ok(()) => serde_json::json!({
+                                "index": r.index,
+                                "success": true,
+                            }),
+                            Err(err) => serde_json::json!({
+                                "index": r.index,
+                                "success": false,
+                                "error": err,
+                            }),
+                        })
+                        .collect();
+
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({"results": json_results})),
+                    )
+                        .into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid operation, expected 'create' or 'disable'"})),
+        )
+            .into_response(),
+    }
+}
+
+/// Admin: list tenants (paginated).
+async fn admin_list_tenants(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<PaginationParams>,
+) -> impl IntoResponse {
+    let _auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    match state
+        .identity
+        .list_tenants(params.cursor.as_deref(), params.effective_limit())
+    {
+        Ok(page) => {
+            let items: Vec<_> = page.items.iter().map(tenant_to_json).collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "items": items,
+                    "next_cursor": page.next_cursor,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// HTTP request body for tenant creation.
+#[derive(Debug, Deserialize)]
+struct HttpCreateTenantRequest {
+    name: String,
+    config: Option<crate::identity::TenantConfig>,
+}
+
+/// Admin: create tenant.
+async fn admin_create_tenant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpCreateTenantRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = CreateTenantRequest {
+        name: body.name,
+        config: body.config,
+    };
+
+    match state.identity.create_tenant(&request) {
+        Ok(tenant) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::TenantCreated,
+                resource_type: "tenant".to_string(),
+                resource_id: tenant.id().as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            (StatusCode::CREATED, Json(tenant_to_json(&tenant))).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: get tenant by ID.
+async fn admin_get_tenant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let _auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let tenant_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid tenant ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state.identity.get_tenant(&TenantId::new(tenant_uuid)) {
+        Ok(Some(tenant)) => (StatusCode::OK, Json(tenant_to_json(&tenant))).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// HTTP request body for tenant update.
+#[derive(Debug, Deserialize)]
+struct HttpUpdateTenantRequest {
+    name: Option<String>,
+    status: Option<String>,
+    config: Option<crate::identity::TenantConfig>,
+}
+
+/// Admin: update tenant by ID.
+async fn admin_update_tenant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<HttpUpdateTenantRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let tenant_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid tenant ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    let status = match body.status.as_deref() {
+        Some("Active") => Some(crate::identity::TenantStatus::Active),
+        Some("Suspended") => Some(crate::identity::TenantStatus::Suspended),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid status"})),
+            )
+                .into_response()
+        }
+        None => None,
+    };
+
+    let tid = TenantId::new(tenant_uuid);
+    let request = UpdateTenantRequest {
+        name: body.name,
+        status,
+        config: body.config,
+    };
+
+    match state.identity.update_tenant(&tid, &request) {
+        Ok(tenant) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::TenantUpdated,
+                resource_type: "tenant".to_string(),
+                resource_id: tenant_uuid.to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            (StatusCode::OK, Json(tenant_to_json(&tenant))).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: delete tenant by ID.
+async fn admin_delete_tenant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let tenant_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid tenant ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state.identity.delete_tenant(&TenantId::new(tenant_uuid)) {
+        Ok(()) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::TenantDeleted,
+                resource_type: "tenant".to_string(),
+                resource_id: tenant_uuid.to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: list clients (paginated).
+async fn admin_list_clients(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<PaginationParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    match state.identity.list_clients(
+        &auth.tenant_id,
+        params.cursor.as_deref(),
+        params.effective_limit(),
+    ) {
+        Ok(page) => {
+            let items: Vec<_> = page
+                .items
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "client_id": c.client_id().as_uuid(),
+                        "client_name": c.client_name(),
+                        "redirect_uris": c.redirect_uris(),
+                        "created_at": c.created_at().as_micros(),
+                        "grant_types": c.grant_types(),
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "items": items,
+                    "next_cursor": page.next_cursor,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: register a new client.
+async fn admin_register_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpRegisterClientRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = RegisterClientRequest {
+        client_name: body.client_name,
+        redirect_uris: body.redirect_uris,
+        client_secret: None,
+        grant_types: vec!["authorization_code".to_string()],
+    };
+
+    match state.identity.register_client(&auth.tenant_id, &request) {
+        Ok(client) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::ClientRegistered,
+                resource_type: "client".to_string(),
+                resource_id: client.client_id().as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            (
+                StatusCode::CREATED,
+                Json(serde_json::to_value(client).unwrap_or_default()),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: get client by ID.
+async fn admin_get_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let client_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid client ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state
+        .identity
+        .get_client(&auth.tenant_id, &ClientId::new(client_uuid))
+    {
+        Ok(Some(client)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(client).unwrap_or_default()),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// HTTP request body for client update.
+#[derive(Debug, Deserialize)]
+struct HttpUpdateClientRequest {
+    client_name: Option<String>,
+    redirect_uris: Option<Vec<String>>,
+}
+
+/// Admin: update client by ID.
+async fn admin_update_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<HttpUpdateClientRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let client_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid client ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    let request = UpdateClientRequest {
+        client_name: body.client_name,
+        redirect_uris: body.redirect_uris,
+    };
+
+    match state
+        .identity
+        .update_client(&auth.tenant_id, &ClientId::new(client_uuid), &request)
+    {
+        Ok(client) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::ClientUpdated,
+                resource_type: "client".to_string(),
+                resource_id: client_uuid.to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(client).unwrap_or_default()),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: delete client by ID.
+async fn admin_delete_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let client_uuid: uuid::Uuid = match id.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid client ID"})),
+            )
+                .into_response()
+        }
+    };
+
+    match state
+        .identity
+        .delete_client(&auth.tenant_id, &ClientId::new(client_uuid))
+    {
+        Ok(()) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                tenant_id: auth.tenant_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::ClientDeleted,
+                resource_type: "client".to_string(),
+                resource_id: client_uuid.to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api"})),
+            });
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::EmbeddedAuditEngine;
+    use crate::authz::{AuthzConfig, EmbeddedAuthzEngine};
     use crate::core::SystemClock;
     use crate::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
-    use crate::storage::{EmbeddedStorageEngine, StorageConfig};
+    use crate::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
-    /// Creates a test app state with an embedded engine in a temp directory.
+    /// Creates a test app state with all three engines in a temp directory.
     fn test_state(temp_dir: &std::path::Path) -> Arc<AppState> {
         let config = StorageConfig::dev(temp_dir.to_path_buf());
         let engine = Arc::new(EmbeddedStorageEngine::open(config).expect("open storage"));
@@ -523,15 +1539,23 @@ mod tests {
             ..IdentityConfig::default()
         };
         let identity_engine = EmbeddedIdentityEngine::new(
-            engine as Arc<dyn crate::storage::StorageEngine>,
-            clock,
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
             identity_config,
         )
         .expect("identity engine");
+        let authz_engine = EmbeddedAuthzEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            AuthzConfig::default(),
+        );
+        let audit_engine =
+            EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
 
-        Arc::new(AppState {
-            identity: Arc::new(identity_engine),
-        })
+        Arc::new(AppState::new(
+            Arc::new(identity_engine),
+            Arc::new(authz_engine),
+            Arc::new(audit_engine),
+        ))
     }
 
     #[tokio::test]

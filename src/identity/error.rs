@@ -103,6 +103,13 @@ pub enum IdentityError {
         /// Description of the assertion failure.
         reason: String,
     },
+    /// The caller is not authorized to perform this operation.
+    ///
+    /// Used for admin API access control. Intentionally vague to
+    /// prevent information leakage about what resources exist.
+    Unauthorized,
+    /// The requested OAuth client was not found.
+    ClientNotFound,
     /// The magic link token is invalid, expired, or already used.
     ///
     /// Intentionally conflates not-found, expired, and already-used for
@@ -166,6 +173,8 @@ impl fmt::Display for IdentityError {
             Self::InvalidAssertion { reason } => {
                 write!(f, "invalid assertion: {reason}")
             }
+            Self::Unauthorized => write!(f, "forbidden"),
+            Self::ClientNotFound => write!(f, "client not found"),
             Self::MagicLinkTokenInvalid => write!(f, "invalid or expired magic link"),
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
@@ -210,6 +219,8 @@ impl std::error::Error for IdentityError {
             | Self::WebAuthnCredentialNotFound
             | Self::InvalidAttestation { .. }
             | Self::InvalidAssertion { .. }
+            | Self::Unauthorized
+            | Self::ClientNotFound
             | Self::MagicLinkTokenInvalid
             | Self::RateLimited
             | Self::Serialization { .. } => None,
@@ -516,6 +527,20 @@ mod tests {
     }
 
     #[test]
+    fn display_unauthorized() {
+        let err = IdentityError::Unauthorized;
+        let display = format!("{err}");
+        assert!(display.contains("forbidden"), "got: {display}");
+    }
+
+    #[test]
+    fn display_client_not_found() {
+        let err = IdentityError::ClientNotFound;
+        let display = format!("{err}");
+        assert!(display.contains("client not found"), "got: {display}");
+    }
+
+    #[test]
     fn display_magic_link_token_invalid() {
         let err = IdentityError::MagicLinkTokenInvalid;
         let display = format!("{err}");
@@ -591,6 +616,8 @@ mod tests {
         })
         .source()
         .is_none());
+        assert!(IdentityError::Unauthorized.source().is_none());
+        assert!(IdentityError::ClientNotFound.source().is_none());
         assert!(IdentityError::MagicLinkTokenInvalid.source().is_none());
         assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {

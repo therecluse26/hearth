@@ -139,6 +139,13 @@ pub(crate) fn prefix_end(prefix: &[u8]) -> Vec<u8> {
     end
 }
 
+/// Returns the scan prefix for listing all OAuth clients.
+///
+/// Format: `oauth:client:`
+pub(crate) fn oauth_client_scan_prefix() -> Vec<u8> {
+    OAUTH_CLIENT_PREFIX.as_bytes().to_vec()
+}
+
 /// Encodes the storage key for an OAuth client.
 ///
 /// Format: `oauth:client:{client_id_uuid}`

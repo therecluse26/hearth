@@ -159,6 +159,27 @@ impl OAuthClient {
     pub(crate) fn set_grant_types(&mut self, grant_types: Vec<String>) {
         self.grant_types = grant_types;
     }
+
+    /// Sets the client name. Used internally during updates.
+    pub(crate) fn set_client_name(&mut self, name: String) {
+        self.client_name = name;
+    }
+
+    /// Sets the redirect URIs. Used internally during updates.
+    pub(crate) fn set_redirect_uris(&mut self, uris: Vec<String>) {
+        self.redirect_uris = uris;
+    }
+}
+
+/// Request to update an existing OAuth 2.0 client.
+///
+/// Only `Some` fields are applied; `None` fields are left unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateClientRequest {
+    /// New client display name.
+    pub client_name: Option<String>,
+    /// New set of redirect URIs.
+    pub redirect_uris: Option<Vec<String>>,
 }
 
 /// The PKCE code challenge method.

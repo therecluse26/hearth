@@ -25,7 +25,7 @@ pub use oidc::{
     ClientCredentialsResponse, CodeChallengeMethod, DeviceAuthorizationRequest,
     DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
-    TokenIntrospectionRequest, TokenRevocationRequest,
+    TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest,
 };
 pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
@@ -33,8 +33,8 @@ pub use tokens::{
 };
 pub use totp::TotpEnrollment;
 pub use types::{
-    CreateTenantRequest, CreateUserRequest, Session, Tenant, TenantConfig, TenantStatus,
-    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+    BulkResult, CreateTenantRequest, CreateUserRequest, Page, Session, Tenant, TenantConfig,
+    TenantStatus, UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
@@ -499,4 +499,79 @@ pub trait IdentityEngine: Send + Sync {
         tenant_id: &TenantId,
         token: &str,
     ) -> Result<UserId, IdentityError>;
+
+    // ===== Admin API (Step 27) =====
+
+    /// Lists users with cursor-based pagination.
+    ///
+    /// Returns at most `limit` users. If more exist, `Page::next_cursor`
+    /// contains the cursor for the next page.
+    fn list_users(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<User>, IdentityError>;
+
+    /// Lists tenants with cursor-based pagination.
+    ///
+    /// Tenants are stored under the system tenant namespace, so no
+    /// `tenant_id` parameter is needed for scoping.
+    fn list_tenants(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Tenant>, IdentityError>;
+
+    /// Lists OAuth clients with cursor-based pagination.
+    fn list_clients(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OAuthClient>, IdentityError>;
+
+    /// Retrieves a single OAuth client by ID.
+    fn get_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<Option<OAuthClient>, IdentityError>;
+
+    /// Updates an existing OAuth client's fields.
+    ///
+    /// Only non-`None` fields in the request are applied.
+    fn update_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+        request: &UpdateClientRequest,
+    ) -> Result<OAuthClient, IdentityError>;
+
+    /// Deletes an OAuth client by ID.
+    fn delete_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<(), IdentityError>;
+
+    /// Creates multiple users in a single batch operation.
+    ///
+    /// Each item is processed independently — individual failures do not
+    /// abort the batch. Returns a `BulkResult` for each input item.
+    fn bulk_create_users(
+        &self,
+        tenant_id: &TenantId,
+        requests: &[CreateUserRequest],
+    ) -> Result<Vec<BulkResult<User>>, IdentityError>;
+
+    /// Disables multiple users in a single batch operation.
+    ///
+    /// Each item is processed independently — individual failures do not
+    /// abort the batch. Returns a `BulkResult` for each input item.
+    fn bulk_disable_users(
+        &self,
+        tenant_id: &TenantId,
+        user_ids: &[UserId],
+    ) -> Result<Vec<BulkResult<()>>, IdentityError>;
 }

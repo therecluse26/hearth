@@ -47,6 +47,14 @@ pub enum AuditAction {
     TupleWritten,
     /// An authorization tuple was deleted.
     TupleDeleted,
+    /// An OAuth client was updated via admin API.
+    ClientUpdated,
+    /// An OAuth client was deleted via admin API.
+    ClientDeleted,
+    /// Users were bulk-created via admin API.
+    BulkUsersCreated,
+    /// Users were bulk-disabled via admin API.
+    BulkUsersDisabled,
 }
 
 impl AuditAction {
@@ -71,6 +79,10 @@ impl AuditAction {
             Self::AuthorizationCodeExchanged => "authz_code_exchanged",
             Self::TupleWritten => "tuple_written",
             Self::TupleDeleted => "tuple_deleted",
+            Self::ClientUpdated => "client_updated",
+            Self::ClientDeleted => "client_deleted",
+            Self::BulkUsersCreated => "bulk_users_created",
+            Self::BulkUsersDisabled => "bulk_users_disabled",
         }
     }
 }

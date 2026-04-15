@@ -38,8 +38,8 @@ use crate::identity::tokens::{
 };
 use crate::identity::totp::{self, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
-    CreateTenantRequest, CreateUserRequest, Session, Tenant, TenantStatus, UpdateTenantRequest,
-    UpdateUserRequest, User, UserStatus,
+    BulkResult, CreateTenantRequest, CreateUserRequest, Page, Session, Tenant, TenantStatus,
+    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
 use crate::identity::webauthn::{
@@ -2909,6 +2909,296 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let user = self.create_user(tenant_id, &request)?;
             Ok(user.id().clone())
         }
+    }
+
+    // ===== Admin API (Step 27) =====
+
+    fn list_users(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<User>, IdentityError> {
+        let prefix = keys::user_id_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            // Decode cursor → UUID, build key just after it
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            // Build key for cursor UUID and add a byte to get "just after"
+            let mut cursor_key = format!("usr:id:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let user: User =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(user);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop(); // discard the extra item
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn list_tenants(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Tenant>, IdentityError> {
+        let sys_tenant = keys::system_tenant_id();
+        let prefix = keys::tenant_id_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!("tenant:id:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(&sys_tenant, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let tenant: Tenant =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(tenant);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop(); // discard the extra item
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn list_clients(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OAuthClient>, IdentityError> {
+        let prefix = keys::oauth_client_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!("oauth:client:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let client: OAuthClient =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(client);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop(); // discard the extra item
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.client_id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn get_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<Option<OAuthClient>, IdentityError> {
+        let key = keys::encode_oauth_client(client_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+
+        match bytes {
+            Some(data) => {
+                let client: OAuthClient =
+                    serde_json::from_slice(&data).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(client))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn update_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+        request: &crate::identity::oidc::UpdateClientRequest,
+    ) -> Result<OAuthClient, IdentityError> {
+        let key = keys::encode_oauth_client(client_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::ClientNotFound)?;
+
+        let mut client: OAuthClient =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if let Some(name) = &request.client_name {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "client_name cannot be empty".to_string(),
+                });
+            }
+            client.set_client_name(trimmed.to_string());
+        }
+        if let Some(uris) = &request.redirect_uris {
+            if uris.is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "redirect_uris cannot be empty".to_string(),
+                });
+            }
+            client.set_redirect_uris(uris.clone());
+        }
+
+        let updated_bytes =
+            serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(client)
+    }
+
+    fn delete_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_oauth_client(client_id);
+        // Verify the client exists first
+        self.storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::ClientNotFound)?;
+
+        self.storage
+            .delete(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+        Ok(())
+    }
+
+    fn bulk_create_users(
+        &self,
+        tenant_id: &TenantId,
+        requests: &[CreateUserRequest],
+    ) -> Result<Vec<BulkResult<User>>, IdentityError> {
+        let mut results = Vec::with_capacity(requests.len());
+        for (index, request) in requests.iter().enumerate() {
+            let result = match self.create_user(tenant_id, request) {
+                Ok(user) => BulkResult {
+                    index,
+                    result: Ok(user),
+                },
+                Err(e) => BulkResult {
+                    index,
+                    result: Err(e.to_string()),
+                },
+            };
+            results.push(result);
+        }
+        Ok(results)
+    }
+
+    fn bulk_disable_users(
+        &self,
+        tenant_id: &TenantId,
+        user_ids: &[UserId],
+    ) -> Result<Vec<BulkResult<()>>, IdentityError> {
+        let mut results = Vec::with_capacity(user_ids.len());
+        for (index, user_id) in user_ids.iter().enumerate() {
+            let result = match self.update_user(
+                tenant_id,
+                user_id,
+                &UpdateUserRequest {
+                    status: Some(UserStatus::Disabled),
+                    ..UpdateUserRequest::default()
+                },
+            ) {
+                Ok(_) => BulkResult {
+                    index,
+                    result: Ok(()),
+                },
+                Err(e) => BulkResult {
+                    index,
+                    result: Err(e.to_string()),
+                },
+            };
+            results.push(result);
+        }
+        Ok(results)
     }
 }
 

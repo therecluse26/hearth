@@ -415,14 +415,14 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | TOTP / MFA | 5/5 | 3/3 | 1/1 | -- | -- | 2/2 | -- | -- | **11/11** |
 | Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
 | Zanzibar Authorization (Full) | 5/5 | 3/3 | 1/2 | -- | 0/2 | 2/2 | -- | 1/2 | **12/16** |
-| Admin API | 0/3 | 0/4 | -- | -- | -- | 0/3 | -- | -- | **0/10** |
+| Admin API | 3/3 | 4/4 | -- | -- | -- | 3/3 | -- | -- | **10/10** |
 | Audit Logging | 4/4 | 3/3 | 2/2 | -- | 0/2 | 1/1 | -- | -- | **10/12** |
 | TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | SDK Integration (TS & Go) | -- | 0/6 | -- | -- | -- | -- | -- | -- | **0/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **32/39** | **20/36** | **9/10** | **1/1** | **0/6** | **16/24** | **3/8** | **3/6** | **84/130** |
+| **Column Total** | **35/39** | **24/36** | **9/10** | **1/1** | **0/6** | **19/24** | **3/8** | **3/6** | **94/130** |
 
 ---
 
@@ -621,22 +621,22 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Admin role enforcement: only users with admin role can access management endpoints `P0` `fast`
-- [ ] Pagination and filtering: list endpoints return correct pages with cursor-based pagination `P0` `fast`
-- [ ] Bulk operations: batch user create/disable processes all entries and returns per-item results `P1` `fast`
+- [x] Admin role enforcement: only users with admin role can access management endpoints `P0` `fast`
+- [x] Pagination and filtering: list endpoints return correct pages with cursor-based pagination `P0` `fast`
+- [x] Bulk operations: batch user create/disable processes all entries and returns per-item results `P1` `fast`
 
 #### Integration
 
-- [ ] REST CRUD for users: create, read, update, disable, list via admin endpoints `P0` `fast`
-- [ ] REST CRUD for tenants: create, read, update, delete via admin endpoints `P0` `fast`
-- [ ] REST CRUD for applications: create, read, update, delete via admin endpoints `P0` `fast`
-- [ ] Admin audit trail: all admin mutations appear in audit log with actor identity `P0` `fast`
+- [x] REST CRUD for users: create, read, update, disable, list via admin endpoints `P0` `fast`
+- [x] REST CRUD for tenants: create, read, update, delete via admin endpoints `P0` `fast`
+- [x] REST CRUD for applications: create, read, update, delete via admin endpoints `P0` `fast`
+- [x] Admin audit trail: all admin mutations appear in audit log with actor identity `P0` `fast`
 
 #### Adversarial
 
-- [ ] Privilege escalation: non-admin user accessing admin endpoints receives 403 with no data leak `P0` `fast`
-- [ ] Admin endpoint rate limiting: excessive requests from single admin trigger throttling `P1` `fast`
-- [ ] Mass enumeration via admin listing: response times constant regardless of result count (no timing leak) `P0` `fast`
+- [x] Privilege escalation: non-admin user accessing admin endpoints receives 403 with no data leak `P0` `fast`
+- [x] Admin endpoint rate limiting: excessive requests from single admin trigger throttling `P1` `fast`
+- [x] Mass enumeration via admin listing: response times constant regardless of result count (no timing leak) `P0` `fast`
 
 ---
 
