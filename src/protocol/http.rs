@@ -244,6 +244,19 @@ fn identity_error_to_response(
         IdentityError::InvalidMfaCode => (StatusCode::UNAUTHORIZED, "invalid MFA code"),
         IdentityError::MfaNotEnabled => (StatusCode::BAD_REQUEST, "MFA not enabled"),
         IdentityError::MfaAlreadyEnabled => (StatusCode::CONFLICT, "MFA already enabled"),
+        IdentityError::WebAuthnRegistrationFailed { .. } => {
+            (StatusCode::BAD_REQUEST, "webauthn registration failed")
+        }
+        IdentityError::WebAuthnAuthenticationFailed { .. } => {
+            (StatusCode::UNAUTHORIZED, "webauthn authentication failed")
+        }
+        IdentityError::WebAuthnCredentialNotFound => {
+            (StatusCode::NOT_FOUND, "credential not found")
+        }
+        IdentityError::InvalidAttestation { .. } => {
+            (StatusCode::BAD_REQUEST, "invalid attestation")
+        }
+        IdentityError::InvalidAssertion { .. } => (StatusCode::UNAUTHORIZED, "invalid assertion"),
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)

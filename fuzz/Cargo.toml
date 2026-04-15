@@ -40,3 +40,8 @@ doc = false
 name = "oidc_request_parse"
 path = "fuzz_targets/oidc_request_parse.rs"
 doc = false
+
+[[bin]]
+name = "webauthn_cbor_parse"
+path = "fuzz_targets/webauthn_cbor_parse.rs"
+doc = false

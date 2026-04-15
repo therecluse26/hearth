@@ -39,6 +39,11 @@ use crate::identity::types::{
     UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
+use crate::identity::webauthn::{
+    self, AuthenticationOptions, CeremonyType, CompleteAuthenticationParams,
+    PendingWebAuthnChallenge, RegistrationOptions, StoredWebAuthnCredential, WebAuthnAuthResult,
+    WebAuthnChallengeStore, WebAuthnCredentialInfo,
+};
 use crate::identity::IdentityEngine;
 use crate::storage::StorageEngine;
 
@@ -158,6 +163,8 @@ pub struct EmbeddedIdentityEngine {
     mfa_attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Used nonces for replay protection (when nonce enforcement is enabled).
     used_nonces: Mutex<HashSet<String>>,
+    /// Pending `WebAuthn` challenges awaiting completion.
+    webauthn_challenges: WebAuthnChallengeStore,
 }
 
 impl std::fmt::Debug for EmbeddedIdentityEngine {
@@ -191,6 +198,7 @@ impl EmbeddedIdentityEngine {
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
+            webauthn_challenges: WebAuthnChallengeStore::new(),
         })
     }
 
@@ -214,6 +222,7 @@ impl EmbeddedIdentityEngine {
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
+            webauthn_challenges: WebAuthnChallengeStore::new(),
         }
     }
 
@@ -980,6 +989,30 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .delete(tenant_id, &mfa_key)
             .map_err(Self::storage_err)?;
+
+        // 4c. Delete all WebAuthn credentials + discoverable index entries
+        let webauthn_prefix = keys::encode_webauthn_credentials_prefix(user_id);
+        let webauthn_end = keys::prefix_end(&webauthn_prefix);
+        let webauthn_entries = self
+            .storage
+            .scan(tenant_id, &webauthn_prefix, &webauthn_end)
+            .map_err(Self::storage_err)?;
+
+        for entry in &webauthn_entries {
+            // If discoverable, delete the discoverable index entry
+            if let Ok(stored) = serde_json::from_slice::<StoredWebAuthnCredential>(&entry.value) {
+                if stored.discoverable {
+                    let disc_key = keys::encode_webauthn_discoverable(&stored.credential_id_b64);
+                    self.storage
+                        .delete(tenant_id, &disc_key)
+                        .map_err(Self::storage_err)?;
+                }
+            }
+            // Delete the credential itself
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
 
         // 5. Delete all sessions for this user
         let session_prefix = keys::encode_user_sessions_prefix(user_id);
@@ -2391,6 +2424,318 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             Some(state) => Ok(state.enabled),
             None => Ok(false),
         }
+    }
+
+    // ===== WebAuthn / Passkeys (Step 24) =====
+
+    fn start_webauthn_registration(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        options: &RegistrationOptions,
+    ) -> Result<Vec<u8>, IdentityError> {
+        // Ensure user exists
+        self.get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Cleanup expired challenges
+        let now = self.clock.now().as_micros();
+        self.webauthn_challenges.cleanup_expired(now);
+
+        // Generate and store challenge
+        let challenge = webauthn::generate_challenge()?;
+        let pending = PendingWebAuthnChallenge {
+            challenge: challenge.clone(),
+            rp_id: options.rp_id.clone(),
+            user_id: Some(user_id.clone()),
+            ceremony_type: CeremonyType::Registration,
+            created_at: now,
+        };
+        self.webauthn_challenges.insert(pending);
+
+        Ok(challenge)
+    }
+
+    fn complete_webauthn_registration(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        client_data_json: &[u8],
+        attestation_object: &[u8],
+        origin: &str,
+        discoverable: bool,
+    ) -> Result<WebAuthnCredentialInfo, IdentityError> {
+        // Extract challenge from clientDataJSON to look up pending
+        let client_data: serde_json::Value =
+            serde_json::from_slice(client_data_json).map_err(|e| {
+                IdentityError::WebAuthnRegistrationFailed {
+                    reason: format!("invalid clientDataJSON: {e}"),
+                }
+            })?;
+        let challenge_b64 = client_data
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| IdentityError::WebAuthnRegistrationFailed {
+                reason: "missing challenge in clientDataJSON".to_string(),
+            })?;
+
+        let pending = self
+            .webauthn_challenges
+            .remove(challenge_b64)
+            .ok_or_else(|| IdentityError::WebAuthnRegistrationFailed {
+                reason: "challenge not found or expired".to_string(),
+            })?;
+
+        // Check expiry
+        let now = self.clock.now().as_micros();
+        if now - pending.created_at > 5 * 60 * 1_000_000 {
+            return Err(IdentityError::WebAuthnRegistrationFailed {
+                reason: "challenge expired".to_string(),
+            });
+        }
+
+        let (mut info, mut stored) = webauthn::complete_registration(
+            &pending,
+            client_data_json,
+            attestation_object,
+            origin,
+            now,
+        )?;
+
+        // Set discoverable from caller's request
+        info = WebAuthnCredentialInfo {
+            credential_id: info.credential_id().to_vec(),
+            algorithm: info.algorithm(),
+            discoverable,
+        };
+        stored.discoverable = discoverable;
+
+        // Persist credential
+        let cred_id_b64 = URL_SAFE_NO_PAD.encode(info.credential_id());
+        let key = keys::encode_webauthn_credential(user_id, &cred_id_b64);
+        let bytes = serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(tenant_id, &key, &bytes)
+            .map_err(Self::storage_err)?;
+
+        // If discoverable, create the index entry
+        if discoverable {
+            let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
+            let user_uuid_bytes = user_id.as_uuid().to_string().into_bytes();
+            self.storage
+                .put(tenant_id, &disc_key, &user_uuid_bytes)
+                .map_err(Self::storage_err)?;
+        }
+
+        Ok(info)
+    }
+
+    fn start_webauthn_authentication(
+        &self,
+        tenant_id: &TenantId,
+        user_id: Option<&UserId>,
+        options: &AuthenticationOptions,
+    ) -> Result<Vec<u8>, IdentityError> {
+        // If user_id provided, verify user exists
+        if let Some(uid) = user_id {
+            self.get_user(tenant_id, uid)?
+                .ok_or(IdentityError::UserNotFound)?;
+        }
+
+        // Cleanup expired challenges
+        let now = self.clock.now().as_micros();
+        self.webauthn_challenges.cleanup_expired(now);
+
+        // Generate and store challenge
+        let challenge = webauthn::generate_challenge()?;
+        let pending = PendingWebAuthnChallenge {
+            challenge: challenge.clone(),
+            rp_id: options.rp_id.clone(),
+            user_id: user_id.cloned(),
+            ceremony_type: CeremonyType::Authentication,
+            created_at: now,
+        };
+        self.webauthn_challenges.insert(pending);
+
+        Ok(challenge)
+    }
+
+    fn complete_webauthn_authentication(
+        &self,
+        tenant_id: &TenantId,
+        params: &CompleteAuthenticationParams<'_>,
+    ) -> Result<WebAuthnAuthResult, IdentityError> {
+        let credential_id = params.credential_id;
+        let client_data_json = params.client_data_json;
+        let authenticator_data = params.authenticator_data;
+        let signature = params.signature;
+        let user_handle = params.user_handle;
+        let origin = params.origin;
+
+        // Extract challenge from clientDataJSON to look up pending
+        let client_data: serde_json::Value =
+            serde_json::from_slice(client_data_json).map_err(|e| {
+                IdentityError::WebAuthnAuthenticationFailed {
+                    reason: format!("invalid clientDataJSON: {e}"),
+                }
+            })?;
+        let challenge_b64 = client_data
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| IdentityError::WebAuthnAuthenticationFailed {
+                reason: "missing challenge in clientDataJSON".to_string(),
+            })?;
+
+        let pending = self
+            .webauthn_challenges
+            .remove(challenge_b64)
+            .ok_or_else(|| IdentityError::WebAuthnAuthenticationFailed {
+                reason: "challenge not found or expired".to_string(),
+            })?;
+
+        // Check expiry
+        let now = self.clock.now().as_micros();
+        if now - pending.created_at > 5 * 60 * 1_000_000 {
+            return Err(IdentityError::WebAuthnAuthenticationFailed {
+                reason: "challenge expired".to_string(),
+            });
+        }
+
+        // Look up the credential by ID
+        let cred_id_b64 = URL_SAFE_NO_PAD.encode(credential_id);
+
+        // Determine which user owns this credential
+        let owner_user_id = if let Some(uid) = pending.user_id.as_ref() {
+            uid.clone()
+        } else {
+            // Discoverable flow: look up user from discoverable index
+            let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
+            let user_uuid_bytes = self
+                .storage
+                .get(tenant_id, &disc_key)
+                .map_err(Self::storage_err)?
+                .ok_or(IdentityError::WebAuthnCredentialNotFound)?;
+            let uuid_str = std::str::from_utf8(&user_uuid_bytes).map_err(|_| {
+                IdentityError::Serialization {
+                    reason: "invalid user UUID in discoverable index".to_string(),
+                }
+            })?;
+            let uuid =
+                uuid::Uuid::parse_str(uuid_str).map_err(|_| IdentityError::Serialization {
+                    reason: "invalid user UUID format in discoverable index".to_string(),
+                })?;
+            UserId::new(uuid)
+        };
+
+        let cred_key = keys::encode_webauthn_credential(&owner_user_id, &cred_id_b64);
+        let stored_bytes = self
+            .storage
+            .get(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::WebAuthnCredentialNotFound)?;
+        let stored: StoredWebAuthnCredential =
+            serde_json::from_slice(&stored_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        let result = webauthn::complete_authentication(
+            &pending,
+            &stored,
+            client_data_json,
+            authenticator_data,
+            signature,
+            user_handle,
+            origin,
+        )?;
+
+        // Update sign counter
+        let mut updated = stored;
+        updated.sign_count = result.sign_count();
+        let updated_bytes =
+            serde_json::to_vec(&updated).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &cred_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(result)
+    }
+
+    fn list_webauthn_credentials(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Vec<WebAuthnCredentialInfo>, IdentityError> {
+        let prefix = keys::encode_webauthn_credentials_prefix(user_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(tenant_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut results = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let stored: StoredWebAuthnCredential =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            let cred_id = URL_SAFE_NO_PAD
+                .decode(&stored.credential_id_b64)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: format!("invalid credential ID: {e}"),
+                })?;
+            results.push(WebAuthnCredentialInfo {
+                credential_id: cred_id,
+                algorithm: stored.algorithm,
+                discoverable: stored.discoverable,
+            });
+        }
+
+        Ok(results)
+    }
+
+    fn revoke_webauthn_credential(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        credential_id: &[u8],
+    ) -> Result<(), IdentityError> {
+        let cred_id_b64 = URL_SAFE_NO_PAD.encode(credential_id);
+
+        // Delete credential record
+        let cred_key = keys::encode_webauthn_credential(user_id, &cred_id_b64);
+        let existing = self
+            .storage
+            .get(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?;
+
+        if existing.is_none() {
+            return Err(IdentityError::WebAuthnCredentialNotFound);
+        }
+
+        // Check if discoverable, delete index entry
+        let stored: StoredWebAuthnCredential =
+            serde_json::from_slice(&existing.expect("checked above")).map_err(|e| {
+                IdentityError::Serialization {
+                    reason: e.to_string(),
+                }
+            })?;
+
+        self.storage
+            .delete(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?;
+
+        if stored.discoverable {
+            let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
+            self.storage
+                .delete(tenant_id, &disc_key)
+                .map_err(Self::storage_err)?;
+        }
+
+        Ok(())
     }
 }
 

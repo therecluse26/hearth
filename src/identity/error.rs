@@ -81,6 +81,28 @@ pub enum IdentityError {
     MfaNotEnabled,
     /// MFA is already enabled; disable it before re-enrolling.
     MfaAlreadyEnabled,
+    /// A `WebAuthn` registration ceremony failed.
+    WebAuthnRegistrationFailed {
+        /// Description of the failure (no secrets).
+        reason: String,
+    },
+    /// A `WebAuthn` authentication ceremony failed.
+    WebAuthnAuthenticationFailed {
+        /// Description of the failure (no secrets).
+        reason: String,
+    },
+    /// The requested `WebAuthn` credential was not found.
+    WebAuthnCredentialNotFound,
+    /// The attestation provided during registration is invalid or unsupported.
+    InvalidAttestation {
+        /// Description of the attestation failure.
+        reason: String,
+    },
+    /// The assertion provided during authentication is invalid.
+    InvalidAssertion {
+        /// Description of the assertion failure.
+        reason: String,
+    },
     /// Too many failed credential attempts; the account is temporarily locked.
     ///
     /// Intentionally vague to avoid leaking lockout state to attackers.
@@ -126,6 +148,19 @@ impl fmt::Display for IdentityError {
             Self::InvalidMfaCode => write!(f, "invalid MFA code"),
             Self::MfaNotEnabled => write!(f, "MFA is not enabled for this user"),
             Self::MfaAlreadyEnabled => write!(f, "MFA is already enabled"),
+            Self::WebAuthnRegistrationFailed { reason } => {
+                write!(f, "WebAuthn registration failed: {reason}")
+            }
+            Self::WebAuthnAuthenticationFailed { reason } => {
+                write!(f, "WebAuthn authentication failed: {reason}")
+            }
+            Self::WebAuthnCredentialNotFound => write!(f, "WebAuthn credential not found"),
+            Self::InvalidAttestation { reason } => {
+                write!(f, "invalid attestation: {reason}")
+            }
+            Self::InvalidAssertion { reason } => {
+                write!(f, "invalid assertion: {reason}")
+            }
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
@@ -164,6 +199,11 @@ impl std::error::Error for IdentityError {
             | Self::InvalidMfaCode
             | Self::MfaNotEnabled
             | Self::MfaAlreadyEnabled
+            | Self::WebAuthnRegistrationFailed { .. }
+            | Self::WebAuthnAuthenticationFailed { .. }
+            | Self::WebAuthnCredentialNotFound
+            | Self::InvalidAttestation { .. }
+            | Self::InvalidAssertion { .. }
             | Self::RateLimited
             | Self::Serialization { .. } => None,
         }
@@ -416,6 +456,59 @@ mod tests {
     }
 
     #[test]
+    fn display_webauthn_registration_failed() {
+        let err = IdentityError::WebAuthnRegistrationFailed {
+            reason: "challenge mismatch".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(
+            display.contains("WebAuthn registration failed"),
+            "got: {display}"
+        );
+        assert!(display.contains("challenge mismatch"), "got: {display}");
+    }
+
+    #[test]
+    fn display_webauthn_authentication_failed() {
+        let err = IdentityError::WebAuthnAuthenticationFailed {
+            reason: "signature invalid".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(
+            display.contains("WebAuthn authentication failed"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_webauthn_credential_not_found() {
+        let err = IdentityError::WebAuthnCredentialNotFound;
+        let display = format!("{err}");
+        assert!(
+            display.contains("WebAuthn credential not found"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_invalid_attestation() {
+        let err = IdentityError::InvalidAttestation {
+            reason: "unsupported format".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid attestation"), "got: {display}");
+    }
+
+    #[test]
+    fn display_invalid_assertion() {
+        let err = IdentityError::InvalidAssertion {
+            reason: "counter replay".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid assertion"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::TenantNotFound.source().is_none());
         assert!(IdentityError::TenantSuspended.source().is_none());
@@ -460,6 +553,27 @@ mod tests {
         assert!(IdentityError::InvalidMfaCode.source().is_none());
         assert!(IdentityError::MfaNotEnabled.source().is_none());
         assert!(IdentityError::MfaAlreadyEnabled.source().is_none());
+        assert!((IdentityError::WebAuthnRegistrationFailed {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!((IdentityError::WebAuthnAuthenticationFailed {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!(IdentityError::WebAuthnCredentialNotFound.source().is_none());
+        assert!((IdentityError::InvalidAttestation {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!((IdentityError::InvalidAssertion {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
         assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {
             reason: "x".to_string()

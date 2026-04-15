@@ -13,6 +13,7 @@ pub mod tokens;
 pub(crate) mod totp;
 mod types;
 mod validation;
+pub(crate) mod webauthn;
 
 pub use credentials::{CleartextPassword, CredentialConfig};
 pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
@@ -32,6 +33,10 @@ pub use totp::TotpEnrollment;
 pub use types::{
     CreateTenantRequest, CreateUserRequest, Session, Tenant, TenantConfig, TenantStatus,
     UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+};
+pub use webauthn::{
+    fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
+    WebAuthnAuthResult, WebAuthnCredentialInfo,
 };
 
 use crate::core::{SessionId, TenantId, UserId};
@@ -397,4 +402,67 @@ pub trait IdentityEngine: Send + Sync {
 
     /// Returns whether MFA is currently enabled for a user.
     fn mfa_enabled(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<bool, IdentityError>;
+
+    // ===== WebAuthn / Passkeys (Step 24) =====
+
+    /// Starts a `WebAuthn` registration ceremony.
+    ///
+    /// Generates a challenge and returns it along with the challenge key
+    /// for use in `complete_webauthn_registration()`.
+    fn start_webauthn_registration(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        options: &RegistrationOptions,
+    ) -> Result<Vec<u8>, IdentityError>;
+
+    /// Completes a `WebAuthn` registration ceremony.
+    ///
+    /// Validates the attestation response, extracts the credential, and
+    /// stores it. Returns the credential info.
+    fn complete_webauthn_registration(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        client_data_json: &[u8],
+        attestation_object: &[u8],
+        origin: &str,
+        discoverable: bool,
+    ) -> Result<WebAuthnCredentialInfo, IdentityError>;
+
+    /// Starts a `WebAuthn` authentication ceremony.
+    ///
+    /// Generates a challenge. If `user_id` is `None`, this is a
+    /// discoverable credential (username-less) flow.
+    fn start_webauthn_authentication(
+        &self,
+        tenant_id: &TenantId,
+        user_id: Option<&UserId>,
+        options: &AuthenticationOptions,
+    ) -> Result<Vec<u8>, IdentityError>;
+
+    /// Completes a `WebAuthn` authentication ceremony.
+    ///
+    /// Validates the assertion, verifies the signature, updates the
+    /// sign counter, and returns the authentication result.
+    fn complete_webauthn_authentication(
+        &self,
+        tenant_id: &TenantId,
+        params: &CompleteAuthenticationParams<'_>,
+    ) -> Result<WebAuthnAuthResult, IdentityError>;
+
+    /// Lists all `WebAuthn` credentials for a user.
+    fn list_webauthn_credentials(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Vec<WebAuthnCredentialInfo>, IdentityError>;
+
+    /// Revokes (deletes) a `WebAuthn` credential.
+    fn revoke_webauthn_credential(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        credential_id: &[u8],
+    ) -> Result<(), IdentityError>;
 }

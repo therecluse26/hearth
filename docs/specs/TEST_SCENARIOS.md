@@ -410,7 +410,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Module | Unit | Integration | Property | Fuzz | Simulation | Adversarial | Conformance | Benchmark | **Total** |
 |--------|------|-------------|----------|------|------------|-------------|-------------|-----------|-----------|
 | OAuth 2.0 Complete | 5/5 | 3/3 | 2/2 | -- | -- | 3/3 | 2/2 | 2/2 | **17/17** |
-| WebAuthn / Passkeys | 0/5 | 0/2 | -- | 0/1 | -- | 0/3 | 0/1 | -- | **0/12** |
+| WebAuthn / Passkeys | 5/5 | 2/2 | -- | 1/1 | -- | 3/3 | 1/1 | -- | **12/12** |
 | Magic Link / Passwordless | 0/4 | 0/2 | -- | -- | -- | 0/2 | -- | -- | **0/8** |
 | TOTP / MFA | 5/5 | 3/3 | 1/1 | -- | -- | 2/2 | -- | -- | **11/11** |
 | Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
@@ -422,7 +422,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 0/5 | -- | **0/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **24/39** | **15/36** | **9/10** | **0/1** | **0/6** | **11/24** | **2/8** | **3/6** | **64/130** |
+| **Column Total** | **29/39** | **17/36** | **9/10** | **1/1** | **0/6** | **14/24** | **3/8** | **3/6** | **76/130** |
 
 ---
 
@@ -469,30 +469,30 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [ ] Registration ceremony: generate challenge, parse attestation response, store credential `P0` `fast`
-- [ ] Authentication ceremony: generate challenge, verify assertion response, update sign counter `P0` `fast`
-- [ ] Multi-credential support: user registers multiple passkeys, each authenticates independently `P0` `fast`
-- [ ] Resident key (discoverable credential) registration and username-less authentication `P0` `fast`
-- [ ] Attestation format validation: packed, TPM, and none attestation types handled correctly `P1` `fast`
+- [x] Registration ceremony: generate challenge, parse attestation response, store credential `P0` `fast`
+- [x] Authentication ceremony: generate challenge, verify assertion response, update sign counter `P0` `fast`
+- [x] Multi-credential support: user registers multiple passkeys, each authenticates independently `P0` `fast`
+- [x] Resident key (discoverable credential) registration and username-less authentication `P0` `fast`
+- [x] Attestation format validation: packed, TPM, and none attestation types handled correctly `P1` `fast`
 
 #### Integration
 
-- [ ] Full registration + authentication lifecycle via embedded API `P0` `fast`
-- [ ] Credential management: register → authenticate → add second key → revoke first key → authenticate with second `P0` `fast`
+- [x] Full registration + authentication lifecycle via embedded API `P0` `fast`
+- [x] Credential management: register → authenticate → add second key → revoke first key → authenticate with second `P0` `fast`
 
 #### Fuzz
 
-- [ ] Arbitrary bytes to CBOR attestation/assertion parser never panic (`cargo-fuzz`) `P0` `extended`
+- [x] Arbitrary bytes to CBOR attestation/assertion parser never panic (`cargo-fuzz`) `P0` `extended`
 
 #### Adversarial
 
-- [ ] Sign counter replay: assertion with non-incrementing counter rejected (cloned authenticator detection) `P0` `fast`
-- [ ] RP ID mismatch: assertion from wrong relying party origin rejected `P0` `fast`
-- [ ] Tampered client data JSON: modified challenge or origin in clientDataJSON causes verification failure `P0` `fast`
+- [x] Sign counter replay: assertion with non-incrementing counter rejected (cloned authenticator detection) `P0` `fast`
+- [x] RP ID mismatch: assertion from wrong relying party origin rejected `P0` `fast`
+- [x] Tampered client data JSON: modified challenge or origin in clientDataJSON causes verification failure `P0` `fast`
 
 #### Conformance
 
-- [ ] WebAuthn Level 2 registration and authentication ceremony conformance `P1` `full`
+- [x] WebAuthn Level 2 registration and authentication ceremony conformance `P1` `full`
 
 ---
 

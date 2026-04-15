@@ -52,6 +52,12 @@ const REVOKED_JTI_PREFIX: &str = "oauth:revjti:";
 /// Prefix for MFA TOTP state per user.
 const MFA_TOTP_PREFIX: &str = "mfa:totp:";
 
+/// Prefix for `WebAuthn` credential storage.
+const WEBAUTHN_CRED_PREFIX: &str = "webauthn:cred:";
+
+/// Prefix for `WebAuthn` discoverable credential index.
+const WEBAUTHN_DISC_PREFIX: &str = "webauthn:disc:";
+
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
 
@@ -232,6 +238,35 @@ pub(crate) fn user_code_scan_prefix() -> Vec<u8> {
 /// Format: `mfa:totp:{user_uuid}`
 pub(crate) fn encode_mfa_totp_key(user_id: &UserId) -> Vec<u8> {
     format!("{MFA_TOTP_PREFIX}{}", user_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the storage key for a `WebAuthn` credential.
+///
+/// Format: `webauthn:cred:{user_uuid}:{credential_id_b64url}`
+///
+/// Supports prefix scanning all credentials for a user.
+pub(crate) fn encode_webauthn_credential(user_id: &UserId, credential_id_b64: &str) -> Vec<u8> {
+    format!(
+        "{WEBAUTHN_CRED_PREFIX}{}:{credential_id_b64}",
+        user_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for listing all `WebAuthn` credentials for a user.
+///
+/// Format: `webauthn:cred:{user_uuid}:`
+pub(crate) fn encode_webauthn_credentials_prefix(user_id: &UserId) -> Vec<u8> {
+    format!("{WEBAUTHN_CRED_PREFIX}{}:", user_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the discoverable credential index key.
+///
+/// Format: `webauthn:disc:{credential_id_b64url}`
+///
+/// Maps a credential ID to a user UUID for username-less authentication.
+pub(crate) fn encode_webauthn_discoverable(credential_id_b64: &str) -> Vec<u8> {
+    format!("{WEBAUTHN_DISC_PREFIX}{credential_id_b64}").into_bytes()
 }
 
 /// Encodes the storage key for a revoked token JTI.
@@ -439,6 +474,33 @@ mod tests {
         let key = encode_mfa_totp_key(&user_id);
         let key_str = std::str::from_utf8(&key).expect("utf8");
         assert_eq!(key_str, "mfa:totp:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn encode_webauthn_credential_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let user_id = UserId::new(uuid);
+        let key = encode_webauthn_credential(&user_id, "cred123");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(
+            key_str,
+            "webauthn:cred:550e8400-e29b-41d4-a716-446655440000:cred123"
+        );
+    }
+
+    #[test]
+    fn webauthn_credential_prefix_enables_scan() {
+        let user_id = UserId::generate();
+        let key = encode_webauthn_credential(&user_id, "credABC");
+        let prefix = encode_webauthn_credentials_prefix(&user_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn encode_webauthn_discoverable_format() {
+        let key = encode_webauthn_discoverable("abc123");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "webauthn:disc:abc123");
     }
 
     #[test]
