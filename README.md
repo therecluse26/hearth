@@ -1,28 +1,43 @@
 # Hearth — a purpose-built identity database
 
-[Identity](#features) · [authorization](#features) · [sessions](#features) — one single-binary Rust server, backed by an embedded WAL + SST storage engine tuned for the identity access pattern.
+**Identity is a database problem. Hearth is the database.**
 
-> **Pre-1.0:** APIs and on-disk formats may change before 1.0. Follow progress in [`docs/specs/IMPLEMENTATION_ORDER.md`](docs/specs/IMPLEMENTATION_ORDER.md).
+Every other identity provider is an application sitting on top of a generic database — Keycloak on Postgres, Ory split across four binaries, Auth0 on its managed stack. That architecture is why auth is slow, operationally heavy, and fragile. Hearth inverts it: the storage engine is specialized for the identity access pattern, and the OAuth/OIDC/Zanzibar surfaces are thin protocol adapters on top. That's why it ships as one process instead of four.
 
----
-
-## What is Hearth?
-
-Hearth is the identity layer for your app — logins, permissions, users, tenants — running as **one small self-hosted binary** instead of a stack of services you have to operate, secure, and keep in sync.
-
-If you've ever glued together Keycloak, Postgres, Redis, and a policy engine just to answer *"who is this user and what can they do?"*, Hearth replaces all of it. One process to deploy. One config file. One thing to back up. No external database to provision, no cache to invalidate, no policy store to babysit.
-
-**Auth stops being your latency tax.** A traditional stack bounces every permission check across the network — app to auth service, auth service to database, maybe to a cache, back again. Hearth keeps the whole decision in one process, so permission checks and token validation finish in well under a millisecond. Your sign-in screen, every API call, and every page load stay snappy even under load.
-
-**Smaller surface, fewer ways to get it wrong.** Four services mean four places a CVE can land, four sets of credentials moving over the network, and a cache that can disagree with the database about who still has access — stale permissions are a security bug, not just a UX one. Hearth is one process: signing keys and session state never leave it, and there's no separate cache to serve yesterday's answer after a revoke.
-
-**Your data, your rules.** Users' data stays on your infrastructure. Apache-2.0, no per-seat pricing, no vendor lock-in, no phone-home telemetry.
-
-See [`docs/vision/VISION.md`](docs/vision/VISION.md) for the design rationale, storage-engine internals, and performance targets.
+> **Pre-1.0:** APIs and on-disk formats may change before 1.0.
 
 ---
 
-## Features
+## Why Hearth is different
+
+### One engine, not four services
+
+The typical self-hosted identity stack is four moving pieces: an auth server (Keycloak, Ory), a relational database (Postgres, MySQL), a session cache (Redis), and a separate policy engine for fine-grained authorization. Four processes to deploy, four to secure, four versions to keep in sync, four failure domains to reason about — plus a cache that can quietly disagree with the database about who still has access.
+
+Hearth is **one binary, one port, one config file, zero external dependencies**. No database to provision, no cache to invalidate, no policy store to operate, no dual-write synchronization between an identity store and an authorization service. One process to deploy. One thing to back up.
+
+### Specialized storage, not a generic DB
+
+A generic database has to serve every workload; an identity engine only has to serve one, and the shape of that workload is known. Hearth's storage engine is a hybrid built around those shapes:
+
+- **User profiles and credentials** — B-tree-like structures indexed by email, username, external ID, and tenant for point lookups.
+- **Sessions** — time-partitioned, tuned for TTL-based expiration and recent-window scans.
+- **Zanzibar relationship tuples** — adjacency-list layout tuned for the exact traversal pattern of `Check` and `Expand`.
+- **Audit log** — append-only with a SHA-256 hash chain per tenant.
+
+A **hot/cold tier** serves the working set from memory-mapped, cache-line-aligned structures and transparently demotes inactive records to on-disk SSTs, so a single node can manage datasets far larger than RAM without paying for it on every request.
+
+### In-process authorization, not a network hop
+
+Because Zanzibar tuples live in the same storage engine as users, tenants, and sessions, **permission checks are in-process function calls, not network requests**. A `check()` does not serialize a payload, does not cross a socket, does not wait on a connection pool — it's a memory read against an adjacency list. This is the structural reason Hearth targets a sub-millisecond hot path: not runtime tuning, but one fewer network hop per permission decision. It's also why creating a user and assigning their initial roles is a single atomic storage write instead of a dual-write across two services.
+
+### Your data, your rules
+
+Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home telemetry. Your users' data stays on your infrastructure.
+
+---
+
+## What's in the box
 
 **Authentication**
 - Password login (Argon2id, OWASP parameters)
@@ -53,6 +68,27 @@ See [`docs/vision/VISION.md`](docs/vision/VISION.md) for the design rationale, s
 
 **Migration**
 - Keycloak realm-export import (`hearth migrate keycloak`) — users, clients, realm roles, and PBKDF2-SHA256 credentials imported natively so existing passwords keep working without a forced reset
+
+---
+
+## How we build it
+
+Identity infrastructure has zero tolerance for data loss and low tolerance for inconsistency. Hearth backs that with eight testing layers, all runnable locally and wired into CI:
+
+1. **Unit** — inline `#[cfg(test)]`, TDD-first. A failing test precedes every feature.
+2. **Integration / black box** — a `TestHarness` runs the same suite in embedded *and* HTTP server modes.
+3. **Property** — `proptest`, 256 cases locally, 10,000+ in CI.
+4. **Fuzz** — `cargo-fuzz` against wire parsers (CBOR, protobuf, JWT, authenticator data).
+5. **Deterministic simulation** — `madsim` replays disk faults, WAL-tail corruption, network partitions, and clock skew from fixed seeds: [`tenant_crash`](simulation/src/tests/tenant_crash.rs), [`audit_crash`](simulation/src/tests/audit_crash.rs), [`watch_partition`](simulation/src/tests/watch_partition.rs), [`cache_stampede`](simulation/src/tests/cache_stampede.rs), [`tenant_concurrent_io`](simulation/src/tests/tenant_concurrent_io.rs).
+6. **Adversarial** — timing attacks, brute-force lockout, enumeration resistance, TLS downgrade, privilege escalation.
+7. **Conformance** — OIDC Core 1.0, Discovery 1.0, Dynamic Client Registration, WebAuthn Level 2 ceremony.
+8. **Benchmarks** — `criterion`, with regression gating in CI.
+
+**Crash-survival is part of the spec.** The storage engine must survive `kill -9` at any point and recover to a consistent state. Every WAL invariant has a madsim scenario that exercises it.
+
+**CI tiers:** Fast (every commit) · Standard (merge) · Extended (nightly) · Full (weekly).
+
+**Current status.** Phase 0 complete (148/148 scenarios); Phase 1 complete (135/135 scenarios). 671 Rust tests + 27 simulation tests + TypeScript and Go SDK tests passing.
 
 ---
 
@@ -289,7 +325,7 @@ import "github.com/anthropics/hearth/sdks/go/hearth"
 client := hearth.NewClient("https://auth.example.com", tenantID)
 ```
 
-Dedicated SDK READMEs with full API docs are planned (see [`docs/specs/THINGS_WE_NEED.md`](docs/specs/THINGS_WE_NEED.md) item #3).
+Dedicated SDK READMEs with full API docs are planned.
 
 ---
 
@@ -363,18 +399,7 @@ Groups, composite roles, client roles, federated identity providers, and require
 | Cluster | `src/cluster/` | Raft consensus (`openraft`). Invisible in single-node mode. |
 | Storage | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |
 
-Dependencies flow strictly downward; `identity/` is the only layer allowed to call `authz/`. Full rules: [`docs/specs/ARCHITECTURE.md`](docs/specs/ARCHITECTURE.md).
-
----
-
-## Documentation map
-
-- [`docs/vision/VISION.md`](docs/vision/VISION.md) — why Hearth exists, design rationale, roadmap
-- [`docs/specs/ARCHITECTURE.md`](docs/specs/ARCHITECTURE.md) — structural MUST/SHOULD rules
-- [`docs/specs/TESTING.md`](docs/specs/TESTING.md) — eight testing layers, TDD workflow, CI tiers
-- [`docs/specs/TEST_SCENARIOS.md`](docs/specs/TEST_SCENARIOS.md) — granular test checklist by module
-- [`docs/specs/IMPLEMENTATION_ORDER.md`](docs/specs/IMPLEMENTATION_ORDER.md) — mandatory Phase 0/1 build sequence
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor setup and pre-commit hooks
+Dependencies flow strictly downward; `identity/` is the only layer allowed to call `authz/`.
 
 ---
 

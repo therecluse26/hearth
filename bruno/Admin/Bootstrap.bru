@@ -1,0 +1,27 @@
+meta {
+  name: Bootstrap
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/admin/bootstrap
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "admin_email": "admin@example.com",
+    "admin_password": "change-me-in-production"
+  }
+}

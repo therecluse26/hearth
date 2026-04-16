@@ -1,0 +1,27 @@
+meta {
+  name: Dynamic Client Registration
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/register
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "client_name": "Dynamic App",
+    "redirect_uris": ["http://localhost:3000/callback"],
+    "grant_types": ["authorization_code", "refresh_token"],
+    "response_types": ["code"],
+    "scope": "openid profile email",
+    "token_endpoint_auth_method": "client_secret_basic"
+  }
+}

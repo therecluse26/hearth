@@ -1,0 +1,24 @@
+meta {
+  name: Token - Device Code
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/token
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    "client_id": "{{clientId}}",
+    "device_code": "{{deviceCode}}"
+  }
+}

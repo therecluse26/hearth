@@ -1,0 +1,26 @@
+meta {
+  name: Token - Auth Code
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/token
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "grant_type": "authorization_code",
+    "client_id": "{{clientId}}",
+    "code": "{{authCode}}",
+    "redirect_uri": "http://localhost:3000/callback",
+    "code_verifier": "code-verifier-value"
+  }
+}

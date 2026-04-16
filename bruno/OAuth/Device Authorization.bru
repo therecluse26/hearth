@@ -1,0 +1,23 @@
+meta {
+  name: Device Authorization
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/device_authorization
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "client_id": "{{clientId}}",
+    "scope": "openid profile email"
+  }
+}

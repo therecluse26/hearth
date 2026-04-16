@@ -30,3 +30,6 @@ node_modules/
 
 # Generated protobuf code (produced by build.rs on every build)
 /src/protocol/generated/
+
+hearth
+*.wal

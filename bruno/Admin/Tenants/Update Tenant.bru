@@ -1,0 +1,26 @@
+meta {
+  name: Update Tenant
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/admin/tenants/{{tenantId}}
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "display_name": "Acme Corporation (Updated)"
+  }
+}
