@@ -162,7 +162,7 @@ struct FaultFsFile {
 impl FsFile for FaultFsFile {
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         if self.config.fail_next_write.swap(false, Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::Other, "injected write fault"));
+            return Err(io::Error::other("injected write fault"));
         }
         let count = self.config.write_count.fetch_add(1, Ordering::SeqCst);
         if count >= self.config.writes_before_failure.load(Ordering::SeqCst) {
@@ -171,24 +171,21 @@ impl FsFile for FaultFsFile {
             if half > 0 {
                 self.inner.write_all(&buf[..half])?;
             }
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "injected write fault (partial)",
-            ));
+            return Err(io::Error::other("injected write fault (partial)"));
         }
         self.inner.write_all(buf)
     }
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         if self.config.fail_next_read.swap(false, Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::Other, "injected read fault"));
+            return Err(io::Error::other("injected read fault"));
         }
         self.inner.read_to_end(buf)
     }
 
     fn sync_all(&self) -> io::Result<()> {
         if self.config.fail_next_sync.swap(false, Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::Other, "injected sync fault"));
+            return Err(io::Error::other("injected sync fault"));
         }
         self.inner.sync_all()
     }
@@ -221,7 +218,7 @@ impl Fs for FaultFs {
 
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn FsFile>> {
         if self.config.fail_next_read.swap(false, Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::Other, "injected read fault"));
+            return Err(io::Error::other("injected read fault"));
         }
         let real = hearth::storage::RealFs.open_read(path)?;
         Ok(Box::new(FaultFsFile {
@@ -232,7 +229,7 @@ impl Fs for FaultFs {
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         if self.config.fail_next_read.swap(false, Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::Other, "injected read fault"));
+            return Err(io::Error::other("injected read fault"));
         }
         hearth::storage::RealFs.read(path)
     }
@@ -245,12 +242,12 @@ impl Fs for FaultFs {
                 let mut partial = self
                     .partial_writes
                     .lock()
-                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "mutex poisoned"))?;
+                    .map_err(|_| io::Error::other("mutex poisoned"))?;
                 partial.insert(path.to_path_buf(), data[..half].to_vec());
                 // Write partial data to disk
                 hearth::storage::RealFs.write(path, &data[..half])?;
             }
-            return Err(io::Error::new(io::ErrorKind::Other, "injected write fault"));
+            return Err(io::Error::other("injected write fault"));
         }
         hearth::storage::RealFs.write(path, data)
     }

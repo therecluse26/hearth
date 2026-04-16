@@ -811,9 +811,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     #[allow(clippy::too_many_lines)]
     fn delete_tenant(&self, tenant_id: &TenantId) -> Result<(), IdentityError> {
-        // Verify tenant exists
-        self.get_tenant(tenant_id)?
-            .ok_or(IdentityError::TenantNotFound)?;
+        // Check whether the tenant record exists. We do NOT early-return on
+        // missing record — a previous cascade may have crashed after deleting
+        // the record but before cleaning all key-spaces. Recovery requires us
+        // to scan every cascade prefix regardless. If no cascade work is found
+        // AND the record is absent, we return TenantNotFound at the end.
+        let tenant_exists = self.get_tenant(tenant_id)?.is_some();
+        let mut cascade_work_done = false;
 
         // 1. Delete all users in this tenant (cascades to sessions, credentials)
         let user_prefix = keys::user_id_scan_prefix();
@@ -823,10 +827,43 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .scan(tenant_id, &user_prefix, &user_end)
             .map_err(Self::storage_err)?;
 
+        if !users.is_empty() {
+            cascade_work_done = true;
+        }
+
         for entry in &users {
             let user: User = Self::deserialize_user(&entry.value)?;
             // delete_user handles cascade of sessions, credentials, email index
             let _ = self.delete_user(tenant_id, user.id());
+        }
+
+        // 1a. Unconditional sweep of per-user secondary prefixes. These
+        //     indexes are normally cleaned up inside `delete_user`, but a
+        //     crash (or an orphaned primary) can leave stragglers. Scanning
+        //     by prefix guarantees we reach them on any retry.
+        for prefix in [
+            &b"usr:email:"[..],
+            &b"cred:user:"[..],
+            &b"ses:id:"[..],
+            &b"ses:user:"[..],
+            &b"mfa:totp:"[..],
+            &b"webauthn:cred:"[..],
+            &b"webauthn:disc:"[..],
+            &b"magic:link:"[..],
+        ] {
+            let end = keys::prefix_end(prefix);
+            let entries = self
+                .storage
+                .scan(tenant_id, prefix, &end)
+                .map_err(Self::storage_err)?;
+            if !entries.is_empty() {
+                cascade_work_done = true;
+            }
+            for entry in &entries {
+                self.storage
+                    .delete(tenant_id, &entry.key)
+                    .map_err(Self::storage_err)?;
+            }
         }
 
         // 2. Delete all OAuth clients
@@ -836,6 +873,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .scan(tenant_id, client_prefix, &client_end)
             .map_err(Self::storage_err)?;
+        if !clients.is_empty() {
+            cascade_work_done = true;
+        }
         for entry in &clients {
             self.storage
                 .delete(tenant_id, &entry.key)
@@ -849,6 +889,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .scan(tenant_id, rel_prefix, &rel_end)
             .map_err(Self::storage_err)?;
+        if !rels.is_empty() {
+            cascade_work_done = true;
+        }
         for entry in &rels {
             self.storage
                 .delete(tenant_id, &entry.key)
@@ -862,6 +905,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .scan(tenant_id, code_prefix, &code_end)
             .map_err(Self::storage_err)?;
+        if !codes.is_empty() {
+            cascade_work_done = true;
+        }
         for entry in &codes {
             self.storage
                 .delete(tenant_id, &entry.key)
@@ -875,6 +921,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .scan(tenant_id, &family_prefix, &family_end)
             .map_err(Self::storage_err)?;
+        if !families.is_empty() {
+            cascade_work_done = true;
+        }
         for entry in &families {
             self.storage
                 .delete(tenant_id, &entry.key)
@@ -888,6 +937,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .scan(tenant_id, &device_prefix, &device_end)
             .map_err(Self::storage_err)?;
+        if !devices.is_empty() {
+            cascade_work_done = true;
+        }
         for entry in &devices {
             self.storage
                 .delete(tenant_id, &entry.key)
@@ -901,6 +953,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .scan(tenant_id, jti_prefix, &jti_end)
             .map_err(Self::storage_err)?;
+        if !jtis.is_empty() {
+            cascade_work_done = true;
+        }
         for entry in &jtis {
             self.storage
                 .delete(tenant_id, &entry.key)
@@ -914,18 +969,30 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .scan(tenant_id, ucode_prefix, &ucode_end)
             .map_err(Self::storage_err)?;
+        if !ucodes.is_empty() {
+            cascade_work_done = true;
+        }
         for entry in &ucodes {
             self.storage
                 .delete(tenant_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
-        // 9. Delete tenant signing key
+        // 9. Delete tenant signing key (check existence first so we can attribute
+        //    cascade work even when only the signing key survives a prior crash).
         let sys_tenant = keys::system_tenant_id();
         let key_storage_key = keys::encode_tenant_signing_key(tenant_id);
-        self.storage
-            .delete(&sys_tenant, &key_storage_key)
-            .map_err(Self::storage_err)?;
+        if self
+            .storage
+            .get(&sys_tenant, &key_storage_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            cascade_work_done = true;
+            self.storage
+                .delete(&sys_tenant, &key_storage_key)
+                .map_err(Self::storage_err)?;
+        }
 
         // 10. Remove from in-memory key cache
         {
@@ -938,6 +1005,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .delete(&sys_tenant, &tenant_key)
             .map_err(Self::storage_err)?;
+
+        // Idempotency guard: if nothing existed for this tenant anywhere, the
+        // caller is asking to delete something that was never created (or was
+        // already fully cleaned). Preserve the `TenantNotFound` contract for
+        // that case so the existing API stays stable.
+        if !tenant_exists && !cascade_work_done {
+            return Err(IdentityError::TenantNotFound);
+        }
 
         Ok(())
     }

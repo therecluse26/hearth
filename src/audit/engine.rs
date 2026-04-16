@@ -3,7 +3,8 @@
 //! Stores audit events in the storage engine with hash chain integrity.
 //! Events are append-only: no update or delete operations exist.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use ring::digest;
 
@@ -20,18 +21,42 @@ const GENESIS_HASH: &str = "genesis";
 
 /// Embedded audit engine backed by the storage layer.
 ///
-/// Thread-safe via the underlying `StorageEngine`.
+/// Thread-safe via the underlying `StorageEngine`. Hash-chain correctness
+/// requires that appends within a single tenant be serialized; a per-tenant
+/// mutex ensures each `append` observes the previous event's hash before
+/// computing its own. The hash chain is inherently sequential, so this is
+/// correctness, not just a performance cache.
 pub struct EmbeddedAuditEngine {
     /// Storage backend.
     storage: Arc<dyn StorageEngine>,
     /// Clock for timestamps.
     clock: Arc<dyn Clock>,
+    /// Per-tenant serialization of the hash-chain read-modify-write cycle,
+    /// with an optional cached last hash to avoid the `O(n)` scan on every
+    /// append after the first.
+    chain_locks: Mutex<HashMap<TenantId, Arc<Mutex<Option<String>>>>>,
 }
 
 impl EmbeddedAuditEngine {
     /// Creates a new audit engine.
     pub fn new(storage: Arc<dyn StorageEngine>, clock: Arc<dyn Clock>) -> Self {
-        Self { storage, clock }
+        Self {
+            storage,
+            clock,
+            chain_locks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns the per-tenant chain lock, creating it on first access.
+    fn tenant_chain_lock(&self, tenant_id: &TenantId) -> Arc<Mutex<Option<String>>> {
+        let mut map = self.chain_locks.lock().expect("chain_locks mutex poisoned");
+        if let Some(lock) = map.get(tenant_id) {
+            Arc::clone(lock)
+        } else {
+            let lock = Arc::new(Mutex::new(None));
+            map.insert(tenant_id.clone(), Arc::clone(&lock));
+            lock
+        }
     }
 
     /// Computes the SHA-256 integrity hash for an event.
@@ -81,9 +106,22 @@ impl EmbeddedAuditEngine {
 
 impl AuditEngine for EmbeddedAuditEngine {
     fn append(&self, request: &CreateAuditEvent) -> Result<AuditEvent, AuditError> {
+        // Acquire the per-tenant chain lock BEFORE reading the last hash. The
+        // chain's integrity guarantee ("every event's prev_hash is the
+        // previous event's integrity_hash") is only preserved if no other
+        // append can interleave between our read of last_hash and our
+        // storage write. The lock doubles as a cache for the last hash
+        // to avoid a full O(n) scan per append after the first.
+        let chain_lock = self.tenant_chain_lock(&request.tenant_id);
+        let mut cached = chain_lock.lock().expect("tenant chain lock poisoned");
+
+        let prev_hash = match cached.as_ref() {
+            Some(h) => h.clone(),
+            None => self.get_last_hash(&request.tenant_id)?,
+        };
+
         let event_id = AuditEventId::generate();
         let timestamp = self.clock.now();
-        let prev_hash = self.get_last_hash(&request.tenant_id)?;
 
         // Build the event (integrity_hash will be filled after computation)
         let mut event = AuditEvent {
@@ -106,19 +144,29 @@ impl AuditEngine for EmbeddedAuditEngine {
             reason: e.to_string(),
         })?;
 
-        // Store event primary key
+        // Single atomic write: primary + actor index + action index land
+        // together, or not at all. Using `put_batch` guarantees that a crash
+        // between these three writes can never leave a "half-indexed" event
+        // (primary exists but index missing, or vice versa) after recovery.
+        // This is what makes the hash chain recoverable: every persisted
+        // event is fully observable through every query path.
         let primary_key = keys::encode_event_key(timestamp, &event.id);
-        self.storage.put(&request.tenant_id, &primary_key, &value)?;
-
-        // Store actor index (value = primary key for lookups)
         let actor_key = keys::encode_actor_index(&request.actor, timestamp, &event.id);
-        self.storage
-            .put(&request.tenant_id, &actor_key, &primary_key)?;
-
-        // Store action index (value = primary key for lookups)
         let action_key = keys::encode_action_index(request.action.as_str(), timestamp, &event.id);
-        self.storage
-            .put(&request.tenant_id, &action_key, &primary_key)?;
+        self.storage.put_batch(
+            &request.tenant_id,
+            &[
+                (primary_key.clone(), value),
+                (actor_key, primary_key.clone()),
+                (action_key, primary_key),
+            ],
+        )?;
+
+        // Only advance the cached hash after the storage write succeeds.
+        // On error we leave the cache unchanged so the next append will
+        // re-read via `get_last_hash` and recover from whatever the
+        // persisted state actually is.
+        *cached = Some(event.integrity_hash.clone());
 
         Ok(event)
     }

@@ -413,17 +413,17 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | WebAuthn / Passkeys | 5/5 | 2/2 | -- | 1/1 | -- | 3/3 | 1/1 | -- | **12/12** |
 | Magic Link / Passwordless | 4/4 | 2/2 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | TOTP / MFA | 5/5 | 3/3 | 1/1 | -- | -- | 2/2 | -- | -- | **11/11** |
-| Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 0/2 | 3/3 | -- | -- | **14/16** |
-| Zanzibar Authorization (Full) | 5/5 | 3/3 | 1/2 | -- | 0/2 | 2/2 | -- | 1/2 | **12/16** |
+| Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 1/2 | 3/3 | -- | -- | **15/16** |
+| Zanzibar Authorization (Full) | 5/5 | 3/3 | 2/2 | -- | 1/2 | 2/2 | -- | 2/2 | **15/16** |
 | Admin API | 3/3 | 4/4 | -- | -- | -- | 3/3 | -- | -- | **10/10** |
-| Audit Logging | 4/4 | 3/3 | 2/2 | -- | 0/2 | 1/1 | -- | -- | **10/12** |
+| Audit Logging | 4/4 | 3/3 | 2/2 | -- | 2/2 | 1/1 | -- | -- | **12/12** |
 | TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | SDK Integration (TS & Go) | -- | 6/6 | -- | -- | -- | -- | -- | -- | **6/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 5/5 | -- | **5/5** |
 | Proto & API Contract | 5/5 | -- | -- | -- | -- | -- | -- | -- | **5/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **40/44** | **30/36** | **9/10** | **1/1** | **0/6** | **19/24** | **8/8** | **3/6** | **110/135** |
+| **Column Total** | **40/44** | **30/36** | **10/10** | **1/1** | **4/6** | **19/24** | **8/8** | **4/6** | **116/135** |
 
 ---
 
@@ -569,7 +569,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Simulation
 
-- [ ] Crash during cascading tenant deletion: recovery completes deletion or fully rolls back (`madsim`) `P0` `full`
+- [x] Crash during cascading tenant deletion: recovery completes deletion or fully rolls back (`madsim`) `P0` `full`
 - [ ] Concurrent tenant operations under simulated I/O delays produce no data corruption (`madsim`) `P1` `full`
 
 #### Adversarial
@@ -598,12 +598,12 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Property
 
-- [ ] Random tuple writes with concurrent watch subscriptions: all subscribers see all events (`proptest`) `P0` `extended`
+- [x] Random tuple writes with concurrent watch subscriptions: all subscribers see all events (`proptest`) `P0` `extended`
 - [x] Cache invalidation correctness: no stale permission results after tuple mutation (`proptest`) `P0` `extended`
 
 #### Simulation
 
-- [ ] Watch API under network partition: reconnected watchers receive missed events or full resync (`madsim`) `P0` `full`
+- [x] Watch API under network partition: reconnected watchers receive missed events or full resync (`madsim`) `P0` `full`
 - [ ] Cache stampede simulation: thundering herd on cache miss produces correct results without excessive load (`madsim`) `P1` `full`
 
 #### Adversarial
@@ -614,7 +614,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Benchmark
 
 - [x] Cached permission check: p50 < 5 μs, p99 < 50 μs (regression: +20%) `P0` `standard`
-- [ ] Watch event delivery latency: p50 < 1 ms, p99 < 10 ms from tuple write to subscriber receipt `P0` `standard`
+- [x] Watch event delivery latency: p50 < 1 ms, p99 < 10 ms from tuple write to subscriber receipt `P0` `standard`
 
 ---
 
@@ -663,8 +663,8 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Simulation
 
-- [ ] Crash during audit write: recovery produces no partial or duplicate entries (`madsim`) `P0` `full`
-- [ ] Audit log integrity under sustained write load: no events lost or reordered (`madsim`) `P0` `full`
+- [x] Crash during audit write: recovery produces no partial or duplicate entries (`madsim`) `P0` `full`
+- [x] Audit log integrity under sustained write load: no events lost or reordered (`madsim`) `P0` `full`
 
 #### Adversarial
 

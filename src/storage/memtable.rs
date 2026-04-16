@@ -225,6 +225,26 @@ impl Memtable {
         match entry.operation {
             WalOperation::Put => self.put(&entry.tenant_id, &entry.key, &entry.value),
             WalOperation::Delete => self.delete(&entry.tenant_id, &entry.key),
+            WalOperation::Batch => {
+                // The outer record's CRC already guarantees atomicity — a
+                // corrupt or truncated batch is dropped by the reader before
+                // reaching here. If decoding still fails, treat it as a
+                // malformed record and stop replay rather than applying a
+                // partial batch.
+                let sub_entries = crate::storage::wal::decode_batch_payload(&entry.value)?;
+                for sub in &sub_entries {
+                    match sub.operation {
+                        WalOperation::Put => self.put(&entry.tenant_id, &sub.key, &sub.value)?,
+                        WalOperation::Delete => self.delete(&entry.tenant_id, &sub.key)?,
+                        WalOperation::Batch => {
+                            return Err(StorageError::DeserializationFailed {
+                                reason: "nested batch in WAL replay".to_string(),
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }
         }
     }
 

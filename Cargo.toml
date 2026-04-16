@@ -105,6 +105,10 @@ harness = false
 name = "audit"
 harness = false
 
+[[bench]]
+name = "zanzibar_watch"
+harness = false
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"

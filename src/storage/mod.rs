@@ -58,4 +58,26 @@ pub trait StorageEngine: Send + Sync {
         start: &[u8],
         end: &[u8],
     ) -> Result<Vec<ScanEntry>, StorageError>;
+
+    /// Atomically writes a batch of `(key, value)` pairs for a single tenant.
+    ///
+    /// All entries land durably or none do: a crash or I/O fault mid-way
+    /// leaves either the empty pre-batch state or the fully-applied
+    /// post-batch state. This is the primitive upper layers should use
+    /// whenever two or more writes must be visible together after recovery
+    /// (e.g., a primary record plus its secondary indexes).
+    ///
+    /// The default implementation falls back to sequential `put()` calls,
+    /// which does NOT provide atomicity — implementers that care must
+    /// override.
+    fn put_batch(
+        &self,
+        tenant_id: &TenantId,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<(), StorageError> {
+        for (key, value) in entries {
+            self.put(tenant_id, key, value)?;
+        }
+        Ok(())
+    }
 }
