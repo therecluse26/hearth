@@ -220,6 +220,16 @@ impl Config {
 
         validate_email(&self.email)?;
 
+        // notification_email: if set, must be a valid RFC 5322 mailbox
+        if let Some(addr) = &self.onboarding.notification_email {
+            addr.parse::<lettre::message::Mailbox>().map_err(|e| {
+                invalid(
+                    "onboarding.notification_email",
+                    format!("could not parse as an RFC 5322 mailbox: {e}"),
+                )
+            })?;
+        }
+
         Ok(())
     }
 }
@@ -742,6 +752,49 @@ email:
         assert_eq!(smtp.port, 1025);
         assert_eq!(smtp.encryption, SmtpEncryption::None);
         assert!(smtp.username.is_none());
+    }
+
+    #[test]
+    fn onboarding_notification_email_accepts_valid_address() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+onboarding:
+  notification_email: "ops@example.com"
+"#;
+        let config = Config::from_yaml_str(yaml).expect("valid notification_email should parse");
+        assert_eq!(
+            config.onboarding.notification_email.as_deref(),
+            Some("ops@example.com")
+        );
+    }
+
+    #[test]
+    fn onboarding_notification_email_rejects_malformed_address() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+onboarding:
+  notification_email: "not an address"
+"#;
+        let err =
+            Config::from_yaml_str(yaml).expect_err("malformed notification_email should fail");
+        let display = format!("{err}");
+        assert!(
+            display.contains("onboarding.notification_email"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn onboarding_notification_email_accepts_absent() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+onboarding: {}
+"#;
+        let config = Config::from_yaml_str(yaml).expect("absent notification_email is fine");
+        assert!(config.onboarding.notification_email.is_none());
     }
 
     #[test]

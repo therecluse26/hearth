@@ -39,6 +39,9 @@ onboarding:
   # http://localhost:8420. Override this if you front the compose stack
   # with a reverse proxy (e.g. set it to https://auth.example.local).
   base_url: "http://localhost:8420"
+  # Email address that receives the first-run setup URL at startup.
+  # Mailpit captures everything — any address works.
+  notification_email: "admin@local.test"
 
 email:
   # Deliver verification emails to Mailpit, which ships in the compose stack

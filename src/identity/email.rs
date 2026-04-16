@@ -58,6 +58,12 @@ impl std::error::Error for EmailError {}
 pub trait EmailSender: Send + Sync {
     /// Sends a verification email containing `verification_url` to `to`.
     fn send_verification_email(&self, to: &str, verification_url: &str) -> Result<(), EmailError>;
+
+    /// Sends a first-run setup notification containing `setup_url` to `to`.
+    ///
+    /// Called at startup when `onboarding.notification_email` is configured.
+    /// Failure is non-fatal — the caller logs a WARN and continues.
+    fn send_setup_notification(&self, to: &str, setup_url: &str) -> Result<(), EmailError>;
 }
 
 /// Validates that an input string contains no CR/LF characters.
@@ -99,6 +105,17 @@ impl EmailSender for LoggingEmailSender {
             recipient = %to,
             verification_url = %verification_url,
             "email.send_verification (log transport): deliver this URL to the recipient"
+        );
+        Ok(())
+    }
+
+    fn send_setup_notification(&self, to: &str, setup_url: &str) -> Result<(), EmailError> {
+        reject_crlf("recipient", to)?;
+        reject_crlf("setup_url", setup_url)?;
+        tracing::info!(
+            recipient = %to,
+            setup_url = %setup_url,
+            "email.send_setup_notification (log transport): deliver this setup URL to the recipient"
         );
         Ok(())
     }
@@ -210,6 +227,51 @@ where
         tracing::info!(
             recipient = %to,
             "email.send_verification: delivered via SMTP"
+        );
+        Ok(())
+    }
+
+    fn send_setup_notification(&self, to: &str, setup_url: &str) -> Result<(), EmailError> {
+        reject_crlf("recipient", to)?;
+        reject_crlf("setup_url", setup_url)?;
+
+        let to_mailbox: Mailbox =
+            to.parse().map_err(
+                |e: lettre::address::AddressError| EmailError::InvalidInput {
+                    reason: format!("recipient: {e}"),
+                },
+            )?;
+
+        let msg = Message::builder()
+            .from(self.from.clone())
+            .to(to_mailbox)
+            .subject("Hearth setup required")
+            .header(ContentType::TEXT_PLAIN)
+            .body(format!(
+                "Hearth is running for the first time and requires initial setup.\n\n\
+                 Open the following URL to create the initial admin account:\n\n\
+                 {setup_url}\n\n\
+                 This link is valid until setup is complete.\n"
+            ))
+            .map_err(|e| EmailError::InvalidInput {
+                reason: e.to_string(),
+            })?;
+
+        let send_sync = || self.transport.send(&msg);
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(send_sync)
+            }
+            _ => send_sync(),
+        };
+
+        result.map_err(|e| EmailError::Transport {
+            reason: e.to_string(),
+        })?;
+
+        tracing::info!(
+            recipient = %to,
+            "email.send_setup_notification: delivered via SMTP"
         );
         Ok(())
     }

@@ -262,9 +262,13 @@ async fn run_serve(
                 config.server.bind_address, config.server.port
             )
         });
-        if let Err(e) =
-            onboarding::ensure_setup_token(identity_engine.as_ref(), &data_dir, Some(&base_url))
-        {
+        if let Err(e) = onboarding::ensure_setup_token(
+            identity_engine.as_ref(),
+            &data_dir,
+            Some(&base_url),
+            Some(email.as_ref()),
+            config.onboarding.notification_email.as_deref(),
+        ) {
             error!(error = %e, "failed to ensure setup token; onboarding will be unavailable");
         }
     }

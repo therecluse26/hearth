@@ -287,6 +287,14 @@ pub struct OnboardingConfig {
     /// header when `None`.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Email address to send the first-run setup URL to on startup.
+    ///
+    /// When set and SMTP is configured, Hearth emails the setup URL to
+    /// this address at startup (in addition to the WARN log). Useful in
+    /// environments where console output is not readily accessible (e.g.
+    /// Docker containers). Leave unset to rely on the log only.
+    #[serde(default)]
+    pub notification_email: Option<String>,
 }
 
 impl OnboardingConfig {
@@ -300,6 +308,7 @@ impl Default for OnboardingConfig {
         Self {
             enabled: Self::default_enabled(),
             base_url: None,
+            notification_email: None,
         }
     }
 }

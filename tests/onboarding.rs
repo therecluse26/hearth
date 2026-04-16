@@ -53,6 +53,14 @@ impl EmailSender for RecordingEmailSender {
             .push((to.to_string(), verification_url.to_string()));
         Ok(())
     }
+
+    fn send_setup_notification(&self, to: &str, setup_url: &str) -> Result<(), EmailError> {
+        self.messages
+            .lock()
+            .expect("lock")
+            .push((to.to_string(), setup_url.to_string()));
+        Ok(())
+    }
 }
 
 /// Test-only email sender that always fails. Used to validate that
@@ -65,6 +73,12 @@ impl EmailSender for FailingEmailSender {
         _to: &str,
         _verification_url: &str,
     ) -> Result<(), EmailError> {
+        Err(EmailError::Transport {
+            reason: "test-only failure".to_string(),
+        })
+    }
+
+    fn send_setup_notification(&self, _to: &str, _setup_url: &str) -> Result<(), EmailError> {
         Err(EmailError::Transport {
             reason: "test-only failure".to_string(),
         })
@@ -153,6 +167,8 @@ fn ensure_setup_token_creates_file_on_first_run() {
         env.identity.as_ref(),
         env.data_dir(),
         Some("https://auth.example.com"),
+        None,
+        None,
     )
     .expect("ensure")
     .expect("token expected on first run");
@@ -164,10 +180,10 @@ fn ensure_setup_token_creates_file_on_first_run() {
 #[test]
 fn ensure_setup_token_is_idempotent_on_restart() {
     let env = TestEnv::new();
-    let a = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None)
+    let a = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("first call")
         .expect("token");
-    let b = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None)
+    let b = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("second call")
         .expect("token");
     assert_eq!(a, b, "restart must not rotate an uncompleted setup token");
@@ -187,7 +203,9 @@ fn ensure_setup_token_removes_stale_token_when_configured() {
         })
         .expect("create");
 
-    let result = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None).expect("ensure");
+    let result =
+        ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
+            .expect("ensure");
 
     assert!(result.is_none(), "not first-run → None");
     assert!(
@@ -201,7 +219,7 @@ fn ensure_setup_token_removes_stale_token_when_configured() {
 #[test]
 fn consume_setup_token_accepts_matching_token() {
     let env = TestEnv::new();
-    let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None)
+    let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
 
@@ -211,7 +229,7 @@ fn consume_setup_token_accepts_matching_token() {
 #[test]
 fn consume_setup_token_rejects_mismatch() {
     let env = TestEnv::new();
-    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None)
+    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
 
@@ -232,7 +250,7 @@ fn consume_setup_token_rejects_when_file_absent() {
 #[test]
 fn consume_setup_token_rejects_after_system_is_configured() {
     let env = TestEnv::new();
-    let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None)
+    let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
 
@@ -254,7 +272,7 @@ fn consume_setup_token_rejects_after_system_is_configured() {
 #[test]
 fn complete_setup_creates_tenant_admin_and_sends_email() {
     let env = TestEnv::new();
-    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None)
+    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
 
@@ -319,7 +337,7 @@ fn complete_setup_creates_tenant_admin_and_sends_email() {
 #[test]
 fn session_creation_blocked_for_pending_verification_user() {
     let env = TestEnv::new();
-    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None);
+    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
     let pw = CleartextPassword::new(b"a-password".to_vec());
     let outcome = env
         .service
@@ -347,7 +365,7 @@ fn session_creation_blocked_for_pending_verification_user() {
 #[test]
 fn verify_email_token_activates_user_and_unblocks_session() {
     let env = TestEnv::new();
-    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None);
+    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
     let pw = CleartextPassword::new(b"another-password".to_vec());
     let outcome = env
         .service
@@ -387,7 +405,7 @@ fn verify_email_token_activates_user_and_unblocks_session() {
 #[test]
 fn verify_email_token_rejects_reuse() {
     let env = TestEnv::new();
-    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None);
+    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
     let pw = CleartextPassword::new(b"pw".to_vec());
     let outcome = env
         .service
@@ -498,7 +516,7 @@ fn complete_setup_surfaces_email_delivery_failure() {
 
     // Seed the setup token so the "keep on failure" assertion below is
     // meaningful — otherwise the file never existed to begin with.
-    let _ = ensure_setup_token(identity.as_ref(), temp.path(), None)
+    let _ = ensure_setup_token(identity.as_ref(), temp.path(), None, None, None)
         .expect("ensure")
         .expect("token");
 
@@ -515,4 +533,70 @@ fn complete_setup_surfaces_email_delivery_failure() {
         temp.path().join(SETUP_TOKEN_FILENAME).exists(),
         "setup token must persist when email delivery fails so operator can retry"
     );
+}
+
+// ===== Scenario: ensure_setup_token email notification =====
+
+#[test]
+fn ensure_setup_token_sends_notification_email_when_configured() {
+    let env = TestEnv::new();
+    let sender = Arc::new(RecordingEmailSender::default());
+
+    let token = ensure_setup_token(
+        env.identity.as_ref(),
+        env.data_dir(),
+        Some("https://auth.example.com"),
+        Some(sender.as_ref()),
+        Some("ops@example.com"),
+    )
+    .expect("ensure")
+    .expect("token on first run");
+
+    assert_eq!(sender.count(), 1, "exactly one notification email sent");
+    let (to, url) = sender.last().expect("message recorded");
+    assert_eq!(to, "ops@example.com");
+    assert!(
+        url.contains(&token),
+        "notification URL must contain the setup token: {url}"
+    );
+    assert!(
+        url.starts_with("https://auth.example.com/ui/setup?token="),
+        "unexpected URL: {url}"
+    );
+}
+
+#[test]
+fn ensure_setup_token_no_email_when_sender_absent() {
+    let env = TestEnv::new();
+    // notification_email is set but sender is None → no email, no panic
+    let token = ensure_setup_token(
+        env.identity.as_ref(),
+        env.data_dir(),
+        Some("https://auth.example.com"),
+        None,
+        Some("ops@example.com"),
+    )
+    .expect("ensure")
+    .expect("token on first run");
+
+    assert_eq!(token.len(), 43);
+}
+
+#[test]
+fn ensure_setup_token_failing_email_is_non_fatal() {
+    let env = TestEnv::new();
+    let sender = FailingEmailSender;
+
+    // A failing email sender must not propagate as an error — ensure returns Ok.
+    let token = ensure_setup_token(
+        env.identity.as_ref(),
+        env.data_dir(),
+        Some("https://auth.example.com"),
+        Some(&sender),
+        Some("ops@example.com"),
+    )
+    .expect("ensure must succeed even when email fails")
+    .expect("token on first run");
+
+    assert_eq!(token.len(), 43, "token still generated despite email failure");
 }

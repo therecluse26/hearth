@@ -137,6 +137,10 @@ pub fn is_first_run(engine: &dyn IdentityEngine) -> Result<bool, IdentityError> 
 /// - Not first-run: best-effort removes the file (stale token from a
 ///   prior aborted run), returns `Ok(None)`.
 ///
+/// When `email_sender` and `notification_email` are both provided,
+/// additionally sends the setup URL to that address. Email failure is
+/// non-fatal — the WARN log is always emitted regardless.
+///
 /// # Errors
 ///
 /// Returns [`OnboardingError::Io`] on filesystem failure or
@@ -145,6 +149,8 @@ pub fn ensure_setup_token(
     engine: &dyn IdentityEngine,
     data_dir: &Path,
     base_url: Option<&str>,
+    email_sender: Option<&dyn crate::identity::email::EmailSender>,
+    notification_email: Option<&str>,
 ) -> Result<Option<String>, OnboardingError> {
     let path = setup_token_path(data_dir);
 
@@ -182,6 +188,18 @@ pub fn ensure_setup_token(
         setup_url = %url,
         "first-run setup required: open this URL to create the initial admin account"
     );
+
+    // Optionally send the setup URL via email. Failure here is non-fatal:
+    // the WARN log above is always emitted and the operator can still
+    // complete setup by reading that log line.
+    if let (Some(sender), Some(to)) = (email_sender, notification_email) {
+        if let Err(e) = sender.send_setup_notification(to, &url) {
+            tracing::warn!(
+                error = %e,
+                "failed to send setup notification email; check SMTP config"
+            );
+        }
+    }
 
     Ok(Some(token))
 }

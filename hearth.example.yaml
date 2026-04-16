@@ -82,3 +82,8 @@ email:
   #     encryption: starttls         # none | starttls | tls (default: starttls)
   #     username: "${SMTP_USERNAME}" # env-substituted — never commit secrets
   #     password: "${SMTP_PASSWORD}"
+
+onboarding:
+  # enabled: true  # set to false to permanently disable the /ui/setup flow
+  # base_url: "https://auth.example.com"  # used in the setup URL logged at startup
+  # notification_email: ops@example.com   # receives the setup URL on first boot (requires SMTP)
