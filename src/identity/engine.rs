@@ -36,7 +36,7 @@ use crate::identity::oidc::{
 use crate::identity::tokens::{
     self, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
 };
-use crate::identity::totp::{self, StoredMfaState, TotpEnrollment, TotpSecret};
+use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
     BulkResult, CreateTenantRequest, CreateUserRequest, Page, Session, Tenant, TenantStatus,
     UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
@@ -2413,7 +2413,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(TotpEnrollment {
             secret_base32,
             provisioning_uri,
-            recovery_codes,
+            recovery_codes: RecoveryCodes::new(recovery_codes),
         })
     }
 

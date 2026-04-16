@@ -82,9 +82,7 @@ impl From<&domain::Tenant> for pb::Tenant {
 // ==================== TenantStatus ====================
 
 /// Converts domain `TenantStatus` to proto enum value.
-pub(crate) fn domain_tenant_status_to_proto(
-    s: domain::TenantStatus,
-) -> pb::TenantStatus {
+pub(crate) fn domain_tenant_status_to_proto(s: domain::TenantStatus) -> pb::TenantStatus {
     match s {
         domain::TenantStatus::Active => pb::TenantStatus::Active,
         domain::TenantStatus::Suspended => pb::TenantStatus::Suspended,
@@ -168,7 +166,9 @@ pub(crate) fn tenant_page_to_proto(page: &domain::Page<domain::Tenant>) -> pb::T
 // ==================== BulkResult ====================
 
 /// Converts a domain `BulkResult<User>` to a proto `BulkResultEntry`.
-pub(crate) fn user_bulk_result_to_proto(r: &domain::BulkResult<domain::User>) -> pb::BulkResultEntry {
+pub(crate) fn user_bulk_result_to_proto(
+    r: &domain::BulkResult<domain::User>,
+) -> pb::BulkResultEntry {
     match &r.result {
         Ok(user) => pb::BulkResultEntry {
             #[allow(clippy::cast_possible_truncation)]
@@ -280,7 +280,11 @@ mod tests {
         assert_eq!(proto.name, "Acme Corp");
         assert_eq!(proto.status, pb::TenantStatus::Active as i32);
         assert_eq!(
-            proto.config.as_ref().expect("config present").session_ttl_micros,
+            proto
+                .config
+                .as_ref()
+                .expect("config present")
+                .session_ttl_micros,
             Some(3_600_000_000)
         );
 

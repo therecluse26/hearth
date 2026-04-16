@@ -102,17 +102,74 @@ pub(crate) struct StoredMfaState {
     pub enabled_at: Option<i64>,
 }
 
+/// Plaintext recovery codes returned once at enrollment.
+///
+/// **Security**: Each code's memory is zeroed on drop. Does NOT implement
+/// `Debug`, `Display`, `Serialize`, or `Clone` — the only way to observe
+/// the codes is to call `iter()` or `as_slice()`, which forces callers to
+/// render them at a single, auditable site.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct RecoveryCodes {
+    codes: Vec<String>,
+}
+
+impl RecoveryCodes {
+    /// Wraps a vector of plaintext recovery codes.
+    pub(crate) fn new(codes: Vec<String>) -> Self {
+        Self { codes }
+    }
+
+    /// Returns the codes as a slice for iteration.
+    pub fn as_slice(&self) -> &[String] {
+        &self.codes
+    }
+
+    /// Returns the number of recovery codes.
+    pub fn len(&self) -> usize {
+        self.codes.len()
+    }
+
+    /// Returns `true` if there are no recovery codes.
+    pub fn is_empty(&self) -> bool {
+        self.codes.is_empty()
+    }
+
+    /// Iterates over the plaintext recovery codes.
+    pub fn iter(&self) -> std::slice::Iter<'_, String> {
+        self.codes.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a RecoveryCodes {
+    type Item = &'a String;
+    type IntoIter = std::slice::Iter<'a, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.codes.iter()
+    }
+}
+
+impl fmt::Debug for RecoveryCodes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecoveryCodes")
+            .field("count", &self.codes.len())
+            .field("codes", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Returned once during MFA enrollment — contains the plaintext recovery codes.
 ///
 /// **Security**: Recovery codes are shown exactly once. After enrollment,
-/// only their Argon2id hashes are stored.
+/// only their Argon2id hashes are stored. The `recovery_codes` field is
+/// wrapped in [`RecoveryCodes`] to zero the plaintext on drop.
 pub struct TotpEnrollment {
     /// Base32-encoded TOTP secret for manual entry.
     pub secret_base32: String,
     /// `otpauth://` URI for QR code scanning.
     pub provisioning_uri: String,
     /// Plaintext recovery codes (shown once).
-    pub recovery_codes: Vec<String>,
+    pub recovery_codes: RecoveryCodes,
 }
 
 impl fmt::Debug for TotpEnrollment {
@@ -475,7 +532,7 @@ mod tests {
         let enrollment = TotpEnrollment {
             secret_base32: "JBSWY3DPEHPK3PXP".to_string(),
             provisioning_uri: "otpauth://totp/test".to_string(),
-            recovery_codes: vec!["ABC123XY".to_string()],
+            recovery_codes: RecoveryCodes::new(vec!["ABC123XY".to_string()]),
         };
         let debug = format!("{enrollment:?}");
         assert!(

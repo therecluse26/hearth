@@ -97,6 +97,14 @@ harness = false
 name = "oauth"
 harness = false
 
+[[bench]]
+name = "admin"
+harness = false
+
+[[bench]]
+name = "audit"
+harness = false
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"

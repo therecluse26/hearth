@@ -27,3 +27,6 @@ fuzz/corpus/
 
 node_modules/
 .reflex/
+
+# Generated protobuf code (produced by build.rs on every build)
+/src/protocol/generated/

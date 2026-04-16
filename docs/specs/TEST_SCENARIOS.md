@@ -735,9 +735,9 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Integration
 
 - [ ] Keycloak migration: import users/clients from Keycloak export → authenticate migrated user → verify session `P1` `fast`
-- [ ] MFA enrollment + login: register → enable TOTP → authenticate with password + TOTP → receive session `P0` `fast`
-- [ ] Passkey-only authentication: register passkey → passwordless login → receive session → validate token `P0` `fast`
-- [ ] Multi-tenant isolation round-trip: create 2 tenants → create users in each → verify complete data isolation `P0` `fast`
+- [x] MFA enrollment + login: register → enable TOTP → authenticate with password + TOTP → receive session `P0` `fast`
+- [x] Passkey-only authentication: register passkey → passwordless login → receive session → validate token `P0` `fast`
+- [x] Multi-tenant isolation round-trip: create 2 tenants → create users in each → verify complete data isolation `P0` `fast`
 
 ---
 
@@ -745,14 +745,14 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Adversarial
 
-- [ ] Error response sanitization: Phase 1 endpoints leak no internal state (no stack traces, query details, or internal paths) `P0` `fast`
-- [ ] Zeroize enforcement: all Phase 1 sensitive types (TOTP secrets, magic link tokens, recovery codes) zeroed after use `P0` `fast`
-- [ ] Input size limits: Phase 1 endpoints enforce request body, header, and URL length limits `P0` `fast`
+- [x] Error response sanitization: Phase 1 endpoints leak no internal state (no stack traces, query details, or internal paths) `P0` `fast`
+- [x] Zeroize enforcement: all Phase 1 sensitive types (TOTP secrets, magic link tokens, recovery codes) zeroed after use `P0` `fast`
+- [x] Input size limits: Phase 1 endpoints enforce request body, header, and URL length limits `P0` `fast`
 
 #### Benchmark
 
-- [ ] Admin user listing: p50 < 5 ms, p99 < 50 ms for 10K users with pagination (regression: +20%) `P0` `standard`
-- [ ] Audit log query: p50 < 10 ms, p99 < 100 ms for 100K entries with time range filter (regression: +20%) `P0` `standard`
+- [x] Admin user listing: p50 < 5 ms, p99 < 50 ms for 10K users with pagination (regression: +20%) `P0` `standard`
+- [x] Audit log query: p50 < 10 ms, p99 < 100 ms for 100K entries with time range filter (regression: +20%) `P0` `standard`
 
 ---
 

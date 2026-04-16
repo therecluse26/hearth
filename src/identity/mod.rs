@@ -31,7 +31,7 @@ pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
     Jwk, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
 };
-pub use totp::TotpEnrollment;
+pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
     BulkResult, CreateTenantRequest, CreateUserRequest, Page, Session, Tenant, TenantConfig,
     TenantStatus, UpdateTenantRequest, UpdateUserRequest, User, UserStatus,

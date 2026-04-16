@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+const GENERATED_DIR: &str = "src/protocol/generated";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_dir = PathBuf::from("proto");
     let protos = &[
@@ -9,11 +11,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/hearth/events/v1/audit.proto",
     ];
 
+    // Generated Rust lives under src/ so IDEs (RustRover, VS Code, Zed) can
+    // statically index it. The files are gitignored; `cargo build` is the
+    // source of truth for generation.
+    let generated = PathBuf::from(GENERATED_DIR);
+    std::fs::create_dir_all(&generated)?;
+
+    // File descriptor set stays in OUT_DIR (binary artifact, not source).
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
+    let descriptor_path = out_dir.join("proto_descriptor.bin");
 
     // Compile proto files with prost, generating file descriptor set for pbjson.
-    let descriptor_path = out_dir.join("proto_descriptor.bin");
     prost_build::Config::new()
+        .out_dir(&generated)
         .file_descriptor_set_path(&descriptor_path)
         .compile_protos(protos, &[proto_dir])?;
 
@@ -22,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pbjson_build::Builder::new()
         .register_descriptors(&descriptor_set)?
         .preserve_proto_field_names()
+        .out_dir(&generated)
         .build(&[
             ".hearth.identity.v1",
             ".hearth.authz.v1",
@@ -30,5 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Re-run build if any proto file changes.
     println!("cargo:rerun-if-changed=proto/");
+    println!("cargo:rerun-if-changed=build.rs");
     Ok(())
 }

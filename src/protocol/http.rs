@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, Router};
@@ -48,6 +48,21 @@ struct AdminRateTracker {
 const ADMIN_RATE_LIMIT: u32 = 100;
 /// Rate limit window in microseconds (1 minute).
 const ADMIN_RATE_WINDOW_MICROS: i64 = 60 * 1_000_000;
+
+/// Default maximum request body size (1 MiB).
+///
+/// Covers normal JSON payloads (user/tenant CRUD, OAuth token exchange).
+/// Larger payloads are rejected with HTTP 413 (Payload Too Large) before
+/// hitting any handler.
+const BODY_LIMIT_DEFAULT: usize = 1024 * 1024;
+
+/// Reduced body limit (64 KiB) for endpoints that only accept short codes
+/// or token strings (e.g. introspection, revocation).
+///
+/// Defense-in-depth: these endpoints never legitimately receive payloads
+/// anywhere near this size, so a stricter limit reduces the blast radius
+/// of resource-exhaustion attempts.
+const BODY_LIMIT_SMALL: usize = 64 * 1024;
 
 /// Shared application state passed to all route handlers.
 pub struct AppState {
@@ -281,8 +296,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/clients", axum::routing::post(register_client))
         .route("/authorize", axum::routing::post(authorize))
         .route("/token", axum::routing::post(token_exchange))
-        .route("/revoke", axum::routing::post(token_revocation))
-        .route("/introspect", axum::routing::post(token_introspection))
+        .route(
+            "/revoke",
+            axum::routing::post(token_revocation)
+                .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+        )
+        .route(
+            "/introspect",
+            axum::routing::post(token_introspection)
+                .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+        )
         .route(
             "/device_authorization",
             axum::routing::post(device_authorization),
@@ -291,6 +314,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/register", axum::routing::post(dynamic_register_client))
         .nest("/admin", admin_routes)
         .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
         .with_state(state)
 }
 
@@ -484,7 +508,10 @@ async fn health() -> impl IntoResponse {
 /// provider's configuration, endpoints, and supported features.
 async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let doc = state.identity.oidc_discovery();
-    (StatusCode::OK, Json(proto_to_rest_json(&pb::OidcDiscoveryDocument::from(&doc))))
+    (
+        StatusCode::OK,
+        Json(proto_to_rest_json(&pb::OidcDiscoveryDocument::from(&doc))),
+    )
 }
 
 /// JWKS endpoint.
@@ -493,7 +520,10 @@ async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse
 /// keys for external token verification.
 async fn jwks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let doc = state.identity.jwks();
-    (StatusCode::OK, Json(proto_to_rest_json(&pb::JwksDocument::from(&doc))))
+    (
+        StatusCode::OK,
+        Json(proto_to_rest_json(&pb::JwksDocument::from(&doc))),
+    )
 }
 
 // === User management endpoints ===
@@ -514,7 +544,11 @@ async fn create_user(
     let request = crate::identity::CreateUserRequest::from(body);
 
     match state.identity.create_user(&tenant_id, &request) {
-        Ok(user) => (StatusCode::CREATED, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response(),
+        Ok(user) => (
+            StatusCode::CREATED,
+            Json(proto_to_rest_json(&pb::User::from(&user))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -665,7 +699,11 @@ async fn register_client(
     request.client_secret = None;
 
     match state.identity.register_client(&tenant_id, &request) {
-        Ok(client) => (StatusCode::CREATED, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response(),
+        Ok(client) => (
+            StatusCode::CREATED,
+            Json(proto_to_rest_json(&pb::OAuthClient::from(&client))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -695,9 +733,13 @@ async fn authorize(
     };
 
     match state.identity.authorize(&tenant_id, &request) {
-        Ok(response) => {
-            (StatusCode::OK, Json(proto_to_rest_json(&pb::AuthorizationResponse::from(&response)))).into_response()
-        }
+        Ok(response) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::AuthorizationResponse::from(
+                &response,
+            ))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -756,9 +798,11 @@ async fn token_exchange(
                 .identity
                 .exchange_authorization_code(&tenant_id, &request)
             {
-                Ok(response) => {
-                    (StatusCode::OK, Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response)))).into_response()
-                }
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                )
+                    .into_response(),
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -809,7 +853,9 @@ async fn token_exchange(
             {
                 Ok(response) => (
                     StatusCode::OK,
-                    Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(&response))),
+                    Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(
+                        &response,
+                    ))),
                 )
                     .into_response(),
                 Err(e) => identity_error_to_response(&e).into_response(),
@@ -819,7 +865,9 @@ async fn token_exchange(
             let Some(device_code) = body.device_code else {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "device_code required for device_code grant"})),
+                    Json(
+                        serde_json::json!({"error": "device_code required for device_code grant"}),
+                    ),
                 )
                     .into_response();
             };
@@ -839,9 +887,11 @@ async fn token_exchange(
                 .identity
                 .poll_device_token(&tenant_id, &device_code, &client_id)
             {
-                Ok(response) => {
-                    (StatusCode::OK, Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response)))).into_response()
-                }
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                )
+                    .into_response(),
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -898,9 +948,13 @@ async fn token_introspection(
     let request = crate::identity::TokenIntrospectionRequest::from(body);
 
     match state.identity.introspect_token(&tenant_id, &request) {
-        Ok(response) => {
-            (StatusCode::OK, Json(proto_to_rest_json(&pb::IntrospectionResponse::from(&response)))).into_response()
-        }
+        Ok(response) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::IntrospectionResponse::from(
+                &response,
+            ))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -939,7 +993,9 @@ async fn device_authorization(
     match state.identity.device_authorize(&tenant_id, &request) {
         Ok(response) => (
             StatusCode::OK,
-            Json(proto_to_rest_json(&pb::DeviceAuthorizationResponse::from(&response))),
+            Json(proto_to_rest_json(&pb::DeviceAuthorizationResponse::from(
+                &response,
+            ))),
         )
             .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
@@ -969,7 +1025,11 @@ async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
     };
 
     match state.identity.userinfo(&tenant_id, token) {
-        Ok(info) => (StatusCode::OK, Json(proto_to_rest_json(&pb::UserInfoResponse::from(&info)))).into_response(),
+        Ok(info) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::UserInfoResponse::from(&info))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -1060,7 +1120,11 @@ async fn admin_list_users(
         params.cursor.as_deref(),
         params.effective_limit(),
     ) {
-        Ok(page) => (StatusCode::OK, Json(proto_to_rest_json(&user_page_to_proto(&page)))).into_response(),
+        Ok(page) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&user_page_to_proto(&page))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -1088,7 +1152,11 @@ async fn admin_create_user(
                 resource_id: user.id().as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::CREATED, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response()
+            (
+                StatusCode::CREATED,
+                Json(proto_to_rest_json(&pb::User::from(&user))),
+            )
+                .into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1120,7 +1188,11 @@ async fn admin_get_user(
         .identity
         .get_user(&auth.tenant_id, &UserId::new(user_uuid))
     {
-        Ok(Some(user)) => (StatusCode::OK, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response(),
+        Ok(Some(user)) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::User::from(&user))),
+        )
+            .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not found"})),
@@ -1177,7 +1249,11 @@ async fn admin_update_user(
                 resource_id: uid.as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::OK, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response()
+            (
+                StatusCode::OK,
+                Json(proto_to_rest_json(&pb::User::from(&user))),
+            )
+                .into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1268,7 +1344,12 @@ async fn admin_bulk_users(
                     let proto_results: Vec<_> =
                         results.iter().map(user_bulk_result_to_proto).collect();
 
-                    (StatusCode::OK, Json(proto_to_rest_json(&pb::BulkResult { results: proto_results })))
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::BulkResult {
+                            results: proto_results,
+                        })),
+                    )
                         .into_response()
                 }
                 Err(e) => identity_error_to_response(&e).into_response(),
@@ -1306,7 +1387,12 @@ async fn admin_bulk_users(
                     let proto_results: Vec<_> =
                         results.iter().map(void_bulk_result_to_proto).collect();
 
-                    (StatusCode::OK, Json(proto_to_rest_json(&pb::BulkResult { results: proto_results })))
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::BulkResult {
+                            results: proto_results,
+                        })),
+                    )
                         .into_response()
                 }
                 Err(e) => identity_error_to_response(&e).into_response(),
@@ -1335,7 +1421,11 @@ async fn admin_list_tenants(
         .identity
         .list_tenants(params.cursor.as_deref(), params.effective_limit())
     {
-        Ok(page) => (StatusCode::OK, Json(proto_to_rest_json(&tenant_page_to_proto(&page)))).into_response(),
+        Ok(page) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&tenant_page_to_proto(&page))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -1363,7 +1453,11 @@ async fn admin_create_tenant(
                 resource_id: tenant.id().as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::CREATED, Json(proto_to_rest_json(&pb::Tenant::from(&tenant)))).into_response()
+            (
+                StatusCode::CREATED,
+                Json(proto_to_rest_json(&pb::Tenant::from(&tenant))),
+            )
+                .into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1392,7 +1486,11 @@ async fn admin_get_tenant(
     };
 
     match state.identity.get_tenant(&TenantId::new(tenant_uuid)) {
-        Ok(Some(tenant)) => (StatusCode::OK, Json(proto_to_rest_json(&pb::Tenant::from(&tenant)))).into_response(),
+        Ok(Some(tenant)) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::Tenant::from(&tenant))),
+        )
+            .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not found"})),
@@ -1449,7 +1547,11 @@ async fn admin_update_tenant(
                 resource_id: tenant_uuid.to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::OK, Json(proto_to_rest_json(&pb::Tenant::from(&tenant)))).into_response()
+            (
+                StatusCode::OK,
+                Json(proto_to_rest_json(&pb::Tenant::from(&tenant))),
+            )
+                .into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1509,7 +1611,11 @@ async fn admin_list_clients(
         params.cursor.as_deref(),
         params.effective_limit(),
     ) {
-        Ok(page) => (StatusCode::OK, Json(proto_to_rest_json(&client_page_to_proto(&page)))).into_response(),
+        Ok(page) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&client_page_to_proto(&page))),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -1538,7 +1644,11 @@ async fn admin_register_client(
                 resource_id: client.client_id().as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::CREATED, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response()
+            (
+                StatusCode::CREATED,
+                Json(proto_to_rest_json(&pb::OAuthClient::from(&client))),
+            )
+                .into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1570,9 +1680,11 @@ async fn admin_get_client(
         .identity
         .get_client(&auth.tenant_id, &ClientId::new(client_uuid))
     {
-        Ok(Some(client)) => {
-            (StatusCode::OK, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response()
-        }
+        Ok(Some(client)) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::OAuthClient::from(&client))),
+        )
+            .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not found"})),
@@ -1620,7 +1732,11 @@ async fn admin_update_client(
                 resource_id: client_uuid.to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::OK, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response()
+            (
+                StatusCode::OK,
+                Json(proto_to_rest_json(&pb::OAuthClient::from(&client))),
+            )
+                .into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }

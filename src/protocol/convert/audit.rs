@@ -22,9 +22,7 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::TenantUpdated => pb::AuditAction::TenantUpdated,
         domain::AuditAction::TenantDeleted => pb::AuditAction::TenantDeleted,
         domain::AuditAction::ClientRegistered => pb::AuditAction::ClientRegistered,
-        domain::AuditAction::AuthorizationCodeIssued => {
-            pb::AuditAction::AuthorizationCodeIssued
-        }
+        domain::AuditAction::AuthorizationCodeIssued => pb::AuditAction::AuthorizationCodeIssued,
         domain::AuditAction::AuthorizationCodeExchanged => {
             pb::AuditAction::AuthorizationCodeExchanged
         }

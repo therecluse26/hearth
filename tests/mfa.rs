@@ -205,7 +205,7 @@ async fn mfa_recovery_code_flow() {
         .expect("verify enrollment");
 
     // Use first recovery code
-    let recovery_code = &enrollment.recovery_codes[0];
+    let recovery_code = &enrollment.recovery_codes.as_slice()[0];
     harness
         .identity()
         .verify_recovery_code(&tenant, user.id(), recovery_code)

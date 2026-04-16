@@ -86,8 +86,7 @@ pub(crate) fn proto_authorize_to_domain(
         state: r.state,
         response_type: r.response_type,
         user_id: UserId::new(
-            uuid::Uuid::parse_str(&r.user_id)
-                .map_err(|_| "invalid user_id UUID".to_string())?,
+            uuid::Uuid::parse_str(&r.user_id).map_err(|_| "invalid user_id UUID".to_string())?,
         ),
         code_challenge: r.code_challenge,
         code_challenge_method,
@@ -246,14 +245,10 @@ impl From<&domain::OidcDiscoveryDocument> for pb::OidcDiscoveryDocument {
             response_types_supported: d.response_types_supported.clone(),
             response_modes_supported: d.response_modes_supported.clone(),
             subject_types_supported: d.subject_types_supported.clone(),
-            id_token_signing_alg_values_supported: d
-                .id_token_signing_alg_values_supported
-                .clone(),
+            id_token_signing_alg_values_supported: d.id_token_signing_alg_values_supported.clone(),
             scopes_supported: d.scopes_supported.clone(),
             claims_supported: d.claims_supported.clone(),
-            token_endpoint_auth_methods_supported: d
-                .token_endpoint_auth_methods_supported
-                .clone(),
+            token_endpoint_auth_methods_supported: d.token_endpoint_auth_methods_supported.clone(),
             code_challenge_methods_supported: d.code_challenge_methods_supported.clone(),
             grant_types_supported: d.grant_types_supported.clone(),
             registration_endpoint: d.registration_endpoint.clone(),
@@ -303,7 +298,10 @@ mod tests {
         let proto = pb::OAuthClient::from(&client);
         assert_eq!(proto.client_id, client.client_id().as_uuid().to_string());
         assert_eq!(proto.client_name, "Test App");
-        assert_eq!(proto.redirect_uris, vec!["https://app.example.com/callback"]);
+        assert_eq!(
+            proto.redirect_uris,
+            vec!["https://app.example.com/callback"]
+        );
         assert!(!proto.is_confidential);
     }
 

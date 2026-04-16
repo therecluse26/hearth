@@ -20,8 +20,8 @@ pub mod identity {
         mismatched_lifetime_syntaxes
     )]
     pub mod v1 {
-        include!(concat!(env!("OUT_DIR"), "/hearth.identity.v1.rs"));
-        include!(concat!(env!("OUT_DIR"), "/hearth.identity.v1.serde.rs"));
+        include!("generated/hearth.identity.v1.rs");
+        include!("generated/hearth.identity.v1.serde.rs");
     }
 }
 
@@ -39,8 +39,8 @@ pub mod authz {
         mismatched_lifetime_syntaxes
     )]
     pub mod v1 {
-        include!(concat!(env!("OUT_DIR"), "/hearth.authz.v1.rs"));
-        include!(concat!(env!("OUT_DIR"), "/hearth.authz.v1.serde.rs"));
+        include!("generated/hearth.authz.v1.rs");
+        include!("generated/hearth.authz.v1.serde.rs");
     }
 }
 
@@ -58,7 +58,7 @@ pub mod events {
         mismatched_lifetime_syntaxes
     )]
     pub mod v1 {
-        include!(concat!(env!("OUT_DIR"), "/hearth.events.v1.rs"));
-        include!(concat!(env!("OUT_DIR"), "/hearth.events.v1.serde.rs"));
+        include!("generated/hearth.events.v1.rs");
+        include!("generated/hearth.events.v1.serde.rs");
     }
 }
