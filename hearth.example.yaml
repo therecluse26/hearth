@@ -1,0 +1,48 @@
+# Hearth example configuration.
+#
+# Usage:
+#   cp hearth.example.yaml hearth.yaml      # auto-detected in CWD
+#   ./target/release/hearth serve           # uses hearth.yaml
+# or:
+#   ./target/release/hearth serve -c /path/to/config.yaml
+#
+# Every section is optional. Any field you omit falls back to the default
+# shown in the comment. An empty file (`{}`) is a valid, production-safe
+# configuration.
+#
+# Environment variable substitution is supported anywhere a string value
+# appears: use dollar-sign + braces around the variable name (see the README
+# "Configuration" section for the exact syntax). A referenced variable that
+# is not set is a startup error — there is no silent fallback.
+
+server:
+  bind_address: "127.0.0.1"   # default: 127.0.0.1
+  port: 8420                  # default: 8420
+
+  # TLS is optional. If you set one of cert/key, you MUST set both.
+  # Enabling TLS also spawns an HTTP→HTTPS redirect listener on `port - 1`
+  # (or port 80 when `port: 443`). Send SIGHUP to reload cert + key.
+  # tls_cert_path: "./tls/server.crt"
+  # tls_key_path:  "./tls/server.key"
+
+  # mTLS: require clients to present a certificate signed by this CA.
+  # `tls_require_client_cert: true` requires `tls_client_ca_path` to be set.
+  # tls_client_ca_path: "./tls/clients-ca.crt"
+  # tls_require_client_cert: false
+
+storage:
+  data_dir: "./data"                      # WAL + SST files live here
+  wal_max_size_bytes: 268435456           # 256 MiB — WAL rotation threshold
+  memtable_flush_bytes: 67108864          # 64 MiB  — memtable→SST flush threshold
+  hot_tier_capacity: 10000                # entries cached in the hot tier
+  fsync: true                             # MUST be true in production; dev mode disables this
+
+observability:
+  log_level: "info"      # trace | debug | info | warn | error
+  log_format: "text"     # text | json
+
+operational:
+  request_timeout_secs: 30
+  shutdown_timeout_secs: 10
+  max_connections: 1024
+  queue_depth: 4096
