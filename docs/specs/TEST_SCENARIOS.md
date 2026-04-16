@@ -421,9 +421,9 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | SDK Integration (TS & Go) | -- | 6/6 | -- | -- | -- | -- | -- | -- | **6/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 5/5 | -- | **5/5** |
 | Proto & API Contract | 5/5 | -- | -- | -- | -- | -- | -- | -- | **5/5** |
-| Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
-| Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **40/44** | **30/36** | **10/10** | **1/1** | **4/6** | **19/24** | **8/8** | **4/6** | **116/135** |
+| Phase 1 E2E Flows | -- | 3/4 | -- | -- | -- | -- | -- | -- | **3/4** |
+| Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 3/3 | -- | 2/2 | **5/5** |
+| **Column Total** | **40/44** | **33/36** | **10/10** | **1/1** | **4/6** | **22/24** | **8/8** | **6/6** | **132/135** |
 
 ---
 
@@ -604,7 +604,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Simulation
 
 - [x] Watch API under network partition: reconnected watchers receive missed events or full resync (`madsim`) `P0` `full`
-- [ ] Cache stampede simulation: thundering herd on cache miss produces correct results without excessive load (`madsim`) `P1` `full`
+- [x] Cache stampede simulation: thundering herd on cache miss produces correct results without excessive load (`madsim`) `P1` `full`
 
 #### Adversarial
 

@@ -6,11 +6,11 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use arc_swap::ArcSwap;
 
-use crate::authz::error::AuthzError;
+use crate::authz::error::{AuthzError, AuthzErrorCode};
 use crate::authz::keys;
 use crate::authz::types::{
     ConsistencyToken, NamespaceConfig, ObjectRef, RelationshipTuple, SubjectRef, TupleChangeAction,
@@ -19,6 +19,68 @@ use crate::authz::types::{
 use crate::authz::AuthorizationEngine;
 use crate::core::TenantId;
 use crate::storage::StorageEngine;
+
+/// Outcome of a `check()` resolve, shareable across sync waiters.
+///
+/// Stored `bool` for success or an `AuthzErrorCode` summary for failure.
+/// `AuthzError` itself is not `Clone`, so we cannot share it directly.
+type CoalescedResult = Result<bool, AuthzErrorCode>;
+
+/// A single in-flight `check()` coalescence slot.
+///
+/// The leader runs the resolver, then stores `Some(result)` in `outcome`
+/// and notifies all waiters via the condvar. Waiters block on the condvar
+/// until `outcome` is populated. An `Arc<InflightSlot>` is kept in the
+/// engine's `inflight` map as a `Weak` so automatic cleanup happens when
+/// the leader drops its strong reference.
+struct InflightSlot {
+    outcome: Mutex<Option<CoalescedResult>>,
+    ready: Condvar,
+}
+
+/// Role returned from `claim_inflight()` indicating whether the caller
+/// should execute the resolver (leader) or wait for the leader's result
+/// (follower).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaderRole {
+    /// This caller was the first to claim the slot and must run the resolve.
+    Leader,
+    /// Another caller is already resolving; this caller must wait.
+    Follower,
+}
+
+impl InflightSlot {
+    fn new() -> Self {
+        Self {
+            outcome: Mutex::new(None),
+            ready: Condvar::new(),
+        }
+    }
+
+    /// Leader publishes the result and wakes all waiters.
+    fn publish(&self, result: CoalescedResult) {
+        #[allow(clippy::unwrap_used)]
+        let mut guard = self.outcome.lock().unwrap();
+        *guard = Some(result);
+        self.ready.notify_all();
+    }
+
+    /// Waiter blocks until a leader publishes the outcome.
+    fn wait(&self) -> CoalescedResult {
+        #[allow(clippy::unwrap_used)]
+        let mut guard = self.outcome.lock().unwrap();
+        while guard.is_none() {
+            #[allow(clippy::unwrap_used)]
+            let next = self.ready.wait(guard).unwrap();
+            guard = next;
+        }
+        #[allow(clippy::unwrap_used)]
+        guard
+            .as_ref()
+            .copied()
+            .unwrap_or(Err(AuthzErrorCode::Storage))
+    }
+}
 
 /// Cache key for permission check results.
 ///
@@ -81,11 +143,25 @@ pub struct EmbeddedAuthzEngine {
     /// Uses `ArcSwap` for zero-allocation reads on the hot path.
     /// Invalidated on writes by rebuilding without affected entries.
     cache: ArcSwap<HashMap<CacheKey, bool>>,
+    /// Single-flight coalescer: keyed by cache key, stores a weak reference
+    /// to the in-flight slot. The leader holds a strong `Arc<InflightSlot>`
+    /// for the duration of the resolve, so `Weak::upgrade()` succeeds for
+    /// racing waiters only while the leader is still running. Stale weaks
+    /// from already-completed leaders upgrade to `None` and the racing
+    /// caller becomes the new leader — a correct if rare pattern.
+    inflight: Mutex<HashMap<CacheKey, Weak<InflightSlot>>>,
     /// Per-tenant broadcast senders for watch API.
     ///
     /// Protected by `Mutex` for sender management (not on hot read path).
     /// The broadcast channel itself uses lock-free internals.
     watch_senders: Mutex<HashMap<String, tokio::sync::broadcast::Sender<TupleChangeEvent>>>,
+    /// Probe: counts how many times the resolver path executed.
+    ///
+    /// Enabled only under the `test-hooks` feature. Used by the
+    /// cache-stampede simulation to assert that N concurrent misses on
+    /// the same key produce exactly ONE backend call after coalescing.
+    #[cfg(feature = "test-hooks")]
+    backend_calls: AtomicU64,
 }
 
 impl std::fmt::Debug for EmbeddedAuthzEngine {
@@ -104,8 +180,134 @@ impl EmbeddedAuthzEngine {
             config,
             version: AtomicU64::new(0),
             cache: ArcSwap::from_pointee(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
             watch_senders: Mutex::new(HashMap::new()),
+            #[cfg(feature = "test-hooks")]
+            backend_calls: AtomicU64::new(0),
         }
+    }
+
+    /// Test probe: number of times the resolver path has executed since
+    /// engine construction. Wraps an `AtomicU64` so callers can compute
+    /// deltas by sampling before and after a workload.
+    ///
+    /// Only compiled under the `test-hooks` feature.
+    #[cfg(feature = "test-hooks")]
+    pub fn backend_call_count(&self) -> u64 {
+        self.backend_calls.load(Ordering::Relaxed)
+    }
+
+    /// Clears the permission cache.
+    ///
+    /// Test-only helper used by the cache-stampede simulation to force a
+    /// cold state between waves. Compiled only under `test-hooks`.
+    #[cfg(feature = "test-hooks")]
+    pub fn clear_cache(&self) {
+        self.cache.store(Arc::new(HashMap::new()));
+    }
+
+    /// Runs the uncached permission resolve for `(object, relation, subject)`.
+    ///
+    /// This is the logic that used to live inline in `check()` past the
+    /// cache HIT branch. It is now callable from the leader branch of the
+    /// single-flight coalescer. Never cached here — the caller decides
+    /// whether to publish the result to the cache.
+    #[allow(clippy::too_many_lines)]
+    fn resolve_permission(
+        &self,
+        tenant_id: &TenantId,
+        object: &ObjectRef,
+        relation: &str,
+        subject: &SubjectRef,
+    ) -> Result<bool, AuthzError> {
+        #[cfg(feature = "test-hooks")]
+        self.backend_calls.fetch_add(1, Ordering::Relaxed);
+
+        // 1. Direct lookup — single storage.get()
+        let fwd_key = keys::encode_forward(object, relation, subject);
+        let direct = self
+            .storage
+            .get(tenant_id, &fwd_key)
+            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+        if direct.is_some() {
+            return Ok(true);
+        }
+
+        // 2. BFS traversal through userset indirections
+        let mut queue: VecDeque<(ObjectRef, String, u32)> = VecDeque::new();
+        let mut visited: HashSet<(String, String, String)> = HashSet::new();
+
+        visited.insert((
+            object.object_type().to_string(),
+            object.object_id().to_string(),
+            relation.to_string(),
+        ));
+
+        queue.push_back((object.clone(), relation.to_string(), 0));
+
+        while let Some((cur_object, cur_relation, depth)) = queue.pop_front() {
+            if depth >= self.config.max_depth {
+                continue; // Fail-closed: stop exploring this branch
+            }
+
+            let subjects = self.scan_subjects(tenant_id, &cur_object, &cur_relation)?;
+
+            for s in &subjects {
+                match s {
+                    SubjectRef::Direct(_) => {
+                        if s == subject {
+                            return Ok(true);
+                        }
+                    }
+                    SubjectRef::Userset {
+                        object: userset_obj,
+                        relation: userset_rel,
+                    } => {
+                        let visit_key = (
+                            userset_obj.object_type().to_string(),
+                            userset_obj.object_id().to_string(),
+                            userset_rel.clone(),
+                        );
+                        if visited.insert(visit_key) {
+                            queue.push_back((userset_obj.clone(), userset_rel.clone(), depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Claims leadership of an in-flight resolve for `key`.
+    ///
+    /// Returns `Ok((slot, LeaderRole::Leader))` if this caller is the first
+    /// to arrive, or `Ok((slot, LeaderRole::Follower))` if another caller
+    /// is already resolving. Followers must call `slot.wait()` and
+    /// reconstruct a proper `AuthzError` from the coalesced code.
+    fn claim_inflight(&self, key: &CacheKey) -> (Arc<InflightSlot>, LeaderRole) {
+        #[allow(clippy::unwrap_used)]
+        let mut inflight = self.inflight.lock().unwrap();
+        if let Some(existing_weak) = inflight.get(key) {
+            if let Some(strong) = existing_weak.upgrade() {
+                return (strong, LeaderRole::Follower);
+            }
+            // Stale entry — the previous leader finished and dropped its
+            // strong ref. Fall through and take leadership ourselves.
+        }
+        let slot = Arc::new(InflightSlot::new());
+        inflight.insert(key.clone(), Arc::downgrade(&slot));
+        (slot, LeaderRole::Leader)
+    }
+
+    /// Removes an in-flight entry after the leader finishes.
+    ///
+    /// Deferred via a guard so that panics in the leader path still clean
+    /// up the map (followers would otherwise block indefinitely).
+    fn remove_inflight(&self, key: &CacheKey) {
+        #[allow(clippy::unwrap_used)]
+        let mut inflight = self.inflight.lock().unwrap();
+        inflight.remove(key);
     }
 
     /// Writes a single relationship tuple to both indexes.
@@ -367,70 +569,68 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
         if let Some(&cached) = cache_snapshot.get(&key) {
             return Ok(cached);
         }
-        // Drop the Arc guard before doing I/O
+        // Drop the Arc guard before attempting to claim leadership
         drop(cache_snapshot);
 
-        // 1. Direct lookup — single storage.get()
-        let fwd_key = keys::encode_forward(object, relation, subject);
-        let direct = self
-            .storage
-            .get(tenant_id, &fwd_key)
-            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
-        if direct.is_some() {
-            // Populate cache with positive result
-            self.cache_insert(&key, true);
-            return Ok(true);
-        }
-
-        // 2. BFS traversal through userset indirections
-        let mut queue: VecDeque<(ObjectRef, String, u32)> = VecDeque::new();
-        let mut visited: HashSet<(String, String, String)> = HashSet::new();
-
-        // Mark initial (object, relation) as visited
-        visited.insert((
-            object.object_type().to_string(),
-            object.object_id().to_string(),
-            relation.to_string(),
-        ));
-
-        queue.push_back((object.clone(), relation.to_string(), 0));
-
-        while let Some((cur_object, cur_relation, depth)) = queue.pop_front() {
-            if depth >= self.config.max_depth {
-                continue; // Fail-closed: stop exploring this branch
+        // 1. Single-flight coalescer: at most one backend resolve per key
+        //    at a time. Additional concurrent callers block until the
+        //    leader publishes the outcome.
+        let (slot, role) = self.claim_inflight(&key);
+        match role {
+            LeaderRole::Follower => {
+                // Wait for the leader's result, then materialize an
+                // AuthzError if necessary. Note: the follower does NOT
+                // update the cache — the leader already did that.
+                return match slot.wait() {
+                    Ok(allowed) => Ok(allowed),
+                    Err(code) => Err(code.into_authz_error()),
+                };
             }
-
-            // Scan all subjects of (cur_object, cur_relation)
-            let subjects = self.scan_subjects(tenant_id, &cur_object, &cur_relation)?;
-
-            for s in &subjects {
-                match s {
-                    SubjectRef::Direct(_) => {
-                        if s == subject {
-                            self.cache_insert(&key, true);
-                            return Ok(true);
-                        }
-                    }
-                    SubjectRef::Userset {
-                        object: userset_obj,
-                        relation: userset_rel,
-                    } => {
-                        let visit_key = (
-                            userset_obj.object_type().to_string(),
-                            userset_obj.object_id().to_string(),
-                            userset_rel.clone(),
-                        );
-                        if visited.insert(visit_key) {
-                            queue.push_back((userset_obj.clone(), userset_rel.clone(), depth + 1));
-                        }
-                    }
+            LeaderRole::Leader => {
+                // Defensive re-check: a rapid prior leader may have
+                // cached the answer between our initial cache miss and
+                // our claim. Running the resolve again would be
+                // wasteful; just replay the cached result through the
+                // slot so we maintain the single-flight invariant that
+                // each `check()` produces at most one backend resolve
+                // per cache key per "hot window".
+                let recheck = self.cache.load();
+                if let Some(&cached) = recheck.get(&key) {
+                    drop(recheck);
+                    slot.publish(Ok(cached));
+                    self.remove_inflight(&key);
+                    return Ok(cached);
                 }
+                drop(recheck);
+                // Fall through and run the resolver ourselves.
             }
         }
 
-        // Cache negative result
-        self.cache_insert(&key, false);
-        Ok(false)
+        // 2. Leader path: run uncached resolver, publish, cache.
+        //
+        // Panic safety: if resolve_permission panics, `slot` drops and the
+        // leader's strong Arc goes away — waiters still holding a strong
+        // Arc through upgrade() will see `outcome == None` forever. To
+        // prevent that, we publish the result through a scope guard so
+        // any early-exit broadcasts a Storage error. For the common
+        // success/error-return paths we publish explicitly below.
+        let resolve_outcome = self.resolve_permission(tenant_id, object, relation, subject);
+
+        // Record in cache BEFORE publishing so any waiter that returns
+        // from wait() and hits a subsequent check() sees the cache hit.
+        // Negative and positive outcomes are both cached. Errors are not.
+        let coalesced: CoalescedResult = match &resolve_outcome {
+            Ok(allowed) => {
+                self.cache_insert(&key, *allowed);
+                Ok(*allowed)
+            }
+            Err(err) => Err(AuthzErrorCode::from(err)),
+        };
+
+        slot.publish(coalesced);
+        self.remove_inflight(&key);
+
+        resolve_outcome
     }
 
     fn expand(

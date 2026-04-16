@@ -56,6 +56,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
 
+[features]
+# Exposes internal test probes (e.g., backend call counters on the authz
+# engine) for use by the simulation crate. Never enable in production.
+test-hooks = []
+
 [build-dependencies]
 pbjson-build = "0.7"
 prost-build = "0.13"

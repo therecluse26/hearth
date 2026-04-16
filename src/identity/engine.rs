@@ -173,6 +173,15 @@ pub struct EmbeddedIdentityEngine {
     magic_link_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Pending `WebAuthn` challenges awaiting completion.
     webauthn_challenges: WebAuthnChallengeStore,
+    /// Serializes tenant-record lifecycle mutations (create/update/delete).
+    ///
+    /// Tenant ops are not on the hot path, and a tenant record and its
+    /// signing key MUST move together to avoid an orphaned "live tenant
+    /// with no JWKS" state. A single coarse mutex is the simplest way to
+    /// guarantee atomicity of the record+key pair under concurrent
+    /// callers; a finer-grained per-tenant lock could come later if
+    /// contention ever becomes measurable.
+    tenant_ops_lock: Mutex<()>,
 }
 
 impl std::fmt::Debug for EmbeddedIdentityEngine {
@@ -208,6 +217,7 @@ impl EmbeddedIdentityEngine {
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
+            tenant_ops_lock: Mutex::new(()),
         })
     }
 
@@ -233,6 +243,7 @@ impl EmbeddedIdentityEngine {
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
+            tenant_ops_lock: Mutex::new(()),
         }
     }
 
@@ -722,6 +733,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     // ===== Tenant lifecycle (Phase 1 Step 19) =====
 
     fn create_tenant(&self, request: &CreateTenantRequest) -> Result<Tenant, IdentityError> {
+        // Serialize against other tenant-record mutations so the atomic
+        // record+key `put_batch` below is never interleaved with another
+        // thread's update/delete. See `tenant_ops_lock` docs.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
         let now = self.clock.now();
         let tenant_id = TenantId::generate();
         let config = request.config.clone().unwrap_or_default();
@@ -741,15 +756,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         );
         let tenant_bytes = Self::serialize_tenant(&tenant)?;
         let tenant_key = keys::encode_tenant_id(&tenant_id);
-        self.storage
-            .put(&sys_tenant, &tenant_key, &tenant_bytes)
-            .map_err(Self::storage_err)?;
-
-        // Persist the per-tenant signing key (PKCS#8 DER)
         let key_storage_key = keys::encode_tenant_signing_key(&tenant_id);
-        let key_bytes = tenant_signing_key.pkcs8_bytes();
+        let key_bytes = tenant_signing_key.pkcs8_bytes().to_vec();
+
+        // Atomic two-entry write: the tenant record and its signing key
+        // land together or not at all. Without this, a crash or fault
+        // between the two puts would leave an orphaned tenant with no
+        // JWKS. The WAL's `[u32 len][payload][u32 crc]` framing gives the
+        // entire batch single-record atomicity.
         self.storage
-            .put(&sys_tenant, &key_storage_key, key_bytes)
+            .put_batch(
+                &sys_tenant,
+                &[(tenant_key, tenant_bytes), (key_storage_key, key_bytes)],
+            )
             .map_err(Self::storage_err)?;
 
         // Cache the signing key in memory
@@ -782,6 +801,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         tenant_id: &TenantId,
         request: &UpdateTenantRequest,
     ) -> Result<Tenant, IdentityError> {
+        // Serialize against create/delete so an in-flight delete can't
+        // race with this read-modify-write and resurrect an orphaned
+        // record after its signing key has already been removed.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
         let mut tenant = self
             .get_tenant(tenant_id)?
             .ok_or(IdentityError::TenantNotFound)?;
@@ -811,6 +834,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     #[allow(clippy::too_many_lines)]
     fn delete_tenant(&self, tenant_id: &TenantId) -> Result<(), IdentityError> {
+        // Serialize against create/update so a concurrent update can't
+        // re-put a tenant record after we've already removed its signing
+        // key. Without this lock, `record=Some key=None` would leak out
+        // and `tenant_jwks()` would fail for a still-live-looking tenant.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
         // Check whether the tenant record exists. We do NOT early-return on
         // missing record — a previous cascade may have crashed after deleting
         // the record but before cleaning all key-spaces. Recovery requires us
@@ -818,6 +846,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // AND the record is absent, we return TenantNotFound at the end.
         let tenant_exists = self.get_tenant(tenant_id)?.is_some();
         let mut cascade_work_done = false;
+
+        // 0. Delete the tenant record FIRST. Ordering matters: if a fault
+        //    lands mid-cascade, the observable partial state is "tenant
+        //    already gone, some cascade residue remains" — never the
+        //    reverse ("tenant alive but signing key missing"), which would
+        //    make `tenant_jwks()` fail for a tenant the API still reports
+        //    as live. The idempotent cascade below converges on retry.
+        let sys_tenant = keys::system_tenant_id();
+        let tenant_key = keys::encode_tenant_id(tenant_id);
+        if tenant_exists {
+            self.storage
+                .delete(&sys_tenant, &tenant_key)
+                .map_err(Self::storage_err)?;
+        }
 
         // 1. Delete all users in this tenant (cascades to sessions, credentials)
         let user_prefix = keys::user_id_scan_prefix();
@@ -980,7 +1022,6 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // 9. Delete tenant signing key (check existence first so we can attribute
         //    cascade work even when only the signing key survives a prior crash).
-        let sys_tenant = keys::system_tenant_id();
         let key_storage_key = keys::encode_tenant_signing_key(tenant_id);
         if self
             .storage
@@ -994,17 +1035,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .map_err(Self::storage_err)?;
         }
 
-        // 10. Remove from in-memory key cache
+        // 10. Remove from in-memory key cache. The record+key were already
+        //     deleted durably above; this just drops the cached `Arc`.
         {
             let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
             key_cache.remove(&tenant_id.as_uuid().to_string());
         }
-
-        // 11. Delete tenant record itself
-        let tenant_key = keys::encode_tenant_id(tenant_id);
-        self.storage
-            .delete(&sys_tenant, &tenant_key)
-            .map_err(Self::storage_err)?;
 
         // Idempotency guard: if nothing existed for this tenant anywhere, the
         // caller is asking to delete something that was never created (or was
