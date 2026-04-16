@@ -420,9 +420,10 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | SDK Integration (TS & Go) | -- | 6/6 | -- | -- | -- | -- | -- | -- | **6/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 5/5 | -- | **5/5** |
+| Proto & API Contract | 5/5 | -- | -- | -- | -- | -- | -- | -- | **5/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **35/39** | **30/36** | **9/10** | **1/1** | **0/6** | **19/24** | **8/8** | **3/6** | **105/130** |
+| **Column Total** | **40/44** | **30/36** | **9/10** | **1/1** | **0/6** | **19/24** | **8/8** | **3/6** | **110/135** |
 
 ---
 
@@ -714,6 +715,18 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 - [x] OpenID Connect Dynamic Client Registration 1.0: register, read, and update client metadata `P1` `full`
 - [x] UserInfo endpoint: returns correct claims for authenticated user with valid access token `P0` `full`
 - [x] ID Token validation: all required claims (iss, sub, aud, exp, iat, nonce) verified `P0` `full`
+
+---
+
+### Proto & API Contract Validation
+
+#### Unit
+
+- [x] `buf lint` passes on all `.proto` files with STANDARD rule set `P0` `fast`
+- [x] `buf breaking` detects no backwards-incompatible proto changes vs main branch `P0` `fast`
+- [x] Generated SDK types (TypeScript + Go) are up-to-date with `.proto` definitions (`buf generate --diff`) `P0` `fast`
+- [x] Proto-to-domain conversion layer compiles after proto field changes (exhaustive struct construction catches drift) `P0` `fast`
+- [x] pbjson int64-as-string coercion: all HTTP responses pass through `proto_to_rest_json()` so REST clients receive numeric JSON `P0` `fast`
 
 ---
 

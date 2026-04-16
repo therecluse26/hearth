@@ -17,17 +17,23 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, Router};
 use serde::Deserialize;
+use serde::Serialize;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
 use crate::core::{ClientId, TenantId, UserId};
-use crate::identity::{
-    AuthorizationRequest, CodeChallengeMethod, CreateTenantRequest, CreateUserRequest,
-    IdentityEngine, RegisterClientRequest, TokenExchangeRequest, UpdateClientRequest,
-    UpdateTenantRequest, UpdateUserRequest, UserStatus,
+use crate::identity::IdentityEngine;
+use crate::protocol::convert::identity::{
+    proto_tenant_status_to_domain, proto_user_status_to_domain, tenant_page_to_proto,
+    user_bulk_result_to_proto, user_page_to_proto, void_bulk_result_to_proto,
 };
+use crate::protocol::convert::oauth::{
+    client_page_to_proto, proto_authorize_to_domain, proto_client_creds_to_domain,
+    proto_token_exchange_to_domain,
+};
+use crate::protocol::proto::identity::v1 as pb;
 
 /// Tracks admin API rate limiting per user.
 #[derive(Debug, Clone)]
@@ -275,6 +281,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/clients", axum::routing::post(register_client))
         .route("/authorize", axum::routing::post(authorize))
         .route("/token", axum::routing::post(token_exchange))
+        .route("/revoke", axum::routing::post(token_revocation))
+        .route("/introspect", axum::routing::post(token_introspection))
+        .route(
+            "/device_authorization",
+            axum::routing::post(device_authorization),
+        )
         .route("/userinfo", axum::routing::get(userinfo))
         .route("/register", axum::routing::post(dynamic_register_client))
         .nest("/admin", admin_routes)
@@ -420,6 +432,42 @@ pub async fn serve_redirect(
     Ok(())
 }
 
+// === JSON helpers ===
+
+/// Serializes a proto type to a `serde_json::Value` with int64 fields
+/// emitted as JSON numbers instead of strings.
+///
+/// pbjson follows the proto3 JSON mapping spec which encodes int64/uint64
+/// as strings to avoid IEEE 754 precision loss. REST APIs conventionally
+/// use numeric JSON values, so this helper post-processes the serialized
+/// JSON to convert string-encoded integers back to numbers.
+fn proto_to_rest_json<T: Serialize>(value: &T) -> serde_json::Value {
+    let v = serde_json::to_value(value).unwrap_or_default();
+    coerce_string_ints(v)
+}
+
+/// Recursively converts string values that represent integers to JSON numbers.
+fn coerce_string_ints(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::String(ref s) => {
+            if let Ok(n) = s.parse::<i64>() {
+                serde_json::Value::Number(n.into())
+            } else {
+                v
+            }
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, coerce_string_ints(v)))
+                .collect(),
+        ),
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(coerce_string_ints).collect())
+        }
+        other => other,
+    }
+}
+
 // === Route handlers ===
 
 /// Health check endpoint.
@@ -436,7 +484,7 @@ async fn health() -> impl IntoResponse {
 /// provider's configuration, endpoints, and supported features.
 async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let doc = state.identity.oidc_discovery();
-    (StatusCode::OK, Json(doc))
+    (StatusCode::OK, Json(proto_to_rest_json(&pb::OidcDiscoveryDocument::from(&doc))))
 }
 
 /// JWKS endpoint.
@@ -445,17 +493,10 @@ async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse
 /// keys for external token verification.
 async fn jwks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let doc = state.identity.jwks();
-    (StatusCode::OK, Json(doc))
+    (StatusCode::OK, Json(proto_to_rest_json(&pb::JwksDocument::from(&doc))))
 }
 
 // === User management endpoints ===
-
-/// HTTP request body for user creation.
-#[derive(Debug, Deserialize)]
-struct HttpCreateUserRequest {
-    email: String,
-    display_name: String,
-}
 
 /// Create a new user.
 ///
@@ -463,64 +504,30 @@ struct HttpCreateUserRequest {
 async fn create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<HttpCreateUserRequest>,
+    Json(body): Json<pb::CreateUserRequest>,
 ) -> impl IntoResponse {
     let tenant_id = match extract_tenant_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
-    let request = CreateUserRequest {
-        email: body.email,
-        display_name: body.display_name,
-    };
+    let request = crate::identity::CreateUserRequest::from(body);
 
     match state.identity.create_user(&tenant_id, &request) {
-        Ok(user) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "id": user.id().as_uuid(),
-                "email": user.email(),
-                "display_name": user.display_name(),
-                "status": format!("{:?}", user.status()),
-            })),
-        )
-            .into_response(),
+        Ok(user) => (StatusCode::CREATED, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
 
 // === OIDC / OAuth 2.0 endpoints ===
 
-/// HTTP request body for client registration.
-#[derive(Debug, Deserialize)]
-struct HttpRegisterClientRequest {
-    client_name: String,
-    redirect_uris: Vec<String>,
-}
-
-/// HTTP request body for authorization code flow initiation.
-#[derive(Debug, Deserialize)]
-struct HttpAuthorizeRequest {
-    client_id: ClientId,
-    redirect_uri: String,
-    scope: String,
-    state: String,
-    response_type: String,
-    user_id: UserId,
-    code_challenge: Option<String>,
-    code_challenge_method: Option<String>,
-    nonce: Option<String>,
-}
-
 /// HTTP request body for token exchange.
 ///
-/// Supports both `authorization_code` and `refresh_token` grant types.
-/// For `authorization_code`: `code` and `redirect_uri` are required.
-/// For `refresh_token`: `refresh_token` is required.
+/// Uses a flat struct because the proto `TokenExchangeRequest` doesn't cover
+/// the multi-grant-type dispatch (`authorization_code` vs `refresh_token`).
 #[derive(Debug, Deserialize)]
 struct HttpTokenRequest {
-    client_id: ClientId,
+    client_id: String,
     #[serde(default)]
     grant_type: Option<String>,
     #[serde(default)]
@@ -531,6 +538,14 @@ struct HttpTokenRequest {
     code_verifier: Option<String>,
     #[serde(default)]
     refresh_token: Option<String>,
+    // Client credentials fields
+    #[serde(default)]
+    client_secret: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    // Device code field
+    #[serde(default)]
+    device_code: Option<String>,
 }
 
 /// Extracts a `TenantId` from the `X-Tenant-ID` header.
@@ -639,26 +654,18 @@ fn identity_error_to_response(
 async fn register_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<HttpRegisterClientRequest>,
+    Json(body): Json<pb::RegisterClientRequest>,
 ) -> impl IntoResponse {
     let tenant_id = match extract_tenant_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
-    let request = RegisterClientRequest {
-        client_name: body.client_name,
-        redirect_uris: body.redirect_uris,
-        client_secret: None,
-        grant_types: vec!["authorization_code".to_string()],
-    };
+    let mut request = crate::identity::RegisterClientRequest::from(body);
+    request.client_secret = None;
 
     match state.identity.register_client(&tenant_id, &request) {
-        Ok(client) => (
-            StatusCode::CREATED,
-            Json(serde_json::to_value(client).unwrap_or_default()),
-        )
-            .into_response(),
+        Ok(client) => (StatusCode::CREATED, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -669,46 +676,28 @@ async fn register_client(
 async fn authorize(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<HttpAuthorizeRequest>,
+    Json(body): Json<pb::AuthorizationRequest>,
 ) -> impl IntoResponse {
     let tenant_id = match extract_tenant_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
-    let code_challenge_method = match body.code_challenge_method.as_deref() {
-        Some("S256") => Some(CodeChallengeMethod::S256),
-        Some(_) => {
+    let request = match proto_authorize_to_domain(body) {
+        Ok(r) => r,
+        Err(msg) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "unsupported code_challenge_method"})),
+                Json(serde_json::json!({"error": msg})),
             )
                 .into_response();
         }
-        None => None,
-    };
-
-    let request = AuthorizationRequest {
-        client_id: body.client_id,
-        redirect_uri: body.redirect_uri,
-        scope: body.scope,
-        state: body.state,
-        response_type: body.response_type,
-        user_id: body.user_id,
-        code_challenge: body.code_challenge,
-        code_challenge_method,
-        nonce: body.nonce,
     };
 
     match state.identity.authorize(&tenant_id, &request) {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "code": response.code(),
-                "state": response.state(),
-            })),
-        )
-            .into_response(),
+        Ok(response) => {
+            (StatusCode::OK, Json(proto_to_rest_json(&pb::AuthorizationResponse::from(&response)))).into_response()
+        }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -717,9 +706,12 @@ async fn authorize(
 ///
 /// Requires `X-Tenant-ID` header.
 ///
-/// Supports two grant types:
+/// Supports multiple grant types:
 /// - `authorization_code` (default): exchange a code for access, ID, and refresh tokens
 /// - `refresh_token`: exchange a refresh token for a new token pair
+/// - `client_credentials`: issue an access token for a confidential client
+/// - `urn:ietf:params:oauth:grant-type:device_code`: poll for device authorization
+#[allow(clippy::too_many_lines)]
 async fn token_exchange(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -742,28 +734,31 @@ async fn token_exchange(
                     .into_response();
             };
 
-            let request = TokenExchangeRequest {
+            let proto_req = pb::TokenExchangeRequest {
                 client_id: body.client_id,
                 code,
                 redirect_uri,
                 code_verifier: body.code_verifier,
             };
 
+            let request = match proto_token_exchange_to_domain(&proto_req) {
+                Ok(r) => r,
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": msg})),
+                    )
+                        .into_response();
+                }
+            };
+
             match state
                 .identity
                 .exchange_authorization_code(&tenant_id, &request)
             {
-                Ok(response) => (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "access_token": response.access_token(),
-                        "id_token": response.id_token(),
-                        "token_type": response.token_type(),
-                        "expires_in": response.expires_in(),
-                        "refresh_token": response.refresh_token(),
-                    })),
-                )
-                    .into_response(),
+                Ok(response) => {
+                    (StatusCode::OK, Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response)))).into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -777,15 +772,76 @@ async fn token_exchange(
             };
 
             match state.identity.refresh_tokens(&tenant_id, &refresh_token) {
-                Ok(tokens) => (
+                Ok(tokens) => {
+                    let resp = pb::OidcTokenResponse {
+                        access_token: tokens.access_token().to_string(),
+                        id_token: String::new(),
+                        token_type: "Bearer".to_string(),
+                        expires_in: 900,
+                        refresh_token: tokens.refresh_token().to_string(),
+                    };
+                    (StatusCode::OK, Json(proto_to_rest_json(&resp))).into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "client_credentials" => {
+            let proto_req = pb::ClientCredentialsRequest {
+                client_id: body.client_id,
+                client_secret: body.client_secret.unwrap_or_default(),
+                scope: body.scope,
+            };
+
+            let request = match proto_client_creds_to_domain(&proto_req) {
+                Ok(r) => r,
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": msg})),
+                    )
+                        .into_response();
+                }
+            };
+
+            match state
+                .identity
+                .client_credentials_token(&tenant_id, &request)
+            {
+                Ok(response) => (
                     StatusCode::OK,
-                    Json(serde_json::json!({
-                        "access_token": tokens.access_token(),
-                        "token_type": "Bearer",
-                        "refresh_token": tokens.refresh_token(),
-                    })),
+                    Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(&response))),
                 )
                     .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "urn:ietf:params:oauth:grant-type:device_code" => {
+            let Some(device_code) = body.device_code else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "device_code required for device_code grant"})),
+                )
+                    .into_response();
+            };
+
+            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+                Ok(u) => ClientId::new(u),
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "invalid client_id UUID"})),
+                    )
+                        .into_response();
+                }
+            };
+
+            match state
+                .identity
+                .poll_device_token(&tenant_id, &device_code, &client_id)
+            {
+                Ok(response) => {
+                    (StatusCode::OK, Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response)))).into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -794,6 +850,99 @@ async fn token_exchange(
             Json(serde_json::json!({"error": "unsupported_grant_type"})),
         )
             .into_response(),
+    }
+}
+
+// === Token Revocation (RFC 7009) ===
+
+/// POST /revoke — revokes an OAuth 2.0 token.
+///
+/// Per RFC 7009, returns 200 OK regardless of whether the token was
+/// actually revoked (to prevent information leakage).
+async fn token_revocation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<pb::TokenRevocationRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = crate::identity::TokenRevocationRequest::from(body);
+
+    match state.identity.revoke_token(&tenant_id, &request) {
+        Ok(()) | Err(crate::identity::IdentityError::InvalidToken) => {
+            // RFC 7009: always return 200 OK
+            StatusCode::OK.into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// === Token Introspection (RFC 7662) ===
+
+/// POST /introspect — introspects an OAuth 2.0 token.
+///
+/// Returns metadata about the token including its active status.
+async fn token_introspection(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<pb::TokenIntrospectionRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = crate::identity::TokenIntrospectionRequest::from(body);
+
+    match state.identity.introspect_token(&tenant_id, &request) {
+        Ok(response) => {
+            (StatusCode::OK, Json(proto_to_rest_json(&pb::IntrospectionResponse::from(&response)))).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// === Device Authorization (RFC 8628) ===
+
+/// POST `/device_authorization` — initiates a device authorization flow.
+///
+/// Returns a device code, user code, and verification URI.
+async fn device_authorization(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<pb::DeviceAuthorizationRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let client_id = match body.client_id.parse::<uuid::Uuid>() {
+        Ok(u) => ClientId::new(u),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid client_id UUID"})),
+            )
+                .into_response();
+        }
+    };
+
+    let request = crate::identity::DeviceAuthorizationRequest {
+        client_id,
+        scope: body.scope,
+    };
+
+    match state.identity.device_authorize(&tenant_id, &request) {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::DeviceAuthorizationResponse::from(&response))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
 
@@ -820,7 +969,7 @@ async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
     };
 
     match state.identity.userinfo(&tenant_id, token) {
-        Ok(info) => (StatusCode::OK, Json(serde_json::json!(info))).into_response(),
+        Ok(info) => (StatusCode::OK, Json(proto_to_rest_json(&pb::UserInfoResponse::from(&info)))).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -828,42 +977,9 @@ async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
 // === Dynamic Client Registration (RFC 7591) ===
 
 /// POST /register — dynamically register a new OAuth 2.0 client.
-async fn dynamic_register_client(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<HttpDynamicRegisterRequest>,
-) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
-    };
-
-    let request = RegisterClientRequest {
-        client_name: body.client_name.unwrap_or_default(),
-        redirect_uris: body.redirect_uris.unwrap_or_default(),
-        client_secret: None, // Dynamic registration creates public clients
-        grant_types: body
-            .grant_types
-            .unwrap_or_else(|| vec!["authorization_code".to_string()]),
-    };
-
-    match state.identity.register_client(&tenant_id, &request) {
-        Ok(client) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "client_id": client.client_id().to_string(),
-                "client_name": client.client_name(),
-                "redirect_uris": client.redirect_uris(),
-                "grant_types": client.grant_types(),
-                "registration_client_uri": format!("/register/{}", client.client_id().as_uuid()),
-            })),
-        )
-            .into_response(),
-        Err(e) => identity_error_to_response(&e).into_response(),
-    }
-}
-
 /// Request body for dynamic client registration (RFC 7591).
+///
+/// Uses a custom struct because RFC 7591 fields are all optional.
 #[derive(Debug, Deserialize)]
 struct HttpDynamicRegisterRequest {
     /// Human-readable client name.
@@ -874,31 +990,45 @@ struct HttpDynamicRegisterRequest {
     grant_types: Option<Vec<String>>,
 }
 
+async fn dynamic_register_client(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HttpDynamicRegisterRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let request = crate::identity::RegisterClientRequest {
+        client_name: body.client_name.unwrap_or_default(),
+        redirect_uris: body.redirect_uris.unwrap_or_default(),
+        client_secret: None, // Dynamic registration creates public clients
+        grant_types: body
+            .grant_types
+            .unwrap_or_else(|| vec!["authorization_code".to_string()]),
+    };
+
+    match state.identity.register_client(&tenant_id, &request) {
+        Ok(client) => {
+            // RFC 7591 response includes registration_client_uri, not in proto
+            let mut resp = proto_to_rest_json(&pb::OAuthClient::from(&client));
+            if let Some(obj) = resp.as_object_mut() {
+                obj.insert(
+                    "registration_client_uri".to_string(),
+                    serde_json::Value::String(format!(
+                        "/register/{}",
+                        client.client_id().as_uuid()
+                    )),
+                );
+            }
+            (StatusCode::CREATED, Json(resp)).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
 // === Admin API endpoints ===
-
-/// Serializes a user to a JSON value for API responses.
-fn user_to_json(user: &crate::identity::User) -> serde_json::Value {
-    serde_json::json!({
-        "id": user.id().as_uuid(),
-        "email": user.email(),
-        "display_name": user.display_name(),
-        "status": format!("{:?}", user.status()),
-        "created_at": user.created_at().as_micros(),
-        "updated_at": user.updated_at().as_micros(),
-    })
-}
-
-/// Serializes a tenant to a JSON value for API responses.
-fn tenant_to_json(tenant: &crate::identity::Tenant) -> serde_json::Value {
-    serde_json::json!({
-        "id": tenant.id().as_uuid(),
-        "name": tenant.name(),
-        "status": format!("{:?}", tenant.status()),
-        "config": tenant.config(),
-        "created_at": tenant.created_at().as_micros(),
-        "updated_at": tenant.updated_at().as_micros(),
-    })
-}
 
 /// Pagination query parameters.
 #[derive(Debug, Deserialize)]
@@ -930,17 +1060,7 @@ async fn admin_list_users(
         params.cursor.as_deref(),
         params.effective_limit(),
     ) {
-        Ok(page) => {
-            let items: Vec<_> = page.items.iter().map(user_to_json).collect();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "items": items,
-                    "next_cursor": page.next_cursor,
-                })),
-            )
-                .into_response()
-        }
+        Ok(page) => (StatusCode::OK, Json(proto_to_rest_json(&user_page_to_proto(&page)))).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -949,17 +1069,14 @@ async fn admin_list_users(
 async fn admin_create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<HttpCreateUserRequest>,
+    Json(body): Json<pb::CreateUserRequest>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
 
-    let request = CreateUserRequest {
-        email: body.email,
-        display_name: body.display_name,
-    };
+    let request = crate::identity::CreateUserRequest::from(body);
 
     match state.identity.create_user(&auth.tenant_id, &request) {
         Ok(user) => {
@@ -971,7 +1088,7 @@ async fn admin_create_user(
                 resource_id: user.id().as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::CREATED, Json(user_to_json(&user))).into_response()
+            (StatusCode::CREATED, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1003,7 +1120,7 @@ async fn admin_get_user(
         .identity
         .get_user(&auth.tenant_id, &UserId::new(user_uuid))
     {
-        Ok(Some(user)) => (StatusCode::OK, Json(user_to_json(&user))).into_response(),
+        Ok(Some(user)) => (StatusCode::OK, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not found"})),
@@ -1013,20 +1130,12 @@ async fn admin_get_user(
     }
 }
 
-/// HTTP request body for user update (admin).
-#[derive(Debug, Deserialize)]
-struct HttpUpdateUserRequest {
-    email: Option<String>,
-    display_name: Option<String>,
-    status: Option<String>,
-}
-
 /// Admin: update user by ID.
 async fn admin_update_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<HttpUpdateUserRequest>,
+    Json(body): Json<pb::UpdateUserRequest>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
@@ -1044,25 +1153,18 @@ async fn admin_update_user(
         }
     };
 
-    let status = match body.status.as_deref() {
-        Some("Active") => Some(UserStatus::Active),
-        Some("Disabled") => Some(UserStatus::Disabled),
-        Some("PendingVerification") => Some(UserStatus::PendingVerification),
-        Some(_) => {
+    // Validate status if provided
+    if let Some(status_val) = body.status {
+        if proto_user_status_to_domain(status_val).is_none() {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "invalid status"})),
             )
-                .into_response()
+                .into_response();
         }
-        None => None,
-    };
+    }
 
-    let request = UpdateUserRequest {
-        email: body.email,
-        display_name: body.display_name,
-        status,
-    };
+    let request = crate::identity::UpdateUserRequest::from(body);
     let uid = UserId::new(user_uuid);
 
     match state.identity.update_user(&auth.tenant_id, &uid, &request) {
@@ -1075,7 +1177,7 @@ async fn admin_update_user(
                 resource_id: uid.as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::OK, Json(user_to_json(&user))).into_response()
+            (StatusCode::OK, Json(proto_to_rest_json(&pb::User::from(&user)))).into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1127,7 +1229,7 @@ async fn admin_delete_user(
 struct HttpBulkUsersRequest {
     operation: String,
     #[serde(default)]
-    users: Vec<HttpCreateUserRequest>,
+    users: Vec<pb::CreateUserRequest>,
     #[serde(default)]
     user_ids: Vec<String>,
 }
@@ -1146,13 +1248,10 @@ async fn admin_bulk_users(
 
     match body.operation.as_str() {
         "create" => {
-            let requests: Vec<CreateUserRequest> = body
+            let requests: Vec<crate::identity::CreateUserRequest> = body
                 .users
-                .iter()
-                .map(|u| CreateUserRequest {
-                    email: u.email.clone(),
-                    display_name: u.display_name.clone(),
-                })
+                .into_iter()
+                .map(crate::identity::CreateUserRequest::from)
                 .collect();
 
             match state.identity.bulk_create_users(&auth.tenant_id, &requests) {
@@ -1166,26 +1265,10 @@ async fn admin_bulk_users(
                         metadata: Some(serde_json::json!({"via": "admin_api"})),
                     });
 
-                    let json_results: Vec<_> = results
-                        .iter()
-                        .map(|r| match &r.result {
-                            Ok(user) => serde_json::json!({
-                                "index": r.index,
-                                "success": true,
-                                "user": user_to_json(user),
-                            }),
-                            Err(err) => serde_json::json!({
-                                "index": r.index,
-                                "success": false,
-                                "error": err,
-                            }),
-                        })
-                        .collect();
+                    let proto_results: Vec<_> =
+                        results.iter().map(user_bulk_result_to_proto).collect();
 
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({"results": json_results})),
-                    )
+                    (StatusCode::OK, Json(proto_to_rest_json(&pb::BulkResult { results: proto_results })))
                         .into_response()
                 }
                 Err(e) => identity_error_to_response(&e).into_response(),
@@ -1220,25 +1303,10 @@ async fn admin_bulk_users(
                         metadata: Some(serde_json::json!({"via": "admin_api"})),
                     });
 
-                    let json_results: Vec<_> = results
-                        .iter()
-                        .map(|r| match &r.result {
-                            Ok(()) => serde_json::json!({
-                                "index": r.index,
-                                "success": true,
-                            }),
-                            Err(err) => serde_json::json!({
-                                "index": r.index,
-                                "success": false,
-                                "error": err,
-                            }),
-                        })
-                        .collect();
+                    let proto_results: Vec<_> =
+                        results.iter().map(void_bulk_result_to_proto).collect();
 
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({"results": json_results})),
-                    )
+                    (StatusCode::OK, Json(proto_to_rest_json(&pb::BulkResult { results: proto_results })))
                         .into_response()
                 }
                 Err(e) => identity_error_to_response(&e).into_response(),
@@ -1267,43 +1335,23 @@ async fn admin_list_tenants(
         .identity
         .list_tenants(params.cursor.as_deref(), params.effective_limit())
     {
-        Ok(page) => {
-            let items: Vec<_> = page.items.iter().map(tenant_to_json).collect();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "items": items,
-                    "next_cursor": page.next_cursor,
-                })),
-            )
-                .into_response()
-        }
+        Ok(page) => (StatusCode::OK, Json(proto_to_rest_json(&tenant_page_to_proto(&page)))).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
-}
-
-/// HTTP request body for tenant creation.
-#[derive(Debug, Deserialize)]
-struct HttpCreateTenantRequest {
-    name: String,
-    config: Option<crate::identity::TenantConfig>,
 }
 
 /// Admin: create tenant.
 async fn admin_create_tenant(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<HttpCreateTenantRequest>,
+    Json(body): Json<pb::CreateTenantRequest>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
 
-    let request = CreateTenantRequest {
-        name: body.name,
-        config: body.config,
-    };
+    let request = crate::identity::CreateTenantRequest::from(body);
 
     match state.identity.create_tenant(&request) {
         Ok(tenant) => {
@@ -1315,7 +1363,7 @@ async fn admin_create_tenant(
                 resource_id: tenant.id().as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::CREATED, Json(tenant_to_json(&tenant))).into_response()
+            (StatusCode::CREATED, Json(proto_to_rest_json(&pb::Tenant::from(&tenant)))).into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1344,7 +1392,7 @@ async fn admin_get_tenant(
     };
 
     match state.identity.get_tenant(&TenantId::new(tenant_uuid)) {
-        Ok(Some(tenant)) => (StatusCode::OK, Json(tenant_to_json(&tenant))).into_response(),
+        Ok(Some(tenant)) => (StatusCode::OK, Json(proto_to_rest_json(&pb::Tenant::from(&tenant)))).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not found"})),
@@ -1354,20 +1402,12 @@ async fn admin_get_tenant(
     }
 }
 
-/// HTTP request body for tenant update.
-#[derive(Debug, Deserialize)]
-struct HttpUpdateTenantRequest {
-    name: Option<String>,
-    status: Option<String>,
-    config: Option<crate::identity::TenantConfig>,
-}
-
 /// Admin: update tenant by ID.
 async fn admin_update_tenant(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<HttpUpdateTenantRequest>,
+    Json(body): Json<pb::UpdateTenantRequest>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
@@ -1385,25 +1425,19 @@ async fn admin_update_tenant(
         }
     };
 
-    let status = match body.status.as_deref() {
-        Some("Active") => Some(crate::identity::TenantStatus::Active),
-        Some("Suspended") => Some(crate::identity::TenantStatus::Suspended),
-        Some(_) => {
+    // Validate status if provided
+    if let Some(status_val) = body.status {
+        if proto_tenant_status_to_domain(status_val).is_none() {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "invalid status"})),
             )
-                .into_response()
+                .into_response();
         }
-        None => None,
-    };
+    }
 
     let tid = TenantId::new(tenant_uuid);
-    let request = UpdateTenantRequest {
-        name: body.name,
-        status,
-        config: body.config,
-    };
+    let request = crate::identity::UpdateTenantRequest::from(body);
 
     match state.identity.update_tenant(&tid, &request) {
         Ok(tenant) => {
@@ -1415,7 +1449,7 @@ async fn admin_update_tenant(
                 resource_id: tenant_uuid.to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (StatusCode::OK, Json(tenant_to_json(&tenant))).into_response()
+            (StatusCode::OK, Json(proto_to_rest_json(&pb::Tenant::from(&tenant)))).into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1475,29 +1509,7 @@ async fn admin_list_clients(
         params.cursor.as_deref(),
         params.effective_limit(),
     ) {
-        Ok(page) => {
-            let items: Vec<_> = page
-                .items
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "client_id": c.client_id().as_uuid(),
-                        "client_name": c.client_name(),
-                        "redirect_uris": c.redirect_uris(),
-                        "created_at": c.created_at().as_micros(),
-                        "grant_types": c.grant_types(),
-                    })
-                })
-                .collect();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "items": items,
-                    "next_cursor": page.next_cursor,
-                })),
-            )
-                .into_response()
-        }
+        Ok(page) => (StatusCode::OK, Json(proto_to_rest_json(&client_page_to_proto(&page)))).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -1506,19 +1518,15 @@ async fn admin_list_clients(
 async fn admin_register_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<HttpRegisterClientRequest>,
+    Json(body): Json<pb::RegisterClientRequest>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
 
-    let request = RegisterClientRequest {
-        client_name: body.client_name,
-        redirect_uris: body.redirect_uris,
-        client_secret: None,
-        grant_types: vec!["authorization_code".to_string()],
-    };
+    let mut request = crate::identity::RegisterClientRequest::from(body);
+    request.client_secret = None;
 
     match state.identity.register_client(&auth.tenant_id, &request) {
         Ok(client) => {
@@ -1530,11 +1538,7 @@ async fn admin_register_client(
                 resource_id: client.client_id().as_uuid().to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (
-                StatusCode::CREATED,
-                Json(serde_json::to_value(client).unwrap_or_default()),
-            )
-                .into_response()
+            (StatusCode::CREATED, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1566,11 +1570,9 @@ async fn admin_get_client(
         .identity
         .get_client(&auth.tenant_id, &ClientId::new(client_uuid))
     {
-        Ok(Some(client)) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(client).unwrap_or_default()),
-        )
-            .into_response(),
+        Ok(Some(client)) => {
+            (StatusCode::OK, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not found"})),
@@ -1580,19 +1582,12 @@ async fn admin_get_client(
     }
 }
 
-/// HTTP request body for client update.
-#[derive(Debug, Deserialize)]
-struct HttpUpdateClientRequest {
-    client_name: Option<String>,
-    redirect_uris: Option<Vec<String>>,
-}
-
 /// Admin: update client by ID.
 async fn admin_update_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<HttpUpdateClientRequest>,
+    Json(body): Json<pb::UpdateClientRequest>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
@@ -1610,10 +1605,7 @@ async fn admin_update_client(
         }
     };
 
-    let request = UpdateClientRequest {
-        client_name: body.client_name,
-        redirect_uris: body.redirect_uris,
-    };
+    let request = crate::identity::UpdateClientRequest::from(body);
 
     match state
         .identity
@@ -1628,11 +1620,7 @@ async fn admin_update_client(
                 resource_id: client_uuid.to_string(),
                 metadata: Some(serde_json::json!({"via": "admin_api"})),
             });
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(client).unwrap_or_default()),
-            )
-                .into_response()
+            (StatusCode::OK, Json(proto_to_rest_json(&pb::OAuthClient::from(&client)))).into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
@@ -1696,10 +1684,12 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
     }
 
     // Create tenant
-    let tenant = match state.identity.create_tenant(&CreateTenantRequest {
-        name: "dev-tenant".to_string(),
-        config: None,
-    }) {
+    let tenant = match state
+        .identity
+        .create_tenant(&crate::identity::CreateTenantRequest {
+            name: "dev-tenant".to_string(),
+            config: None,
+        }) {
         Ok(t) => t,
         Err(e) => return identity_error_to_response(&e).into_response(),
     };
@@ -1709,7 +1699,7 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
     // Create admin user
     let user = match state.identity.create_user(
         &tenant_id,
-        &CreateUserRequest {
+        &crate::identity::CreateUserRequest {
             email: "admin@dev.local".to_string(),
             display_name: "Dev Admin".to_string(),
         },
@@ -1757,12 +1747,12 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "tenant_id": tenant_id.as_uuid(),
-            "user_id": user_id.as_uuid(),
-            "access_token": tokens.access_token(),
-            "refresh_token": tokens.refresh_token(),
-        })),
+        Json(pb::BootstrapResponse {
+            tenant_id: tenant_id.as_uuid().to_string(),
+            user_id: user_id.as_uuid().to_string(),
+            access_token: tokens.access_token().to_string(),
+            refresh_token: tokens.refresh_token().to_string(),
+        }),
     )
         .into_response()
 }

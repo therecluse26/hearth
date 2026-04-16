@@ -26,7 +26,7 @@ describe("TypeScript SDK: Admin CRUD", () => {
     expect(user.id).toBeTruthy();
     expect(user.email).toBe("crud-test@test.local");
     expect(user.display_name).toBe("CRUD Test User");
-    expect(user.status).toBe("Active");
+    expect(user.status).toBe("USER_STATUS_ACTIVE");
 
     // Read
     const fetched = await admin.getUser(user.id);
@@ -66,7 +66,7 @@ describe("TypeScript SDK: Admin CRUD", () => {
     });
     expect(tenant.id).toBeTruthy();
     expect(tenant.name).toBe("test-tenant-crud");
-    expect(tenant.status).toBe("Active");
+    expect(tenant.status).toBe("TENANT_STATUS_ACTIVE");
 
     // Read
     const fetchedTenant = await admin.getTenant(tenant.id);

@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package hearth.authz.v1;
+
+option go_package = "github.com/hearthdb/hearth/sdks/go/generated/authz/v1;authzv1";
+
+// A reference to an object: {type}:{id}.
+message ObjectRef {
+  string object_type = 1;
+  string object_id = 2;
+}
+
+// A reference to a subject: either a direct entity or a userset.
+message SubjectRef {
+  oneof kind {
+    // A direct entity reference (e.g., user:alice).
+    ObjectRef direct = 1;
+    // A userset reference (e.g., group:eng#member).
+    UsersetRef userset = 2;
+  }
+}
+
+// A userset reference: object#relation.
+message UsersetRef {
+  ObjectRef object = 1;
+  string relation = 2;
+}
+
+// A complete relationship tuple: (object#relation@subject).
+message RelationshipTuple {
+  ObjectRef object = 1;
+  string relation = 2;
+  SubjectRef subject = 3;
+}
+
+// The operation type for a tuple write.
+enum TupleWriteOperation {
+  TUPLE_WRITE_OPERATION_UNSPECIFIED = 0;
+  TUPLE_WRITE_OPERATION_TOUCH = 1;
+  TUPLE_WRITE_OPERATION_DELETE = 2;
+  TUPLE_WRITE_OPERATION_TOUCH_IF_ABSENT = 3;
+  TUPLE_WRITE_OPERATION_DELETE_IF_PRESENT = 4;
+}
+
+// A write operation on a relationship tuple.
+message TupleWrite {
+  TupleWriteOperation operation = 1;
+  RelationshipTuple tuple = 2;
+}
+
+// An opaque consistency token (Zanzibar "zookie").
+message ConsistencyToken {
+  uint64 version = 1;
+}
+
+// The action type in a tuple change event.
+enum TupleChangeAction {
+  TUPLE_CHANGE_ACTION_UNSPECIFIED = 0;
+  TUPLE_CHANGE_ACTION_TOUCH = 1;
+  TUPLE_CHANGE_ACTION_DELETE = 2;
+}
+
+// An event representing a change to a relationship tuple.
+message TupleChangeEvent {
+  uint64 sequence = 1;
+  TupleChangeAction action = 2;
+  string object_type = 3;
+  string object_id = 4;
+  string relation = 5;
+  string subject = 6;
+  string tenant_id = 7;
+  uint64 timestamp_us = 8;
+}
+
+// Filter for the watch operation.
+message WatchFilter {
+  optional string object_type = 1;
+}
+
+// Namespace configuration defining valid object types and relations.
+message NamespaceConfig {
+  map<string, ObjectTypeConfig> object_types = 1;
+}
+
+// Configuration for a single object type within the namespace.
+message ObjectTypeConfig {
+  map<string, RelationConfig> relations = 1;
+}
+
+// Configuration for a single relation within an object type.
+message RelationConfig {
+  repeated string allowed_subject_types = 1;
+}

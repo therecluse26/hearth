@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package hearth.identity.v1;
+
+option go_package = "github.com/hearthdb/hearth/sdks/go/generated/identity/v1;identityv1";
+
+// Request to initiate an OAuth 2.0 authorization.
+message AuthorizationRequest {
+  string client_id = 1;
+  string redirect_uri = 2;
+  string scope = 3;
+  string state = 4;
+  string response_type = 5;
+  string user_id = 6;
+  optional string code_challenge = 7;
+  optional string code_challenge_method = 8;
+  optional string nonce = 9;
+}
+
+// Response from a successful authorization request.
+message AuthorizationResponse {
+  string code = 1;
+  string state = 2;
+}
+
+// Request to exchange an authorization code for tokens.
+message TokenExchangeRequest {
+  string client_id = 1;
+  string code = 2;
+  string redirect_uri = 3;
+  optional string code_verifier = 4;
+}
+
+// Response from a successful token exchange.
+message OidcTokenResponse {
+  string access_token = 1;
+  string id_token = 2;
+  string token_type = 3;
+  int64 expires_in = 4;
+  string refresh_token = 5;
+}
+
+// Request to register a new OAuth 2.0 client.
+message RegisterClientRequest {
+  string client_name = 1;
+  repeated string redirect_uris = 2;
+  optional string client_secret = 3;
+  repeated string grant_types = 4;
+}
+
+// Request to update an existing OAuth 2.0 client.
+message UpdateClientRequest {
+  optional string client_name = 1;
+  repeated string redirect_uris = 2;
+}
+
+// A registered OAuth 2.0 client.
+message OAuthClient {
+  string client_id = 1;
+  string client_name = 2;
+  repeated string redirect_uris = 3;
+  int64 created_at = 4;
+  bool is_confidential = 5;
+  repeated string grant_types = 6;
+}
+
+// A cursor-based page of OAuth clients.
+message OAuthClientPage {
+  repeated OAuthClient items = 1;
+  optional string next_cursor = 2;
+}
+
+// Request for the Client Credentials Grant (RFC 6749 s4.4).
+message ClientCredentialsRequest {
+  string client_id = 1;
+  string client_secret = 2;
+  optional string scope = 3;
+}
+
+// Response from a client credentials grant.
+message ClientCredentialsResponse {
+  string access_token = 1;
+  string token_type = 2;
+  int64 expires_in = 3;
+  optional string scope = 4;
+}
+
+// Request for the Device Authorization Grant (RFC 8628).
+message DeviceAuthorizationRequest {
+  string client_id = 1;
+  optional string scope = 2;
+}
+
+// Response from a device authorization request (RFC 8628 s3.2).
+message DeviceAuthorizationResponse {
+  string device_code = 1;
+  string user_code = 2;
+  string verification_uri = 3;
+  int64 expires_in = 4;
+  int64 interval = 5;
+}
+
+// Request to revoke an OAuth 2.0 token (RFC 7009).
+message TokenRevocationRequest {
+  string token = 1;
+  optional string token_type_hint = 2;
+}
+
+// Request for token introspection (RFC 7662).
+message TokenIntrospectionRequest {
+  string token = 1;
+  optional string token_type_hint = 2;
+}
+
+// Response from token introspection (RFC 7662).
+message IntrospectionResponse {
+  bool active = 1;
+  optional string scope = 2;
+  optional string client_id = 3;
+  optional string sub = 4;
+  optional int64 exp = 5;
+  optional int64 iat = 6;
+  optional string token_type = 7;
+  optional string iss = 8;
+  optional string aud = 9;
+}
+
+// Response from the UserInfo endpoint (OIDC Core s5.3).
+message UserInfoResponse {
+  string sub = 1;
+  optional string email = 2;
+  optional bool email_verified = 3;
+  optional string name = 4;
+}
+
+// OIDC Discovery document (OpenID Connect Discovery 1.0).
+message OidcDiscoveryDocument {
+  string issuer = 1;
+  string authorization_endpoint = 2;
+  string token_endpoint = 3;
+  string jwks_uri = 4;
+  string userinfo_endpoint = 5;
+  repeated string response_types_supported = 6;
+  repeated string response_modes_supported = 7;
+  repeated string subject_types_supported = 8;
+  repeated string id_token_signing_alg_values_supported = 9;
+  repeated string scopes_supported = 10;
+  repeated string claims_supported = 11;
+  repeated string token_endpoint_auth_methods_supported = 12;
+  repeated string code_challenge_methods_supported = 13;
+  repeated string grant_types_supported = 14;
+  optional string registration_endpoint = 15;
+  optional string device_authorization_endpoint = 16;
+  optional string revocation_endpoint = 17;
+  optional string introspection_endpoint = 18;
+}
+
+// A JSON Web Key.
+message JsonWebKey {
+  string kty = 1;
+  string crv = 2;
+  string x = 3;
+  string kid = 4;
+  // Always "sig".
+  string use = 5;
+  // Always "EdDSA".
+  string alg = 6;
+}
+
+// A JWKS document.
+message JwksDocument {
+  repeated JsonWebKey keys = 1;
+}
+
+// Response from the dev bootstrap endpoint.
+message BootstrapResponse {
+  string tenant_id = 1;
+  string user_id = 2;
+  string access_token = 3;
+  string refresh_token = 4;
+}
