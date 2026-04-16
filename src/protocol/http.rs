@@ -327,7 +327,23 @@ pub async fn serve(
     state: Arc<AppState>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), std::io::Error> {
-    let app = router(state);
+    serve_router(addr, router(state), shutdown).await
+}
+
+/// Starts the HTTP server on the given address with a pre-built router.
+///
+/// Variant of [`serve`] that accepts an already-assembled axum [`Router`]
+/// so callers can merge in additional routers (e.g. the web UI adapter
+/// under `/ui/*`) before handing the final tree to axum.
+///
+/// # Errors
+///
+/// Returns the same errors as [`serve`].
+pub async fn serve_router(
+    addr: SocketAddr,
+    app: Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), std::io::Error> {
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
 
@@ -352,7 +368,24 @@ pub async fn serve_tls(
     tls_acceptor: tokio_rustls::TlsAcceptor,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<(), std::io::Error> {
-    let app = router(state);
+    serve_tls_router(listener, router(state), tls_acceptor, shutdown).await
+}
+
+/// Starts the HTTPS server with a pre-built router.
+///
+/// Variant of [`serve_tls`] that accepts an already-assembled axum
+/// [`Router`] so callers can merge in additional routers (e.g. the web
+/// UI adapter under `/ui/*`) before handing the final tree to axum.
+///
+/// # Errors
+///
+/// Returns the same errors as [`serve_tls`].
+pub async fn serve_tls_router(
+    listener: TcpListener,
+    app: Router,
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+    shutdown: tokio::sync::watch::Receiver<()>,
+) -> Result<(), std::io::Error> {
     let local_addr = listener.local_addr()?;
 
     info!(%local_addr, "HTTPS server listening");
@@ -671,6 +704,10 @@ fn identity_error_to_response(
         IdentityError::MagicLinkTokenInvalid => {
             (StatusCode::UNAUTHORIZED, "invalid or expired link")
         }
+        IdentityError::VerificationTokenInvalid => {
+            (StatusCode::GONE, "invalid or expired verification link")
+        }
+        IdentityError::UserNotVerified => (StatusCode::FORBIDDEN, "email not verified"),
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)

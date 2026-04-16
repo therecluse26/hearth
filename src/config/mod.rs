@@ -8,7 +8,10 @@ pub mod error;
 mod types;
 
 pub use error::ConfigError;
-pub use types::{ObservabilityConfig, OperationalConfig, ServerConfig, StorageSection};
+pub use types::{
+    EmailConfig, EmailTransport, ObservabilityConfig, OnboardingConfig, OperationalConfig,
+    ServerConfig, StorageSection,
+};
 
 use serde::Deserialize;
 use std::path::Path;
@@ -31,6 +34,12 @@ pub struct Config {
     /// Operational limits and timeouts.
     #[serde(default)]
     pub operational: OperationalConfig,
+    /// Outbound email delivery settings.
+    #[serde(default)]
+    pub email: EmailConfig,
+    /// First-run onboarding settings.
+    #[serde(default)]
+    pub onboarding: OnboardingConfig,
     /// Whether development mode is active. Not serialized — set by [`Config::dev`].
     #[serde(skip)]
     pub dev_mode: bool,
@@ -88,6 +97,8 @@ impl Config {
                 log_format: "text".to_string(),
             },
             operational: OperationalConfig::default(),
+            email: EmailConfig::default(),
+            onboarding: OnboardingConfig::default(),
             dev_mode: true,
         }
     }

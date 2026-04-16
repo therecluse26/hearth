@@ -190,6 +190,70 @@ impl Default for OperationalConfig {
     }
 }
 
+/// Email delivery transport selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailTransport {
+    /// Write email contents (subject, recipient, verification URL) to the
+    /// `tracing` log at WARN level. No external delivery. Default.
+    Log,
+}
+
+impl Default for EmailTransport {
+    fn default() -> Self {
+        Self::Log
+    }
+}
+
+/// Email sender configuration.
+///
+/// Controls how verification emails (and later, other transactional mail)
+/// are delivered. SMTP transport is planned but not yet implemented; the
+/// default `Log` transport is suitable for development and for K8s
+/// deployments that pair with a sidecar log shipper.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmailConfig {
+    /// Which transport to use for outbound email.
+    #[serde(default)]
+    pub transport: EmailTransport,
+    /// Sender address used in the `From:` header. Required for any
+    /// non-`Log` transport; `None` otherwise.
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+/// First-run onboarding configuration.
+///
+/// When `enabled`, Hearth generates a setup token at startup if no tenant
+/// exists and logs a one-time setup URL (Jenkins-style).
+#[derive(Debug, Clone, Deserialize)]
+pub struct OnboardingConfig {
+    /// When `true`, the onboarding flow is available at `/ui/setup` until
+    /// the first admin is created. Set to `false` to permanently disable.
+    #[serde(default = "OnboardingConfig::default_enabled")]
+    pub enabled: bool,
+    /// Public base URL used in verification-email links (e.g.
+    /// `https://auth.example.com`). Falls back to the request `Host`
+    /// header when `None`.
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+impl OnboardingConfig {
+    const fn default_enabled() -> bool {
+        true
+    }
+}
+
+impl Default for OnboardingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            base_url: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +291,19 @@ mod tests {
         assert_eq!(cfg.shutdown_timeout_secs, 10);
         assert_eq!(cfg.max_connections, 1024);
         assert_eq!(cfg.queue_depth, 4096);
+    }
+
+    #[test]
+    fn email_config_defaults() {
+        let cfg = EmailConfig::default();
+        assert_eq!(cfg.transport, EmailTransport::Log);
+        assert!(cfg.from.is_none());
+    }
+
+    #[test]
+    fn onboarding_config_defaults() {
+        let cfg = OnboardingConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.base_url.is_none());
     }
 }

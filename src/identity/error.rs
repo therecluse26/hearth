@@ -115,6 +115,17 @@ pub enum IdentityError {
     /// Intentionally conflates not-found, expired, and already-used for
     /// enumeration resistance — callers cannot distinguish the three.
     MagicLinkTokenInvalid,
+    /// The email-verification token is invalid, expired, or already used.
+    ///
+    /// Intentionally conflates not-found, expired, and already-used for
+    /// enumeration resistance — callers cannot distinguish the three.
+    VerificationTokenInvalid,
+    /// The user account has not yet verified their email address.
+    ///
+    /// Returned by `create_session` when a user in `PendingVerification`
+    /// status attempts to log in. Callers should direct the user to the
+    /// email-verification flow.
+    UserNotVerified,
     /// Too many failed credential attempts; the account is temporarily locked.
     ///
     /// Intentionally vague to avoid leaking lockout state to attackers.
@@ -176,6 +187,8 @@ impl fmt::Display for IdentityError {
             Self::Unauthorized => write!(f, "forbidden"),
             Self::ClientNotFound => write!(f, "client not found"),
             Self::MagicLinkTokenInvalid => write!(f, "invalid or expired magic link"),
+            Self::VerificationTokenInvalid => write!(f, "invalid or expired verification link"),
+            Self::UserNotVerified => write!(f, "user email not verified"),
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
@@ -222,6 +235,8 @@ impl std::error::Error for IdentityError {
             | Self::Unauthorized
             | Self::ClientNotFound
             | Self::MagicLinkTokenInvalid
+            | Self::VerificationTokenInvalid
+            | Self::UserNotVerified
             | Self::RateLimited
             | Self::Serialization { .. } => None,
         }
@@ -551,6 +566,23 @@ mod tests {
     }
 
     #[test]
+    fn display_verification_token_invalid() {
+        let err = IdentityError::VerificationTokenInvalid;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid or expired verification link"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_user_not_verified() {
+        let err = IdentityError::UserNotVerified;
+        let display = format!("{err}");
+        assert!(display.contains("not verified"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::TenantNotFound.source().is_none());
         assert!(IdentityError::TenantSuspended.source().is_none());
@@ -619,6 +651,8 @@ mod tests {
         assert!(IdentityError::Unauthorized.source().is_none());
         assert!(IdentityError::ClientNotFound.source().is_none());
         assert!(IdentityError::MagicLinkTokenInvalid.source().is_none());
+        assert!(IdentityError::VerificationTokenInvalid.source().is_none());
+        assert!(IdentityError::UserNotVerified.source().is_none());
         assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {
             reason: "x".to_string()

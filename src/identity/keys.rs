@@ -61,6 +61,9 @@ const WEBAUTHN_DISC_PREFIX: &str = "webauthn:disc:";
 /// Prefix for magic link token storage (stored by SHA-256 hash of token).
 const MAGIC_LINK_PREFIX: &str = "magic:link:";
 
+/// Prefix for email verification token storage (stored by SHA-256 hash).
+const EMAIL_VERIFY_PREFIX: &str = "email:verify:";
+
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
 
@@ -287,6 +290,16 @@ pub(crate) fn encode_webauthn_discoverable(credential_id_b64: &str) -> Vec<u8> {
 /// The plaintext is never stored.
 pub(crate) fn encode_magic_link_token(token_hash: &str) -> Vec<u8> {
     format!("{MAGIC_LINK_PREFIX}{token_hash}").into_bytes()
+}
+
+/// Encodes the storage key for an email verification token.
+///
+/// Format: `email:verify:{sha256_hex_of_token}`
+///
+/// The token hash is the SHA-256 hex digest of the plaintext token.
+/// The plaintext is never stored.
+pub(crate) fn encode_email_verify_token(token_hash: &str) -> Vec<u8> {
+    format!("{EMAIL_VERIFY_PREFIX}{token_hash}").into_bytes()
 }
 
 /// Encodes the storage key for a revoked token JTI.

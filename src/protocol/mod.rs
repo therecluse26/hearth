@@ -7,3 +7,4 @@ pub mod convert;
 pub mod http;
 pub mod proto;
 pub mod tls;
+pub mod web;

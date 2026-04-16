@@ -7,12 +7,15 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
-use hearth::config::Config;
+use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
+use hearth::config::{Config, EmailTransport};
 use hearth::core::{Clock, SystemClock};
-use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
+use hearth::identity::email::{LoggingEmailSender, SharedEmailSender};
+use hearth::identity::onboarding::{self, OnboardingService};
+use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::protocol::http::{self, AppState};
 use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
+use hearth::protocol::web::{self, WebState};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Hearth — a purpose-built identity database.
@@ -170,6 +173,7 @@ async fn main() {
 }
 
 /// Runs the `hearth serve` command.
+#[allow(clippy::too_many_lines)]
 async fn run_serve(
     dev: bool,
     config_path: Option<PathBuf>,
@@ -223,31 +227,66 @@ async fn run_serve(
         IdentityConfig::default()
     };
 
-    let identity_engine = EmbeddedIdentityEngine::new(
+    let identity_engine: Arc<dyn IdentityEngine> = Arc::new(EmbeddedIdentityEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
         identity_config,
-    )?;
+    )?);
 
-    let authz_engine = EmbeddedAuthzEngine::new(
+    let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         AuthzConfig::default(),
-    );
+    ));
 
-    let audit_engine =
-        EmbeddedAuditEngine::new(Arc::clone(&storage) as Arc<dyn StorageEngine>, clock);
+    let audit_engine = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        clock,
+    ));
+
+    // Email sender (default: log transport — stderr at WARN level).
+    let email: SharedEmailSender = build_email_sender(&config);
+
+    // Ensure a first-run setup token exists iff no tenant is configured.
+    // The resolved data-dir differs between dev (tempdir) and prod; for
+    // dev mode we place the token under the OS temp dir so the startup
+    // log URL still works against `cargo run -- serve --dev`.
+    let data_dir: PathBuf = if config.dev_mode {
+        std::env::temp_dir().join("hearth-dev-onboarding")
+    } else {
+        PathBuf::from(&config.storage.data_dir)
+    };
+    if config.onboarding.enabled {
+        let base_url = config.onboarding.base_url.clone().unwrap_or_else(|| {
+            format!(
+                "http://{}:{}",
+                config.server.bind_address, config.server.port
+            )
+        });
+        if let Err(e) =
+            onboarding::ensure_setup_token(identity_engine.as_ref(), &data_dir, Some(&base_url))
+        {
+            error!(error = %e, "failed to ensure setup token; onboarding will be unavailable");
+        }
+    }
+
+    let onboarding_service = Arc::new(OnboardingService::new(
+        Arc::clone(&identity_engine),
+        Arc::clone(&authz_engine),
+        Arc::clone(&email),
+        data_dir.clone(),
+    ));
 
     let app_state = if config.dev_mode {
         Arc::new(AppState::new_dev(
-            Arc::new(identity_engine),
-            Arc::new(authz_engine),
-            Arc::new(audit_engine),
+            Arc::clone(&identity_engine),
+            Arc::clone(&authz_engine),
+            audit_engine,
         ))
     } else {
         Arc::new(AppState::new(
-            Arc::new(identity_engine),
-            Arc::new(authz_engine),
-            Arc::new(audit_engine),
+            Arc::clone(&identity_engine),
+            Arc::clone(&authz_engine),
+            audit_engine,
         ))
     };
 
@@ -256,11 +295,18 @@ async fn run_serve(
         .parse()
         .map_err(|e| format!("invalid bind address: {e}"))?;
 
+    // Compose JSON API router + web UI router.
+    let web_state = WebState::new(
+        Arc::clone(&identity_engine),
+        Arc::clone(&onboarding_service),
+    );
+    let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
+
     // Check for TLS configuration
     if let (Some(cert_path), Some(key_path)) =
         (&config.server.tls_cert_path, &config.server.tls_key_path)
     {
-        run_serve_tls(addr, &config, app_state, cert_path, key_path).await?;
+        run_serve_tls(addr, &config, app_router, cert_path, key_path).await?;
     } else {
         let shutdown = async {
             tokio::signal::ctrl_c()
@@ -268,18 +314,30 @@ async fn run_serve(
                 .expect("failed to install Ctrl+C handler");
             info!("shutdown signal received, stopping server");
         };
-        http::serve(addr, app_state, shutdown).await?;
+        http::serve_router(addr, app_router, shutdown).await?;
     }
 
     info!("Hearth server stopped");
     Ok(())
 }
 
+/// Builds the outbound email sender from configuration.
+///
+/// Currently only the `log` transport is implemented — SMTP is planned
+/// as an additive change. Verification URLs are written to `tracing` at
+/// WARN level, making them visible in any normal production log
+/// pipeline.
+fn build_email_sender(config: &Config) -> SharedEmailSender {
+    match config.email.transport {
+        EmailTransport::Log => Arc::new(LoggingEmailSender::new()),
+    }
+}
+
 /// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert reload.
 async fn run_serve_tls(
     addr: SocketAddr,
     config: &Config,
-    app_state: Arc<AppState>,
+    app_router: axum::Router,
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -346,7 +404,7 @@ async fn run_serve_tls(
 
     // Start HTTPS server
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    http::serve_tls(listener, app_state, acceptor, shutdown_rx).await?;
+    http::serve_tls_router(listener, app_router, acceptor, shutdown_rx).await?;
 
     let _ = redirect_handle.await;
     Ok(())

@@ -5,12 +5,14 @@
 //! May call `authz` (lateral dependency). Never the reverse.
 
 pub(crate) mod credentials;
+pub mod email;
 mod engine;
 pub mod error;
 pub(crate) mod keys;
 pub(crate) mod magic_link;
 pub mod migration;
 pub mod oidc;
+pub mod onboarding;
 pub mod tokens;
 pub(crate) mod totp;
 mod types;
@@ -18,6 +20,7 @@ mod validation;
 pub(crate) mod webauthn;
 
 pub use credentials::{CleartextPassword, CredentialConfig};
+pub use email::{EmailError, EmailSender, LoggingEmailSender, SharedEmailSender};
 pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
@@ -497,6 +500,34 @@ pub trait IdentityEngine: Send + Sync {
     /// expired, or already used. The error is intentionally vague for
     /// enumeration resistance.
     fn validate_magic_link(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<UserId, IdentityError>;
+
+    // ===== Email verification (onboarding) =====
+
+    /// Issues an email-verification token bound to the given user.
+    ///
+    /// Generates 32 random bytes (base64url), stores the SHA-256 hash
+    /// with a 24-hour expiry, and returns the plaintext token once for
+    /// inclusion in a verification URL. The plaintext is never persisted.
+    fn issue_email_verification_token(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<String, IdentityError>;
+
+    /// Consumes an email-verification token and activates the user.
+    ///
+    /// Looks up the token by SHA-256 hash, validates expiry and single-use
+    /// semantics, then transitions the user from `PendingVerification` to
+    /// `Active`. Deletes the token entry on success.
+    ///
+    /// Returns `Err(VerificationTokenInvalid)` if the token is not found,
+    /// expired, or already used. Intentionally vague for enumeration
+    /// resistance.
+    fn verify_email_token(
         &self,
         tenant_id: &TenantId,
         token: &str,

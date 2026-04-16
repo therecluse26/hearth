@@ -28,6 +28,26 @@ fn hex_encode(bytes: &[u8]) -> String {
 use crate::identity::magic_link::{
     self, MagicLinkResponse, StoredMagicLink, MAGIC_LINK_EXPIRY_MICROS,
 };
+
+/// Email-verification token expiry: 24 hours in microseconds.
+const EMAIL_VERIFY_EXPIRY_MICROS: i64 = 24 * 60 * 60 * 1_000_000;
+
+/// Persisted state for a pending email-verification token.
+///
+/// Stored under `email:verify:{sha256_hex_of_token}`. The plaintext
+/// token is never persisted — only its SHA-256 digest is used as the
+/// key. Verification is single-use: on success the entry is deleted.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StoredEmailVerification {
+    /// Stringified UUID of the user whose email is being verified.
+    user_id: String,
+    /// Creation time in Unix microseconds.
+    created_at_micros: i64,
+    /// Whether the token has already been consumed. Present for parity
+    /// with the magic-link record; `verify_email_token` also deletes the
+    /// entry outright on success.
+    used: bool,
+}
 use crate::identity::oidc::{
     AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, StoredAuthorizationCode,
@@ -1428,9 +1448,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         tenant_id: &TenantId,
         user_id: &UserId,
     ) -> Result<Session, IdentityError> {
-        // Ensure the user exists
-        self.get_user(tenant_id, user_id)?
+        // Ensure the user exists and is permitted to start a session.
+        // Unverified users must complete the email-verification flow first;
+        // disabled users are blocked entirely (distinguished from
+        // `UserNotFound` because an operator deliberately disabled them).
+        let user = self
+            .get_user(tenant_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
+        match user.status() {
+            UserStatus::Active => {}
+            UserStatus::PendingVerification => return Err(IdentityError::UserNotVerified),
+            UserStatus::Disabled => return Err(IdentityError::Unauthorized),
+        }
 
         // Generate session
         let session_id = SessionId::generate();
@@ -3064,6 +3093,110 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let user = self.create_user(tenant_id, &request)?;
             Ok(user.id().clone())
         }
+    }
+
+    // ===== Email verification (onboarding) =====
+
+    fn issue_email_verification_token(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<String, IdentityError> {
+        // Ensure the target user exists (don't bind tokens to nothing).
+        let user = self
+            .get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Generate 32 random bytes, base64url-encoded.
+        let rng = ring::rand::SystemRandom::new();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "failed to generate verification token".to_string(),
+            })?;
+        let token = URL_SAFE_NO_PAD.encode(bytes);
+
+        // Persist SHA-256(token) → StoredEmailVerification.
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let stored = StoredEmailVerification {
+            user_id: user.id().as_uuid().to_string(),
+            created_at_micros: self.clock.now().as_micros(),
+            used: false,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let key = keys::encode_email_verify_token(&token_hash);
+        self.storage
+            .put(tenant_id, &key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(token)
+    }
+
+    fn verify_email_token(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<UserId, IdentityError> {
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let key = keys::encode_email_verify_token(&token_hash);
+
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::VerificationTokenInvalid)?;
+
+        let stored: StoredEmailVerification =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if stored.used {
+            return Err(IdentityError::VerificationTokenInvalid);
+        }
+
+        let now = self.clock.now().as_micros();
+        if now - stored.created_at_micros > EMAIL_VERIFY_EXPIRY_MICROS {
+            // Best-effort cleanup; ignore failure.
+            let _ = self.storage.delete(tenant_id, &key);
+            return Err(IdentityError::VerificationTokenInvalid);
+        }
+
+        // Resolve stored user id back into a typed UserId.
+        let uuid =
+            uuid::Uuid::parse_str(&stored.user_id).map_err(|e| IdentityError::Serialization {
+                reason: format!("invalid stored user_id: {e}"),
+            })?;
+        let user_id = UserId::new(uuid);
+
+        // Transition user to Active. If the user was already Active we
+        // still consume the token to keep single-use semantics, but leave
+        // the user record alone.
+        let mut user = self
+            .get_user(tenant_id, &user_id)?
+            .ok_or(IdentityError::VerificationTokenInvalid)?;
+        if user.status() == UserStatus::PendingVerification {
+            user.set_status(UserStatus::Active);
+            user.set_updated_at(self.clock.now());
+            let user_bytes =
+                serde_json::to_vec(&user).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            let user_key = keys::encode_user_id(&user_id);
+            self.storage
+                .put(tenant_id, &user_key, &user_bytes)
+                .map_err(Self::storage_err)?;
+        }
+
+        // Delete the token entry so it cannot be reused.
+        self.storage
+            .delete(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+
+        Ok(user_id)
     }
 
     // ===== UserInfo (OIDC Core §5.3) =====
