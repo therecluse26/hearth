@@ -54,6 +54,39 @@ enum Commands {
         #[command(subcommand)]
         action: AppAction,
     },
+    /// Import data from another identity provider.
+    Migrate {
+        #[command(subcommand)]
+        source: MigrateSource,
+    },
+}
+
+/// Supported migration sources.
+#[derive(Subcommand)]
+enum MigrateSource {
+    /// Import a Keycloak realm export (JSON).
+    Keycloak {
+        /// Path to a Keycloak realm export file (JSON).
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Data directory of the target Hearth store. Required unless
+        /// `--dry-run` is set; the store will be created if it does not
+        /// exist.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Optional tenant UUID to import into. When omitted, the realm
+        /// `id` field from the export is used; if that is also missing
+        /// or malformed, a fresh UUID is generated.
+        #[arg(long)]
+        tenant: Option<String>,
+
+        /// Validate the export and print the report without writing any
+        /// data. `--data-dir` is not required in this mode.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Tenant management subcommands.
@@ -113,6 +146,21 @@ async fn main() {
                 redirect_uri,
             } => {
                 if let Err(e) = run_app_create(&server, &tenant_id, &name, &redirect_uri) {
+                    error!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        },
+        Commands::Migrate { source } => match source {
+            MigrateSource::Keycloak {
+                file,
+                data_dir,
+                tenant,
+                dry_run,
+            } => {
+                if let Err(e) =
+                    run_migrate_keycloak(&file, data_dir.as_deref(), tenant.as_deref(), dry_run)
+                {
                     error!("{e}");
                     std::process::exit(1);
                 }
@@ -359,4 +407,115 @@ fn run_app_create(
 
     println!("{response}");
     Ok(())
+}
+
+/// Runs the `hearth migrate keycloak` command.
+///
+/// Parses a Keycloak realm export and imports its tenant, users, clients,
+/// and realm roles. In dry-run mode no state is written; otherwise a data
+/// directory is required.
+fn run_migrate_keycloak(
+    file: &std::path::Path,
+    data_dir: Option<&std::path::Path>,
+    tenant: Option<&str>,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use hearth::core::TenantId;
+    use hearth::identity::migration::{ImportOptions, KeycloakImporter, KeycloakRealmExport};
+    use uuid::Uuid;
+
+    let bytes = std::fs::read(file)?;
+    let export: KeycloakRealmExport = KeycloakImporter::parse(&bytes)?;
+
+    let requested_tenant = tenant
+        .map(|s| -> Result<TenantId, Box<dyn std::error::Error>> {
+            let uuid = Uuid::parse_str(s).map_err(|e| format!("invalid --tenant UUID: {e}"))?;
+            Ok(TenantId::new(uuid))
+        })
+        .transpose()?;
+
+    if dry_run {
+        // Dry-run uses a temporary store so the importer still exercises
+        // its full validation path (parsing, tuple shape checks) without
+        // touching the user's data directory.
+        let temp_dir = tempfile::tempdir()?;
+        let storage_config = StorageConfig::dev(temp_dir.path().to_path_buf());
+        let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+        let (identity, authz) = build_engines(&storage, true)?;
+        let importer = KeycloakImporter::new(identity, authz);
+        let report =
+            importer.import_realm(&export, requested_tenant, &ImportOptions { dry_run: true })?;
+        print_migration_report(&report);
+        return Ok(());
+    }
+
+    let data_dir = data_dir.ok_or(
+        "--data-dir is required for a real migration (use --dry-run to validate without writing)",
+    )?;
+    std::fs::create_dir_all(data_dir)?;
+    let storage_config = StorageConfig::dev(data_dir.to_path_buf());
+    let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+    let (identity, authz) = build_engines(&storage, false)?;
+    let importer = KeycloakImporter::new(identity, authz);
+
+    let report =
+        importer.import_realm(&export, requested_tenant, &ImportOptions { dry_run: false })?;
+    print_migration_report(&report);
+    Ok(())
+}
+
+/// Identity + authz pair returned by [`build_engines`].
+type AdminEngines = (
+    Arc<dyn hearth::identity::IdentityEngine>,
+    Arc<dyn hearth::authz::AuthorizationEngine>,
+);
+
+/// Builds the identity + authz engine pair used by one-shot admin
+/// commands (migrations, etc.). Keeps the wiring in one place.
+fn build_engines(
+    storage: &Arc<EmbeddedStorageEngine>,
+    dev_mode: bool,
+) -> Result<AdminEngines, Box<dyn std::error::Error>> {
+    let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let identity_config = if dev_mode {
+        IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        }
+    } else {
+        IdentityConfig::default()
+    };
+    let identity = Arc::new(EmbeddedIdentityEngine::new(
+        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        clock,
+        identity_config,
+    )?) as Arc<dyn hearth::identity::IdentityEngine>;
+    let authz = Arc::new(EmbeddedAuthzEngine::new(
+        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        AuthzConfig::default(),
+    )) as Arc<dyn hearth::authz::AuthorizationEngine>;
+    Ok((identity, authz))
+}
+
+/// Prints a `MigrationReport` as a human-readable summary.
+fn print_migration_report(report: &hearth::identity::MigrationReport) {
+    println!("Migration summary:");
+    if let Some(tid) = &report.tenant_id {
+        println!("  tenant:                {tid}");
+    } else {
+        println!("  tenant:                <none>");
+    }
+    println!("  users imported:        {}", report.users_imported);
+    println!(
+        "  users w/ skipped cred: {}",
+        report.users_with_skipped_credentials
+    );
+    println!("  clients imported:      {}", report.clients_imported);
+    println!("  tuples written:        {}", report.tuples_written);
+    if !report.warnings.is_empty() {
+        println!("Warnings:");
+        for w in &report.warnings {
+            println!("  - {w}");
+        }
+    }
 }

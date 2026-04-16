@@ -9,6 +9,7 @@ mod engine;
 pub mod error;
 pub(crate) mod keys;
 pub(crate) mod magic_link;
+pub mod migration;
 pub mod oidc;
 pub mod tokens;
 pub(crate) mod totp;
@@ -33,8 +34,9 @@ pub use tokens::{
 };
 pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
-    BulkResult, CreateTenantRequest, CreateUserRequest, Page, Session, Tenant, TenantConfig,
-    TenantStatus, UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+    BulkResult, CreateTenantRequest, CreateUserRequest, ImportClientRequest, ImportUserRequest,
+    MigrationReport, Page, RawCredential, Session, Tenant, TenantConfig, TenantStatus,
+    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
@@ -589,4 +591,41 @@ pub trait IdentityEngine: Send + Sync {
         tenant_id: &TenantId,
         user_ids: &[UserId],
     ) -> Result<Vec<BulkResult<()>>, IdentityError>;
+
+    // ===== Migration / import (Phase 1 Step 30) =====
+
+    /// Imports a tenant, optionally with a caller-supplied `TenantId`.
+    ///
+    /// Unlike `create_tenant`, this allows preserving an external system's
+    /// realm/organization UUID. Returns `DuplicateTenantName` or a
+    /// tenant-id-conflict error if one already exists with the same id.
+    fn import_tenant(
+        &self,
+        request: &CreateTenantRequest,
+        requested_id: Option<TenantId>,
+    ) -> Result<Tenant, IdentityError>;
+
+    /// Imports a user with a pre-hashed credential from an external system.
+    ///
+    /// Preserves the source-system hash verbatim so users can authenticate
+    /// with their existing passwords. New hashes produced by Hearth
+    /// (via `change_password`) are always Argon2id; successful verification
+    /// against the imported hash auto-upgrades it in place on first login.
+    fn import_user(
+        &self,
+        tenant_id: &TenantId,
+        request: &ImportUserRequest,
+    ) -> Result<User, IdentityError>;
+
+    /// Imports an OAuth 2.0 client from an external system.
+    ///
+    /// Preserves the source-system client identifier if provided. The
+    /// supplied `client_secret` (if any) is hashed with Argon2id at
+    /// import time — the source system's hashed secret is not reusable
+    /// because Hearth's storage format requires Argon2id.
+    fn import_client(
+        &self,
+        tenant_id: &TenantId,
+        request: &ImportClientRequest,
+    ) -> Result<OAuthClient, IdentityError>;
 }

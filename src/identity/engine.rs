@@ -38,8 +38,8 @@ use crate::identity::tokens::{
 };
 use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
-    BulkResult, CreateTenantRequest, CreateUserRequest, Page, Session, Tenant, TenantStatus,
-    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+    BulkResult, CreateTenantRequest, CreateUserRequest, ImportClientRequest, ImportUserRequest,
+    Page, Session, Tenant, TenantStatus, UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
 use crate::identity::webauthn::{
@@ -3414,6 +3414,247 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             results.push(result);
         }
         Ok(results)
+    }
+
+    // ===== Migration / import (Phase 1 Step 30) =====
+
+    fn import_tenant(
+        &self,
+        request: &CreateTenantRequest,
+        requested_id: Option<TenantId>,
+    ) -> Result<Tenant, IdentityError> {
+        // Serialize against other tenant-record mutations so the atomic
+        // record+key `put_batch` below is never interleaved with another
+        // thread's update/delete. Mirrors `create_tenant`.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
+
+        let tenant_id = requested_id.unwrap_or_else(TenantId::generate);
+
+        // Refuse to clobber an existing tenant record — callers may
+        // retry an idempotent import flow, in which case they want a
+        // clear DuplicateTenantName signal rather than a silent rewrite
+        // that would also generate a fresh signing key and invalidate
+        // every existing token under that tenant.
+        let sys_tenant = keys::system_tenant_id();
+        let tenant_key = keys::encode_tenant_id(&tenant_id);
+        if self
+            .storage
+            .get(&sys_tenant, &tenant_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::DuplicateTenantName);
+        }
+
+        let now = self.clock.now();
+        let config = request.config.clone().unwrap_or_default();
+        let tenant_signing_key = SigningKey::generate()?;
+
+        let tenant = Tenant::new(
+            tenant_id.clone(),
+            request.name.clone(),
+            TenantStatus::Active,
+            config,
+            now,
+            now,
+        );
+        let tenant_bytes = Self::serialize_tenant(&tenant)?;
+        let key_storage_key = keys::encode_tenant_signing_key(&tenant_id);
+        let key_bytes = tenant_signing_key.pkcs8_bytes().to_vec();
+
+        self.storage
+            .put_batch(
+                &sys_tenant,
+                &[(tenant_key, tenant_bytes), (key_storage_key, key_bytes)],
+            )
+            .map_err(Self::storage_err)?;
+
+        {
+            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(
+                tenant_id.as_uuid().to_string(),
+                Arc::new(tenant_signing_key),
+            );
+        }
+
+        Ok(tenant)
+    }
+
+    fn import_user(
+        &self,
+        tenant_id: &TenantId,
+        request: &ImportUserRequest,
+    ) -> Result<User, IdentityError> {
+        // 1. Validate and normalize input (same invariants as create_user)
+        let email = validation::validate_email(&request.email)?;
+        let display_name = validation::validate_display_name(&request.display_name)?;
+
+        // 2. Check email uniqueness
+        let email_key = keys::encode_user_email(&email);
+        if self
+            .storage
+            .get(tenant_id, &email_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::DuplicateEmail);
+        }
+
+        // 3. Resolve user id — allow caller to preserve a foreign UUID,
+        //    but refuse to clobber an existing record at that id.
+        let user_id = request.id.clone().unwrap_or_else(UserId::generate);
+        let id_key = keys::encode_user_id(&user_id);
+        if self
+            .storage
+            .get(tenant_id, &id_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::InvalidInput {
+                reason: "a user with this id already exists".to_string(),
+            });
+        }
+
+        let now = self.clock.now();
+        let user = User::new(
+            user_id.clone(),
+            email.clone(),
+            display_name,
+            request.status,
+            now,
+            now,
+        );
+        let user_bytes = Self::serialize_user(&user)?;
+        let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
+
+        // 4. If a credential was supplied, derive the algorithm from the
+        //    PHC prefix and prepare the credential write as part of the
+        //    same atomic batch. Preserving the foreign hash verbatim lets
+        //    the user authenticate with their existing password; the next
+        //    successful verify will auto-upgrade to Argon2id.
+        let mut entries = Vec::with_capacity(3);
+        entries.push((email_key, user_id_bytes));
+        entries.push((id_key, user_bytes));
+
+        if let Some(raw) = &request.credential {
+            let algorithm = classify_phc_algorithm(&raw.phc_string).ok_or_else(|| {
+                IdentityError::InvalidInput {
+                    reason: "unrecognized password hash format".to_string(),
+                }
+            })?;
+            let created_at = raw.created_at_micros.unwrap_or_else(|| now.as_micros());
+            let stored = StoredCredential {
+                algorithm,
+                hash: raw.phc_string.clone(),
+                created_at,
+            };
+            let cred_bytes = Self::serialize_credential(&stored)?;
+            let cred_key = keys::encode_credential_key(&user_id);
+            entries.push((cred_key, cred_bytes));
+        }
+
+        self.storage
+            .put_batch(tenant_id, &entries)
+            .map_err(Self::storage_err)?;
+
+        Ok(user)
+    }
+
+    fn import_client(
+        &self,
+        tenant_id: &TenantId,
+        request: &ImportClientRequest,
+    ) -> Result<OAuthClient, IdentityError> {
+        let client_name = validation::validate_client_name(&request.client_name)?;
+
+        let has_client_credentials = request
+            .grant_types
+            .contains(&"client_credentials".to_string());
+        let has_device_code = request
+            .grant_types
+            .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string());
+        if request.redirect_uris.is_empty() && !has_client_credentials && !has_device_code {
+            return Err(IdentityError::InvalidInput {
+                reason: "at least one redirect URI is required".to_string(),
+            });
+        }
+        for uri in &request.redirect_uris {
+            if uri.trim().is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "redirect URIs must not be empty".to_string(),
+                });
+            }
+            validation::validate_redirect_uri(uri)?;
+        }
+
+        let client_id = request.id.clone().unwrap_or_else(ClientId::generate);
+        let key = keys::encode_oauth_client(&client_id);
+        if self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::InvalidInput {
+                reason: "a client with this id already exists".to_string(),
+            });
+        }
+
+        let now = self.clock.now();
+        let grant_types = if request.grant_types.is_empty() {
+            vec!["authorization_code".to_string()]
+        } else {
+            request.grant_types.clone()
+        };
+
+        let client = if let Some(ref secret) = request.client_secret {
+            let secret_hash =
+                credentials::hash_raw_secret(secret.as_bytes(), &self.config.credential)?;
+            OAuthClient::new_confidential(
+                client_id,
+                client_name,
+                request.redirect_uris.clone(),
+                now,
+                secret_hash,
+                grant_types,
+            )
+        } else {
+            let mut c =
+                OAuthClient::new(client_id, client_name, request.redirect_uris.clone(), now);
+            c.set_grant_types(grant_types);
+            c
+        };
+
+        let client_bytes =
+            serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &client_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(client)
+    }
+}
+
+/// Classifies a PHC-formatted hash string into a [`PasswordAlgorithm`].
+///
+/// Used by `import_user` to tag an externally supplied hash. Returns
+/// `None` for prefixes this code base does not know how to verify, so
+/// the caller can fail fast rather than storing an unverifiable
+/// credential.
+fn classify_phc_algorithm(phc: &str) -> Option<crate::identity::credentials::PasswordAlgorithm> {
+    use crate::identity::credentials::PasswordAlgorithm;
+    if phc.starts_with("$argon2id$") {
+        Some(PasswordAlgorithm::Argon2id)
+    } else if phc.starts_with("$2a$") || phc.starts_with("$2b$") {
+        Some(PasswordAlgorithm::Bcrypt)
+    } else if phc.starts_with("$scrypt$") {
+        Some(PasswordAlgorithm::Scrypt)
+    } else if phc.starts_with("$pbkdf2-sha256$") {
+        Some(PasswordAlgorithm::Pbkdf2Sha256)
+    } else {
+        None
     }
 }
 

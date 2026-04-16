@@ -353,6 +353,86 @@ pub struct UpdateTenantRequest {
     pub config: Option<TenantConfig>,
 }
 
+// ===== Migration / import request types (Phase 1 Step 30) =====
+
+/// A pre-hashed credential to attach to an imported user.
+///
+/// Unlike `CreateUserRequest` + `set_password`, imports preserve the
+/// source system's hash verbatim so users can authenticate with their
+/// existing passwords. New hashes (via `change_password` or `set_password`)
+/// are always Argon2id; successful verification against a legacy hash
+/// auto-upgrades it in place.
+#[derive(Clone, Debug)]
+pub struct RawCredential {
+    /// The PHC-formatted hash string (e.g. `$pbkdf2-sha256$i=27500$salt$hash`).
+    pub phc_string: String,
+    /// Unix-microseconds timestamp of original credential creation, if known.
+    pub created_at_micros: Option<i64>,
+}
+
+/// Request to import a user from an external identity provider.
+///
+/// `id` allows preserving the source system's user ID so that in-flight
+/// tokens and application-level references remain valid; leave `None`
+/// to let the engine generate a fresh `UserId`. `credential` may be
+/// `None` — e.g. for users whose source hash used an unsupported KDF.
+#[derive(Clone, Debug)]
+pub struct ImportUserRequest {
+    /// Preserved source-system UUID, or `None` to generate a new one.
+    pub id: Option<UserId>,
+    /// Email address (will be normalized).
+    pub email: String,
+    /// Display name (will be trimmed and NFC-normalized).
+    pub display_name: String,
+    /// Account status.
+    pub status: UserStatus,
+    /// Pre-hashed credential. `None` imports the user with no password.
+    pub credential: Option<RawCredential>,
+}
+
+/// Request to import an OAuth 2.0 client from an external provider.
+///
+/// Unlike `RegisterClientRequest`, this allows preserving the client's
+/// source-system identifier. The secret (if any) is hashed with Argon2id
+/// at import time — the source system's hashed secret is not reusable
+/// because Hearth's storage format requires Argon2id.
+#[derive(Clone, Debug)]
+pub struct ImportClientRequest {
+    /// Preserved source-system client UUID, or `None` to generate.
+    pub id: Option<crate::core::ClientId>,
+    /// Display name.
+    pub client_name: String,
+    /// Allowed redirect URIs.
+    pub redirect_uris: Vec<String>,
+    /// Plaintext client secret — hashed with Argon2id before storage.
+    /// `None` creates a public client.
+    pub client_secret: Option<String>,
+    /// Allowed OAuth 2.0 grant types (defaults to `authorization_code`).
+    pub grant_types: Vec<String>,
+}
+
+/// Summary returned by a successful migration.
+///
+/// Counts reflect what was actually written. `warnings` contains
+/// human-readable notes about partial imports (e.g. users whose credential
+/// used an unsupported KDF and was skipped).
+#[derive(Clone, Debug, Default)]
+pub struct MigrationReport {
+    /// ID of the tenant the migrated realm was imported into.
+    pub tenant_id: Option<TenantId>,
+    /// Number of users written.
+    pub users_imported: usize,
+    /// Number of users whose credentials could not be imported
+    /// (the user record itself was still created).
+    pub users_with_skipped_credentials: usize,
+    /// Number of OAuth clients written.
+    pub clients_imported: usize,
+    /// Number of authorization tuples written.
+    pub tuples_written: usize,
+    /// Non-fatal issues encountered during the import.
+    pub warnings: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

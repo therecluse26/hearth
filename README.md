@@ -51,6 +51,9 @@ See [`docs/vision/VISION.md`](docs/vision/VISION.md) for the design rationale, s
 - TLS 1.3 + mTLS, SIGHUP cert hot-reload, HTTP→HTTPS redirect
 - Audit log with SHA-256 hash chain and per-tenant integrity verification
 
+**Migration**
+- Keycloak realm-export import (`hearth migrate keycloak`) — users, clients, realm roles, and PBKDF2-SHA256 credentials imported natively so existing passwords keep working without a forced reset
+
 ---
 
 ## Quick Start
@@ -152,11 +155,13 @@ Copy [`hearth.example.yaml`](hearth.example.yaml) to `hearth.yaml` and edit. Eve
 hearth serve [--dev] [-c, --config <path>] [--port <u16>] [--bind <addr>]
 hearth tenant create
 hearth app create --server <url> --tenant_id <uuid> --name <name> --redirect_uri <url>
+hearth migrate keycloak --file <export.json> [--data-dir <path>] [--tenant <uuid>] [--dry-run]
 ```
 
 - **`serve`** starts the HTTP(S) server. `--dev` implies in-memory storage, relaxed validation, and the bootstrap endpoint.
 - **`tenant create`** prints `{"tenant_id": "<uuid>"}` on stdout. It's a pure UUID generator and does not require a running server.
 - **`app create`** registers an OAuth 2.0 client by POSTing to `/clients` on a running Hearth server. The server URL must be reachable over HTTP.
+- **`migrate keycloak`** imports a Keycloak realm export directly into the embedded store. Operates on the data directory offline (no running server needed) — see [Migrating from Keycloak](#migrating-from-keycloak).
 
 ---
 
@@ -301,6 +306,49 @@ server:
   tls_client_ca_path: "/etc/hearth/clients-ca.crt"
   tls_require_client_cert: true
 ```
+
+---
+
+## Migrating from Keycloak
+
+Hearth reads Keycloak realm exports natively and imports them into the embedded store offline — no running server required, no HTTP body limits, no forced password reset for end users whose hashes Hearth can verify directly.
+
+### Validate an export
+
+Run `--dry-run` first to parse the export, validate every record, and print a report of what *would* be written:
+
+```bash
+./target/release/hearth migrate keycloak \
+  --file /path/to/realm-export.json \
+  --dry-run
+```
+
+### Import into a data directory
+
+Drop `--dry-run` and point `--data-dir` at the directory `hearth serve` will later use:
+
+```bash
+./target/release/hearth migrate keycloak \
+  --file /path/to/realm-export.json \
+  --data-dir ./data
+```
+
+Optionally pass `--tenant <uuid>` to force a specific Hearth `TenantId` (defaults to the realm's own UUID from the export).
+
+### What gets imported
+
+| Keycloak                     | Hearth                                                     |
+|------------------------------|------------------------------------------------------------|
+| realm (`id`, `realm`)        | tenant                                                     |
+| user (`id`, `email`, …)      | user (Keycloak UUID preserved when valid)                  |
+| user → `realmRoles`          | Zanzibar tuple `realm:<tid>#<role>@user:<uid>`             |
+| client + `secret`            | `OAuthClient` (secret re-hashed with Argon2id on import)   |
+| password — PBKDF2-SHA256     | PHC string; verifies natively, no password reset required  |
+| password — PBKDF2-SHA512     | *Skipped* with a warning; user must reset password         |
+
+### What's not imported (yet)
+
+Groups, composite roles, client roles, federated identity providers, and required actions are out of scope for the initial importer. Users affected by unsupported credentials land in the store with no password set and appear in the report's `warnings` list so operators can reconcile.
 
 ---
 

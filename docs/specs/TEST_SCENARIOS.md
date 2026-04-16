@@ -413,17 +413,17 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | WebAuthn / Passkeys | 5/5 | 2/2 | -- | 1/1 | -- | 3/3 | 1/1 | -- | **12/12** |
 | Magic Link / Passwordless | 4/4 | 2/2 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | TOTP / MFA | 5/5 | 3/3 | 1/1 | -- | -- | 2/2 | -- | -- | **11/11** |
-| Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 1/2 | 3/3 | -- | -- | **15/16** |
-| Zanzibar Authorization (Full) | 5/5 | 3/3 | 2/2 | -- | 1/2 | 2/2 | -- | 2/2 | **15/16** |
+| Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 2/2 | 3/3 | -- | -- | **16/16** |
+| Zanzibar Authorization (Full) | 5/5 | 3/3 | 2/2 | -- | 2/2 | 2/2 | -- | 2/2 | **16/16** |
 | Admin API | 3/3 | 4/4 | -- | -- | -- | 3/3 | -- | -- | **10/10** |
 | Audit Logging | 4/4 | 3/3 | 2/2 | -- | 2/2 | 1/1 | -- | -- | **12/12** |
 | TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | SDK Integration (TS & Go) | -- | 6/6 | -- | -- | -- | -- | -- | -- | **6/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 5/5 | -- | **5/5** |
 | Proto & API Contract | 5/5 | -- | -- | -- | -- | -- | -- | -- | **5/5** |
-| Phase 1 E2E Flows | -- | 3/4 | -- | -- | -- | -- | -- | -- | **3/4** |
+| Phase 1 E2E Flows | -- | 4/4 | -- | -- | -- | -- | -- | -- | **4/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 3/3 | -- | 2/2 | **5/5** |
-| **Column Total** | **40/44** | **33/36** | **10/10** | **1/1** | **4/6** | **22/24** | **8/8** | **6/6** | **132/135** |
+| **Column Total** | **40/44** | **34/36** | **10/10** | **1/1** | **6/6** | **22/24** | **8/8** | **6/6** | **135/135** |
 
 ---
 
@@ -570,7 +570,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Simulation
 
 - [x] Crash during cascading tenant deletion: recovery completes deletion or fully rolls back (`madsim`) `P0` `full`
-- [ ] Concurrent tenant operations under simulated I/O delays produce no data corruption (`madsim`) `P1` `full`
+- [x] Concurrent tenant operations under simulated I/O delays produce no data corruption (`madsim`) `P1` `full`
 
 #### Adversarial
 
@@ -734,7 +734,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Integration
 
-- [ ] Keycloak migration: import users/clients from Keycloak export → authenticate migrated user → verify session `P1` `fast`
+- [x] Keycloak migration: import users/clients from Keycloak export → authenticate migrated user → verify session `P1` `fast`
 - [x] MFA enrollment + login: register → enable TOTP → authenticate with password + TOTP → receive session `P0` `fast`
 - [x] Passkey-only authentication: register passkey → passwordless login → receive session → validate token `P0` `fast`
 - [x] Multi-tenant isolation round-trip: create 2 tenants → create users in each → verify complete data isolation `P0` `fast`

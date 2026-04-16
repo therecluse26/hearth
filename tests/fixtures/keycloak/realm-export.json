@@ -1,0 +1,57 @@
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "realm": "acme",
+  "users": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "username": "alice",
+      "email": "alice@acme.test",
+      "firstName": "Alice",
+      "lastName": "Anderson",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "credentialData": "{\"hashIterations\": 27500, \"algorithm\": \"pbkdf2-sha256\", \"additionalParameters\": {}}",
+          "secretData": "{\"value\": \"8TdZue/sx9cmt7nmJ8P59lLAB1p1igCY5Xg12OTXlKU=\", \"salt\": \"c2l4dGVlbi1ieXRlLXNhbA==\", \"additionalParameters\": {}}",
+          "createdDate": 1700000000000
+        }
+      ],
+      "realmRoles": ["admin", "member"]
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "username": "bob",
+      "email": "bob@acme.test",
+      "firstName": "Bob",
+      "lastName": "Baker",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "credentialData": "{\"hashIterations\": 210000, \"algorithm\": \"pbkdf2-sha512\", \"additionalParameters\": {}}",
+          "secretData": "{\"value\": \"p1XHmkNMrVN3o11vciYZs7jBoSdA71TaztD8qnc0u1ad7qQ93p5v7+3ZORgOrEdt4VlxxGL6V8SM1ZZjko4bKg==\", \"salt\": \"YW5vdGhlci0xNmItc2FsdA==\", \"additionalParameters\": {}}",
+          "createdDate": 1700000000000
+        }
+      ],
+      "realmRoles": ["member"]
+    }
+  ],
+  "clients": [
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "clientId": "acme-web",
+      "name": "Acme Web App",
+      "secret": "top-secret-value",
+      "redirectUris": ["https://app.acme.test/callback"],
+      "publicClient": false,
+      "enabled": true
+    }
+  ],
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "Administrator" },
+      { "name": "member", "description": "Regular member" }
+    ]
+  }
+}
