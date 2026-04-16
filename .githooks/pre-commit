@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Pre-commit hook: auto-regenerate SDK types when proto files are staged.
+#
+# Enabled by `make setup`, which sets:
+#   git config core.hooksPath .githooks
+#
+# Why: `build.rs` already regenerates Rust types from `proto/` on every
+# `cargo build`, but the TS/Go SDK generated files are committed source
+# (not in `OUT_DIR`), so they need a separate trigger. This hook keeps
+# them in sync at commit time so CI's `make proto-check` never sees drift.
+
+set -euo pipefail
+
+# Collect staged .proto changes (Added / Copied / Modified / Renamed).
+# `|| true` prevents `set -e` from aborting when grep finds no matches
+# (the common case — most commits don't touch proto/).
+staged_proto=$(git diff --cached --name-only --diff-filter=ACMR \
+  | grep -E '^proto/.*\.proto$' || true)
+
+if [ -z "$staged_proto" ]; then
+  # No proto changes — nothing to regenerate.
+  exit 0
+fi
+
+if ! command -v buf >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+error: pre-commit hook needs 'buf' on PATH to regenerate SDK types.
+
+Install buf:  https://buf.build/docs/installation
+Then retry the commit.
+
+To bypass (discouraged — CI will fail via 'make proto-check'):
+  git commit --no-verify
+EOF
+  exit 1
+fi
+
+echo "proto changes staged; regenerating SDK types via 'buf generate'..."
+(cd proto && buf generate)
+
+# Re-stage regenerated output so it lands in the same commit.
+# If `buf generate` produced no changes (e.g. comment-only edits),
+# `git add` is a no-op and the commit proceeds unchanged.
+git add sdks/typescript/src/generated sdks/go/generated
+
+exit 0

@@ -5,7 +5,14 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: build test clippy fmt check proto-gen proto-lint proto-breaking proto-check sdk-test
+.PHONY: setup build test clippy fmt check proto-gen proto-lint proto-breaking proto-check sdk-test
+
+# ── Contributor Setup ─────────────────────────────────
+
+## One-time contributor setup: enable repo-managed git hooks.
+setup:
+	git config core.hooksPath .githooks
+	@echo "✓ Git hooks enabled (.githooks/pre-commit)"
 
 # ── Rust ──────────────────────────────────────────────
 
