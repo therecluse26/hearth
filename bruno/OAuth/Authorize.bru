@@ -28,3 +28,11 @@ body:json {
     "password": "hunter2"
   }
 }
+
+script:post-response {
+  const status = res.getStatus();
+  if (status >= 200 && status < 300 && res.getBody()) {
+    const body = res.getBody();
+    if (body.code) bru.setEnvVar("authCode", body.code);
+  }
+}

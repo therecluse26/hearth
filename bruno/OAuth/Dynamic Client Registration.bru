@@ -25,3 +25,12 @@ body:json {
     "token_endpoint_auth_method": "client_secret_basic"
   }
 }
+
+script:post-response {
+  const status = res.getStatus();
+  if (status >= 200 && status < 300 && res.getBody()) {
+    const body = res.getBody();
+    if (body.client_id)     bru.setEnvVar("clientId",     body.client_id);
+    if (body.client_secret) bru.setEnvVar("clientSecret", body.client_secret);
+  }
+}
