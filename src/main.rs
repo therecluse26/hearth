@@ -189,11 +189,19 @@ async fn run_serve(
     let audit_engine =
         EmbeddedAuditEngine::new(Arc::clone(&storage) as Arc<dyn StorageEngine>, clock);
 
-    let app_state = Arc::new(AppState::new(
-        Arc::new(identity_engine),
-        Arc::new(authz_engine),
-        Arc::new(audit_engine),
-    ));
+    let app_state = if config.dev_mode {
+        Arc::new(AppState::new_dev(
+            Arc::new(identity_engine),
+            Arc::new(authz_engine),
+            Arc::new(audit_engine),
+        ))
+    } else {
+        Arc::new(AppState::new(
+            Arc::new(identity_engine),
+            Arc::new(authz_engine),
+            Arc::new(audit_engine),
+        ))
+    };
 
     // Build server address
     let addr: SocketAddr = format!("{}:{}", config.server.bind_address, config.server.port)

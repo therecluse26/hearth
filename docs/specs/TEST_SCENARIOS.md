@@ -418,11 +418,11 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Admin API | 3/3 | 4/4 | -- | -- | -- | 3/3 | -- | -- | **10/10** |
 | Audit Logging | 4/4 | 3/3 | 2/2 | -- | 0/2 | 1/1 | -- | -- | **10/12** |
 | TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
-| SDK Integration (TS & Go) | -- | 0/6 | -- | -- | -- | -- | -- | -- | **0/6** |
+| SDK Integration (TS & Go) | -- | 6/6 | -- | -- | -- | -- | -- | -- | **6/6** |
 | OIDC Conformance | -- | -- | -- | -- | -- | -- | 5/5 | -- | **5/5** |
 | Phase 1 E2E Flows | -- | 0/4 | -- | -- | -- | -- | -- | -- | **0/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 0/3 | -- | 0/2 | **0/5** |
-| **Column Total** | **35/39** | **24/36** | **9/10** | **1/1** | **0/6** | **19/24** | **8/8** | **3/6** | **99/130** |
+| **Column Total** | **35/39** | **30/36** | **9/10** | **1/1** | **0/6** | **19/24** | **8/8** | **3/6** | **105/130** |
 
 ---
 
@@ -696,12 +696,12 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Integration
 
-- [ ] TypeScript SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
-- [ ] TypeScript SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
-- [ ] TypeScript SDK: JWKS validation — tokens verified using fetched public keys `P0` `fast`
-- [ ] Go SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
-- [ ] Go SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
-- [ ] Go SDK: transparent token refresh — expired access token triggers automatic refresh `P0` `fast`
+- [x] TypeScript SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
+- [x] TypeScript SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
+- [x] TypeScript SDK: JWKS validation — tokens verified using fetched public keys `P0` `fast`
+- [x] Go SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
+- [x] Go SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
+- [x] Go SDK: transparent token refresh — expired access token triggers automatic refresh `P0` `fast`
 
 ---
 

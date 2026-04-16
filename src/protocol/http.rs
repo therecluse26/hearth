@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
-use crate::authz::{AuthorizationEngine, ObjectRef, SubjectRef};
+use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
 use crate::core::{ClientId, TenantId, UserId};
 use crate::identity::{
     AuthorizationRequest, CodeChallengeMethod, CreateTenantRequest, CreateUserRequest,
@@ -51,6 +51,11 @@ pub struct AppState {
     pub authz: Arc<dyn AuthorizationEngine>,
     /// The audit engine for mutation logging.
     pub audit: Arc<dyn AuditEngine>,
+    /// Whether the server is running in development mode.
+    ///
+    /// Enables the `POST /admin/bootstrap` endpoint for SDK integration
+    /// tests and local development.
+    pub dev_mode: bool,
     /// Per-admin-user rate trackers. Key: user UUID string.
     admin_rate_trackers: Mutex<HashMap<String, AdminRateTracker>>,
 }
@@ -66,6 +71,24 @@ impl AppState {
             identity,
             authz,
             audit,
+            dev_mode: false,
+            admin_rate_trackers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Creates a new `AppState` in development mode.
+    ///
+    /// Enables the `POST /admin/bootstrap` endpoint.
+    pub fn new_dev(
+        identity: Arc<dyn IdentityEngine>,
+        authz: Arc<dyn AuthorizationEngine>,
+        audit: Arc<dyn AuditEngine>,
+    ) -> Self {
+        Self {
+            identity,
+            authz,
+            audit,
+            dev_mode: true,
             admin_rate_trackers: Mutex::new(HashMap::new()),
         }
     }
@@ -255,6 +278,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/userinfo", axum::routing::get(userinfo))
         .route("/register", axum::routing::post(dynamic_register_client))
         .nest("/admin", admin_routes)
+        .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
         .with_state(state)
 }
 
@@ -490,12 +514,23 @@ struct HttpAuthorizeRequest {
 }
 
 /// HTTP request body for token exchange.
+///
+/// Supports both `authorization_code` and `refresh_token` grant types.
+/// For `authorization_code`: `code` and `redirect_uri` are required.
+/// For `refresh_token`: `refresh_token` is required.
 #[derive(Debug, Deserialize)]
 struct HttpTokenRequest {
     client_id: ClientId,
-    code: String,
-    redirect_uri: String,
+    #[serde(default)]
+    grant_type: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    redirect_uri: Option<String>,
+    #[serde(default)]
     code_verifier: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 /// Extracts a `TenantId` from the `X-Tenant-ID` header.
@@ -678,9 +713,13 @@ async fn authorize(
     }
 }
 
-/// Exchange an authorization code for tokens.
+/// Exchange an authorization code or refresh token for tokens.
 ///
-/// Requires `X-Tenant-ID` header. Returns access, ID, and refresh tokens.
+/// Requires `X-Tenant-ID` header.
+///
+/// Supports two grant types:
+/// - `authorization_code` (default): exchange a code for access, ID, and refresh tokens
+/// - `refresh_token`: exchange a refresh token for a new token pair
 async fn token_exchange(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -691,29 +730,70 @@ async fn token_exchange(
         Err(e) => return e.into_response(),
     };
 
-    let request = TokenExchangeRequest {
-        client_id: body.client_id,
-        code: body.code,
-        redirect_uri: body.redirect_uri,
-        code_verifier: body.code_verifier,
-    };
+    let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
 
-    match state
-        .identity
-        .exchange_authorization_code(&tenant_id, &request)
-    {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "access_token": response.access_token(),
-                "id_token": response.id_token(),
-                "token_type": response.token_type(),
-                "expires_in": response.expires_in(),
-                "refresh_token": response.refresh_token(),
-            })),
+    match grant_type {
+        "authorization_code" => {
+            let (Some(code), Some(redirect_uri)) = (body.code, body.redirect_uri) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "code and redirect_uri required for authorization_code grant"})),
+                )
+                    .into_response();
+            };
+
+            let request = TokenExchangeRequest {
+                client_id: body.client_id,
+                code,
+                redirect_uri,
+                code_verifier: body.code_verifier,
+            };
+
+            match state
+                .identity
+                .exchange_authorization_code(&tenant_id, &request)
+            {
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "access_token": response.access_token(),
+                        "id_token": response.id_token(),
+                        "token_type": response.token_type(),
+                        "expires_in": response.expires_in(),
+                        "refresh_token": response.refresh_token(),
+                    })),
+                )
+                    .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "refresh_token" => {
+            let Some(refresh_token) = body.refresh_token else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "refresh_token required for refresh_token grant"})),
+                )
+                    .into_response();
+            };
+
+            match state.identity.refresh_tokens(&tenant_id, &refresh_token) {
+                Ok(tokens) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "access_token": tokens.access_token(),
+                        "token_type": "Bearer",
+                        "refresh_token": tokens.refresh_token(),
+                    })),
+                )
+                    .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "unsupported_grant_type"})),
         )
             .into_response(),
-        Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
 
@@ -1599,6 +1679,94 @@ async fn admin_delete_client(
     }
 }
 
+// === Dev Bootstrap Endpoint ===
+
+/// POST /admin/bootstrap — creates a tenant, admin user, session, Zanzibar
+/// admin tuple, and issues tokens. Returns everything needed for SDK tests.
+///
+/// Only available when `AppState.dev_mode` is `true` (i.e., `--dev` flag).
+/// Returns 404 in production mode.
+async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if !state.dev_mode {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response();
+    }
+
+    // Create tenant
+    let tenant = match state.identity.create_tenant(&CreateTenantRequest {
+        name: "dev-tenant".to_string(),
+        config: None,
+    }) {
+        Ok(t) => t,
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+
+    let tenant_id = tenant.id().clone();
+
+    // Create admin user
+    let user = match state.identity.create_user(
+        &tenant_id,
+        &CreateUserRequest {
+            email: "admin@dev.local".to_string(),
+            display_name: "Dev Admin".to_string(),
+        },
+    ) {
+        Ok(u) => u,
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+
+    let user_id = user.id().clone();
+
+    // Create session
+    let session = match state.identity.create_session(&tenant_id, &user_id) {
+        Ok(s) => s,
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+
+    // Issue tokens
+    let tokens = match state
+        .identity
+        .issue_tokens(&tenant_id, &user_id, session.id())
+    {
+        Ok(t) => t,
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+
+    // Write Zanzibar admin tuple: hearth#admin@user:<uuid>
+    // INVARIANT: "hearth", "admin", "user" are valid field names (short ASCII)
+    #[allow(clippy::unwrap_used)]
+    let object = ObjectRef::new("hearth", "admin").unwrap();
+    #[allow(clippy::unwrap_used)]
+    let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
+    #[allow(clippy::unwrap_used)]
+    let tuple = RelationshipTuple::new(object, "admin", subject).unwrap();
+
+    if let Err(e) = state
+        .authz
+        .write_tuples(&tenant_id, &[TupleWrite::Touch(tuple)])
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("failed to write admin tuple: {e}")})),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "tenant_id": tenant_id.as_uuid(),
+            "user_id": user_id.as_uuid(),
+            "access_token": tokens.access_token(),
+            "refresh_token": tokens.refresh_token(),
+        })),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1607,6 +1775,7 @@ mod tests {
     use crate::core::SystemClock;
     use crate::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
     use crate::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+    use tower::ServiceExt as _;
 
     /// Creates a test app state with all three engines in a temp directory.
     fn test_state(temp_dir: &std::path::Path) -> Arc<AppState> {
@@ -1637,6 +1806,35 @@ mod tests {
         ))
     }
 
+    /// Creates a test app state in dev mode.
+    fn test_state_dev(temp_dir: &std::path::Path) -> Arc<AppState> {
+        let config = StorageConfig::dev(temp_dir.to_path_buf());
+        let engine = Arc::new(EmbeddedStorageEngine::open(config).expect("open storage"));
+        let clock = Arc::new(SystemClock) as Arc<dyn crate::core::Clock>;
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let identity_engine = EmbeddedIdentityEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+            identity_config,
+        )
+        .expect("identity engine");
+        let authz_engine = EmbeddedAuthzEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            AuthzConfig::default(),
+        );
+        let audit_engine =
+            EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
+
+        Arc::new(AppState::new_dev(
+            Arc::new(identity_engine),
+            Arc::new(authz_engine),
+            Arc::new(audit_engine),
+        ))
+    }
+
     #[tokio::test]
     async fn health_returns_ok() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -1648,5 +1846,65 @@ mod tests {
         drop(resp);
         let result = health().await.into_response();
         assert_eq!(result.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_404_in_production_mode() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state(temp_dir.path());
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/bootstrap")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_admin_credentials_in_dev_mode() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let state = test_state_dev(temp_dir.path());
+        let app = router(state);
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/bootstrap")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+
+        // Verify all expected fields are present
+        assert!(json.get("tenant_id").is_some(), "missing tenant_id");
+        assert!(json.get("user_id").is_some(), "missing user_id");
+        assert!(json.get("access_token").is_some(), "missing access_token");
+        assert!(json.get("refresh_token").is_some(), "missing refresh_token");
+
+        // Verify tenant_id and user_id are valid UUIDs
+        let tenant_str = json["tenant_id"].as_str().expect("tenant_id string");
+        let _: uuid::Uuid = tenant_str.parse().expect("valid tenant UUID");
+        let user_str = json["user_id"].as_str().expect("user_id string");
+        let _: uuid::Uuid = user_str.parse().expect("valid user UUID");
+
+        // Verify access_token is non-empty
+        let token = json["access_token"].as_str().expect("access_token string");
+        assert!(!token.is_empty(), "access_token should not be empty");
     }
 }
