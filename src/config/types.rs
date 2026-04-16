@@ -197,6 +197,9 @@ pub enum EmailTransport {
     /// Write email contents (subject, recipient, verification URL) to the
     /// `tracing` log at WARN level. No external delivery. Default.
     Log,
+    /// Deliver via SMTP to an external mail server. Requires an
+    /// accompanying [`SmtpConfig`] block and a `from` address.
+    Smtp,
 }
 
 impl Default for EmailTransport {
@@ -205,21 +208,68 @@ impl Default for EmailTransport {
     }
 }
 
+/// SMTP transport-level encryption mode.
+///
+/// Mirrors the semantics of `lettre::transport::smtp::client::Tls`:
+///
+/// - [`SmtpEncryption::None`] — cleartext SMTP (e.g. a local Mailpit
+///   on `:1025`). Never use over untrusted networks.
+/// - [`SmtpEncryption::Starttls`] — explicit TLS upgrade (RFC 3207) on
+///   the submission port. Default; matches modern providers on :587.
+/// - [`SmtpEncryption::Tls`] — implicit TLS (RFC 8314), historically
+///   "SMTPS" on :465.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpEncryption {
+    /// Plaintext SMTP. No encryption.
+    None,
+    /// Explicit TLS upgrade via STARTTLS. Default.
+    #[default]
+    Starttls,
+    /// Implicit TLS (SMTPS).
+    Tls,
+}
+
+/// SMTP transport settings.
+///
+/// Required when [`EmailTransport::Smtp`] is selected. Credentials are
+/// optional; if `username` is set then `password` MUST also be set (and
+/// vice versa) — the config validator enforces the pair.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SmtpConfig {
+    /// SMTP server hostname (e.g. `smtp.example.com`, `mailpit`).
+    pub host: String,
+    /// SMTP server port (typically 25, 465, 587, or 1025 for Mailpit).
+    pub port: u16,
+    /// Transport-level encryption mode. Defaults to `starttls`.
+    #[serde(default)]
+    pub encryption: SmtpEncryption,
+    /// SMTP AUTH username. When `Some`, `password` MUST also be `Some`.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// SMTP AUTH password. Must accompany `username`.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
 /// Email sender configuration.
 ///
 /// Controls how verification emails (and later, other transactional mail)
-/// are delivered. SMTP transport is planned but not yet implemented; the
-/// default `Log` transport is suitable for development and for K8s
-/// deployments that pair with a sidecar log shipper.
+/// are delivered. Defaults to the `Log` transport, suitable for local
+/// development. Production deployments should set `transport: smtp` and
+/// provide an [`SmtpConfig`] block.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EmailConfig {
     /// Which transport to use for outbound email.
     #[serde(default)]
     pub transport: EmailTransport,
-    /// Sender address used in the `From:` header. Required for any
-    /// non-`Log` transport; `None` otherwise.
+    /// Sender address used in the `From:` header. Required when
+    /// `transport` is not `Log`; ignored otherwise.
     #[serde(default)]
     pub from: Option<String>,
+    /// SMTP-specific settings. Required when `transport == Smtp`.
+    #[serde(default)]
+    pub smtp: Option<SmtpConfig>,
 }
 
 /// First-run onboarding configuration.

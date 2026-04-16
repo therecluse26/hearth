@@ -1,0 +1,72 @@
+# compose.yaml — local development stack.
+#
+# One command brings up Hearth + a dev SMTP sink:
+#
+#   docker compose up --build
+#
+# Once healthy:
+#   - Hearth:     http://localhost:8420  (health at /health)
+#   - Mailpit UI: http://localhost:8025
+#
+# Hearth config lives in `deploy/hearth.docker.yaml` and is mounted read-only
+# at `/etc/hearth/hearth.yaml`. Application-level knobs belong there, not in
+# this compose file — see README "Running with Docker Compose" for details.
+
+services:
+  hearth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hearth:dev
+    container_name: hearth
+    # Mailpit is dormant today (email transport is `log`), but we declare the
+    # dependency so the compose DNS alias `mailpit` exists by the time Hearth
+    # boots. When SMTP transport lands, switch `service_started` →
+    # `service_healthy` so Hearth waits for Mailpit's /readyz to pass.
+    depends_on:
+      mailpit:
+        condition: service_started
+    ports:
+      - "8420:8420"
+    volumes:
+      # Named volume keeps WAL + SSTs across `docker compose down`. Use
+      # `docker compose down -v` to wipe.
+      - hearth_data:/var/lib/hearth
+      # Read-only bind for the config file — edit on the host, SIGHUP on
+      # the container (or `docker compose restart hearth`) to reload.
+      - ./deploy/hearth.docker.yaml:/etc/hearth/hearth.yaml:ro
+    environment:
+      # tracing-subscriber honours RUST_LOG; the YAML sets log_level for the
+      # app itself, but env-var filters give per-module overrides for debug.
+      RUST_LOG: "info,hearth=debug"
+    restart: unless-stopped
+    # Uses the same endpoint as Kubernetes readiness probes.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8420/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  mailpit:
+    # Dev-only SMTP sink + web UI. Captures every message Hearth sends and
+    # renders it at http://localhost:8025. The SMTP listener on :1025 is
+    # intentionally NOT published to the host — only reachable from inside
+    # the compose network as `mailpit:1025`.
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    ports:
+      - "8025:8025"       # web UI
+      # 1025 deliberately unpublished — see note above
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  # Single named volume persists WAL, SSTs, signing keys, indexes — everything
+  # Hearth writes under `storage.data_dir`. Destroying it is the equivalent of
+  # factory-resetting the instance.
+  hearth_data:

@@ -46,3 +46,39 @@ operational:
   shutdown_timeout_secs: 10
   max_connections: 1024
   queue_depth: 4096
+
+email:
+  # Outbound mail transport for verification and (future) transactional mail.
+  # Supported values:
+  #   log   — write the recipient, subject, and verification URL to the
+  #           `tracing` log at WARN level. No network I/O. Default.
+  #   smtp  — deliver via an external SMTP server. Requires the `smtp` block
+  #           and a `from` address.
+  transport: log                  # default: log
+  # Sender address used in the `From:` header. Optional under the `log`
+  # transport (nothing is sent); required when `transport: smtp`.
+  # from: "hearth@example.com"
+
+  # ---------------------------------------------------------------------------
+  # SMTP transport.
+  #
+  # For local development with the compose stack, Mailpit listens on :1025
+  # inside the compose network (no published host port) and captures all
+  # outbound mail to http://localhost:8025. See `deploy/hearth.docker.yaml`
+  # for the Mailpit-targeted configuration that's used when running via
+  # `docker compose up`.
+  #
+  # For production, point at your real SMTP relay. `encryption: starttls`
+  # is the expected default on submission ports (587); use `tls` for the
+  # legacy implicit-TLS / SMTPS port (465) and `none` only for trusted
+  # local networks.
+  #
+  # email:
+  #   transport: smtp
+  #   from: "hearth@example.com"
+  #   smtp:
+  #     host: "smtp.example.com"
+  #     port: 587
+  #     encryption: starttls         # none | starttls | tls (default: starttls)
+  #     username: "${SMTP_USERNAME}" # env-substituted — never commit secrets
+  #     password: "${SMTP_PASSWORD}"

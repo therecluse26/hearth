@@ -10,8 +10,17 @@ mod types;
 pub use error::ConfigError;
 pub use types::{
     EmailConfig, EmailTransport, ObservabilityConfig, OnboardingConfig, OperationalConfig,
-    ServerConfig, StorageSection,
+    ServerConfig, SmtpConfig, SmtpEncryption, StorageSection,
 };
+
+/// Helper: construct a validation error without repeating the struct
+/// literal everywhere the email validator fires.
+fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
+    ConfigError::ValidationError {
+        field: field.to_string(),
+        reason: reason.into(),
+    }
+}
 
 use serde::Deserialize;
 use std::path::Path;
@@ -203,8 +212,67 @@ impl Config {
             });
         }
 
+        validate_email(&self.email)?;
+
         Ok(())
     }
+}
+
+/// Validates the `email` section. Only the `Smtp` transport has
+/// structural requirements today (`Log` accepts any `from`/`smtp`
+/// combination, including `None`).
+fn validate_email(email: &EmailConfig) -> Result<(), ConfigError> {
+    if email.transport != EmailTransport::Smtp {
+        return Ok(());
+    }
+
+    let smtp = email.smtp.as_ref().ok_or_else(|| {
+        invalid(
+            "email.smtp",
+            "smtp block is required when email.transport is smtp",
+        )
+    })?;
+
+    let from = email.from.as_ref().ok_or_else(|| {
+        invalid(
+            "email.from",
+            "from address is required when email.transport is smtp",
+        )
+    })?;
+    from.parse::<lettre::message::Mailbox>().map_err(|e| {
+        invalid(
+            "email.from",
+            format!("could not parse as an RFC 5322 mailbox: {e}"),
+        )
+    })?;
+
+    // Credentials: either both or neither. Mismatched halves are rejected.
+    match (&smtp.username, &smtp.password) {
+        (Some(u), _) if u.is_empty() => {
+            return Err(invalid("email.smtp.username", "must not be empty"));
+        }
+        (Some(_), None) => {
+            return Err(invalid(
+                "email.smtp.password",
+                "password is required when username is set",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(invalid(
+                "email.smtp.username",
+                "username is required when password is set",
+            ));
+        }
+        _ => {}
+    }
+
+    if smtp.host.is_empty() {
+        return Err(invalid("email.smtp.host", "must not be empty"));
+    }
+    if smtp.port == 0 {
+        return Err(invalid("email.smtp.port", "must be between 1 and 65535"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -513,5 +581,134 @@ storage:
     fn config_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Config>();
+    }
+
+    // === Email / SMTP validation ===
+
+    #[test]
+    fn email_smtp_requires_smtp_block() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing smtp should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.smtp"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_requires_from() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing from should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.from"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_rejects_malformed_from() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "not an address"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("malformed from should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.from"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_rejects_username_without_password() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    username: "u"
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing password should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.smtp.password"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_rejects_password_without_username() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    password: "p"
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing username should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.smtp.username"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_accepts_minimal_valid_config() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "Hearth <auth@example.com>"
+  smtp:
+    host: "mailpit"
+    port: 1025
+    encryption: none
+"#;
+        let config = Config::from_yaml_str(yaml).expect("valid SMTP config should parse");
+        assert_eq!(config.email.transport, EmailTransport::Smtp);
+        let smtp = config.email.smtp.as_ref().expect("smtp present");
+        assert_eq!(smtp.host, "mailpit");
+        assert_eq!(smtp.port, 1025);
+        assert_eq!(smtp.encryption, SmtpEncryption::None);
+        assert!(smtp.username.is_none());
+    }
+
+    #[test]
+    fn email_smtp_accepts_credentialed_config() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    encryption: starttls
+    username: "notifications"
+    password: "hunter2"
+"#;
+        let config = Config::from_yaml_str(yaml).expect("credentialed config should parse");
+        let smtp = config.email.smtp.expect("smtp present");
+        assert_eq!(smtp.encryption, SmtpEncryption::Starttls);
+        assert_eq!(smtp.username.as_deref(), Some("notifications"));
+        assert_eq!(smtp.password.as_deref(), Some("hunter2"));
     }
 }

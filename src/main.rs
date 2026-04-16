@@ -10,7 +10,7 @@ use hearth::audit::EmbeddedAuditEngine;
 use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
 use hearth::config::{Config, EmailTransport};
 use hearth::core::{Clock, SystemClock};
-use hearth::identity::email::{LoggingEmailSender, SharedEmailSender};
+use hearth::identity::email::{smtp_sender_from_config, LoggingEmailSender, SharedEmailSender};
 use hearth::identity::onboarding::{self, OnboardingService};
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::protocol::http::{self, AppState};
@@ -244,7 +244,7 @@ async fn run_serve(
     ));
 
     // Email sender (default: log transport — stderr at WARN level).
-    let email: SharedEmailSender = build_email_sender(&config);
+    let email: SharedEmailSender = build_email_sender(&config)?;
 
     // Ensure a first-run setup token exists iff no tenant is configured.
     // The resolved data-dir differs between dev (tempdir) and prod; for
@@ -323,14 +323,17 @@ async fn run_serve(
 
 /// Builds the outbound email sender from configuration.
 ///
-/// Currently only the `log` transport is implemented — SMTP is planned
-/// as an additive change. Verification URLs are written to `tracing` at
-/// WARN level, making them visible in any normal production log
-/// pipeline.
-fn build_email_sender(config: &Config) -> SharedEmailSender {
-    match config.email.transport {
+/// Returns a [`LoggingEmailSender`] for `transport: log` (default) and
+/// a fully wired [`hearth::identity::email::SmtpEmailSender`] for
+/// `transport: smtp`. The latter can fail if `lettre` rejects the
+/// configured host or TLS settings at startup; that error bubbles up
+/// so the server refuses to start rather than discovering the problem
+/// on the first password-reset attempt.
+fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std::error::Error>> {
+    Ok(match config.email.transport {
         EmailTransport::Log => Arc::new(LoggingEmailSender::new()),
-    }
+        EmailTransport::Smtp => Arc::new(smtp_sender_from_config(&config.email)?),
+    })
 }
 
 /// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert reload.

@@ -3,6 +3,8 @@
 **/*.rs.bk
 Cargo.lock
 
+.env
+
 # IDE files
 .idea/
 .vscode/
@@ -33,3 +35,6 @@ node_modules/
 
 hearth
 *.wal
+
+# Local runtime data (compose named volume + `cargo run` default path)
+/data/

@@ -1,0 +1,54 @@
+# Hearth configuration — Docker Compose profile.
+#
+# This file is mounted read-only into the `hearth` container at
+# `/etc/hearth/hearth.yaml` by `compose.yaml` and passed to the binary as:
+#
+#     hearth serve -c /etc/hearth/hearth.yaml
+#
+# It is validated by the same loader as any other config
+# (`src/config/mod.rs`) — there is no compose-specific code path. Edit here
+# to tune the dev stack; the host reloads it on restart.
+
+server:
+  # MUST be 0.0.0.0 (not the 127.0.0.1 default): inside a container, the
+  # loopback interface is reachable only from the container itself, so the
+  # host port forward would route to a closed socket.
+  bind_address: "0.0.0.0"
+  port: 8420
+
+storage:
+  # Matches the named volume mount in compose.yaml. Any path outside
+  # /var/lib/hearth will be lost on container replacement.
+  data_dir: "/var/lib/hearth/data"
+  # Other storage knobs (wal_max_size_bytes, memtable_flush_bytes,
+  # hot_tier_capacity, fsync) fall through to the production defaults —
+  # see hearth.example.yaml for the full list.
+
+observability:
+  log_level: "info"
+  # Use "json" for structured logs when piping to a log aggregator.
+  log_format: "text"
+
+onboarding:
+  # First-run setup flow at /ui/setup. Disable once an admin exists if you
+  # don't want the path to be reachable at all (it 404s after setup anyway).
+  enabled: true
+  # Public base URL — appears in the one-time setup URL and in verification
+  # email links. Inside the container the service listens on :8420 on all
+  # interfaces; from the host you reach it via the compose port mapping as
+  # http://localhost:8420. Override this if you front the compose stack
+  # with a reverse proxy (e.g. set it to https://auth.example.local).
+  base_url: "http://localhost:8420"
+
+email:
+  # Deliver verification emails to Mailpit, which ships in the compose stack
+  # at http://localhost:8025. Mailpit accepts plaintext SMTP on :1025, so no
+  # STARTTLS is negotiated — that's why `encryption: none` is safe here. For
+  # any real deployment swap this block for a TLS-enabled relay; see the
+  # example config at `hearth.example.yaml`.
+  transport: smtp
+  from: "hearth@local.test"
+  smtp:
+    host: "mailpit"
+    port: 1025
+    encryption: none

@@ -182,6 +182,30 @@ Copy [`hearth.example.yaml`](hearth.example.yaml) to `hearth.yaml` and edit. Eve
 | `operational` | `shutdown_timeout_secs` | u64 | `10` | |
 | `operational` | `max_connections` | u32 | `1024` | |
 | `operational` | `queue_depth` | u32 | `4096` | |
+| `email` | `transport` | string | `log` | `log` \| `smtp` |
+| `email` | `from` | string? | — | `From:` header; required when `transport: smtp` |
+| `email.smtp` | `host` | string | — | SMTP server hostname; required when `transport: smtp` |
+| `email.smtp` | `port` | u16 | — | SMTP server port (e.g. `587`, `465`, `1025`) |
+| `email.smtp` | `encryption` | string | `starttls` | `none` \| `starttls` \| `tls` |
+| `email.smtp` | `username` | string? | — | SMTP AUTH username (pair with `password`) |
+| `email.smtp` | `password` | string? | — | SMTP AUTH password (pair with `username`) |
+
+---
+
+## Running with Docker Compose
+
+A two-service compose stack (Hearth + [Mailpit](https://mailpit.axllent.org/) as a dev SMTP sink) lives at the repo root:
+
+```bash
+docker compose up --build -d
+docker compose logs hearth | grep "setup_url"   # grab the first-run setup URL
+open http://localhost:8420                      # Hearth
+open http://localhost:8025                      # Mailpit UI
+docker compose down                             # stop (keeps data volume)
+docker compose down -v                          # stop + wipe data volume
+```
+
+Container config lives in [`deploy/hearth.docker.yaml`](deploy/hearth.docker.yaml); tune knobs there, not in `compose.yaml`. The compose stack ships with `email.transport: smtp` pointed at Mailpit over compose DNS as `mailpit:1025`, so verification emails sent from the first-run `/ui/setup` flow land in the Mailpit inbox at http://localhost:8025 — click the link inside Mailpit to complete setup.
 
 ---
 
