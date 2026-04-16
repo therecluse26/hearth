@@ -70,9 +70,15 @@ impl Config {
 
     /// Loads configuration from a YAML file on disk.
     ///
-    /// Reads the file, substitutes environment variables, parses YAML,
-    /// and validates the result.
+    /// Before reading the YAML, looks for a `.env` file in the same directory
+    /// as `path` and loads it if present (missing `.env` is silently ignored).
+    /// Variables already set in the process environment take precedence over
+    /// `.env` values. After that, substitutes `${VAR}` references, parses
+    /// YAML, and validates the result.
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
+        if let Some(dir) = path.parent() {
+            env::load_dotenv(&dir.join(".env"))?;
+        }
         let content = std::fs::read_to_string(path)?;
         Self::from_yaml_str(&content)
     }
@@ -484,6 +490,54 @@ storage:
         let config = Config::from_file(&config_path).expect("load from file");
         assert_eq!(config.server.port, 7777);
         assert_eq!(config.storage.data_dir, "/tmp/hearth");
+    }
+
+    #[test]
+    fn from_file_auto_loads_dotenv_sibling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        std::fs::write(
+            dir.path().join(".env"),
+            "HEARTH_FFILE_DOTENV_PORT=7654\nHEARTH_FFILE_DOTENV_DIR=/dotenv/data\n",
+        )
+        .expect("write .env");
+        std::fs::write(
+            dir.path().join("hearth.yaml"),
+            "server:\n  port: ${HEARTH_FFILE_DOTENV_PORT}\nstorage:\n  data_dir: ${HEARTH_FFILE_DOTENV_DIR}\n",
+        )
+        .expect("write hearth.yaml");
+
+        std::env::remove_var("HEARTH_FFILE_DOTENV_PORT");
+        std::env::remove_var("HEARTH_FFILE_DOTENV_DIR");
+
+        let config =
+            Config::from_file(&dir.path().join("hearth.yaml")).expect("load with .env sibling");
+        assert_eq!(config.server.port, 7654);
+        assert_eq!(config.storage.data_dir, "/dotenv/data");
+
+        std::env::remove_var("HEARTH_FFILE_DOTENV_PORT");
+        std::env::remove_var("HEARTH_FFILE_DOTENV_DIR");
+    }
+
+    #[test]
+    fn from_file_real_env_beats_dotenv() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        std::fs::write(dir.path().join(".env"), "HEARTH_FFILE_PRIORITY=from_dotenv\n")
+            .expect("write .env");
+        std::fs::write(
+            dir.path().join("hearth.yaml"),
+            "storage:\n  data_dir: ${HEARTH_FFILE_PRIORITY}\n",
+        )
+        .expect("write hearth.yaml");
+
+        std::env::set_var("HEARTH_FFILE_PRIORITY", "from_real_env");
+
+        let config =
+            Config::from_file(&dir.path().join("hearth.yaml")).expect("real env takes precedence");
+        assert_eq!(config.storage.data_dir, "from_real_env");
+
+        std::env::remove_var("HEARTH_FFILE_PRIORITY");
     }
 
     #[test]
