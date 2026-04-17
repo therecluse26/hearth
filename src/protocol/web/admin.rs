@@ -93,7 +93,7 @@ pub async fn admin_users_list(
             users: page.items,
             next_cursor: page.next_cursor,
             chrome: true,
-            active: "admin",
+            active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -135,7 +135,7 @@ pub async fn admin_user_create_form(RequireAdmin(session): RequireAdmin) -> Resp
         form_email: String::new(),
         form_display_name: String::new(),
         chrome: true,
-        active: "admin",
+        active: "users",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
         flash: None,
@@ -203,7 +203,7 @@ pub async fn admin_user_create_submit(
             form_email: form.email,
             form_display_name: form.display_name,
             chrome: true,
-            active: "admin",
+            active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -215,7 +215,7 @@ pub async fn admin_user_create_submit(
             form_email: form.email,
             form_display_name: form.display_name,
             chrome: true,
-            active: "admin",
+            active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -229,7 +229,7 @@ pub async fn admin_user_create_submit(
                 form_email: form.email,
                 form_display_name: form.display_name,
                 chrome: true,
-                active: "admin",
+                active: "users",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -274,7 +274,7 @@ pub async fn admin_user_detail(
         Ok(Some(user)) => render(&UserDetailTemplate {
             user,
             chrome: true,
-            active: "admin",
+            active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -331,7 +331,7 @@ pub async fn admin_user_edit_form(
             user,
             error: None,
             chrome: true,
-            active: "admin",
+            active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -488,7 +488,7 @@ fn render_edit_error(
             form_display_name: form.display_name.clone(),
             form_status: form.status.clone(),
             chrome: true,
-            active: "admin",
+            active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -562,7 +562,7 @@ pub async fn admin_tenants_list(
             tenants: page.items,
             next_cursor: page.next_cursor,
             chrome: true,
-            active: "admin",
+            active: "tenants",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -600,7 +600,7 @@ pub async fn admin_tenant_create_form(RequireAdmin(session): RequireAdmin) -> Re
         error: None,
         form_name: String::new(),
         chrome: true,
-        active: "admin",
+        active: "tenants",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
         flash: None,
@@ -639,7 +639,7 @@ pub async fn admin_tenant_create_submit(
             error: Some("A tenant with that name already exists.".to_string()),
             form_name: form.name,
             chrome: true,
-            active: "admin",
+            active: "tenants",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -652,7 +652,7 @@ pub async fn admin_tenant_create_submit(
                 error: Some("Unable to create tenant right now.".to_string()),
                 form_name: form.name,
                 chrome: true,
-                active: "admin",
+                active: "tenants",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -695,7 +695,7 @@ pub async fn admin_tenant_detail(
         Ok(Some(tenant)) => render(&TenantDetailTemplate {
             tenant,
             chrome: true,
-            active: "admin",
+            active: "tenants",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -748,7 +748,7 @@ pub async fn admin_tenant_edit_form(
             tenant,
             error: None,
             chrome: true,
-            active: "admin",
+            active: "tenants",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -916,7 +916,7 @@ pub async fn admin_apps_list(
             applications: page.items,
             next_cursor: page.next_cursor,
             chrome: true,
-            active: "admin",
+            active: "applications",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -959,7 +959,7 @@ pub async fn admin_app_create_form(RequireAdmin(session): RequireAdmin) -> Respo
         form_redirect_uris: String::new(),
         form_confidential: false,
         chrome: true,
-        active: "admin",
+        active: "applications",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
         flash: None,
@@ -1021,7 +1021,7 @@ pub async fn admin_app_create_submit(
                 app: client,
                 client_secret: secret,
                 chrome: true,
-                active: "admin",
+                active: "applications",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -1035,7 +1035,7 @@ pub async fn admin_app_create_submit(
             form_redirect_uris: form.redirect_uris,
             form_confidential: is_confidential,
             chrome: true,
-            active: "admin",
+            active: "applications",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -1050,7 +1050,7 @@ pub async fn admin_app_create_submit(
                 form_redirect_uris: form.redirect_uris,
                 form_confidential: is_confidential,
                 chrome: true,
-                active: "admin",
+                active: "applications",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -1095,7 +1095,7 @@ pub async fn admin_app_detail(
             app,
             client_secret: None,
             chrome: true,
-            active: "admin",
+            active: "applications",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -1148,7 +1148,7 @@ pub async fn admin_app_edit_form(
             app,
             error: None,
             chrome: true,
-            active: "admin",
+            active: "applications",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -1387,7 +1387,7 @@ pub async fn admin_sessions_list(
                 sessions: rows,
                 next_cursor: page.next_cursor,
                 chrome: true,
-                active: "admin",
+                active: "sessions",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -1507,10 +1507,18 @@ struct AuditListTemplate {
     narrow: bool,
 }
 
+/// Rows-only partial returned when the audit filter is triggered via HTMX.
+#[derive(Template)]
+#[template(path = "ui/admin/audit/_rows_only.html")]
+struct AuditRowsTemplate {
+    events: Vec<AuditRow>,
+}
+
 /// `GET /ui/admin/audit`.
 pub async fn admin_audit_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    htmx: super::templates::IsHtmx,
     Query(params): Query<AuditFilterParams>,
 ) -> Response {
     let action = params
@@ -1537,19 +1545,23 @@ pub async fn admin_audit_list(
                     event: e,
                 })
                 .collect();
-            render(&AuditListTemplate {
-                events: rows,
-                form_actor: params.actor.unwrap_or_default(),
-                form_action: params.action.unwrap_or_default(),
-                form_limit: limit.to_string(),
-                chrome: true,
-                active: "admin",
-                user_email: Some(session.user_email.clone()),
-                is_admin: true,
-                flash: None,
-                csrf: session.csrf.clone(),
-                narrow: false,
-            })
+            if htmx.0 {
+                render(&AuditRowsTemplate { events: rows })
+            } else {
+                render(&AuditListTemplate {
+                    events: rows,
+                    form_actor: params.actor.unwrap_or_default(),
+                    form_action: params.action.unwrap_or_default(),
+                    form_limit: limit.to_string(),
+                    chrome: true,
+                    active: "audit",
+                    user_email: Some(session.user_email.clone()),
+                    is_admin: true,
+                    flash: None,
+                    csrf: session.csrf.clone(),
+                    narrow: false,
+                })
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "audit query failed");

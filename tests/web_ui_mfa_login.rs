@@ -354,8 +354,10 @@ async fn mfa_challenge_post_valid_totp_creates_session() {
     let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
         .expect("pending cookie must be set");
 
-    // Compute a valid TOTP code.
-    let code = compute_totp_code(&secret, current_unix_secs());
+    // Compute a valid TOTP code for the *next* time step.  Enrollment already
+    // consumed the current step, so using `current_unix_secs()` would hit replay
+    // protection.  The next step is within the ±1 tolerance window.
+    let code = compute_totp_code(&secret, current_unix_secs() + 30);
 
     let response = rig
         .app
@@ -567,8 +569,8 @@ async fn mfa_challenge_preserves_return_to() {
     let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
         .expect("pending cookie must be set");
 
-    // Submit valid TOTP.
-    let code = compute_totp_code(&secret, current_unix_secs());
+    // Submit valid TOTP for the next step (current step was consumed by enrollment).
+    let code = compute_totp_code(&secret, current_unix_secs() + 30);
     let response = rig
         .app
         .clone()

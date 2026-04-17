@@ -41,3 +41,5 @@ hearth
 
 # Local runtime data (compose named volume + `cargo run` default path)
 /data/
+*.png
+*.log
