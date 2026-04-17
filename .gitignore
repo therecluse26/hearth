@@ -41,5 +41,10 @@ hearth
 
 # Local runtime data (compose named volume + `cargo run` default path)
 /data/
+
+*.jpg
+*.jpeg
 *.png
 *.log
+
+.playwright-mcp/
