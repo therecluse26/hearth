@@ -43,7 +43,10 @@ use serde::Deserialize;
 use crate::identity::onboarding::OnboardingError;
 use crate::identity::{CleartextPassword, IdentityError};
 
-use super::auth::{issue_auth_cookies, sanitize_return_to, IssuedCookies};
+use super::auth::{
+    clear_mfa_pending_cookie, cookie_value_from_headers, issue_auth_cookies, issue_mfa_pending_cookie,
+    parse_mfa_pending_cookie, sanitize_return_to, IssuedCookies, MFA_PENDING_COOKIE,
+};
 use super::templates::{render, render_status, Flash};
 use super::WebState;
 
@@ -202,6 +205,36 @@ impl VerifyInvalidTemplate {
         Self {
             heading,
             message,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// MFA challenge template — shown after password verification when MFA is
+/// enabled. Accepts a TOTP code or recovery code.
+#[derive(Template)]
+#[template(path = "ui/mfa_challenge.html")]
+struct MfaChallengeTemplate {
+    error: Option<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl MfaChallengeTemplate {
+    fn new(error: Option<String>) -> Self {
+        Self {
+            error,
             chrome: false,
             active: "",
             user_email: None,
@@ -456,9 +489,12 @@ pub struct LoginForm {
 /// Handles login submission.
 ///
 /// On success: creates a session, issues the `hearth_ui_session` and
-/// `hearth_ui_csrf` cookies, then redirects. All authentication
-/// failures collapse into a single generic error message (enumeration
-/// resistance).
+/// `hearth_ui_csrf` cookies, then redirects. When MFA is enabled for
+/// the user, redirects to `/ui/mfa-challenge` with a pending cookie
+/// instead of creating a session.
+///
+/// All authentication failures collapse into a single generic error
+/// message (enumeration resistance).
 pub async fn login_submit(
     State(state): State<Arc<WebState>>,
     Form(form): Form<LoginForm>,
@@ -504,6 +540,26 @@ pub async fn login_submit(
             }
         }
 
+        // --- MFA gate ---
+        // If the user has MFA enabled, issue a pending cookie and redirect
+        // to the challenge page instead of creating a session.
+        let mfa_on = state
+            .identity
+            .mfa_enabled(tenant.id(), user.id())
+            .unwrap_or(false);
+        if mfa_on {
+            let cookie = issue_mfa_pending_cookie(
+                &state.cookie_secret,
+                tenant.id(),
+                user.id(),
+                return_to.as_deref(),
+            );
+            state.set_current_tenant(tenant.id().clone());
+            let mut response = Redirect::to("/ui/mfa-challenge").into_response();
+            append_cookie(&mut response, &cookie);
+            return response;
+        }
+
         match state.identity.create_session(tenant.id(), user.id()) {
             Ok(session) => {
                 let IssuedCookies {
@@ -542,6 +598,129 @@ pub async fn login_submit(
     }
 
     generic_error()
+}
+
+// ============================================================================
+// MFA challenge
+// ============================================================================
+
+/// Form body submitted by the MFA challenge page.
+#[derive(Debug, Deserialize)]
+pub struct MfaChallengeForm {
+    /// TOTP code or recovery code entered by the user.
+    pub code: String,
+}
+
+/// Renders the MFA challenge form.
+///
+/// If the MFA pending cookie is missing or invalid, redirects to
+/// `/ui/login` — the user must start the login flow again.
+pub async fn mfa_challenge_form(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+    if parse_mfa_pending_cookie(&state.cookie_secret, raw).is_none() {
+        return Redirect::to("/ui/login").into_response();
+    }
+
+    render(&MfaChallengeTemplate::new(None))
+}
+
+/// Handles MFA challenge submission.
+///
+/// Validates the pending cookie, then tries `verify_totp()` (6-digit
+/// numeric) or `verify_recovery_code()` (anything else). On success:
+/// creates a session, issues cookies, clears the pending cookie, and
+/// redirects to the original `return_to` or `/ui`.
+pub async fn mfa_challenge_submit(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Form(form): Form<MfaChallengeForm>,
+) -> Response {
+    let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
+        return mfa_expired_response();
+    };
+    let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
+        return mfa_expired_response();
+    };
+
+    let code = form.code.trim();
+
+    // Dispatch: 6-digit all-numeric → TOTP; anything else → recovery code.
+    let is_totp = code.len() == 6 && code.chars().all(|c| c.is_ascii_digit());
+    let verify_result = if is_totp {
+        state
+            .identity
+            .verify_totp(&pending.tenant_id, &pending.user_id, code)
+    } else {
+        state
+            .identity
+            .verify_recovery_code(&pending.tenant_id, &pending.user_id, code)
+    };
+
+    match verify_result {
+        Ok(()) => {}
+        Err(IdentityError::RateLimited) => {
+            return render_status(
+                &MfaChallengeTemplate::new(Some(
+                    "Too many failed attempts. Please wait a few minutes and try again."
+                        .to_string(),
+                )),
+                StatusCode::TOO_MANY_REQUESTS,
+            );
+        }
+        Err(IdentityError::InvalidMfaCode | IdentityError::MfaNotEnabled) => {
+            return render_status(
+                &MfaChallengeTemplate::new(Some("Invalid code. Please try again.".to_string())),
+                StatusCode::UNAUTHORIZED,
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "mfa-challenge: verification failed");
+            return render_status(
+                &MfaChallengeTemplate::new(Some("Invalid code. Please try again.".to_string())),
+                StatusCode::UNAUTHORIZED,
+            );
+        }
+    }
+
+    // MFA passed — create the session.
+    match state
+        .identity
+        .create_session(&pending.tenant_id, &pending.user_id)
+    {
+        Ok(session) => {
+            let IssuedCookies {
+                session_cookie,
+                csrf_cookie,
+            } = issue_auth_cookies(&state.cookie_secret, &pending.tenant_id, session.id());
+
+            let location = pending.return_to.as_deref().unwrap_or("/ui");
+            let mut response = Redirect::to(location).into_response();
+            append_cookie(&mut response, &session_cookie);
+            append_cookie(&mut response, &csrf_cookie);
+            append_cookie(&mut response, &clear_mfa_pending_cookie());
+            response
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "mfa-challenge: create_session failed");
+            internal_error_response()
+        }
+    }
+}
+
+/// Returns a 401 response when the MFA pending cookie is expired or
+/// missing.
+fn mfa_expired_response() -> Response {
+    render_status(
+        &MfaChallengeTemplate::new(Some(
+            "Your session has expired. Please sign in again.".to_string(),
+        )),
+        StatusCode::UNAUTHORIZED,
+    )
 }
 
 // ============================================================================

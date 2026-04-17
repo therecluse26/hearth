@@ -164,6 +164,11 @@ pub fn router(state: WebState) -> Router {
             "/login",
             axum::routing::get(handlers::login_form).post(handlers::login_submit),
         )
+        .route(
+            "/mfa-challenge",
+            axum::routing::get(handlers::mfa_challenge_form)
+                .post(handlers::mfa_challenge_submit),
+        )
         .route("/", axum::routing::get(handlers::dashboard))
         .route("/logout", axum::routing::post(handlers::logout_submit))
         .route("/account", axum::routing::get(account::account_index))

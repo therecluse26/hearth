@@ -101,12 +101,12 @@ ci-standard: ci-fast test proto-breaking sdk-test proto-check
 
 # ── Docker ──────────────────────────────────────────
 
-COMPOSE_DEV := -f compose.yaml -f compose.dev.yaml
-
 ## First-time image build + start (bakes binary into image).
 docker-up:
 	docker compose up --build -d
 
-## Fast iterate: host-side release build + container restart with bind mount (~15 s).
+## Fast iterate: incremental Docker build via BuildKit cache + restart (~15–25 s).
+## BuildKit cache mounts persist cargo registry + target dir across builds, so
+## only the hearth crate recompiles. Works on Linux, macOS, and Windows.
 docker-reload:
-	PROTOC=$(PROTOC) cargo build --release $(CARGO_FLAGS) && docker compose $(COMPOSE_DEV) up -d --force-recreate hearth
+	DOCKER_BUILDKIT=1 docker compose up --build -d hearth

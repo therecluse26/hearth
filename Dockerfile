@@ -74,8 +74,15 @@ RUN mkdir -p src simulation/src benches \
                 session_lookup tiered_storage oauth admin audit zanzibar_watch; do \
          echo 'fn main() {}' > "benches/${b}.rs"; \
        done \
-    && (test -f Cargo.lock || cargo generate-lockfile) \
-    && cargo build --release --bin hearth \
+    && (test -f Cargo.lock || cargo generate-lockfile)
+
+# Dependency-only build. BuildKit cache mounts persist the cargo registry and
+# target directory across builds, so subsequent `docker compose up --build`
+# invocations skip already-compiled dependencies entirely.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --bin hearth \
     && rm -rf src simulation/src benches src/protocol/generated
 
 # ----- Real source pass -------------------------------------------------------
@@ -97,9 +104,16 @@ COPY benches ./benches
 # had the same mtime (rare but possible with very fast builds). `build.rs`
 # is touched too so cargo re-runs it and regenerates `src/protocol/generated/`
 # (which was produced in the cache pass, then wiped with the stub src/).
-RUN touch src/main.rs src/lib.rs simulation/src/lib.rs build.rs \
+# Final build: only the hearth crate recompiles (deps are cached). The binary
+# must be copied out of the cache mount within this RUN step — the mount
+# vanishes from the layer once the command finishes.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    touch src/main.rs src/lib.rs simulation/src/lib.rs build.rs \
     && cargo build --release --bin hearth \
-    && strip target/release/hearth
+    && strip target/release/hearth \
+    && cp target/release/hearth /tmp/hearth
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
@@ -131,7 +145,7 @@ RUN groupadd --system --gid 10001 hearth \
     && mkdir -p /var/lib/hearth /etc/hearth \
     && chown -R hearth:hearth /var/lib/hearth /etc/hearth
 
-COPY --from=builder /build/target/release/hearth /usr/local/bin/hearth
+COPY --from=builder /tmp/hearth /usr/local/bin/hearth
 
 USER 10001:10001
 WORKDIR /var/lib/hearth

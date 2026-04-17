@@ -53,6 +53,16 @@ use super::WebState;
 pub const SESSION_COOKIE: &str = "hearth_ui_session";
 /// Name of the page-readable cookie carrying the CSRF token.
 pub const CSRF_COOKIE: &str = "hearth_ui_csrf";
+/// Name of the short-lived cookie carrying the pending MFA challenge state.
+///
+/// Issued after successful password verification when MFA is enabled.
+/// The value is `{user_id}.{tenant_id}.{expires_unix_secs}.{return_to_b64}.{mac}`
+/// where MAC = HMAC-SHA256(secret, `user_id|tenant_id|expires|return_to_b64`).
+/// TTL: 5 minutes.
+pub const MFA_PENDING_COOKIE: &str = "hearth_ui_mfa_pending";
+
+/// TTL for the MFA pending cookie in seconds (5 minutes).
+const MFA_PENDING_TTL_SECS: u64 = 300;
 
 /// Secret used to MAC session cookies. 32 random bytes. Shared across
 /// all UI handlers via [`WebState::cookie_secret`].
@@ -91,6 +101,158 @@ impl std::fmt::Debug for CookieSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CookieSecret(<redacted>)")
     }
+}
+
+/// Parsed contents of a valid MFA pending cookie.
+#[derive(Debug, Clone)]
+pub struct MfaPending {
+    /// User who passed the password check.
+    pub user_id: UserId,
+    /// Tenant the user belongs to.
+    pub tenant_id: TenantId,
+    /// Optional `return_to` path to redirect after MFA completes.
+    pub return_to: Option<String>,
+}
+
+/// Builds the full `Set-Cookie` header value for an MFA pending cookie.
+///
+/// The cookie proves "this user passed password verification" and is
+/// valid for [`MFA_PENDING_TTL_SECS`]. It grants no access — only the
+/// right to attempt the second authentication factor.
+#[must_use]
+pub fn issue_mfa_pending_cookie(
+    secret: &CookieSecret,
+    tenant_id: &TenantId,
+    user_id: &UserId,
+    return_to: Option<&str>,
+) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before epoch")
+        .as_secs();
+    let expires = now + MFA_PENDING_TTL_SECS;
+
+    let return_to_b64 = match return_to {
+        Some(r) if !r.is_empty() => BASE64URL_NOPAD.encode(r.as_bytes()),
+        _ => String::new(),
+    };
+
+    let mac = compute_mfa_pending_mac(secret, user_id, tenant_id, expires, &return_to_b64);
+    let value = format!(
+        "{}.{}.{expires}.{return_to_b64}.{mac}",
+        user_id.as_uuid(),
+        tenant_id.as_uuid(),
+    );
+
+    format!(
+        "{MFA_PENDING_COOKIE}={value}; HttpOnly; Path=/ui; SameSite=Lax; Max-Age={MFA_PENDING_TTL_SECS}"
+    )
+}
+
+/// Parses and validates an MFA pending cookie value.
+///
+/// Returns `None` on any parse / MAC / expiry failure. Intentionally
+/// opaque — callers redirect to `/ui/login` on `None`.
+#[must_use]
+pub fn parse_mfa_pending_cookie(secret: &CookieSecret, value: &str) -> Option<MfaPending> {
+    let mut parts = value.splitn(5, '.');
+    let uid_str = parts.next()?;
+    let tid_str = parts.next()?;
+    let expires_str = parts.next()?;
+    let return_to_b64 = parts.next()?;
+    let mac_str = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let uid: Uuid = uid_str.parse().ok()?;
+    let tid: Uuid = tid_str.parse().ok()?;
+    let expires: u64 = expires_str.parse().ok()?;
+
+    let user_id = UserId::new(uid);
+    let tenant_id = TenantId::new(tid);
+
+    // Verify MAC first (constant-time).
+    let expected = compute_mfa_pending_mac(secret, &user_id, &tenant_id, expires, return_to_b64);
+    let mac_match: bool = expected.as_bytes().ct_eq(mac_str.as_bytes()).into();
+    if !mac_match {
+        return None;
+    }
+
+    // Check expiry.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before epoch")
+        .as_secs();
+    if now > expires {
+        return None;
+    }
+
+    let return_to = if return_to_b64.is_empty() {
+        None
+    } else {
+        let decoded = BASE64URL_NOPAD.decode(return_to_b64.as_bytes()).ok()?;
+        Some(String::from_utf8(decoded).ok()?)
+    };
+
+    Some(MfaPending {
+        user_id,
+        tenant_id,
+        return_to,
+    })
+}
+
+/// Returns the full `Set-Cookie` header value that clears the MFA pending cookie.
+#[must_use]
+pub fn clear_mfa_pending_cookie() -> String {
+    format!("{MFA_PENDING_COOKIE}=; HttpOnly; Path=/ui; SameSite=Lax; Max-Age=0")
+}
+
+/// Computes the HMAC tag for an MFA pending cookie.
+fn compute_mfa_pending_mac(
+    secret: &CookieSecret,
+    user_id: &UserId,
+    tenant_id: &TenantId,
+    expires: u64,
+    return_to_b64: &str,
+) -> String {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+        .expect("HMAC-SHA256 accepts any 32-byte key");
+    mac.update(user_id.as_uuid().as_bytes());
+    mac.update(b"|");
+    mac.update(tenant_id.as_uuid().as_bytes());
+    mac.update(b"|");
+    mac.update(expires.to_string().as_bytes());
+    mac.update(b"|");
+    mac.update(return_to_b64.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    BASE64URL_NOPAD.encode(&tag)
+}
+
+/// Extracts a named cookie value from raw `HeaderMap` (not `Parts`).
+///
+/// Useful for pre-auth handlers that receive `HeaderMap` directly.
+pub fn cookie_value_from_headers<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+    let prefix = format!("{name}=");
+    for value in headers.get_all(header::COOKIE) {
+        let Ok(header_str) = value.to_str() else {
+            continue;
+        };
+        for pair in header_str.split(';') {
+            let trimmed = pair.trim();
+            if let Some(v) = trimmed.strip_prefix(&prefix) {
+                let ptr = v.as_ptr();
+                let len = v.len();
+                // SAFETY: same argument as `cookie_value` — the slice borrows
+                // from `header_str` which borrows from the `HeaderValue` inside
+                // `headers`, and `headers` lives for `'a`.
+                let s: &'a str =
+                    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
+                return Some(s);
+            }
+        }
+    }
+    None
 }
 
 /// Cookie pair issued on a successful login.
@@ -552,5 +714,134 @@ mod tests {
         assert!(sanitize_return_to("/admin/api").is_none());
         assert!(sanitize_return_to("javascript:alert(1)").is_none());
         assert!(sanitize_return_to("/ui/\r\nSet-Cookie: evil").is_none());
+    }
+
+    // ===== MFA pending cookie tests =====
+
+    #[test]
+    fn mfa_pending_cookie_round_trip() {
+        let secret = CookieSecret::from_bytes([5u8; 32]);
+        let uid = UserId::generate();
+        let tid = TenantId::generate();
+
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
+        // Extract value from `Set-Cookie` header.
+        let value = full
+            .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
+            .expect("prefix")
+            .split(';')
+            .next()
+            .expect("value");
+
+        let parsed = parse_mfa_pending_cookie(&secret, value).expect("valid");
+        assert_eq!(parsed.user_id, uid);
+        assert_eq!(parsed.tenant_id, tid);
+        assert!(parsed.return_to.is_none());
+    }
+
+    #[test]
+    fn mfa_pending_cookie_detects_user_id_tampering() {
+        let secret = CookieSecret::from_bytes([6u8; 32]);
+        let uid = UserId::generate();
+        let other = UserId::generate();
+        let tid = TenantId::generate();
+
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
+        let value = full
+            .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
+            .expect("prefix")
+            .split(';')
+            .next()
+            .expect("value");
+
+        // Replace the user_id segment with a different UUID.
+        let tampered = value.replacen(
+            &uid.as_uuid().to_string(),
+            &other.as_uuid().to_string(),
+            1,
+        );
+        assert!(
+            parse_mfa_pending_cookie(&secret, &tampered).is_none(),
+            "tampered user_id should be rejected"
+        );
+    }
+
+    #[test]
+    fn mfa_pending_cookie_detects_tenant_id_tampering() {
+        let secret = CookieSecret::from_bytes([7u8; 32]);
+        let uid = UserId::generate();
+        let tid = TenantId::generate();
+        let other_tid = TenantId::generate();
+
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
+        let value = full
+            .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
+            .expect("prefix")
+            .split(';')
+            .next()
+            .expect("value");
+
+        // Replace the tenant_id segment with a different UUID.
+        let tampered = value.replacen(
+            &tid.as_uuid().to_string(),
+            &other_tid.as_uuid().to_string(),
+            1,
+        );
+        assert!(
+            parse_mfa_pending_cookie(&secret, &tampered).is_none(),
+            "tampered tenant_id should be rejected"
+        );
+    }
+
+    #[test]
+    fn mfa_pending_cookie_rejects_expired() {
+        let secret = CookieSecret::from_bytes([8u8; 32]);
+        let uid = UserId::generate();
+        let tid = TenantId::generate();
+
+        // Manually craft a cookie that expired 10 seconds ago.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("epoch")
+            .as_secs();
+        let expired = now.saturating_sub(10);
+        let return_to_b64 = "";
+        let mac =
+            compute_mfa_pending_mac(&secret, &uid, &tid, expired, return_to_b64);
+        let value = format!(
+            "{}.{}.{expired}.{return_to_b64}.{mac}",
+            uid.as_uuid(),
+            tid.as_uuid(),
+        );
+
+        assert!(
+            parse_mfa_pending_cookie(&secret, &value).is_none(),
+            "expired cookie should be rejected"
+        );
+    }
+
+    #[test]
+    fn mfa_pending_cookie_preserves_return_to() {
+        let secret = CookieSecret::from_bytes([9u8; 32]);
+        let uid = UserId::generate();
+        let tid = TenantId::generate();
+
+        let full = issue_mfa_pending_cookie(
+            &secret,
+            &tid,
+            &uid,
+            Some("/ui/admin/users"),
+        );
+        let value = full
+            .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
+            .expect("prefix")
+            .split(';')
+            .next()
+            .expect("value");
+
+        let parsed = parse_mfa_pending_cookie(&secret, value).expect("valid");
+        assert_eq!(parsed.user_id, uid);
+        assert_eq!(parsed.tenant_id, tid);
+        assert_eq!(parsed.return_to.as_deref(), Some("/ui/admin/users"));
     }
 }

@@ -1,15 +1,9 @@
-# compose.dev.yaml — fast dev reload via host-built binary.
+# compose.dev.yaml — development overrides.
 #
-# NOT auto-loaded. The Makefile's `docker-reload` target passes this file
-# explicitly with `-f` flags so the bind mount is only active after a
-# successful `cargo build --release` (avoids Docker creating a directory
-# placeholder when the binary doesn't exist yet).
+# Layered on top of compose.yaml with:
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
 #
-# Usage:
-#   make docker-up       # first time — image build, no mount
-#   make docker-reload   # cargo build --release + restart with mount
+# Currently empty. Add dev-specific overrides here (extra env vars, debug
+# ports, volume mounts, etc.) without touching the base compose file.
 
-services:
-  hearth:
-    volumes:
-      - ./target/release/hearth:/usr/local/bin/hearth:ro
+services: {}
