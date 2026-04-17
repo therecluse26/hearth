@@ -1406,6 +1406,7 @@ pub async fn admin_sessions_list(
 pub async fn admin_session_revoke(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    htmx: super::templates::IsHtmx,
     AxumPath(sid): AxumPath<String>,
     Form(form): Form<DeleteForm>,
 ) -> Response {
@@ -1424,7 +1425,11 @@ pub async fn admin_session_revoke(
     {
         Ok(()) => {
             audit_session_event(&state, &session, &session_id, "revoke");
-            Redirect::to("/ui/admin/sessions").into_response()
+            if htmx.0 {
+                super::templates::htmx_toast_response("Session revoked.", "success")
+            } else {
+                Redirect::to("/ui/admin/sessions").into_response()
+            }
         }
         Err(IdentityError::SessionNotFound) => {
             super::handlers_common::not_found("Session not found")

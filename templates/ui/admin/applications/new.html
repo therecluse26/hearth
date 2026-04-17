@@ -1,39 +1,50 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · Register Application{% endblock %}
 {% block body %}
-<header class="hearth-page-header">
-  <h1>Register application</h1>
-</header>
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">Register application</h1>
+</div>
 
-{% match error %}
-  {% when Some with (msg) %}
-    <div class="hearth-flash hearth-flash--error" role="alert">{{ msg }}</div>
-  {% when None %}
-{% endmatch %}
-
-<form method="post" action="/ui/admin/applications/new" autocomplete="off">
-  {% match csrf %}
-    {% when Some with (token) %}
-      <input type="hidden" name="_csrf" value="{{ token }}">
+<div class="rounded-xl bg-white p-6 shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+  {% match error %}
+    {% when Some with (msg) %}
+      <div class="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm font-medium text-red-800 dark:bg-red-900/30 dark:text-red-400" role="alert">{{ msg }}</div>
     {% when None %}
   {% endmatch %}
 
-  <label for="client_name">Application name</label>
-  <input type="text" id="client_name" name="client_name" required
-         value="{{ form_client_name }}">
+  <form method="post" action="/ui/admin/applications/new" autocomplete="off" class="space-y-4">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
 
-  <label for="redirect_uris">Redirect URIs (one per line)</label>
-  <textarea id="redirect_uris" name="redirect_uris" rows="3" required>{{ form_redirect_uris }}</textarea>
+    <div>
+      <label for="client_name" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Application name</label>
+      <input type="text" id="client_name" name="client_name" required value="{{ form_client_name }}"
+             class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+    </div>
 
-  <label for="confidential">
-    <input type="checkbox" id="confidential" name="confidential" value="true"
-           {% if form_confidential %}checked{% endif %}>
-    Confidential client (server-side app with a client secret)
-  </label>
+    <div>
+      <label for="redirect_uris" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Redirect URIs <span class="font-normal text-slate-400">(one per line)</span></label>
+      <textarea id="redirect_uris" name="redirect_uris" rows="3" required
+                class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">{{ form_redirect_uris }}</textarea>
+    </div>
 
-  <div class="hearth-actions">
-    <button type="submit">Register</button>
-    <a href="/ui/admin/applications">Cancel</a>
-  </div>
-</form>
+    <div class="flex items-center gap-2">
+      <input type="checkbox" id="confidential" name="confidential" value="true"
+             {% if form_confidential %}checked{% endif %}
+             class="h-4 w-4 rounded border-slate-300 text-hearth-500 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700">
+      <label for="confidential" class="text-sm text-slate-700 dark:text-slate-300">Confidential client (server-side app with a client secret)</label>
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+      <button type="submit"
+              class="rounded-lg bg-hearth-500 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-hearth-600 focus:outline-none focus:ring-2 focus:ring-hearth-500/50 focus:ring-offset-2 dark:focus:ring-offset-slate-800">
+        Register
+      </button>
+      <a href="/ui/admin/applications" class="text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300">Cancel</a>
+    </div>
+  </form>
+</div>
 {% endblock %}

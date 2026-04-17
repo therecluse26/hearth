@@ -30,6 +30,9 @@ fuzz/corpus/
 node_modules/
 .reflex/
 
+# Tailwind standalone CLI (binary, not committed — install via `make tailwind-install`)
+ui/tailwindcss
+
 # Generated protobuf code (produced by build.rs on every build)
 /src/protocol/generated/
 

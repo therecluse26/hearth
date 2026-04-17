@@ -40,7 +40,9 @@
 //! with a `#[allow(dead_code)]` helper: pages carry the fields
 //! directly (not nested) which is what the layout expects.
 
-use axum::http::StatusCode;
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use tracing::error;
 
@@ -99,6 +101,56 @@ pub fn render<T: askama::Template>(template: &T) -> Response {
 pub fn render_status<T: askama::Template>(template: &T, status: StatusCode) -> Response {
     let mut response = render(template);
     *response.status_mut() = status;
+    response
+}
+
+// ---------------------------------------------------------------------------
+// HTMX detection
+// ---------------------------------------------------------------------------
+
+/// Extractor that detects whether the current request was made by HTMX.
+///
+/// HTMX sets the `HX-Request: true` header on every fetch it initiates.
+/// Handlers can use this to decide between returning a full page or a
+/// partial HTML fragment.
+pub struct IsHtmx(pub bool);
+
+impl<S> FromRequestParts<S> for IsHtmx
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let is_htmx = parts
+            .headers
+            .get("HX-Request")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "true");
+        Ok(Self(is_htmx))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTMX toast response
+// ---------------------------------------------------------------------------
+
+/// Returns a 200 response with an `HX-Trigger` header that tells the
+/// client-side Alpine.js toast container to display a notification.
+///
+/// `kind` is typically `"success"` or `"error"`.
+pub fn htmx_toast_response(message: &str, kind: &str) -> Response {
+    let json = format!(
+        r#"{{"showToast":{{"message":"{}","kind":"{}"}}}}"#,
+        message.replace('"', r#"\""#),
+        kind.replace('"', r#"\""#),
+    );
+    let mut response = Response::new(axum::body::Body::empty());
+    if let Ok(val) = HeaderValue::from_str(&json) {
+        response
+            .headers_mut()
+            .insert(header::HeaderName::from_static("hx-trigger"), val);
+    }
     response
 }
 

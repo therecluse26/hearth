@@ -1,50 +1,37 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · Sessions{% endblock %}
 {% block body %}
-<header class="hearth-page-header">
-  <h1>Sessions</h1>
-</header>
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">Sessions</h1>
+</div>
 
-<table class="hearth-table">
-  <thead>
-    <tr>
-      <th>Session ID</th>
-      <th>User</th>
-      <th>Created</th>
-      <th>Expires</th>
-      <th></th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for s in sessions %}
-      <tr>
-        <td><code>{{ s.session.id().as_uuid() }}</code></td>
-        <td>{{ s.user_email }}</td>
-        <td>{{ s.created_at_display }}</td>
-        <td>{{ s.expires_at_display }}</td>
-        <td>
-          <form method="post" action="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke"
-                onsubmit="return confirm('Revoke this session?');">
-            {% match csrf %}
-              {% when Some with (token) %}
-                <input type="hidden" name="_csrf" value="{{ token }}">
-              {% when None %}
-            {% endmatch %}
-            <button type="submit" class="hearth-button--danger">Revoke</button>
-          </form>
-        </td>
-      </tr>
-    {% endfor %}
-    {% if sessions.is_empty() %}
-      <tr><td colspan="5" class="hearth-muted">No active sessions.</td></tr>
-    {% endif %}
-  </tbody>
-</table>
+<div class="overflow-hidden rounded-xl bg-white shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+  <div class="overflow-x-auto">
+    <table class="w-full">
+      <thead>
+        <tr class="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50">
+          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Session ID</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">User</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Created</th>
+          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Expires</th>
+          <th class="px-4 py-3"></th>
+        </tr>
+      </thead>
+      <tbody id="table-body">
+        {% include "ui/admin/sessions/_rows.html" %}
+      </tbody>
+    </table>
+  </div>
+</div>
 
 {% match next_cursor %}
   {% when Some with (cursor) %}
-    <nav class="hearth-pagination">
-      <a href="/ui/admin/sessions?cursor={{ cursor }}">Next page &rarr;</a>
+    <nav class="mt-4 flex justify-end">
+      <a href="/ui/admin/sessions?cursor={{ cursor }}"
+         class="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
+        Next page
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
     </nav>
   {% when None %}
 {% endmatch %}

@@ -3,8 +3,9 @@
 //! Serves the Hearth admin UI under `/ui/*`. Wire adapter only — every
 //! state change flows through the identity, authorization, or audit
 //! engines. Templates live under `templates/ui/`, compiled into the
-//! binary by the askama derive macro; static assets
-//! (`htmx.min.js`, `app.css`) are embedded via `include_bytes!`.
+//! binary by the askama derive macro; static assets (`htmx.min.js`,
+//! `app.css`) are embedded via `include_bytes!`. Alpine.js is loaded
+//! from a CDN with an SRI integrity hash.
 //!
 //! # Submodules
 //!
@@ -274,7 +275,7 @@ pub fn router(state: WebState) -> Router {
 
 /// HTMX v1.9.12 — pinned, checksum recorded in `assets/CHECKSUMS.txt`.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
-/// Hand-rolled CSS for the admin UI.
+/// Tailwind-generated CSS for the admin UI.
 const APP_CSS: &[u8] = include_bytes!("assets/app.css");
 
 /// Serves embedded static assets with long-lived caching headers.

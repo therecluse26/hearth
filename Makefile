@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check proto-gen proto-lint proto-breaking proto-check sdk-test docker-up docker-reload
+.PHONY: setup build test clippy fmt check css css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test docker-up docker-reload
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -14,9 +14,36 @@ setup:
 	git config core.hooksPath .githooks
 	@echo "✓ Git hooks enabled (.githooks/pre-commit)"
 
+# ── Tailwind CSS ──────────────────────────────────────
+
+## Build Tailwind CSS (minified output → embedded asset).
+## Must cd into ui/ so Tailwind resolves content paths relative to the config file.
+css:
+	cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify
+
+## Watch mode for local development (auto-rebuilds on template change).
+css-watch:
+	cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --watch
+
+## Download Tailwind standalone CLI (platform-specific).
+tailwind-install:
+	@mkdir -p ui
+	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	ARCH=$$(uname -m); \
+	case "$$OS-$$ARCH" in \
+		linux-x86_64)  BIN=tailwindcss-linux-x64 ;; \
+		linux-aarch64) BIN=tailwindcss-linux-arm64 ;; \
+		darwin-x86_64) BIN=tailwindcss-macos-x64 ;; \
+		darwin-arm64)  BIN=tailwindcss-macos-arm64 ;; \
+		*) echo "Unsupported platform: $$OS-$$ARCH" && exit 1 ;; \
+	esac; \
+	curl -sLo ui/tailwindcss "https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/$$BIN" && \
+	chmod +x ui/tailwindcss && \
+	echo "✓ Tailwind CLI installed at ui/tailwindcss ($$BIN)"
+
 # ── Rust ──────────────────────────────────────────────
 
-build:
+build: css
 	PROTOC=$(PROTOC) cargo build $(CARGO_FLAGS)
 
 test:
