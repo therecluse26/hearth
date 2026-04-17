@@ -29,7 +29,7 @@ use subtle::ConstantTimeEq;
 
 use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
 use crate::core::TenantId;
-use crate::identity::email::{EmailError, SharedEmailSender};
+use crate::identity::email::{EmailError, EmailService};
 use crate::identity::{
     CleartextPassword, CreateTenantRequest, CreateUserRequest, IdentityEngine, IdentityError,
     UpdateUserRequest, UserStatus,
@@ -149,7 +149,7 @@ pub fn ensure_setup_token(
     engine: &dyn IdentityEngine,
     data_dir: &Path,
     base_url: Option<&str>,
-    email_sender: Option<&dyn crate::identity::email::EmailSender>,
+    email_service: Option<&EmailService>,
     notification_email: Option<&str>,
 ) -> Result<Option<String>, OnboardingError> {
     let path = setup_token_path(data_dir);
@@ -192,11 +192,11 @@ pub fn ensure_setup_token(
     // Optionally send the setup URL via email. Failure here is non-fatal:
     // the WARN log above is always emitted and the operator can still
     // complete setup by reading that log line.
-    if let (Some(sender), Some(to)) = (email_sender, notification_email) {
-        if let Err(e) = sender.send_setup_notification(to, &url) {
+    if let (Some(service), Some(to)) = (email_service, notification_email) {
+        if let Err(e) = service.send_setup_notification(to, &url) {
             tracing::warn!(
                 error = %e,
-                "failed to send setup notification email; check SMTP config"
+                "failed to send setup notification email; check email config"
             );
         }
     }
@@ -323,12 +323,12 @@ fn write_file_mode_0600(path: &Path, bytes: &[u8]) -> Result<(), OnboardingError
 
 /// Orchestrates first-run setup.
 ///
-/// Composes `IdentityEngine` + `AuthorizationEngine` + `EmailSender`
+/// Composes `IdentityEngine` + `AuthorizationEngine` + `EmailService`
 /// without owning any of them. Handler code holds an `Arc<OnboardingService>`.
 pub struct OnboardingService {
     identity: Arc<dyn IdentityEngine>,
     authz: Arc<dyn AuthorizationEngine>,
-    email: SharedEmailSender,
+    email: Arc<EmailService>,
     data_dir: PathBuf,
 }
 
@@ -338,7 +338,7 @@ impl OnboardingService {
     pub fn new(
         identity: Arc<dyn IdentityEngine>,
         authz: Arc<dyn AuthorizationEngine>,
-        email: SharedEmailSender,
+        email: Arc<EmailService>,
         data_dir: PathBuf,
     ) -> Self {
         Self {
@@ -463,11 +463,11 @@ impl OnboardingService {
         // 7. Send the email. Failure here is fatal for the request
         //    (the operator will never see the link) but the tenant/user
         //    are already persisted so retrying the setup form after
-        //    fixing SMTP will fail with DuplicateTenantName. The
+        //    fixing email config will fail with DuplicateTenantName. The
         //    operator can either delete the partial state or reuse the
         //    tenant by issuing a new verification via admin tools.
         self.email
-            .send_verification_email(admin_email, &verification_url)?;
+            .send_verification_email(admin_email, &verification_url, None)?;
 
         // 8. Retire the setup token.
         remove_setup_token(&self.data_dir);

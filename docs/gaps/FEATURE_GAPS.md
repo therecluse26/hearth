@@ -29,16 +29,20 @@ This document inventories **features not yet implemented** that would block or h
 - **Why It Matters:** Password reset is the single most common support request for any auth system. Without it, locked-out users have no self-service path — operators must manually intervene.
 - **Priority Rationale:** P0 because every production deployment with password-based auth requires this flow.
 
-### Production Email Provider Integration
+### Production Email Provider Integration — COMPLETED
 
-- **Current State:** The `EmailSender` trait is defined in `src/identity/email.rs` (line 58) with an SMTP transport implementation. SMTP configuration is supported via `src/config/types.rs`. The onboarding flow uses email for magic links and verification (`src/identity/onboarding.rs`).
-- **What's Missing:**
-  - HTTP-based provider adapters (SendGrid, SES, Postmark, Mailgun) for operators who don't run SMTP infrastructure.
-  - Email templating engine (branded templates for reset, verification, magic link, MFA enrollment).
+- **Status:** Implemented. The email subsystem (`src/identity/email/`) now supports five transports: Log (dev), SMTP, `SendGrid`, `Postmark`, and `Mailgun`.
+- **What Was Delivered:**
+  - HTTP-based provider adapters (`SendGrid` v3, `Postmark`, `Mailgun` with EU region) via injectable `HttpTransport` trait.
+  - Branded email templates (Askama compiled into binary) with per-tenant branding overrides (`EmailBranding` on `TenantConfig`).
+  - Optional disk-based template override via Tera (`email.templates_dir` config).
+  - `EmailService` orchestration layer separating transport from content (branding + template rendering).
+  - `ApiKey` zeroize-on-drop wrapper for provider credentials.
+  - Config validation for all provider types.
+- **What Remains (future enhancements):**
+  - AWS SES adapter (requires Sig v4 signing).
   - Delivery status tracking / bounce handling.
-  - Per-tenant email provider configuration (multi-tenant SaaS operators need different sender domains).
-- **Why It Matters:** Many cloud deployments prohibit outbound SMTP (port 25/587 blocked). Without HTTP-based providers, email delivery is unreliable or impossible in common hosting environments.
-- **Priority Rationale:** P0 because email delivery underpins password reset, magic link, and verification — all of which are P0 flows.
+  - Per-tenant email provider configuration (multi-tenant SaaS operators using different sender domains per tenant).
 
 ### Self-Service Session Management
 

@@ -41,7 +41,7 @@ use crate::audit::AuditEngine;
 use crate::authz::AuthorizationEngine;
 use crate::core::TenantId;
 use crate::identity::onboarding::OnboardingService;
-use crate::identity::IdentityEngine;
+use crate::identity::{EmailService, IdentityEngine};
 
 pub mod account;
 pub mod admin;
@@ -69,6 +69,10 @@ pub struct WebState {
     pub audit: Arc<dyn AuditEngine>,
     /// First-run onboarding orchestration.
     pub onboarding: Arc<OnboardingService>,
+    /// Email service for sending transactional emails (password reset, etc.).
+    ///
+    /// `None` when email is not configured (tests, minimal deployments).
+    pub email: Option<Arc<EmailService>>,
     /// 32-byte random secret used to MAC session cookies.
     pub cookie_secret: CookieSecret,
     /// The tenant the UI is currently pinned to. Set by
@@ -87,12 +91,14 @@ impl WebState {
         audit: Arc<dyn AuditEngine>,
         onboarding: Arc<OnboardingService>,
         cookie_secret: CookieSecret,
+        email: Option<Arc<EmailService>>,
     ) -> Self {
         Self {
             identity,
             authz,
             audit,
             onboarding,
+            email,
             cookie_secret,
             current_tenant: Arc::new(RwLock::new(None)),
         }
@@ -166,8 +172,20 @@ pub fn router(state: WebState) -> Router {
         )
         .route(
             "/mfa-challenge",
-            axum::routing::get(handlers::mfa_challenge_form)
-                .post(handlers::mfa_challenge_submit),
+            axum::routing::get(handlers::mfa_challenge_form).post(handlers::mfa_challenge_submit),
+        )
+        .route(
+            "/forgot-password",
+            axum::routing::get(handlers::forgot_password_form)
+                .post(handlers::forgot_password_submit),
+        )
+        .route(
+            "/forgot-password/sent",
+            axum::routing::get(handlers::forgot_password_sent),
+        )
+        .route(
+            "/reset-password",
+            axum::routing::get(handlers::reset_password_form).post(handlers::reset_password_submit),
         )
         .route("/", axum::routing::get(handlers::dashboard))
         .route("/logout", axum::routing::post(handlers::logout_submit))
@@ -259,6 +277,10 @@ pub fn router(state: WebState) -> Router {
         )
         // --- Audit ---
         .route("/admin/audit", axum::routing::get(admin::admin_audit_list))
+        .route(
+            "/admin/test-email",
+            axum::routing::post(admin::admin_test_email),
+        )
         .route("/static/{file}", axum::routing::get(serve_static))
         .with_state(Arc::clone(&shared));
 

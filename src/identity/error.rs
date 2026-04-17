@@ -120,6 +120,11 @@ pub enum IdentityError {
     /// Intentionally conflates not-found, expired, and already-used for
     /// enumeration resistance — callers cannot distinguish the three.
     VerificationTokenInvalid,
+    /// The password-reset token is invalid, expired, or already used.
+    ///
+    /// Intentionally conflates not-found, expired, and already-used for
+    /// enumeration resistance — callers cannot distinguish the three.
+    PasswordResetTokenInvalid,
     /// The user account has not yet verified their email address.
     ///
     /// Returned by `create_session` when a user in `PendingVerification`
@@ -188,6 +193,9 @@ impl fmt::Display for IdentityError {
             Self::ClientNotFound => write!(f, "client not found"),
             Self::MagicLinkTokenInvalid => write!(f, "invalid or expired magic link"),
             Self::VerificationTokenInvalid => write!(f, "invalid or expired verification link"),
+            Self::PasswordResetTokenInvalid => {
+                write!(f, "invalid or expired password reset link")
+            }
             Self::UserNotVerified => write!(f, "user email not verified"),
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
@@ -236,6 +244,7 @@ impl std::error::Error for IdentityError {
             | Self::ClientNotFound
             | Self::MagicLinkTokenInvalid
             | Self::VerificationTokenInvalid
+            | Self::PasswordResetTokenInvalid
             | Self::UserNotVerified
             | Self::RateLimited
             | Self::Serialization { .. } => None,
@@ -576,6 +585,16 @@ mod tests {
     }
 
     #[test]
+    fn display_password_reset_token_invalid() {
+        let err = IdentityError::PasswordResetTokenInvalid;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid or expired password reset link"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
     fn display_user_not_verified() {
         let err = IdentityError::UserNotVerified;
         let display = format!("{err}");
@@ -652,6 +671,7 @@ mod tests {
         assert!(IdentityError::ClientNotFound.source().is_none());
         assert!(IdentityError::MagicLinkTokenInvalid.source().is_none());
         assert!(IdentityError::VerificationTokenInvalid.source().is_none());
+        assert!(IdentityError::PasswordResetTokenInvalid.source().is_none());
         assert!(IdentityError::UserNotVerified.source().is_none());
         assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {

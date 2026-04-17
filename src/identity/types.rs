@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{SessionId, TenantId, Timestamp, UserId};
+use crate::identity::email::EmailBranding;
 
 /// A cursor-based page of results.
 ///
@@ -248,6 +249,8 @@ pub struct TenantConfig {
     pub password_memory_cost: Option<u32>,
     /// Argon2id time cost (iterations). Overrides engine default.
     pub password_time_cost: Option<u32>,
+    /// Per-tenant email branding overrides.
+    pub email_branding: Option<EmailBranding>,
 }
 
 /// A tenant record.
@@ -592,6 +595,7 @@ mod tests {
             session_ttl_micros: Some(7_200_000_000),
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
+            email_branding: None,
         };
         tenant.set_config(new_config.clone());
         tenant.set_updated_at(Timestamp::from_micros(2_000));

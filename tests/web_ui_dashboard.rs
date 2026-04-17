@@ -23,7 +23,7 @@ use hearth::authz::{
 use hearth::core::Clock;
 use hearth::core::SystemClock;
 use hearth::core::{SessionId, TenantId};
-use hearth::identity::email::EmailSender;
+use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{
     CleartextPassword, CreateTenantRequest, CreateUserRequest, CredentialConfig,
@@ -34,25 +34,16 @@ use hearth::protocol::web::{self, CookieSecret, WebState};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
-/// No-op email sender — onboarding isn't exercised by these tests but
-/// `OnboardingService::new` still requires a sender handle.
-struct NullEmailSender;
-
-impl EmailSender for NullEmailSender {
-    fn send_verification_email(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<(), hearth::identity::email::EmailError> {
-        Ok(())
-    }
-    fn send_setup_notification(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<(), hearth::identity::email::EmailError> {
-        Ok(())
-    }
+/// Builds a no-op email service for tests that don't exercise email delivery.
+fn null_email_service() -> Arc<EmailService> {
+    Arc::new(
+        EmailService::new(
+            Arc::new(LoggingEmailSender::new()),
+            EmailBranding::default(),
+            None,
+        )
+        .expect("email service"),
+    )
 }
 
 /// Known-static cookie-secret bytes used by `build_rig`. Lets tests
@@ -141,8 +132,7 @@ fn build_rig() -> TestRig {
     let admin_obj = ObjectRef::new("hearth", "admin").expect("valid object");
     let admin_subj =
         SubjectRef::direct("user", &user.id().as_uuid().to_string()).expect("valid subject");
-    let admin_tuple =
-        RelationshipTuple::new(admin_obj, "admin", admin_subj).expect("valid tuple");
+    let admin_tuple = RelationshipTuple::new(admin_obj, "admin", admin_subj).expect("valid tuple");
     authz
         .write_tuples(tenant.id(), &[TupleWrite::Touch(admin_tuple)])
         .expect("write admin tuple");
@@ -150,7 +140,7 @@ fn build_rig() -> TestRig {
     let onboarding = Arc::new(OnboardingService::new(
         Arc::clone(&identity),
         Arc::clone(&authz),
-        Arc::new(NullEmailSender) as Arc<dyn EmailSender>,
+        null_email_service(),
         data_dir,
     ));
     let state = WebState::new(
@@ -159,6 +149,7 @@ fn build_rig() -> TestRig {
         Arc::clone(&audit),
         onboarding,
         CookieSecret::from_bytes(COOKIE_SECRET_BYTES),
+        None,
     );
     let app = web::router(state);
 

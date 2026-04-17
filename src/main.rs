@@ -10,7 +10,11 @@ use hearth::audit::EmbeddedAuditEngine;
 use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
 use hearth::config::{Config, EmailTransport};
 use hearth::core::{Clock, SystemClock};
-use hearth::identity::email::{smtp_sender_from_config, LoggingEmailSender, SharedEmailSender};
+use hearth::identity::email::mailgun::MailgunRegion;
+use hearth::identity::email::{
+    smtp_sender_from_config, ApiKey, EmailService, LoggingEmailSender, MailgunEmailSender,
+    MailtrapEmailSender, PostmarkEmailSender, SendgridEmailSender, SharedEmailSender,
+};
 use hearth::identity::onboarding::{self, OnboardingService};
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::protocol::http::{self, AppState};
@@ -243,8 +247,9 @@ async fn run_serve(
         clock,
     ));
 
-    // Email sender (default: log transport — stderr at WARN level).
-    let email: SharedEmailSender = build_email_sender(&config)?;
+    // Email sender + service (default: log transport — stderr at WARN level).
+    let email_sender: SharedEmailSender = build_email_sender(&config)?;
+    let email_service = Arc::new(build_email_service(email_sender, &config)?);
 
     // Ensure a first-run setup token exists iff no tenant is configured.
     // The resolved data-dir differs between dev (tempdir) and prod; for
@@ -266,7 +271,7 @@ async fn run_serve(
             identity_engine.as_ref(),
             &data_dir,
             Some(&base_url),
-            Some(email.as_ref()),
+            Some(email_service.as_ref()),
             config.onboarding.notification_email.as_deref(),
         ) {
             error!(error = %e, "failed to ensure setup token; onboarding will be unavailable");
@@ -276,7 +281,7 @@ async fn run_serve(
     let onboarding_service = Arc::new(OnboardingService::new(
         Arc::clone(&identity_engine),
         Arc::clone(&authz_engine),
-        Arc::clone(&email),
+        Arc::clone(&email_service),
         data_dir.clone(),
     ));
 
@@ -306,6 +311,7 @@ async fn run_serve(
         Arc::clone(&audit_engine),
         Arc::clone(&onboarding_service),
         web::CookieSecret::random(),
+        Some(Arc::clone(&email_service)),
     );
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
@@ -330,17 +336,104 @@ async fn run_serve(
 
 /// Builds the outbound email sender from configuration.
 ///
-/// Returns a [`LoggingEmailSender`] for `transport: log` (default) and
-/// a fully wired [`hearth::identity::email::SmtpEmailSender`] for
-/// `transport: smtp`. The latter can fail if `lettre` rejects the
-/// configured host or TLS settings at startup; that error bubbles up
-/// so the server refuses to start rather than discovering the problem
-/// on the first password-reset attempt.
+/// Returns the appropriate transport adapter based on the configured
+/// `email.transport`. Fails if the transport rejects the configuration
+/// at startup — better to fail early than on the first send attempt.
 fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std::error::Error>> {
+    use hearth::identity::email::http::UreqTransport;
+
     Ok(match config.email.transport {
         EmailTransport::Log => Arc::new(LoggingEmailSender::new()),
         EmailTransport::Smtp => Arc::new(smtp_sender_from_config(&config.email)?),
+        EmailTransport::Sendgrid => {
+            let sg = config
+                .email
+                .sendgrid
+                .as_ref()
+                .ok_or("email.sendgrid block is required for sendgrid transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for sendgrid transport")?;
+            Arc::new(SendgridEmailSender::new(
+                UreqTransport,
+                ApiKey::new(sg.api_key.clone()),
+                from.clone(),
+            ))
+        }
+        EmailTransport::Postmark => {
+            let pm = config
+                .email
+                .postmark
+                .as_ref()
+                .ok_or("email.postmark block is required for postmark transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for postmark transport")?;
+            Arc::new(PostmarkEmailSender::new(
+                UreqTransport,
+                ApiKey::new(pm.server_token.clone()),
+                from.clone(),
+            ))
+        }
+        EmailTransport::Mailgun => {
+            let mg = config
+                .email
+                .mailgun
+                .as_ref()
+                .ok_or("email.mailgun block is required for mailgun transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for mailgun transport")?;
+            let region = match mg.region {
+                hearth::config::MailgunRegion::Us => MailgunRegion::Us,
+                hearth::config::MailgunRegion::Eu => MailgunRegion::Eu,
+            };
+            Arc::new(MailgunEmailSender::new(
+                UreqTransport,
+                ApiKey::new(mg.api_key.clone()),
+                mg.domain.clone(),
+                from.clone(),
+                region,
+            ))
+        }
+        EmailTransport::Mailtrap => {
+            let mt = config
+                .email
+                .mailtrap
+                .as_ref()
+                .ok_or("email.mailtrap block is required for mailtrap transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for mailtrap transport")?;
+            Arc::new(MailtrapEmailSender::new(
+                UreqTransport,
+                ApiKey::new(mt.api_key.clone()),
+                from.clone(),
+            ))
+        }
     })
+}
+
+/// Builds the email service (orchestration layer) wrapping a sender.
+fn build_email_service(
+    sender: SharedEmailSender,
+    config: &Config,
+) -> Result<EmailService, Box<dyn std::error::Error>> {
+    let branding = config.email.branding.clone().unwrap_or_default();
+    let templates_dir = config
+        .email
+        .templates_dir
+        .as_ref()
+        .map(std::path::Path::new);
+    Ok(EmailService::new(sender, branding, templates_dir)?)
 }
 
 /// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert reload.

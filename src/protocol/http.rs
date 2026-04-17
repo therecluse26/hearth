@@ -708,6 +708,9 @@ fn identity_error_to_response(
         IdentityError::VerificationTokenInvalid => {
             (StatusCode::GONE, "invalid or expired verification link")
         }
+        IdentityError::PasswordResetTokenInvalid => {
+            (StatusCode::UNAUTHORIZED, "invalid or expired reset link")
+        }
         IdentityError::UserNotVerified => (StatusCode::FORBIDDEN, "email not verified"),
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
         IdentityError::SigningError { .. }

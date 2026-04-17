@@ -9,8 +9,9 @@ mod types;
 
 pub use error::ConfigError;
 pub use types::{
-    EmailConfig, EmailTransport, ObservabilityConfig, OnboardingConfig, OperationalConfig,
-    ServerConfig, SmtpConfig, SmtpEncryption, StorageSection,
+    EmailConfig, EmailTransport, MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig,
+    OnboardingConfig, OperationalConfig, PostmarkConfig, SendgridConfig, ServerConfig, SmtpConfig,
+    SmtpEncryption, StorageSection,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -234,14 +235,24 @@ impl Config {
     }
 }
 
-/// Validates the `email` section. Only the `Smtp` transport has
-/// structural requirements today (`Log` accepts any `from`/`smtp`
-/// combination, including `None`).
+/// Validates the `email` section.
+///
+/// Each transport has its own structural requirements. `Log` accepts
+/// any combination (including all `None`).
 fn validate_email(email: &EmailConfig) -> Result<(), ConfigError> {
-    if email.transport != EmailTransport::Smtp {
-        return Ok(());
+    match email.transport {
+        EmailTransport::Log => return Ok(()),
+        EmailTransport::Smtp => validate_email_smtp(email)?,
+        EmailTransport::Sendgrid => validate_email_sendgrid(email)?,
+        EmailTransport::Postmark => validate_email_postmark(email)?,
+        EmailTransport::Mailgun => validate_email_mailgun(email)?,
+        EmailTransport::Mailtrap => validate_email_mailtrap(email)?,
     }
+    Ok(())
+}
 
+/// Validates SMTP transport configuration.
+fn validate_email_smtp(email: &EmailConfig) -> Result<(), ConfigError> {
     let smtp = email.smtp.as_ref().ok_or_else(|| {
         invalid(
             "email.smtp",
@@ -249,20 +260,9 @@ fn validate_email(email: &EmailConfig) -> Result<(), ConfigError> {
         )
     })?;
 
-    let from = email.from.as_ref().ok_or_else(|| {
-        invalid(
-            "email.from",
-            "from address is required when email.transport is smtp",
-        )
-    })?;
-    from.parse::<lettre::message::Mailbox>().map_err(|e| {
-        invalid(
-            "email.from",
-            format!("could not parse as an RFC 5322 mailbox: {e}"),
-        )
-    })?;
+    validate_from_address(email)?;
 
-    // Credentials: either both or neither. Mismatched halves are rejected.
+    // Credentials: either both or neither.
     match (&smtp.username, &smtp.password) {
         (Some(u), _) if u.is_empty() => {
             return Err(invalid("email.smtp.username", "must not be empty"));
@@ -288,6 +288,89 @@ fn validate_email(email: &EmailConfig) -> Result<(), ConfigError> {
     if smtp.port == 0 {
         return Err(invalid("email.smtp.port", "must be between 1 and 65535"));
     }
+    Ok(())
+}
+
+/// Validates `SendGrid` transport configuration.
+fn validate_email_sendgrid(email: &EmailConfig) -> Result<(), ConfigError> {
+    let sg = email.sendgrid.as_ref().ok_or_else(|| {
+        invalid(
+            "email.sendgrid",
+            "sendgrid block is required when email.transport is sendgrid",
+        )
+    })?;
+    validate_from_address(email)?;
+    if sg.api_key.is_empty() {
+        return Err(invalid("email.sendgrid.api_key", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates `Postmark` transport configuration.
+fn validate_email_postmark(email: &EmailConfig) -> Result<(), ConfigError> {
+    let pm = email.postmark.as_ref().ok_or_else(|| {
+        invalid(
+            "email.postmark",
+            "postmark block is required when email.transport is postmark",
+        )
+    })?;
+    validate_from_address(email)?;
+    if pm.server_token.is_empty() {
+        return Err(invalid("email.postmark.server_token", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates `Mailgun` transport configuration.
+fn validate_email_mailgun(email: &EmailConfig) -> Result<(), ConfigError> {
+    let mg = email.mailgun.as_ref().ok_or_else(|| {
+        invalid(
+            "email.mailgun",
+            "mailgun block is required when email.transport is mailgun",
+        )
+    })?;
+    validate_from_address(email)?;
+    if mg.api_key.is_empty() {
+        return Err(invalid("email.mailgun.api_key", "must not be empty"));
+    }
+    if mg.domain.is_empty() {
+        return Err(invalid("email.mailgun.domain", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates `Mailtrap` transport configuration.
+fn validate_email_mailtrap(email: &EmailConfig) -> Result<(), ConfigError> {
+    let mt = email.mailtrap.as_ref().ok_or_else(|| {
+        invalid(
+            "email.mailtrap",
+            "mailtrap block is required when email.transport is mailtrap",
+        )
+    })?;
+    validate_from_address(email)?;
+    if mt.api_key.is_empty() {
+        return Err(invalid("email.mailtrap.api_key", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates the `from` address (shared across all non-log transports).
+fn validate_from_address(email: &EmailConfig) -> Result<(), ConfigError> {
+    let from = email.from.as_ref().ok_or_else(|| {
+        invalid(
+            "email.from",
+            format!(
+                "from address is required when email.transport is {:?}",
+                email.transport
+            ),
+        )
+    })?;
+    from.parse::<lettre::message::Mailbox>().map_err(|e| {
+        invalid(
+            "email.from",
+            format!("could not parse as an RFC 5322 mailbox: {e}"),
+        )
+    })?;
     Ok(())
 }
 

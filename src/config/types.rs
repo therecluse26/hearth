@@ -7,6 +7,8 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::identity::email::EmailBranding;
+
 /// Server network configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -200,6 +202,14 @@ pub enum EmailTransport {
     /// Deliver via SMTP to an external mail server. Requires an
     /// accompanying [`SmtpConfig`] block and a `from` address.
     Smtp,
+    /// Deliver via the `SendGrid` v3 API. Requires a [`SendgridConfig`].
+    Sendgrid,
+    /// Deliver via the `Postmark` API. Requires a [`PostmarkConfig`].
+    Postmark,
+    /// Deliver via the `Mailgun` API. Requires a [`MailgunConfig`].
+    Mailgun,
+    /// Deliver via the `Mailtrap` Sending API. Requires a [`MailtrapConfig`].
+    Mailtrap,
 }
 
 impl Default for EmailTransport {
@@ -252,12 +262,64 @@ pub struct SmtpConfig {
     pub password: Option<String>,
 }
 
+/// `SendGrid` transport settings.
+///
+/// Required when [`EmailTransport::Sendgrid`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SendgridConfig {
+    /// `SendGrid` API key.
+    pub api_key: String,
+}
+
+/// `Postmark` transport settings.
+///
+/// Required when [`EmailTransport::Postmark`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostmarkConfig {
+    /// `Postmark` server token.
+    pub server_token: String,
+}
+
+/// `Mailgun` region selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailgunRegion {
+    /// US region (default).
+    #[default]
+    Us,
+    /// EU region.
+    Eu,
+}
+
+/// `Mailgun` transport settings.
+///
+/// Required when [`EmailTransport::Mailgun`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MailgunConfig {
+    /// `Mailgun` API key.
+    pub api_key: String,
+    /// `Mailgun` sending domain (e.g. `mg.example.com`).
+    pub domain: String,
+    /// Region selector. Defaults to US.
+    #[serde(default)]
+    pub region: MailgunRegion,
+}
+
+/// `Mailtrap` transport settings.
+///
+/// Required when [`EmailTransport::Mailtrap`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MailtrapConfig {
+    /// `Mailtrap` API key.
+    pub api_key: String,
+}
+
 /// Email sender configuration.
 ///
 /// Controls how verification emails (and later, other transactional mail)
 /// are delivered. Defaults to the `Log` transport, suitable for local
-/// development. Production deployments should set `transport: smtp` and
-/// provide an [`SmtpConfig`] block.
+/// development. Production deployments should set `transport: smtp` (or
+/// one of the HTTP providers) and provide the corresponding config block.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EmailConfig {
     /// Which transport to use for outbound email.
@@ -270,6 +332,26 @@ pub struct EmailConfig {
     /// SMTP-specific settings. Required when `transport == Smtp`.
     #[serde(default)]
     pub smtp: Option<SmtpConfig>,
+    /// `SendGrid`-specific settings. Required when `transport == Sendgrid`.
+    #[serde(default)]
+    pub sendgrid: Option<SendgridConfig>,
+    /// `Postmark`-specific settings. Required when `transport == Postmark`.
+    #[serde(default)]
+    pub postmark: Option<PostmarkConfig>,
+    /// `Mailgun`-specific settings. Required when `transport == Mailgun`.
+    #[serde(default)]
+    pub mailgun: Option<MailgunConfig>,
+    /// `Mailtrap`-specific settings. Required when `transport == Mailtrap`.
+    #[serde(default)]
+    pub mailtrap: Option<MailtrapConfig>,
+    /// Global email branding defaults. Per-tenant overrides are stored
+    /// in `TenantConfig.email_branding`.
+    #[serde(default)]
+    pub branding: Option<EmailBranding>,
+    /// Optional directory containing custom Tera email templates.
+    /// If set, templates from this directory override the compiled defaults.
+    #[serde(default)]
+    pub templates_dir: Option<String>,
 }
 
 /// First-run onboarding configuration.

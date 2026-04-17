@@ -20,7 +20,11 @@ mod validation;
 pub(crate) mod webauthn;
 
 pub use credentials::{CleartextPassword, CredentialConfig};
-pub use email::{EmailError, EmailSender, LoggingEmailSender, SharedEmailSender};
+pub use email::{
+    ApiKey, EmailBranding, EmailError, EmailMessage, EmailSender, EmailService, LoggingEmailSender,
+    MailgunEmailSender, MailtrapEmailSender, PostmarkEmailSender, SendgridEmailSender,
+    SharedEmailSender, StubHttpTransport,
+};
 pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
@@ -526,6 +530,40 @@ pub trait IdentityEngine: Send + Sync {
         &self,
         tenant_id: &TenantId,
         token: &str,
+    ) -> Result<UserId, IdentityError>;
+
+    // ===== Password reset =====
+
+    /// Requests a password reset token for the given email address.
+    ///
+    /// If the email belongs to an existing user, generates a random token,
+    /// stores its SHA-256 hash under `rst:token:{hash}`, and returns
+    /// `Some(plaintext_token)`. If the email is unknown, returns `None`.
+    ///
+    /// Unlike magic links, password reset tokens MUST NOT auto-create
+    /// accounts for unknown emails.
+    ///
+    /// Rate-limited per email address (reuses magic link rate tracker).
+    fn request_password_reset(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<Option<String>, IdentityError>;
+
+    /// Resets a user's password using a password reset token.
+    ///
+    /// Validates the token (exists, not expired, not used), marks it as
+    /// used, sets the new password via `set_password()`, and returns the
+    /// user ID.
+    ///
+    /// Returns `Err(PasswordResetTokenInvalid)` if the token is not found,
+    /// expired, or already used. Intentionally vague for enumeration
+    /// resistance.
+    fn reset_password_with_token(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+        new_password: &CleartextPassword,
     ) -> Result<UserId, IdentityError>;
 
     // ===== Email verification (onboarding) =====

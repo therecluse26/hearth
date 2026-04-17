@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, SubjectRef};
 use hearth::core::{Clock, SystemClock};
-use hearth::identity::email::{EmailError, EmailSender};
+use hearth::identity::email::{EmailBranding, EmailError, EmailMessage, EmailSender, EmailService};
 use hearth::identity::onboarding::{
     consume_setup_token, ensure_setup_token, is_first_run, OnboardingError, OnboardingService,
     SETUP_TOKEN_FILENAME,
@@ -29,14 +29,14 @@ use hearth::identity::{
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
-/// Test-only email sender that records every sent message.
+/// Test-only email sender that records every sent [`EmailMessage`].
 #[derive(Default)]
 struct RecordingEmailSender {
-    messages: Mutex<Vec<(String, String)>>,
+    messages: Mutex<Vec<EmailMessage>>,
 }
 
 impl RecordingEmailSender {
-    fn last(&self) -> Option<(String, String)> {
+    fn last(&self) -> Option<EmailMessage> {
         self.messages.lock().expect("lock").last().cloned()
     }
 
@@ -46,19 +46,8 @@ impl RecordingEmailSender {
 }
 
 impl EmailSender for RecordingEmailSender {
-    fn send_verification_email(&self, to: &str, verification_url: &str) -> Result<(), EmailError> {
-        self.messages
-            .lock()
-            .expect("lock")
-            .push((to.to_string(), verification_url.to_string()));
-        Ok(())
-    }
-
-    fn send_setup_notification(&self, to: &str, setup_url: &str) -> Result<(), EmailError> {
-        self.messages
-            .lock()
-            .expect("lock")
-            .push((to.to_string(), setup_url.to_string()));
+    fn send(&self, message: &EmailMessage) -> Result<(), EmailError> {
+        self.messages.lock().expect("lock").push(message.clone());
         Ok(())
     }
 }
@@ -68,17 +57,7 @@ impl EmailSender for RecordingEmailSender {
 struct FailingEmailSender;
 
 impl EmailSender for FailingEmailSender {
-    fn send_verification_email(
-        &self,
-        _to: &str,
-        _verification_url: &str,
-    ) -> Result<(), EmailError> {
-        Err(EmailError::Transport {
-            reason: "test-only failure".to_string(),
-        })
-    }
-
-    fn send_setup_notification(&self, _to: &str, _setup_url: &str) -> Result<(), EmailError> {
+    fn send(&self, _message: &EmailMessage) -> Result<(), EmailError> {
         Err(EmailError::Transport {
             reason: "test-only failure".to_string(),
         })
@@ -90,6 +69,8 @@ struct TestEnv {
     identity: Arc<dyn IdentityEngine>,
     authz: Arc<dyn AuthorizationEngine>,
     email: Arc<RecordingEmailSender>,
+    #[allow(dead_code)]
+    email_service: Arc<EmailService>,
     service: Arc<OnboardingService>,
     temp: tempfile::TempDir,
 }
@@ -117,18 +98,25 @@ impl TestEnv {
             EmbeddedIdentityEngine::new(Arc::clone(&storage_dyn), clock, identity_cfg)
                 .expect("identity engine"),
         );
-        let email_dyn: hearth::identity::SharedEmailSender =
-            Arc::clone(&email) as Arc<dyn EmailSender>;
+        let email_service = Arc::new(
+            EmailService::new(
+                Arc::clone(&email) as hearth::identity::SharedEmailSender,
+                EmailBranding::default(),
+                None,
+            )
+            .expect("email service"),
+        );
         let service = Arc::new(OnboardingService::new(
             Arc::clone(&identity),
             Arc::clone(&authz),
-            email_dyn,
+            Arc::clone(&email_service),
             temp.path().to_path_buf(),
         ));
         Self {
             identity,
             authz,
             email,
+            email_service,
             service,
             temp,
         }
@@ -305,10 +293,20 @@ fn complete_setup_creates_tenant_admin_and_sends_email() {
 
     // Email sent once with a non-empty verification URL.
     assert_eq!(env.email.count(), 1);
-    let (to, url) = env.email.last().expect("email sent");
-    assert_eq!(to, "admin@example.com");
-    assert!(url.starts_with("https://auth.example.com/ui/verify-email?token="));
-    assert_eq!(url, outcome.verification_url);
+    let msg = env.email.last().expect("email sent");
+    assert_eq!(msg.to, "admin@example.com");
+    assert!(
+        msg.text_body.contains(&outcome.verification_url),
+        "text body should contain verification URL: {}",
+        msg.text_body
+    );
+    assert!(
+        outcome
+            .verification_url
+            .starts_with("https://auth.example.com/ui/verify-email?token="),
+        "verification URL shape: {}",
+        outcome.verification_url
+    );
 
     // Zanzibar admin tuple was written.
     let admin_object = ObjectRef::new("hearth", "admin").expect("object");
@@ -377,9 +375,15 @@ fn verify_email_token_activates_user_and_unblocks_session() {
         )
         .expect("complete_setup");
 
-    // Extract the token from the sent email URL.
-    let (_, url) = env.email.last().expect("email captured");
-    let token = url.split("token=").nth(1).expect("token query").to_string();
+    // Extract the token from the verification URL embedded in the email.
+    let msg = env.email.last().expect("email captured");
+    let token = msg
+        .text_body
+        .split("token=")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .expect("token in text body")
+        .to_string();
 
     let user_id = env
         .identity
@@ -417,8 +421,14 @@ fn verify_email_token_rejects_reuse() {
         )
         .expect("complete_setup");
 
-    let (_, url) = env.email.last().expect("email captured");
-    let token = url.split("token=").nth(1).expect("token").to_string();
+    let msg = env.email.last().expect("email captured");
+    let token = msg
+        .text_body
+        .split("token=")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .expect("token in text body")
+        .to_string();
 
     // First use succeeds.
     env.identity
@@ -505,11 +515,18 @@ fn complete_setup_surfaces_email_delivery_failure() {
     };
     let identity: Arc<dyn IdentityEngine> =
         Arc::new(EmbeddedIdentityEngine::new(storage_dyn, clock, identity_cfg).expect("identity"));
-    let email: hearth::identity::SharedEmailSender = Arc::new(FailingEmailSender);
+    let email_service = Arc::new(
+        EmailService::new(
+            Arc::new(FailingEmailSender) as hearth::identity::SharedEmailSender,
+            EmailBranding::default(),
+            None,
+        )
+        .expect("email service"),
+    );
     let service = OnboardingService::new(
         Arc::clone(&identity),
         Arc::clone(&authz),
-        email,
+        email_service,
         temp.path().to_path_buf(),
     );
 
@@ -539,28 +556,35 @@ fn complete_setup_surfaces_email_delivery_failure() {
 #[test]
 fn ensure_setup_token_sends_notification_email_when_configured() {
     let env = TestEnv::new();
-    let sender = Arc::new(RecordingEmailSender::default());
+    let recording_sender = Arc::new(RecordingEmailSender::default());
+    let email_service = EmailService::new(
+        Arc::clone(&recording_sender) as hearth::identity::SharedEmailSender,
+        EmailBranding::default(),
+        None,
+    )
+    .expect("email service");
 
     let token = ensure_setup_token(
         env.identity.as_ref(),
         env.data_dir(),
         Some("https://auth.example.com"),
-        Some(sender.as_ref()),
+        Some(&email_service),
         Some("ops@example.com"),
     )
     .expect("ensure")
     .expect("token on first run");
 
-    assert_eq!(sender.count(), 1, "exactly one notification email sent");
-    let (to, url) = sender.last().expect("message recorded");
-    assert_eq!(to, "ops@example.com");
-    assert!(
-        url.contains(&token),
-        "notification URL must contain the setup token: {url}"
+    assert_eq!(
+        recording_sender.count(),
+        1,
+        "exactly one notification email sent"
     );
+    let msg = recording_sender.last().expect("message recorded");
+    assert_eq!(msg.to, "ops@example.com");
     assert!(
-        url.starts_with("https://auth.example.com/ui/setup?token="),
-        "unexpected URL: {url}"
+        msg.text_body.contains(&token),
+        "notification text must contain the setup token: {}",
+        msg.text_body
     );
 }
 
@@ -584,14 +608,19 @@ fn ensure_setup_token_no_email_when_sender_absent() {
 #[test]
 fn ensure_setup_token_failing_email_is_non_fatal() {
     let env = TestEnv::new();
-    let sender = FailingEmailSender;
+    let email_service = EmailService::new(
+        Arc::new(FailingEmailSender) as hearth::identity::SharedEmailSender,
+        EmailBranding::default(),
+        None,
+    )
+    .expect("email service");
 
     // A failing email sender must not propagate as an error — ensure returns Ok.
     let token = ensure_setup_token(
         env.identity.as_ref(),
         env.data_dir(),
         Some("https://auth.example.com"),
-        Some(&sender),
+        Some(&email_service),
         Some("ops@example.com"),
     )
     .expect("ensure must succeed even when email fails")

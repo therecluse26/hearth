@@ -19,7 +19,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
 use hearth::core::{Clock, SystemClock, TenantId, UserId};
-use hearth::identity::email::EmailSender;
+use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{
     CleartextPassword, CreateTenantRequest, CreateUserRequest, CredentialConfig,
@@ -29,23 +29,16 @@ use hearth::protocol::web::{self, CookieSecret, WebState};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
-struct NullEmailSender;
-
-impl EmailSender for NullEmailSender {
-    fn send_verification_email(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<(), hearth::identity::email::EmailError> {
-        Ok(())
-    }
-    fn send_setup_notification(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<(), hearth::identity::email::EmailError> {
-        Ok(())
-    }
+/// Builds a no-op email service for tests that don't exercise email delivery.
+fn null_email_service() -> Arc<EmailService> {
+    Arc::new(
+        EmailService::new(
+            Arc::new(LoggingEmailSender::new()),
+            EmailBranding::default(),
+            None,
+        )
+        .expect("email service"),
+    )
 }
 
 const COOKIE_SECRET_BYTES: [u8; 32] = [42u8; 32];
@@ -121,7 +114,7 @@ fn build_rig() -> TestRig {
     let onboarding = Arc::new(OnboardingService::new(
         Arc::clone(&identity),
         authz.clone() as Arc<dyn hearth::authz::AuthorizationEngine>,
-        Arc::new(NullEmailSender) as Arc<dyn EmailSender>,
+        null_email_service(),
         data_dir,
     ));
     let state = WebState::new(
@@ -130,6 +123,7 @@ fn build_rig() -> TestRig {
         audit as Arc<dyn hearth::audit::AuditEngine>,
         onboarding,
         CookieSecret::from_bytes(COOKIE_SECRET_BYTES),
+        None,
     );
     let app = web::router(state);
 
@@ -186,7 +180,12 @@ fn current_unix_secs() -> u64 {
 }
 
 /// Submits the login form and returns the response.
-async fn post_login(app: axum::Router, email: &str, password: &str, return_to: Option<&str>) -> axum::response::Response {
+async fn post_login(
+    app: axum::Router,
+    email: &str,
+    password: &str,
+    return_to: Option<&str>,
+) -> axum::response::Response {
     let mut body = format!("email={email}&password={password}");
     if let Some(r) = return_to {
         body.push_str(&format!("&return_to={r}"));
@@ -248,7 +247,9 @@ async fn login_without_mfa_creates_session_immediately() {
         "session cookie must be set: {cookies:?}"
     );
     assert!(
-        !cookies.iter().any(|c| c.starts_with("hearth_ui_mfa_pending=")),
+        !cookies
+            .iter()
+            .any(|c| c.starts_with("hearth_ui_mfa_pending=")),
         "MFA pending cookie must NOT be set: {cookies:?}"
     );
 }
@@ -270,11 +271,15 @@ async fn login_with_mfa_redirects_to_challenge() {
 
     let cookies = set_cookies(&response);
     assert!(
-        cookies.iter().any(|c| c.starts_with("hearth_ui_mfa_pending=")),
+        cookies
+            .iter()
+            .any(|c| c.starts_with("hearth_ui_mfa_pending=")),
         "MFA pending cookie must be set: {cookies:?}"
     );
     assert!(
-        !cookies.iter().any(|c| c.starts_with("hearth_ui_session=") && !c.contains("Max-Age=0")),
+        !cookies
+            .iter()
+            .any(|c| c.starts_with("hearth_ui_session=") && !c.contains("Max-Age=0")),
         "session cookie must NOT be set: {cookies:?}"
     );
 }
@@ -314,8 +319,8 @@ async fn mfa_challenge_get_with_valid_pending_renders_form() {
     // First log in to get the pending cookie.
     let login_resp = post_login(rig.app.clone(), "alice@acme.test", PASSWORD, None).await;
     let cookies = set_cookies(&login_resp);
-    let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
-        .expect("pending cookie must be set");
+    let pending_value =
+        find_cookie_value(&cookies, "hearth_ui_mfa_pending").expect("pending cookie must be set");
 
     // GET /ui/mfa-challenge with the pending cookie.
     let response = rig
@@ -325,7 +330,10 @@ async fn mfa_challenge_get_with_valid_pending_renders_form() {
             Request::builder()
                 .method("GET")
                 .uri("/ui/mfa-challenge")
-                .header(header::COOKIE, format!("hearth_ui_mfa_pending={pending_value}"))
+                .header(
+                    header::COOKIE,
+                    format!("hearth_ui_mfa_pending={pending_value}"),
+                )
                 .body(Body::empty())
                 .expect("build request"),
         )
@@ -351,8 +359,8 @@ async fn mfa_challenge_post_valid_totp_creates_session() {
     // Login to get pending cookie.
     let login_resp = post_login(rig.app.clone(), "alice@acme.test", PASSWORD, None).await;
     let cookies = set_cookies(&login_resp);
-    let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
-        .expect("pending cookie must be set");
+    let pending_value =
+        find_cookie_value(&cookies, "hearth_ui_mfa_pending").expect("pending cookie must be set");
 
     // Compute a valid TOTP code for the *next* time step.  Enrollment already
     // consumed the current step, so using `current_unix_secs()` would hit replay
@@ -367,7 +375,10 @@ async fn mfa_challenge_post_valid_totp_creates_session() {
                 .method("POST")
                 .uri("/ui/mfa-challenge")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("hearth_ui_mfa_pending={pending_value}"))
+                .header(
+                    header::COOKIE,
+                    format!("hearth_ui_mfa_pending={pending_value}"),
+                )
                 .body(Body::from(format!("code={code}")))
                 .expect("build request"),
         )
@@ -406,8 +417,8 @@ async fn mfa_challenge_post_invalid_totp_shows_error() {
 
     let login_resp = post_login(rig.app.clone(), "alice@acme.test", PASSWORD, None).await;
     let cookies = set_cookies(&login_resp);
-    let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
-        .expect("pending cookie must be set");
+    let pending_value =
+        find_cookie_value(&cookies, "hearth_ui_mfa_pending").expect("pending cookie must be set");
 
     let response = rig
         .app
@@ -417,7 +428,10 @@ async fn mfa_challenge_post_invalid_totp_shows_error() {
                 .method("POST")
                 .uri("/ui/mfa-challenge")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("hearth_ui_mfa_pending={pending_value}"))
+                .header(
+                    header::COOKIE,
+                    format!("hearth_ui_mfa_pending={pending_value}"),
+                )
                 .body(Body::from("code=000000"))
                 .expect("build request"),
         )
@@ -514,8 +528,8 @@ async fn mfa_challenge_post_recovery_code_creates_session() {
     // Login to get pending cookie.
     let login_resp = post_login(rig.app.clone(), "alice@acme.test", PASSWORD, None).await;
     let cookies = set_cookies(&login_resp);
-    let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
-        .expect("pending cookie must be set");
+    let pending_value =
+        find_cookie_value(&cookies, "hearth_ui_mfa_pending").expect("pending cookie must be set");
 
     // Submit a recovery code instead of TOTP.
     let recovery = &recovery_codes[0];
@@ -527,7 +541,10 @@ async fn mfa_challenge_post_recovery_code_creates_session() {
                 .method("POST")
                 .uri("/ui/mfa-challenge")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("hearth_ui_mfa_pending={pending_value}"))
+                .header(
+                    header::COOKIE,
+                    format!("hearth_ui_mfa_pending={pending_value}"),
+                )
                 .body(Body::from(format!("code={recovery}")))
                 .expect("build request"),
         )
@@ -566,8 +583,8 @@ async fn mfa_challenge_preserves_return_to() {
     )
     .await;
     let cookies = set_cookies(&login_resp);
-    let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
-        .expect("pending cookie must be set");
+    let pending_value =
+        find_cookie_value(&cookies, "hearth_ui_mfa_pending").expect("pending cookie must be set");
 
     // Submit valid TOTP for the next step (current step was consumed by enrollment).
     let code = compute_totp_code(&secret, current_unix_secs() + 30);
@@ -579,7 +596,10 @@ async fn mfa_challenge_preserves_return_to() {
                 .method("POST")
                 .uri("/ui/mfa-challenge")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("hearth_ui_mfa_pending={pending_value}"))
+                .header(
+                    header::COOKIE,
+                    format!("hearth_ui_mfa_pending={pending_value}"),
+                )
                 .body(Body::from(format!("code={code}")))
                 .expect("build request"),
         )
@@ -606,8 +626,8 @@ async fn mfa_challenge_post_tampered_cookie_rejected() {
     // Login to get a real pending cookie.
     let login_resp = post_login(rig.app.clone(), "alice@acme.test", PASSWORD, None).await;
     let cookies = set_cookies(&login_resp);
-    let pending_value = find_cookie_value(&cookies, "hearth_ui_mfa_pending")
-        .expect("pending cookie must be set");
+    let pending_value =
+        find_cookie_value(&cookies, "hearth_ui_mfa_pending").expect("pending cookie must be set");
 
     // Tamper with the cookie: replace the first char of the MAC (last segment).
     let mut parts: Vec<&str> = pending_value.splitn(5, '.').collect();
@@ -629,10 +649,7 @@ async fn mfa_challenge_post_tampered_cookie_rejected() {
                 .method("POST")
                 .uri("/ui/mfa-challenge")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(
-                    header::COOKIE,
-                    format!("hearth_ui_mfa_pending={tampered}"),
-                )
+                .header(header::COOKIE, format!("hearth_ui_mfa_pending={tampered}"))
                 .body(Body::from("code=123456"))
                 .expect("build request"),
         )

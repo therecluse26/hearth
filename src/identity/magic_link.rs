@@ -20,6 +20,9 @@ use crate::identity::error::IdentityError;
 /// Magic link expiry: 15 minutes in microseconds.
 pub(crate) const MAGIC_LINK_EXPIRY_MICROS: i64 = 15 * 60 * 1_000_000;
 
+/// Password reset token expiry: 30 minutes in microseconds.
+pub(crate) const PASSWORD_RESET_EXPIRY_MICROS: i64 = 30 * 60 * 1_000_000;
+
 /// Number of random bytes for a magic link token.
 pub(crate) const MAGIC_LINK_TOKEN_BYTES: usize = 32;
 
@@ -37,6 +40,22 @@ pub(crate) struct StoredMagicLink {
     /// When this link was created (Unix microseconds).
     pub created_at_micros: i64,
     /// Whether this link has already been used.
+    pub used: bool,
+}
+
+/// Stored state for a pending password reset token.
+///
+/// Persisted under `rst:token:{sha256_hex_of_token}` within the tenant's
+/// key space. The plaintext token is never stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StoredPasswordReset {
+    /// The email address this reset was requested for.
+    pub email: String,
+    /// The user ID whose password will be reset.
+    pub user_id: String,
+    /// When this token was created (Unix microseconds).
+    pub created_at_micros: i64,
+    /// Whether this token has already been used.
     pub used: bool,
 }
 

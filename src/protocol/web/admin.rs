@@ -1569,3 +1569,57 @@ pub async fn admin_audit_list(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test email
+// ---------------------------------------------------------------------------
+
+/// Form data for the admin test email action.
+#[derive(Debug, Deserialize)]
+pub struct TestEmailForm {
+    /// The CSRF token echoed from the form.
+    pub csrf: String,
+    /// The recipient email address.
+    pub email: String,
+}
+
+/// Sends a test email to verify transport configuration.
+///
+/// Requires admin role. On success, returns a flash message confirming
+/// delivery. On failure, returns a flash message with the error.
+pub async fn admin_test_email(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Form(form): Form<TestEmailForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let email = form.email.trim();
+    if email.is_empty() {
+        return Redirect::to("/ui/admin/settings?flash=test_email_empty").into_response();
+    }
+
+    match &state.email {
+        Some(email_service) => {
+            let tenant_branding = state
+                .identity
+                .get_tenant(&session.tenant_id)
+                .ok()
+                .flatten()
+                .and_then(|t| t.config().email_branding.clone());
+            match email_service.send_test_email(email, tenant_branding.as_ref()) {
+                Ok(()) => {
+                    tracing::info!(to = %email, "admin test email sent");
+                    Redirect::to("/ui/admin/settings?flash=test_email_sent").into_response()
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, to = %email, "admin test email failed");
+                    Redirect::to("/ui/admin/settings?flash=test_email_failed").into_response()
+                }
+            }
+        }
+        None => Redirect::to("/ui/admin/settings?flash=test_email_no_transport").into_response(),
+    }
+}

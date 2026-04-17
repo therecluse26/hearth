@@ -7,10 +7,10 @@
 //! where the config shape, validator, and sender wiring drift out of
 //! sync with each other.
 //!
-//! See `src/identity/email.rs` for unit tests on the sender itself.
+//! See `src/identity/email/smtp.rs` for unit tests on the sender itself.
 
 use hearth::config::{Config, EmailTransport, SmtpConfig, SmtpEncryption};
-use hearth::identity::email::{EmailSender, SmtpEmailSender};
+use hearth::identity::email::{EmailMessage, EmailSender, SmtpEmailSender};
 use lettre::message::Mailbox;
 use lettre::transport::stub::StubTransport;
 
@@ -114,9 +114,6 @@ email:
 
 #[test]
 fn log_transport_accepts_minimal_config() {
-    // Sanity check: existing `transport: log` default path still works
-    // with no `smtp` block present. Guards against the new SMTP
-    // validator leaking into the default path.
     let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
@@ -128,9 +125,6 @@ storage:
 
 // ===== End-to-end delivery through StubTransport =====
 
-/// Mirror of the production wiring in `build_email_sender` but with a
-/// `StubTransport` swapped in — lets us assert the message reaches its
-/// intended shape without opening a socket.
 fn stub_sender_from_config(config: &Config, stub: StubTransport) -> SmtpEmailSender<StubTransport> {
     assert_eq!(
         config.email.transport,
@@ -164,18 +158,20 @@ email:
     let stub = StubTransport::new_ok();
     let sender = stub_sender_from_config(&config, stub.clone());
 
-    sender
-        .send_verification_email(
-            "alice@example.com",
-            "https://auth.example.com/ui/verify-email?token=Qx_42",
-        )
-        .expect("send should succeed through stub");
+    let msg = EmailMessage {
+        to: "alice@example.com".to_string(),
+        subject: "Verify your Hearth account".to_string(),
+        text_body: "Click: https://auth.example.com/ui/verify-email?token=Qx_42".to_string(),
+        html_body:
+            "<p>Click <a href=\"https://auth.example.com/ui/verify-email?token=Qx_42\">here</a></p>"
+                .to_string(),
+    };
+    sender.send(&msg).expect("send should succeed through stub");
 
     let messages = stub.messages();
     assert_eq!(messages.len(), 1, "exactly one message");
     let (envelope, body) = &messages[0];
 
-    // Envelope header round-trip.
     assert_eq!(
         envelope.from().map(ToString::to_string),
         Some("auth@example.com".to_string()),
@@ -183,7 +179,6 @@ email:
     let recipients: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
     assert_eq!(recipients, vec!["alice@example.com".to_string()]);
 
-    // Body contains the verification URL and the advertised subject.
     assert!(
         body.contains("Subject: Verify your Hearth account"),
         "missing subject: {body}"
@@ -196,10 +191,6 @@ email:
 
 #[test]
 fn pipeline_preserves_credentials_through_to_sender_shape() {
-    // Credentials are not observable in the StubTransport output — they
-    // only take effect on the real SMTP dialogue — but we still want to
-    // assert that a validated, credentialed config builds end-to-end
-    // without either the validator or construction rejecting it.
     let cfg = hearth::config::EmailConfig {
         transport: EmailTransport::Smtp,
         from: Some("auth@example.com".to_string()),
@@ -210,6 +201,7 @@ fn pipeline_preserves_credentials_through_to_sender_shape() {
             username: Some("notifications".to_string()),
             password: Some("hunter2".to_string()),
         }),
+        ..hearth::config::EmailConfig::default()
     };
     let sender = hearth::identity::email::smtp_sender_from_config(&cfg)
         .expect("credentialed SMTP config should build");

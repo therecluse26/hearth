@@ -1,0 +1,9 @@
+{{ product_name }} — Test Email
+
+This is a test email from {{ product_name }}.
+
+If you received this message, your email transport is configured correctly.
+{% if support_email.is_some() %}
+Need help? Contact {{ support_email.as_deref().unwrap_or_default() }}
+{% endif %}
+{% if custom_footer_text.is_some() %}{{ custom_footer_text.as_deref().unwrap_or_default() }}{% endif %}

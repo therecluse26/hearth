@@ -26,7 +26,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 use crate::identity::magic_link::{
-    self, MagicLinkResponse, StoredMagicLink, MAGIC_LINK_EXPIRY_MICROS,
+    self, MagicLinkResponse, StoredMagicLink, StoredPasswordReset, MAGIC_LINK_EXPIRY_MICROS,
+    PASSWORD_RESET_EXPIRY_MICROS,
 };
 
 /// Email-verification token expiry: 24 hours in microseconds.
@@ -191,6 +192,11 @@ pub struct EmbeddedIdentityEngine {
     /// Limits the number of magic link requests per email per hour.
     /// Key format: `magic:{tenant}:{email}`.
     magic_link_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Per-email password reset rate trackers.
+    ///
+    /// Limits the number of password reset requests per email per hour.
+    /// Key format: `reset:{tenant}:{email}`.
+    password_reset_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Pending `WebAuthn` challenges awaiting completion.
     webauthn_challenges: WebAuthnChallengeStore,
     /// Serializes tenant-record lifecycle mutations (create/update/delete).
@@ -235,6 +241,7 @@ impl EmbeddedIdentityEngine {
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
+            password_reset_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             tenant_ops_lock: Mutex::new(()),
@@ -261,6 +268,7 @@ impl EmbeddedIdentityEngine {
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
+            password_reset_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             tenant_ops_lock: Mutex::new(()),
@@ -420,6 +428,57 @@ impl EmbeddedIdentityEngine {
             .magic_link_rate_trackers
             .lock()
             .expect("magic link tracker lock");
+        let tracker = trackers.entry(key).or_insert(AttemptTracker {
+            failed_count: 0,
+            last_failure_micros: now,
+        });
+        tracker.failed_count += 1;
+        tracker.last_failure_micros = now;
+    }
+
+    // ===== Password reset rate limiting helpers =====
+
+    /// Password reset rate limit: 3 requests per email per hour.
+    const PASSWORD_RESET_MAX_REQUESTS: u32 = 3;
+    /// Password reset rate limit window: 1 hour in microseconds.
+    const PASSWORD_RESET_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
+
+    /// Builds a password reset rate tracker key from tenant and email.
+    fn password_reset_tracker_key(tenant_id: &TenantId, email: &str) -> String {
+        format!("reset:{}:{email}", tenant_id.as_uuid())
+    }
+
+    /// Checks whether password reset requests for this email are rate-limited.
+    fn check_password_reset_rate_limit(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<(), IdentityError> {
+        let key = Self::password_reset_tracker_key(tenant_id, email);
+        let trackers = self
+            .password_reset_rate_trackers
+            .lock()
+            .expect("password reset tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= Self::PASSWORD_RESET_MAX_REQUESTS {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < Self::PASSWORD_RESET_RATE_WINDOW_MICROS {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a password reset request for rate limiting.
+    fn record_password_reset_request(&self, tenant_id: &TenantId, email: &str) {
+        let key = Self::password_reset_tracker_key(tenant_id, email);
+        let now = self.clock.now().as_micros();
+        let mut trackers = self
+            .password_reset_rate_trackers
+            .lock()
+            .expect("password reset tracker lock");
         let tracker = trackers.entry(key).or_insert(AttemptTracker {
             failed_count: 0,
             last_failure_micros: now,
@@ -912,6 +971,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             &b"webauthn:cred:"[..],
             &b"webauthn:disc:"[..],
             &b"magic:link:"[..],
+            &b"email:verify:"[..],
+            &b"rst:token:"[..],
         ] {
             let end = keys::prefix_end(prefix);
             let entries = self
@@ -3217,6 +3278,114 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let user = self.create_user(tenant_id, &request)?;
             Ok(user.id().clone())
         }
+    }
+
+    // ===== Password reset =====
+
+    fn request_password_reset(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<Option<String>, IdentityError> {
+        // 1. Normalize email
+        let normalized = validation::validate_email(email)?;
+
+        // 2. Check per-email rate limit (3 per hour)
+        self.check_password_reset_rate_limit(tenant_id, &normalized)?;
+
+        // 3. Look up user by email — return None for unknown (enumeration resistance)
+        let Some(user) = self.get_user_by_email(tenant_id, &normalized)? else {
+            // Record the attempt even for unknown emails (prevents rate-limit bypass)
+            self.record_password_reset_request(tenant_id, &normalized);
+            return Ok(None);
+        };
+
+        // 4. Generate random token (reuse magic link token generator)
+        let token = magic_link::generate_magic_link_token()?;
+
+        // 5. SHA-256 hash the token
+        let token_hash = Self::sha256_hex(token.as_str().as_bytes());
+
+        // 6. Store the password reset record
+        let now = self.clock.now().as_micros();
+        let stored = StoredPasswordReset {
+            email: normalized.clone(),
+            user_id: user.id().as_uuid().to_string(),
+            created_at_micros: now,
+            used: false,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let key = keys::encode_password_reset_token(&token_hash);
+        self.storage
+            .put(tenant_id, &key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 7. Record rate limit event
+        self.record_password_reset_request(tenant_id, &normalized);
+
+        // 8. Return plaintext token (shown once)
+        Ok(Some(token.as_str().to_string()))
+    }
+
+    fn reset_password_with_token(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+        new_password: &CleartextPassword,
+    ) -> Result<UserId, IdentityError> {
+        // 1. SHA-256 hash the incoming token
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let key = keys::encode_password_reset_token(&token_hash);
+
+        // 2. Look up stored record
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::PasswordResetTokenInvalid)?;
+
+        let mut stored: StoredPasswordReset =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 3. Check if already used
+        if stored.used {
+            return Err(IdentityError::PasswordResetTokenInvalid);
+        }
+
+        // 4. Check expiry (30 minutes)
+        let now = self.clock.now().as_micros();
+        if now - stored.created_at_micros > PASSWORD_RESET_EXPIRY_MICROS {
+            // Clean up stale record
+            self.storage
+                .delete(tenant_id, &key)
+                .map_err(Self::storage_err)?;
+            return Err(IdentityError::PasswordResetTokenInvalid);
+        }
+
+        // 5. Mark as used
+        stored.used = true;
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 6. Parse user ID and set new password
+        let uuid =
+            uuid::Uuid::parse_str(&stored.user_id).map_err(|e| IdentityError::Serialization {
+                reason: format!("invalid stored user_id: {e}"),
+            })?;
+        let user_id = UserId::new(uuid);
+        self.set_password(tenant_id, &user_id, new_password)?;
+
+        Ok(user_id)
     }
 
     // ===== Email verification (onboarding) =====
@@ -5763,6 +5932,7 @@ mod tests {
             session_ttl_micros: Some(3_600_000_000), // 1 hour
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
+            email_branding: None,
         };
         let tenant = engine
             .create_tenant(&CreateTenantRequest {
@@ -5891,6 +6061,7 @@ mod tests {
             session_ttl_micros: Some(7_200_000_000), // 2 hours
             password_memory_cost: Some(32768),
             password_time_cost: None,
+            email_branding: None,
         };
         let updated = engine
             .update_tenant(

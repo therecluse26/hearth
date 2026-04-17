@@ -232,7 +232,10 @@ fn compute_mfa_pending_mac(
 /// Extracts a named cookie value from raw `HeaderMap` (not `Parts`).
 ///
 /// Useful for pre-auth handlers that receive `HeaderMap` directly.
-pub fn cookie_value_from_headers<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+pub fn cookie_value_from_headers<'a>(
+    headers: &'a axum::http::HeaderMap,
+    name: &str,
+) -> Option<&'a str> {
     let prefix = format!("{name}=");
     for value in headers.get_all(header::COOKIE) {
         let Ok(header_str) = value.to_str() else {
@@ -755,11 +758,7 @@ mod tests {
             .expect("value");
 
         // Replace the user_id segment with a different UUID.
-        let tampered = value.replacen(
-            &uid.as_uuid().to_string(),
-            &other.as_uuid().to_string(),
-            1,
-        );
+        let tampered = value.replacen(&uid.as_uuid().to_string(), &other.as_uuid().to_string(), 1);
         assert!(
             parse_mfa_pending_cookie(&secret, &tampered).is_none(),
             "tampered user_id should be rejected"
@@ -806,8 +805,7 @@ mod tests {
             .as_secs();
         let expired = now.saturating_sub(10);
         let return_to_b64 = "";
-        let mac =
-            compute_mfa_pending_mac(&secret, &uid, &tid, expired, return_to_b64);
+        let mac = compute_mfa_pending_mac(&secret, &uid, &tid, expired, return_to_b64);
         let value = format!(
             "{}.{}.{expired}.{return_to_b64}.{mac}",
             uid.as_uuid(),
@@ -826,12 +824,7 @@ mod tests {
         let uid = UserId::generate();
         let tid = TenantId::generate();
 
-        let full = issue_mfa_pending_cookie(
-            &secret,
-            &tid,
-            &uid,
-            Some("/ui/admin/users"),
-        );
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, Some("/ui/admin/users"));
         let value = full
             .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
             .expect("prefix")

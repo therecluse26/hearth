@@ -1,0 +1,10 @@
+{% extends "email/base.html" %}
+{% block title %}Verify your {{ product_name }} account{% endblock %}
+{% block content %}
+<p>Click the button below to verify your email address and activate your account.</p>
+<div class="btn-wrapper">
+  <a href="{{ verification_url }}" class="btn">Verify Email</a>
+</div>
+<p class="url-fallback">If the button doesn't work, copy and paste this URL into your browser:<br>{{ verification_url }}</p>
+<p>If you didn't request this, you can safely ignore this message.</p>
+{% endblock %}

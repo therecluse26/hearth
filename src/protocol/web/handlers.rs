@@ -44,8 +44,9 @@ use crate::identity::onboarding::OnboardingError;
 use crate::identity::{CleartextPassword, IdentityError};
 
 use super::auth::{
-    clear_mfa_pending_cookie, cookie_value_from_headers, issue_auth_cookies, issue_mfa_pending_cookie,
-    parse_mfa_pending_cookie, sanitize_return_to, IssuedCookies, MFA_PENDING_COOKIE,
+    clear_mfa_pending_cookie, cookie_value_from_headers, issue_auth_cookies,
+    issue_mfa_pending_cookie, parse_mfa_pending_cookie, sanitize_return_to, IssuedCookies,
+    MFA_PENDING_COOKIE,
 };
 use super::templates::{render, render_status, Flash};
 use super::WebState;
@@ -855,6 +856,304 @@ fn derive_base_url(headers: &HeaderMap) -> String {
         .filter(|s| *s == "https")
         .map_or("http", |_| "https");
     format!("{scheme}://{host}")
+}
+
+// ============================================================================
+// Password reset flow
+// ============================================================================
+
+/// Forgot-password form template.
+#[derive(Template)]
+#[template(path = "ui/forgot_password.html")]
+struct ForgotPasswordTemplate {
+    error: Option<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl ForgotPasswordTemplate {
+    fn new(error: Option<String>) -> Self {
+        Self {
+            error,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// "Check your email" confirmation after requesting a password reset.
+#[derive(Template)]
+#[template(path = "ui/forgot_password_sent.html")]
+struct ForgotPasswordSentTemplate {
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl ForgotPasswordSentTemplate {
+    fn new() -> Self {
+        Self {
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// Reset password form (token in URL).
+#[derive(Template)]
+#[template(path = "ui/reset_password.html")]
+struct ResetPasswordTemplate {
+    token: String,
+    error: Option<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl ResetPasswordTemplate {
+    fn new(token: String, error: Option<String>) -> Self {
+        Self {
+            token,
+            error,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// Success page after password reset.
+#[derive(Template)]
+#[template(path = "ui/reset_password_ok.html")]
+struct ResetPasswordOkTemplate {
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl ResetPasswordOkTemplate {
+    fn new() -> Self {
+        Self {
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// Renders the forgot-password form.
+pub async fn forgot_password_form() -> Response {
+    render(&ForgotPasswordTemplate::new(None))
+}
+
+/// Form data for forgot-password submission.
+#[derive(Debug, Deserialize)]
+pub struct ForgotPasswordForm {
+    /// The email address for the password reset.
+    pub email: String,
+}
+
+/// Handles forgot-password form submission.
+///
+/// Looks up the user across tenants. If found, requests a password reset
+/// token and sends a reset email. Always redirects to the "check your
+/// email" page regardless of whether the email exists (enumeration
+/// resistance).
+pub async fn forgot_password_submit(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Form(form): Form<ForgotPasswordForm>,
+) -> Response {
+    let email = form.email.trim();
+
+    // Walk tenants (same pattern as login)
+    let tenants = match state.identity.list_tenants(None, 100) {
+        Ok(page) => page.items,
+        Err(e) => {
+            tracing::error!(error = %e, "forgot_password: failed to list tenants");
+            return Redirect::to("/ui/forgot-password/sent").into_response();
+        }
+    };
+
+    for tenant in &tenants {
+        match state.identity.request_password_reset(tenant.id(), email) {
+            Ok(Some(token)) => {
+                // Build the reset URL
+                let base = derive_base_url(&headers);
+                let reset_url = format!("{base}/ui/reset-password?token={token}");
+
+                // Send email if service is configured
+                if let Some(ref email_service) = state.email {
+                    let tenant_branding = state
+                        .identity
+                        .get_tenant(tenant.id())
+                        .ok()
+                        .flatten()
+                        .and_then(|t| t.config().email_branding.clone());
+                    if let Err(e) = email_service.send_password_reset_email(
+                        email,
+                        &reset_url,
+                        tenant_branding.as_ref(),
+                    ) {
+                        tracing::warn!(error = %e, "forgot_password: failed to send email");
+                    }
+                } else {
+                    // Fallback: log the URL so admins can still access it
+                    tracing::warn!(reset_url = %reset_url, "password reset URL (no email transport configured)");
+                }
+                break;
+            }
+            Ok(None) => {
+                // Unknown email — try next tenant
+            }
+            Err(IdentityError::RateLimited) => {
+                // Rate limited — still show success page (enumeration resistance)
+                break;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "forgot_password: error requesting reset");
+                break;
+            }
+        }
+    }
+
+    // Always redirect to "sent" page regardless of outcome
+    Redirect::to("/ui/forgot-password/sent").into_response()
+}
+
+/// Renders the "check your email" confirmation page.
+pub async fn forgot_password_sent() -> Response {
+    render(&ForgotPasswordSentTemplate::new())
+}
+
+/// Query parameters for the reset-password page.
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordQuery {
+    /// The plaintext token from the password reset email.
+    pub token: Option<String>,
+}
+
+/// Renders the reset-password form (token passed via URL query parameter).
+pub async fn reset_password_form(Query(query): Query<ResetPasswordQuery>) -> Response {
+    match query.token {
+        Some(token) => render(&ResetPasswordTemplate::new(token, None)),
+        None => render_status(
+            &ResetPasswordTemplate::new(
+                String::new(),
+                Some("Missing or invalid reset link.".to_string()),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+    }
+}
+
+/// Form data for the reset-password submission.
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordFormData {
+    /// The plaintext token from the password reset email.
+    pub token: String,
+    /// The new password.
+    pub password: String,
+    /// Password confirmation.
+    pub password_confirm: String,
+}
+
+/// Handles reset-password form submission.
+///
+/// Validates the token across tenants, checks password confirmation match,
+/// sets the new password, and shows a success page.
+pub async fn reset_password_submit(
+    State(state): State<Arc<WebState>>,
+    Form(form): Form<ResetPasswordFormData>,
+) -> Response {
+    // 1. Check passwords match
+    if form.password != form.password_confirm {
+        return render(&ResetPasswordTemplate::new(
+            form.token,
+            Some("Passwords do not match.".to_string()),
+        ));
+    }
+
+    // 2. Validate password minimum requirements
+    if form.password.len() < 8 {
+        return render(&ResetPasswordTemplate::new(
+            form.token,
+            Some("Password must be at least 8 characters.".to_string()),
+        ));
+    }
+
+    let password = CleartextPassword::from_string(form.password);
+
+    // 3. Walk tenants
+    let tenants = match state.identity.list_tenants(None, 100) {
+        Ok(page) => page.items,
+        Err(e) => {
+            tracing::error!(error = %e, "reset_password: failed to list tenants");
+            return internal_error_response();
+        }
+    };
+
+    for tenant in &tenants {
+        match state
+            .identity
+            .reset_password_with_token(tenant.id(), &form.token, &password)
+        {
+            Ok(_user_id) => {
+                return render(&ResetPasswordOkTemplate::new());
+            }
+            Err(IdentityError::PasswordResetTokenInvalid) => {
+                // Try next tenant
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "reset_password: error resetting password");
+                return render(&ResetPasswordTemplate::new(
+                    form.token,
+                    Some("Failed to reset password. Please try again.".to_string()),
+                ));
+            }
+        }
+    }
+
+    // Token not valid in any tenant
+    render(&ResetPasswordTemplate::new(
+        String::new(),
+        Some("This reset link is invalid or has expired. Please request a new one.".to_string()),
+    ))
 }
 
 /// Internal — shared 404 renderer used by the setup gate.
