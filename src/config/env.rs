@@ -102,7 +102,11 @@ pub(crate) fn load_dotenv(path: &Path) -> Result<(), ConfigError> {
             .and_then(|rest| {
                 // Require at least one whitespace after `export`
                 let trimmed = rest.trim_start();
-                if trimmed.len() < rest.len() { Some(trimmed) } else { None }
+                if trimmed.len() < rest.len() {
+                    Some(trimmed)
+                } else {
+                    None
+                }
             })
             .unwrap_or(line);
 
@@ -258,8 +262,11 @@ mod tests {
     fn dotenv_loads_key_value_pairs() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dotenv = dir.path().join(".env");
-        std::fs::write(&dotenv, "HEARTH_DENV_LOAD_A=hello\nHEARTH_DENV_LOAD_B=world\n")
-            .expect("write .env");
+        std::fs::write(
+            &dotenv,
+            "HEARTH_DENV_LOAD_A=hello\nHEARTH_DENV_LOAD_B=world\n",
+        )
+        .expect("write .env");
         std::env::remove_var("HEARTH_DENV_LOAD_A");
         std::env::remove_var("HEARTH_DENV_LOAD_B");
 
@@ -389,7 +396,10 @@ mod tests {
 
         let err = load_dotenv(&dotenv).expect_err("malformed line should error");
         let display = format!("{err}");
-        assert!(display.contains("line 2"), "should report line number, got: {display}");
+        assert!(
+            display.contains("line 2"),
+            "should report line number, got: {display}"
+        );
     }
 
     #[test]

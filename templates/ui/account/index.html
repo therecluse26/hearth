@@ -1,0 +1,56 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · My Account{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>My Account</h1>
+  <p class="hearth-muted">
+    Manage your password and multi-factor authentication.
+  </p>
+</header>
+
+<section aria-labelledby="pw-heading">
+  <h2 id="pw-heading">Change password</h2>
+  {% match password_error %}
+    {% when Some with (msg) %}
+      <div class="hearth-flash hearth-flash--error" role="alert">{{ msg }}</div>
+    {% when None %}
+  {% endmatch %}
+  <form method="post" action="/ui/account/password" autocomplete="off">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+
+    <label for="current_password">Current password</label>
+    <input type="password" id="current_password" name="current_password"
+           required autocomplete="current-password">
+
+    <label for="new_password">New password</label>
+    <input type="password" id="new_password" name="new_password"
+           required minlength="12" autocomplete="new-password">
+
+    <label for="confirm_password">Confirm new password</label>
+    <input type="password" id="confirm_password" name="confirm_password"
+           required minlength="12" autocomplete="new-password">
+
+    <div class="hearth-actions">
+      <button type="submit">Change password</button>
+    </div>
+  </form>
+</section>
+
+<section aria-labelledby="mfa-heading" style="margin-top: 2rem;">
+  <h2 id="mfa-heading">Multi-factor authentication</h2>
+  {% if mfa_enabled %}
+    <p>MFA is <strong>enabled</strong> on this account.</p>
+    <p><a href="/ui/account/totp">Manage MFA</a></p>
+  {% else %}
+    <p class="hearth-muted">
+      MFA is not enabled.
+      <a href="/ui/account/totp">Enrol an authenticator app</a>
+      to add a second factor.
+    </p>
+  {% endif %}
+</section>
+{% endblock %}

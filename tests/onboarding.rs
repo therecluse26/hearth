@@ -203,9 +203,8 @@ fn ensure_setup_token_removes_stale_token_when_configured() {
         })
         .expect("create");
 
-    let result =
-        ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
-            .expect("ensure");
+    let result = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
+        .expect("ensure");
 
     assert!(result.is_none(), "not first-run → None");
     assert!(
@@ -598,5 +597,9 @@ fn ensure_setup_token_failing_email_is_non_fatal() {
     .expect("ensure must succeed even when email fails")
     .expect("token on first run");
 
-    assert_eq!(token.len(), 43, "token still generated despite email failure");
+    assert_eq!(
+        token.len(),
+        43,
+        "token still generated despite email failure"
+    );
 }

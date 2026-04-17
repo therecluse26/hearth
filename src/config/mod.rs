@@ -533,8 +533,11 @@ storage:
     fn from_file_real_env_beats_dotenv() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        std::fs::write(dir.path().join(".env"), "HEARTH_FFILE_PRIORITY=from_dotenv\n")
-            .expect("write .env");
+        std::fs::write(
+            dir.path().join(".env"),
+            "HEARTH_FFILE_PRIORITY=from_dotenv\n",
+        )
+        .expect("write .env");
         std::fs::write(
             dir.path().join("hearth.yaml"),
             "storage:\n  data_dir: ${HEARTH_FFILE_PRIORITY}\n",

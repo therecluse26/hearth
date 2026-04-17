@@ -1,10 +1,68 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · Dashboard{% endblock %}
 {% block body %}
-<h1>Welcome{% match user_email %}{% when Some with (email) %}, {{ email }}{% when None %}{% endmatch %}</h1>
-<p class="hearth-muted">
-  The full admin UI is being rolled out. For now, use the JSON admin API
-  at <code>/admin/*</code>. See <a href="https://github.com/bradleyjkemp/hearth">the project
-  README</a> for details.
-</p>
+<header class="hearth-page-header">
+  <h1>Welcome{% match user_email %}{% when Some with (email) %}, {{ email }}{% when None %}{% endmatch %}</h1>
+  <p class="hearth-muted">
+    Hearth admin console. Manage your account below or use the admin
+    surface if you have the <code>hearth#admin</code> role.
+  </p>
+</header>
+
+<section aria-labelledby="quick-links">
+  <h2 id="quick-links">Quick links</h2>
+  <ul class="hearth-tiles">
+    <li>
+      <a href="/ui/account" class="hearth-tile">
+        <strong>My Account</strong>
+        <span>Password, MFA, passkeys</span>
+      </a>
+    </li>
+    <li>
+      <a href="/ui/account/sessions" class="hearth-tile">
+        <strong>My sessions</strong>
+        <span>Devices where you are signed in</span>
+      </a>
+    </li>
+    {% if is_admin %}
+      <li>
+        <a href="/ui/admin/users" class="hearth-tile">
+          <strong>Users</strong>
+          <span>Create, edit, and remove users</span>
+        </a>
+      </li>
+      <li>
+        <a href="/ui/admin/tenants" class="hearth-tile">
+          <strong>Tenants</strong>
+          <span>Manage tenants</span>
+        </a>
+      </li>
+      <li>
+        <a href="/ui/admin/applications" class="hearth-tile">
+          <strong>Applications</strong>
+          <span>OAuth 2.0 clients</span>
+        </a>
+      </li>
+      <li>
+        <a href="/ui/admin/sessions" class="hearth-tile">
+          <strong>Sessions</strong>
+          <span>All active sessions</span>
+        </a>
+      </li>
+      <li>
+        <a href="/ui/admin/audit" class="hearth-tile">
+          <strong>Audit log</strong>
+          <span>Tamper-evident history</span>
+        </a>
+      </li>
+    {% endif %}
+  </ul>
+  {% if !is_admin %}
+    <p class="hearth-muted">
+      Admin sections are hidden because you do not have the
+      <code>hearth#admin</code> role. Ask an administrator to grant it if
+      you need access.
+    </p>
+  {% endif %}
+</section>
 {% endblock %}

@@ -42,6 +42,7 @@ use crate::core::TenantId;
 use crate::identity::onboarding::OnboardingService;
 use crate::identity::IdentityEngine;
 
+pub mod account;
 pub mod auth;
 pub mod handlers;
 pub(crate) mod handlers_common;
@@ -121,9 +122,16 @@ impl WebState {
 /// | `/ui/setup/sent` | GET | "Check your email" confirmation |
 /// | `/ui/verify-email` | GET | Consume an email-verification token |
 /// | `/ui/login` | GET/POST | Login form + submit |
-/// | `/ui/` | GET | Placeholder dashboard |
+/// | `/ui/` | GET | Signed-in dashboard (redirects to login when unauthenticated) |
+/// | `/ui/logout` | POST | Revoke session + clear cookies |
+/// | `/ui/account` | GET | My-account page (password, MFA status) |
+/// | `/ui/account/password` | POST | Change password |
+/// | `/ui/account/totp` | GET | MFA enrol / disable page |
+/// | `/ui/account/totp/activate` | POST | Activate pending TOTP enrolment |
+/// | `/ui/account/totp/disable` | POST | Disable MFA |
 /// | `/ui/static/{file}` | GET | Embedded static assets (htmx, css) |
 pub fn router(state: WebState) -> Router {
+    let shared = Arc::new(state);
     let ui_routes = Router::new()
         .route(
             "/setup",
@@ -136,10 +144,34 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(handlers::login_form).post(handlers::login_submit),
         )
         .route("/", axum::routing::get(handlers::dashboard))
+        .route("/logout", axum::routing::post(handlers::logout_submit))
+        .route("/account", axum::routing::get(account::account_index))
+        .route(
+            "/account/password",
+            axum::routing::post(account::account_change_password),
+        )
+        .route(
+            "/account/totp",
+            axum::routing::get(account::totp_enroll_form),
+        )
+        .route(
+            "/account/totp/activate",
+            axum::routing::post(account::totp_activate),
+        )
+        .route(
+            "/account/totp/disable",
+            axum::routing::post(account::totp_disable),
+        )
         .route("/static/{file}", axum::routing::get(serve_static))
-        .with_state(Arc::new(state));
+        .with_state(Arc::clone(&shared));
 
-    Router::new().nest("/ui", ui_routes)
+    // axum 0.8 tightened path matching: `nest("/ui", Router::new().route("/", _))`
+    // matches `/ui` but NOT `/ui/`. Register the trailing-slash variant at the
+    // outer router so both paths hit the dashboard handler.
+    Router::new()
+        .route("/ui/", axum::routing::get(handlers::dashboard))
+        .nest("/ui", ui_routes)
+        .with_state(shared)
 }
 
 // ---------------------------------------------------------------------------

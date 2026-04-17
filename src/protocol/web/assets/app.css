@@ -253,3 +253,50 @@ table.hearth-table th {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     word-break: break-all;
 }
+
+/* Dashboard ------------------------------------------------------------- */
+
+.hearth-page-header {
+    margin-bottom: 2rem;
+}
+
+.hearth-page-header h1 {
+    margin-bottom: 0.25rem;
+}
+
+.hearth-tiles {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 1rem;
+}
+
+.hearth-tile {
+    display: flex;
+    flex-direction: column;
+    padding: 1rem;
+    border: 1px solid var(--hearth-border);
+    border-radius: 6px;
+    background: var(--hearth-code-bg);
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 120ms ease;
+}
+
+.hearth-tile:hover,
+.hearth-tile:focus {
+    border-color: var(--hearth-accent);
+    outline: none;
+}
+
+.hearth-tile strong {
+    font-size: 1.05rem;
+    margin-bottom: 0.25rem;
+}
+
+.hearth-tile span {
+    color: var(--hearth-muted);
+    font-size: 0.92rem;
+}

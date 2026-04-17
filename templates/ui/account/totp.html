@@ -1,0 +1,82 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Multi-factor authentication{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>Multi-factor authentication</h1>
+  <p class="hearth-muted">
+    Protect this account with a time-based one-time password (TOTP)
+    from any authenticator app — 1Password, Bitwarden, Google
+    Authenticator, Authy, or similar.
+  </p>
+</header>
+
+{% if mfa_enabled %}
+  <section aria-labelledby="disable-heading">
+    <h2 id="disable-heading">MFA is enabled</h2>
+    <p>
+      Disabling MFA will allow password-only login on this account.
+      Reconsider before proceeding.
+    </p>
+    <form method="post" action="/ui/account/totp/disable" autocomplete="off">
+      {% match csrf %}
+        {% when Some with (token) %}
+          <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+      <div class="hearth-actions">
+        <button type="submit" class="hearth-button--danger">Disable MFA</button>
+        <a href="/ui/account">Cancel</a>
+      </div>
+    </form>
+  </section>
+{% else %}
+  <section aria-labelledby="enroll-heading">
+    <h2 id="enroll-heading">Enrol a new authenticator</h2>
+
+    {% match activation_error %}
+      {% when Some with (msg) %}
+        <div class="hearth-flash hearth-flash--error" role="alert">{{ msg }}</div>
+      {% when None %}
+    {% endmatch %}
+
+    <ol class="hearth-steps">
+      <li>
+        <strong>Scan this QR in your authenticator app</strong> — or copy the
+        secret manually.
+        <p><code class="hearth-secret">{{ secret_base32 }}</code></p>
+        <p class="hearth-muted">
+          <a href="{{ provisioning_uri }}">Open in authenticator app</a>
+        </p>
+      </li>
+      <li>
+        <strong>Save these recovery codes.</strong> Each code can be used once
+        if you lose your authenticator.
+        <ul class="hearth-recovery-codes">
+          {% for code in recovery_codes %}
+            <li><code>{{ code }}</code></li>
+          {% endfor %}
+        </ul>
+      </li>
+      <li>
+        <strong>Enter the current 6-digit code</strong> shown in your
+        authenticator to activate MFA.
+        <form method="post" action="/ui/account/totp/activate" autocomplete="off">
+          {% match csrf %}
+            {% when Some with (token) %}
+              <input type="hidden" name="_csrf" value="{{ token }}">
+            {% when None %}
+          {% endmatch %}
+          <label for="code">Authentication code</label>
+          <input type="text" id="code" name="code" inputmode="numeric"
+                 pattern="[0-9]*" maxlength="8" required
+                 autocomplete="one-time-code">
+          <div class="hearth-actions">
+            <button type="submit">Activate MFA</button>
+            <a href="/ui/account">Cancel</a>
+          </div>
+        </form>
+      </li>
+    </ol>
+  </section>
+{% endif %}
+{% endblock %}

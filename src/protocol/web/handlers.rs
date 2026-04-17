@@ -545,21 +545,89 @@ pub async fn login_submit(
 }
 
 // ============================================================================
-// Dashboard (placeholder — real implementation in commit 3)
+// Dashboard
 // ============================================================================
 
-/// Placeholder dashboard page. Requires a signed-in session; redirects
-/// to `/ui/login` when the session cookie is missing or invalid.
-pub async fn dashboard(session: super::auth::UiSession) -> Response {
+/// Signed-in dashboard. Redirects to `/ui/login` when the session
+/// cookie is missing or invalid. Computes `is_admin` by running the
+/// `hearth#admin` authz check so the template can render (or hide)
+/// admin-only quick links.
+pub async fn dashboard(
+    State(state): State<Arc<WebState>>,
+    session: super::auth::UiSession,
+) -> Response {
+    let is_admin = is_admin(&state, &session);
     render(&DashboardTemplate {
         chrome: true,
         active: "dashboard",
         user_email: Some(session.user_email.clone()),
-        is_admin: false,
+        is_admin,
         flash: None,
         csrf: session.csrf.clone(),
         narrow: false,
     })
+}
+
+/// Returns `true` iff the signed-in user has the `hearth#admin`
+/// relation. Non-fatal on authz errors — the caller treats those as
+/// "not admin" so the UI degrades gracefully.
+pub(crate) fn is_admin(state: &WebState, session: &super::auth::UiSession) -> bool {
+    // INVARIANT: "hearth"/"admin" and "user"/<uuid> are valid ObjectRef /
+    // SubjectRef components (ASCII + UUID respectively).
+    #[allow(clippy::unwrap_used)]
+    let object = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
+    #[allow(clippy::unwrap_used)]
+    let subject =
+        crate::authz::SubjectRef::direct("user", &session.user_id.as_uuid().to_string()).unwrap();
+    state
+        .authz
+        .check(&session.tenant_id, &object, "admin", &subject, None)
+        .unwrap_or(false)
+}
+
+// ============================================================================
+// Logout
+// ============================================================================
+
+/// Form body for the sign-out button.
+#[derive(Debug, Deserialize)]
+pub struct LogoutForm {
+    /// CSRF token echoed from the hidden input.
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// Handles sign-out. Verifies CSRF, revokes the session on the server,
+/// clears both UI cookies, and redirects to `/ui/login`.
+///
+/// Idempotent: if the session is already gone (e.g. the user clicked
+/// sign-out twice), we still clear the cookies and redirect.
+pub async fn logout_submit(
+    State(state): State<Arc<WebState>>,
+    session: super::auth::UiSession,
+    Form(form): Form<LogoutForm>,
+) -> Response {
+    if let Err(resp) = super::auth::verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    match state
+        .identity
+        .revoke_session(&session.tenant_id, &session.session_id)
+    {
+        Ok(()) | Err(crate::identity::IdentityError::SessionNotFound) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "logout: revoke_session failed");
+            // Still clear cookies and redirect — worst case the user
+            // is signed out client-side, server session will expire.
+        }
+    }
+
+    let mut response = Redirect::to("/ui/login").into_response();
+    for cookie in super::auth::clearing_cookies() {
+        append_cookie(&mut response, &cookie);
+    }
+    response
 }
 
 // ============================================================================

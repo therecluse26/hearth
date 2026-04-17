@@ -166,9 +166,8 @@ fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
                 // a slice of the underlying `HeaderValue` bytes, and the
                 // `HeaderValue` lives for `'a` inside `parts.headers`.
                 // We preserve the pointer, length, and UTF-8 invariant.
-                let s: &'a str = unsafe {
-                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
-                };
+                let s: &'a str =
+                    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
                 return Some(s);
             }
         }
@@ -407,10 +406,10 @@ fn csrf_failure_response() -> Response {
 
 /// Builds a 303 redirect to `/ui/login?return_to=<current_path>`.
 fn redirect_to_login(parts: &Parts) -> Response {
-    let path_and_query = parts.uri.path_and_query().map_or_else(
-        || "/ui/".to_string(),
-        |p| p.as_str().to_string(),
-    );
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map_or_else(|| "/ui/".to_string(), |p| p.as_str().to_string());
 
     let sanitized = sanitize_return_to(&path_and_query).unwrap_or_else(|| "/ui/".to_string());
     let encoded = url_encode(&sanitized);
@@ -450,8 +449,17 @@ fn url_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for b in input.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b'?'
-            | b'=' | b'&' => out.push(b as char),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'/'
+            | b'?'
+            | b'='
+            | b'&' => out.push(b as char),
             _ => {
                 // INVARIANT: writing to `String` via `fmt::Write` is infallible.
                 let _ = write!(out, "%{b:02X}");
