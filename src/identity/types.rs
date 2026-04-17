@@ -182,6 +182,11 @@ impl Session {
         self.last_refreshed_at
     }
 
+    /// Returns whether the session has been revoked.
+    pub(crate) fn is_revoked(&self) -> bool {
+        self.revoked
+    }
+
     /// Returns whether the session is valid (not expired and not revoked).
     pub(crate) fn is_valid(&self, now: Timestamp) -> bool {
         !self.revoked && now < self.expires_at

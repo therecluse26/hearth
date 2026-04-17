@@ -1625,12 +1625,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
-        for entry in entries.iter().take(limit + 1) {
+        for entry in &entries {
+            if items.len() > limit {
+                break;
+            }
             let session: Session =
                 serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
                 })?;
-            items.push(session);
+            if !session.is_revoked() {
+                items.push(session);
+            }
         }
 
         let next_cursor = if items.len() > limit {
