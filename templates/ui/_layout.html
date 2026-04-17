@@ -17,7 +17,7 @@
 <body{% match csrf %}{% when Some with (token) %} hx-headers='{"X-CSRF-Token": "{{ token }}"}'{% when None %}{% endmatch %}>
   {% if chrome %}
   {# ── Authenticated layout: sidebar + main content ── #}
-  <div class="flex h-screen bg-slate-50 dark:bg-slate-900" x-data="{ sidebarOpen: false }">
+  <div class="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-900" x-data="{ sidebarOpen: false }">
     {# Mobile overlay backdrop #}
     <div x-show="sidebarOpen" x-transition:enter="transition-opacity ease-out duration-200"
          x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
@@ -124,7 +124,7 @@
     </aside>
 
     {# ── Main content area ── #}
-    <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {# Top bar #}
       <header class="flex h-14 shrink-0 items-center gap-4 border-b border-slate-200 bg-white px-4 dark:border-slate-700 dark:bg-slate-900">
         {# Mobile hamburger #}
@@ -146,7 +146,7 @@
       </header>
 
       {# Page content #}
-      <main class="flex-1 overflow-y-auto p-6">
+      <main class="min-h-0 flex-1 overflow-y-auto p-6">
         <div class="mx-auto {% if narrow %}max-w-lg{% else %}max-w-5xl{% endif %}">
           {% match flash %}
             {% when Some with (f) %}
