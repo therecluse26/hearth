@@ -1,0 +1,10 @@
+# Vendored static assets and their SHA-256 checksums.
+#
+# When updating a vendored file, bump the version in the upstream URL,
+# re-record the checksum with `sha256sum`, and run the binary so the
+# `include_bytes!` macro picks up the new bytes.
+
+htmx.min.js
+  version: 1.9.12
+  upstream: https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js
+  sha256:   449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452

@@ -238,7 +238,7 @@ async fn run_serve(
         AuthzConfig::default(),
     ));
 
-    let audit_engine = Arc::new(EmbeddedAuditEngine::new(
+    let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         clock,
     ));
@@ -284,13 +284,13 @@ async fn run_serve(
         Arc::new(AppState::new_dev(
             Arc::clone(&identity_engine),
             Arc::clone(&authz_engine),
-            audit_engine,
+            Arc::clone(&audit_engine),
         ))
     } else {
         Arc::new(AppState::new(
             Arc::clone(&identity_engine),
             Arc::clone(&authz_engine),
-            audit_engine,
+            Arc::clone(&audit_engine),
         ))
     };
 
@@ -302,7 +302,10 @@ async fn run_serve(
     // Compose JSON API router + web UI router.
     let web_state = WebState::new(
         Arc::clone(&identity_engine),
+        Arc::clone(&authz_engine),
+        Arc::clone(&audit_engine),
         Arc::clone(&onboarding_service),
+        web::CookieSecret::random(),
     );
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 

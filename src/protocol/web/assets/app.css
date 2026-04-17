@@ -1,0 +1,255 @@
+/* Hearth admin UI — minimal scope-limited styles.
+ *
+ * Vendored alongside htmx.min.js and served from `/ui/static/app.css`
+ * via `include_bytes!`. No external CSS frameworks; single-binary
+ * deployment stays self-contained.
+ */
+
+:root {
+    color-scheme: light dark;
+    --hearth-bg: Canvas;
+    --hearth-fg: CanvasText;
+    --hearth-muted: GrayText;
+    --hearth-accent: #3b6ea5;
+    --hearth-error-bg: #fde8e8;
+    --hearth-error-fg: #7a1a1a;
+    --hearth-success-bg: #e6f4ea;
+    --hearth-success-fg: #1a5a32;
+    --hearth-border: #d0d0d0;
+    --hearth-code-bg: rgba(127, 127, 127, 0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --hearth-error-bg: #3b1a1a;
+        --hearth-error-fg: #f4b4b4;
+        --hearth-success-bg: #1a3b25;
+        --hearth-success-fg: #b4e4c2;
+        --hearth-border: #3a3a3a;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    margin: 0;
+    line-height: 1.5;
+    background: var(--hearth-bg);
+    color: var(--hearth-fg);
+}
+
+.hearth-nav {
+    background: var(--hearth-accent);
+    color: white;
+    padding: 0.75rem 1.25rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1rem;
+}
+
+.hearth-nav__brand {
+    font-weight: 700;
+    font-size: 1.125rem;
+    color: white;
+    text-decoration: none;
+}
+
+.hearth-nav__links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    flex: 1;
+}
+
+.hearth-nav__links a {
+    color: white;
+    text-decoration: none;
+    padding: 0.25rem 0.5rem;
+    border-radius: 3px;
+}
+
+.hearth-nav__links a:hover,
+.hearth-nav__links a[aria-current="page"] {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.hearth-nav__user {
+    font-size: 0.875rem;
+    opacity: 0.9;
+}
+
+.hearth-nav__user form {
+    display: inline;
+    margin: 0;
+}
+
+.hearth-nav__user button {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    color: white;
+    padding: 0.25rem 0.625rem;
+    margin-left: 0.5rem;
+    cursor: pointer;
+    border-radius: 3px;
+    font-size: 0.875rem;
+}
+
+.hearth-nav__user button:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+main {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: 1.5rem 1.25rem 4rem;
+}
+
+main.narrow {
+    max-width: 32rem;
+}
+
+h1 {
+    margin-top: 0;
+}
+
+label {
+    display: block;
+    margin-top: 1rem;
+    font-weight: 600;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="url"],
+input[type="search"],
+input[type="number"],
+textarea,
+select {
+    display: block;
+    width: 100%;
+    padding: 0.5rem;
+    margin-top: 0.25rem;
+    box-sizing: border-box;
+    font-size: 1rem;
+    border: 1px solid var(--hearth-border);
+    border-radius: 3px;
+    background: var(--hearth-bg);
+    color: var(--hearth-fg);
+}
+
+button,
+.hearth-btn {
+    padding: 0.5rem 1rem;
+    font-size: 1rem;
+    cursor: pointer;
+    border: 1px solid var(--hearth-accent);
+    background: var(--hearth-accent);
+    color: white;
+    border-radius: 3px;
+    text-decoration: none;
+    display: inline-block;
+}
+
+button.hearth-btn--secondary,
+.hearth-btn--secondary {
+    background: transparent;
+    color: var(--hearth-accent);
+}
+
+button.hearth-btn--danger,
+.hearth-btn--danger {
+    background: #b13a3a;
+    border-color: #b13a3a;
+    color: white;
+}
+
+.hearth-flash {
+    padding: 0.75rem 1rem;
+    border-radius: 3px;
+    margin: 1rem 0;
+}
+
+.hearth-flash--error,
+.error {
+    background: var(--hearth-error-bg);
+    color: var(--hearth-error-fg);
+}
+
+.hearth-flash--success {
+    background: var(--hearth-success-bg);
+    color: var(--hearth-success-fg);
+}
+
+code {
+    background: var(--hearth-code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+pre {
+    background: var(--hearth-code-bg);
+    padding: 0.75rem;
+    border-radius: 3px;
+    overflow-x: auto;
+}
+
+table.hearth-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+}
+
+table.hearth-table th,
+table.hearth-table td {
+    text-align: left;
+    padding: 0.5rem 0.625rem;
+    border-bottom: 1px solid var(--hearth-border);
+}
+
+table.hearth-table th {
+    background: var(--hearth-code-bg);
+    font-weight: 600;
+}
+
+.hearth-muted {
+    color: var(--hearth-muted);
+}
+
+.hearth-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+}
+
+.hearth-inline-form {
+    display: inline;
+    margin: 0;
+}
+
+.hearth-pagination {
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.hearth-qr {
+    max-width: 16rem;
+    margin: 1rem 0;
+}
+
+.hearth-secret-box {
+    background: var(--hearth-code-bg);
+    padding: 1rem;
+    border-radius: 3px;
+    margin: 1rem 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+}

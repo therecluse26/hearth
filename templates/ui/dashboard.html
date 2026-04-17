@@ -1,0 +1,10 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Dashboard{% endblock %}
+{% block body %}
+<h1>Welcome{% match user_email %}{% when Some with (email) %}, {{ email }}{% when None %}{% endmatch %}</h1>
+<p class="hearth-muted">
+  The full admin UI is being rolled out. For now, use the JSON admin API
+  at <code>/admin/*</code>. See <a href="https://github.com/bradleyjkemp/hearth">the project
+  README</a> for details.
+</p>
+{% endblock %}

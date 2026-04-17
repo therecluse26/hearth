@@ -1,0 +1,11 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Check your email{% endblock %}
+{% block body %}
+<h1>Almost done</h1>
+<p>We sent a verification link to the email address you just entered.
+Click the link to activate your account, then sign in.</p>
+<p><em>Running without an SMTP server?</em> The verification URL was written to
+the Hearth server logs at <code>WARN</code> level — look for a line containing
+<code>verification_url</code>.</p>
+<p><a href="/ui/login">Go to sign-in</a></p>
+{% endblock %}

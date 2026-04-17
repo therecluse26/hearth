@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Hearth{% endblock %}</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+  {% match csrf %}
+    {% when Some with (token) %}
+      <meta name="csrf" content="{{ token }}">
+    {% when None %}
+  {% endmatch %}
+</head>
+<body{% match csrf %}{% when Some with (token) %} hx-headers='{"X-CSRF-Token": "{{ token }}"}'{% when None %}{% endmatch %}>
+  {% if chrome %}
+    <nav class="hearth-nav" aria-label="Primary">
+      <a href="/ui/" class="hearth-nav__brand">Hearth</a>
+      <div class="hearth-nav__links">
+        <a href="/ui/"{% if active == "dashboard" %} aria-current="page"{% endif %}>Dashboard</a>
+        <a href="/ui/account"{% if active == "account" %} aria-current="page"{% endif %}>My Account</a>
+        {% if is_admin %}
+          <a href="/ui/admin/users"{% if active == "users" %} aria-current="page"{% endif %}>Users</a>
+          <a href="/ui/admin/tenants"{% if active == "tenants" %} aria-current="page"{% endif %}>Tenants</a>
+          <a href="/ui/admin/applications"{% if active == "applications" %} aria-current="page"{% endif %}>Applications</a>
+          <a href="/ui/admin/sessions"{% if active == "sessions" %} aria-current="page"{% endif %}>Sessions</a>
+          <a href="/ui/admin/audit"{% if active == "audit" %} aria-current="page"{% endif %}>Audit</a>
+        {% endif %}
+      </div>
+      {% match user_email %}
+        {% when Some with (email) %}
+          <div class="hearth-nav__user">
+            {{ email }}
+            <form method="post" action="/ui/logout" class="hearth-inline-form">
+              {% match csrf %}
+                {% when Some with (token) %}
+                  <input type="hidden" name="_csrf" value="{{ token }}">
+                {% when None %}
+              {% endmatch %}
+              <button type="submit">Sign out</button>
+            </form>
+          </div>
+        {% when None %}
+      {% endmatch %}
+    </nav>
+  {% endif %}
+
+  <main{% if narrow %} class="narrow"{% endif %}>
+    {% match flash %}
+      {% when Some with (f) %}
+        <div class="hearth-flash hearth-flash--{{ f.kind }}" role="{% if f.kind == "error" %}alert{% else %}status{% endif %}">
+          {{ f.message }}
+        </div>
+      {% when None %}
+    {% endmatch %}
+
+    {% block body %}{% endblock %}
+  </main>
+
+  <script src="/ui/static/htmx.min.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

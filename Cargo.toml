@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 arc-swap = "1"
+askama = "0.12"
 pbjson = "0.7"
 pbjson-types = "0.7"
 prost = "0.13"

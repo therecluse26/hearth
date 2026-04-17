@@ -1,21 +1,217 @@
-//! Axum handlers for the `/ui/*` routes.
+//! Axum handlers for the public `/ui/*` entry points.
 //!
-//! Inline HTML only — the real template layer lands in the Phase 1.6
-//! Admin UI plan. Keep business logic out of this module; every state
-//! transition must go through `OnboardingService` or `IdentityEngine`.
+//! Wire adapter only — every state transition delegates to
+//! `OnboardingService` or `IdentityEngine`. Templates live under
+//! `templates/ui/` and are compiled into the binary by the askama
+//! derive macro.
+//!
+//! See [`super`] module docs for the cookie and CSRF model.
+//!
+//! # Routes covered here
+//!
+//! This file owns the public (pre-auth) surface:
+//!
+//! * `GET  /ui/setup` — first-run setup form (token-gated).
+//! * `POST /ui/setup` — submit setup form.
+//! * `GET  /ui/setup/sent` — "check your email" confirmation.
+//! * `GET  /ui/verify-email` — consume a verification token.
+//! * `GET  /ui/login` — login form.
+//! * `POST /ui/login` — submit login credentials.
+//!
+//! Post-auth routes (`/ui/`, `/ui/logout`, `/ui/account/*`,
+//! `/ui/admin/*`) live alongside in dedicated modules.
+//!
+//! # Security notes
+//!
+//! * `login_submit` sets two cookies on success: `hearth_ui_session`
+//!   (`HttpOnly` — server-only) and `hearth_ui_csrf` (readable by JS so
+//!   the page can echo it via HTMX headers). Both are `Path=/ui` +
+//!   `SameSite=Lax`.
+//! * The session cookie value is `sid.tid.mac` (stateless binding of a
+//!   session id to its tenant id via HMAC-SHA256). See [`super::auth`]
+//!   for parsing.
 
 use std::sync::Arc;
 
+use askama::Template;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
 
 use crate::identity::onboarding::OnboardingError;
 use crate::identity::{CleartextPassword, IdentityError};
 
+use super::auth::{issue_auth_cookies, sanitize_return_to, IssuedCookies};
+use super::templates::{render, render_status, Flash};
 use super::WebState;
+
+// ============================================================================
+// Template structs
+// ============================================================================
+
+/// Setup form template — used for both initial render and error re-render.
+#[derive(Template)]
+#[template(path = "ui/setup.html")]
+struct SetupTemplate {
+    token: String,
+    error: Option<String>,
+    // Layout fields (nav disabled for public pages).
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl SetupTemplate {
+    fn new(token: String, error: Option<String>) -> Self {
+        Self {
+            token,
+            error,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// Simple "setup submitted" confirmation page.
+#[derive(Template)]
+#[template(path = "ui/setup_sent.html")]
+struct SetupSentTemplate {
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl SetupSentTemplate {
+    fn new() -> Self {
+        Self {
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// Login form template.
+#[derive(Template)]
+#[template(path = "ui/login.html")]
+struct LoginTemplate {
+    error: Option<String>,
+    return_to: Option<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl LoginTemplate {
+    fn new(error: Option<String>, return_to: Option<String>) -> Self {
+        Self {
+            error,
+            return_to,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// Successful email verification page.
+#[derive(Template)]
+#[template(path = "ui/verify_email_ok.html")]
+struct VerifyOkTemplate {
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl VerifyOkTemplate {
+    fn new() -> Self {
+        Self {
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
+
+/// Placeholder dashboard template. Commit 3 replaces this with a
+/// real overview page.
+#[derive(Template)]
+#[template(path = "ui/dashboard.html")]
+struct DashboardTemplate {
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+/// Invalid / expired / malformed verification link page.
+#[derive(Template)]
+#[template(path = "ui/verify_email_invalid.html")]
+struct VerifyInvalidTemplate {
+    heading: &'static str,
+    message: &'static str,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+impl VerifyInvalidTemplate {
+    fn new(heading: &'static str, message: &'static str) -> Self {
+        Self {
+            heading,
+            message,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+        }
+    }
+}
 
 // ============================================================================
 // Setup form
@@ -56,7 +252,7 @@ pub async fn setup_form(
         }
     }
 
-    Html(render_setup_form(token, None)).into_response()
+    render(&SetupTemplate::new(token.to_string(), None))
 }
 
 /// Form body submitted by the setup page.
@@ -97,9 +293,10 @@ pub async fn setup_submit(
     }
 
     if let Err(msg) = validate_setup_form(&form) {
-        return Html(render_setup_form(&form.token, Some(&msg)))
-            .into_response()
-            .with_status(StatusCode::BAD_REQUEST);
+        return render_status(
+            &SetupTemplate::new(form.token.clone(), Some(msg)),
+            StatusCode::BAD_REQUEST,
+        );
     }
 
     let password = CleartextPassword::from_string(form.admin_password.clone());
@@ -112,37 +309,48 @@ pub async fn setup_submit(
         &password,
         &base_url,
     ) {
-        Ok(_) => Redirect::to("/ui/setup/sent").into_response(),
+        Ok(outcome) => {
+            // Pin the newly-created tenant as the "current" tenant for
+            // future logins through this process. On restart the first
+            // tenant is re-resolved at login time.
+            state.set_current_tenant(outcome.tenant_id.clone());
+            Redirect::to("/ui/setup/sent").into_response()
+        }
         Err(OnboardingError::AlreadyConfigured) => {
             not_found_response("Setup page is not available.")
         }
         Err(OnboardingError::Identity(IdentityError::DuplicateEmail)) => {
-            let msg = "An account with that email already exists in this system.";
-            Html(render_setup_form(&form.token, Some(msg)))
-                .into_response()
-                .with_status(StatusCode::CONFLICT)
+            let msg = "An account with that email already exists in this system.".to_string();
+            render_status(
+                &SetupTemplate::new(form.token.clone(), Some(msg)),
+                StatusCode::CONFLICT,
+            )
         }
         Err(OnboardingError::Identity(IdentityError::DuplicateTenantName)) => {
-            let msg = "A tenant with that name already exists. Retry with a different name.";
-            Html(render_setup_form(&form.token, Some(msg)))
-                .into_response()
-                .with_status(StatusCode::CONFLICT)
+            let msg =
+                "A tenant with that name already exists. Retry with a different name.".to_string();
+            render_status(
+                &SetupTemplate::new(form.token.clone(), Some(msg)),
+                StatusCode::CONFLICT,
+            )
         }
         Err(OnboardingError::Identity(IdentityError::InvalidInput { reason })) => {
             let msg = format!("Invalid input: {reason}");
-            Html(render_setup_form(&form.token, Some(&msg)))
-                .into_response()
-                .with_status(StatusCode::BAD_REQUEST)
+            render_status(
+                &SetupTemplate::new(form.token.clone(), Some(msg)),
+                StatusCode::BAD_REQUEST,
+            )
         }
         Err(OnboardingError::Email(e)) => {
             tracing::error!(error = %e, "setup: failed to send verification email");
-            let msg =
-                "The account was created but the verification email could not be sent. Check \
-                the server logs for the verification link, or retry after fixing the email \
-                transport.";
-            Html(render_setup_form(&form.token, Some(msg)))
-                .into_response()
-                .with_status(StatusCode::BAD_GATEWAY)
+            let msg = "The account was created but the verification email could not be sent. \
+                Check the server logs for the verification link, or retry after fixing the email \
+                transport."
+                .to_string();
+            render_status(
+                &SetupTemplate::new(form.token.clone(), Some(msg)),
+                StatusCode::BAD_GATEWAY,
+            )
         }
         Err(e) => {
             tracing::error!(error = %e, "setup: unexpected failure");
@@ -152,19 +360,8 @@ pub async fn setup_submit(
 }
 
 /// Renders the "setup submitted" confirmation page.
-pub async fn setup_sent() -> Html<String> {
-    Html(wrap_page(
-        "Check your email",
-        r#"
-        <h1>Almost done</h1>
-        <p>We sent a verification link to the email address you just entered.
-        Click the link to activate your account, then sign in.</p>
-        <p><em>Running without an SMTP server?</em> The verification URL was written to
-        the Hearth server logs at <code>WARN</code> level — look for a line containing
-        <code>verification_url</code>.</p>
-        <p><a href="/ui/login">Go to sign-in</a></p>
-        "#,
-    ))
+pub async fn setup_sent() -> Response {
+    render(&SetupSentTemplate::new())
 }
 
 // ============================================================================
@@ -185,12 +382,13 @@ pub async fn verify_email(
     Query(query): Query<VerifyQuery>,
 ) -> Response {
     let Some(token) = query.token.as_deref() else {
-        return Html(wrap_page(
-            "Verification link invalid",
-            "<h1>Invalid link</h1><p>This verification link is missing or malformed.</p>",
-        ))
-        .into_response()
-        .with_status(StatusCode::BAD_REQUEST);
+        return render_status(
+            &VerifyInvalidTemplate::new(
+                "Invalid link",
+                "This verification link is missing or malformed.",
+            ),
+            StatusCode::BAD_REQUEST,
+        );
     };
 
     // The token is not tenant-scoped in the URL. Walk the first page
@@ -207,17 +405,7 @@ pub async fn verify_email(
 
     for tenant in &tenants {
         match state.identity.verify_email_token(tenant.id(), token) {
-            Ok(_) => {
-                return Html(wrap_page(
-                    "Email verified",
-                    r#"
-                    <h1>Email verified</h1>
-                    <p>Your account is now active. You can sign in.</p>
-                    <p><a href="/ui/login">Sign in</a></p>
-                    "#,
-                ))
-                .into_response();
-            }
+            Ok(_) => return render(&VerifyOkTemplate::new()),
             Err(IdentityError::VerificationTokenInvalid) => {}
             Err(e) => {
                 tracing::error!(error = %e, "verify-email: unexpected failure");
@@ -226,25 +414,31 @@ pub async fn verify_email(
         }
     }
 
-    Html(wrap_page(
-        "Verification link invalid",
-        "
-        <h1>Link expired or already used</h1>
-        <p>This verification link is no longer valid. Request a new verification
-        email from the sign-in page once it becomes available.</p>
-        ",
-    ))
-    .into_response()
-    .with_status(StatusCode::GONE)
+    render_status(
+        &VerifyInvalidTemplate::new(
+            "Link expired or already used",
+            "This verification link is no longer valid. Request a new verification email from \
+            the sign-in page once it becomes available.",
+        ),
+        StatusCode::GONE,
+    )
 }
 
 // ============================================================================
-// Login (placeholder — full UI arrives in Phase 1.6)
+// Login
 // ============================================================================
 
+/// Query parameters for the GET login form (optional `return_to`).
+#[derive(Debug, Deserialize)]
+pub struct LoginQuery {
+    /// Relative path to redirect back to after a successful sign-in.
+    pub return_to: Option<String>,
+}
+
 /// Renders the login form.
-pub async fn login_form() -> Html<String> {
-    Html(render_login_form(None))
+pub async fn login_form(Query(query): Query<LoginQuery>) -> Response {
+    let return_to = query.return_to.as_deref().and_then(sanitize_return_to);
+    render(&LoginTemplate::new(None, return_to))
 }
 
 /// Credentials submitted by the login form.
@@ -254,29 +448,32 @@ pub struct LoginForm {
     pub email: String,
     /// Password.
     pub password: String,
+    /// Optional `return_to` path submitted via hidden field.
+    #[serde(default)]
+    pub return_to: Option<String>,
 }
 
 /// Handles login submission.
 ///
-/// On success: creates a session, sets a `hearth_ui_session` cookie
-/// (`HttpOnly; Path=/ui; SameSite=Lax`), and redirects to `/ui/`.
-/// All authentication failures collapse into a single generic error
-/// message (enumeration resistance).
+/// On success: creates a session, issues the `hearth_ui_session` and
+/// `hearth_ui_csrf` cookies, then redirects. All authentication
+/// failures collapse into a single generic error message (enumeration
+/// resistance).
 pub async fn login_submit(
     State(state): State<Arc<WebState>>,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    // The Identity trait is tenant-scoped, but the web login form does
-    // not know the tenant yet. For the placeholder flow we pick the
-    // first tenant the email resolves to — multi-tenant login UX is a
-    // Phase 1.6 concern. Any failure → generic 401.
     let email = form.email.trim();
+    let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
+
     let generic_error = || {
-        Html(render_login_form(Some(
-            "Sign-in failed. Check your credentials and try again.",
-        )))
-        .into_response()
-        .with_status(StatusCode::UNAUTHORIZED)
+        render_status(
+            &LoginTemplate::new(
+                Some("Sign-in failed. Check your credentials and try again.".to_string()),
+                return_to.clone(),
+            ),
+            StatusCode::UNAUTHORIZED,
+        )
     };
 
     // Walk up to the first page of tenants (Phase 1 = usually one).
@@ -309,23 +506,33 @@ pub async fn login_submit(
 
         match state.identity.create_session(tenant.id(), user.id()) {
             Ok(session) => {
-                let cookie = format!(
-                    "hearth_ui_session={}; HttpOnly; Path=/ui; SameSite=Lax",
-                    session.id().as_uuid()
-                );
-                let mut response = Redirect::to("/ui/").into_response();
-                if let Ok(v) = header::HeaderValue::from_str(&cookie) {
-                    response.headers_mut().insert(header::SET_COOKIE, v);
-                }
+                let IssuedCookies {
+                    session_cookie,
+                    csrf_cookie,
+                } = issue_auth_cookies(&state.cookie_secret, tenant.id(), session.id());
+
+                // Pin this tenant as the "current" one so subsequent logins from
+                // this process resolve consistently.
+                state.set_current_tenant(tenant.id().clone());
+
+                let location = return_to.as_deref().unwrap_or("/ui/");
+                let mut response = Redirect::to(location).into_response();
+                append_cookie(&mut response, &session_cookie);
+                append_cookie(&mut response, &csrf_cookie);
                 return response;
             }
             Err(IdentityError::UserNotVerified) => {
-                return Html(render_login_form(Some(
-                    "Your email is not verified yet. Check your inbox (or the server \
-                    logs) for the verification link and click it before signing in.",
-                )))
-                .into_response()
-                .with_status(StatusCode::FORBIDDEN);
+                return render_status(
+                    &LoginTemplate::new(
+                        Some(
+                            "Your email is not verified yet. Check your inbox (or the server \
+                             logs) for the verification link and click it before signing in."
+                                .to_string(),
+                        ),
+                        return_to.clone(),
+                    ),
+                    StatusCode::FORBIDDEN,
+                );
             }
             Err(e) => {
                 tracing::warn!(error = %e, "login: create_session failed");
@@ -337,21 +544,34 @@ pub async fn login_submit(
     generic_error()
 }
 
-/// Placeholder dashboard — the real management UI lands in Phase 1.6.
-pub async fn dashboard() -> Html<String> {
-    Html(wrap_page(
-        "Hearth",
-        "
-        <h1>Welcome</h1>
-        <p>You are signed in. The management dashboard is coming in a future release.
-        For now, use the JSON admin API at <code>/admin/*</code>.</p>
-        ",
-    ))
+// ============================================================================
+// Dashboard (placeholder — real implementation in commit 3)
+// ============================================================================
+
+/// Placeholder dashboard page. Requires a signed-in session; redirects
+/// to `/ui/login` when the session cookie is missing or invalid.
+pub async fn dashboard(session: super::auth::UiSession) -> Response {
+    render(&DashboardTemplate {
+        chrome: true,
+        active: "dashboard",
+        user_email: Some(session.user_email.clone()),
+        is_admin: false,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+    })
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Appends a `Set-Cookie` header without overwriting existing ones.
+fn append_cookie(response: &mut Response, value: &str) {
+    if let Ok(v) = header::HeaderValue::from_str(value) {
+        response.headers_mut().append(header::SET_COOKIE, v);
+    }
+}
 
 fn validate_setup_form(form: &SetupForm) -> Result<(), String> {
     if form.tenant_name.trim().is_empty() {
@@ -390,176 +610,21 @@ fn derive_base_url(headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
-fn not_found_response(body: &str) -> Response {
-    Html(wrap_page(
-        "Not Found",
-        &format!("<h1>Not Found</h1><p>{}</p>", html_escape(body)),
-    ))
-    .into_response()
-    .with_status(StatusCode::NOT_FOUND)
+/// Internal — shared 404 renderer used by the setup gate.
+pub(super) fn not_found_response(body: &str) -> Response {
+    let tmpl = crate::protocol::web::handlers_common::NotFoundTemplate::new(body.to_string());
+    render_status(&tmpl, StatusCode::NOT_FOUND)
 }
 
-fn internal_error_response() -> Response {
-    Html(wrap_page(
-        "Server error",
-        "<h1>Server error</h1><p>Something went wrong. Check the server logs.</p>",
-    ))
-    .into_response()
-    .with_status(StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-fn render_setup_form(token: &str, error: Option<&str>) -> String {
-    let token_esc = html_escape(token);
-    let error_html = error.map_or(String::new(), |e| {
-        format!(
-            r#"<div class="error" role="alert">{}</div>"#,
-            html_escape(e)
-        )
-    });
-    wrap_page(
-        "Hearth · First-run setup",
-        &format!(
-            r#"
-            <h1>Welcome to Hearth</h1>
-            <p>No tenant has been configured yet. Create your first tenant and admin
-            account below.</p>
-            {error_html}
-            <form method="post" action="/ui/setup" autocomplete="off">
-              <input type="hidden" name="token" value="{token_esc}">
-              <label for="tenant_name">Tenant name</label>
-              <input type="text" id="tenant_name" name="tenant_name" required>
-
-              <label for="admin_display_name">Your display name</label>
-              <input type="text" id="admin_display_name" name="admin_display_name" required>
-
-              <label for="admin_email">Email</label>
-              <input type="email" id="admin_email" name="admin_email" required
-                     autocomplete="email">
-
-              <label for="admin_password">Password (min 12 characters)</label>
-              <input type="password" id="admin_password" name="admin_password" required
-                     minlength="12" autocomplete="new-password">
-
-              <button type="submit">Create admin account</button>
-            </form>
-            "#,
-        ),
-    )
-}
-
-fn render_login_form(error: Option<&str>) -> String {
-    let error_html = error.map_or(String::new(), |e| {
-        format!(
-            r#"<div class="error" role="alert">{}</div>"#,
-            html_escape(e)
-        )
-    });
-    wrap_page(
-        "Hearth · Sign in",
-        &format!(
-            r#"
-            <h1>Sign in</h1>
-            {error_html}
-            <form method="post" action="/ui/login">
-              <label for="email">Email</label>
-              <input type="email" id="email" name="email" required autocomplete="email">
-
-              <label for="password">Password</label>
-              <input type="password" id="password" name="password" required
-                     autocomplete="current-password">
-
-              <button type="submit">Sign in</button>
-            </form>
-            "#,
-        ),
-    )
-}
-
-fn wrap_page(title: &str, body: &str) -> String {
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
-  <style>
-    :root {{ color-scheme: light dark; }}
-    body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 32rem;
-            margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }}
-    h1 {{ margin-top: 0; }}
-    label {{ display: block; margin-top: 1rem; font-weight: 600; }}
-    input {{ display: block; width: 100%; padding: .5rem; margin-top: .25rem;
-             box-sizing: border-box; font-size: 1rem; }}
-    button {{ margin-top: 1.5rem; padding: .625rem 1rem; font-size: 1rem;
-              cursor: pointer; }}
-    .error {{ background: #fde8e8; color: #7a1a1a; padding: .75rem 1rem;
-              border-radius: .25rem; margin-top: 1rem; }}
-    code {{ background: rgba(127,127,127,0.15); padding: .1em .35em; border-radius: 3px; }}
-  </style>
-</head>
-<body>
-  {body}
-</body>
-</html>"#,
-        title = html_escape(title),
-        body = body,
-    )
-}
-
-/// Minimal HTML escape for text interpolation.
-///
-/// We intentionally do not use a crate — the only text we interpolate
-/// into HTML is (a) the setup token (base64url, already safe) and (b)
-/// operator-supplied error messages we control.
-fn html_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for c in input.chars() {
-        match c {
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '&' => out.push_str("&amp;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Extension trait to override the status of a generated response.
-trait ResponseStatusExt {
-    /// Sets the HTTP status on an already-built response.
-    fn with_status(self, status: StatusCode) -> Response;
-}
-
-impl ResponseStatusExt for Response {
-    fn with_status(mut self, status: StatusCode) -> Response {
-        *self.status_mut() = status;
-        self
-    }
+/// Internal — shared 500 renderer.
+pub(super) fn internal_error_response() -> Response {
+    let tmpl = crate::protocol::web::handlers_common::ServerErrorTemplate::new();
+    render_status(&tmpl, StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn html_escape_prevents_basic_injection() {
-        let out = html_escape(r#"<script>"evil"</script>"#);
-        assert!(!out.contains("<script>"), "got: {out}");
-        assert!(out.contains("&lt;script&gt;"), "got: {out}");
-    }
-
-    #[test]
-    fn wrap_page_contains_title_and_body() {
-        let page = wrap_page("Title<x>", "<h1>Body</h1>");
-        assert!(
-            page.contains("<title>Title&lt;x&gt;</title>"),
-            "got: {page}"
-        );
-        assert!(page.contains("<h1>Body</h1>"), "got: {page}");
-    }
 
     #[test]
     fn derive_base_url_uses_host_header() {
