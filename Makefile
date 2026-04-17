@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check proto-gen proto-lint proto-breaking proto-check sdk-test
+.PHONY: setup build test clippy fmt check proto-gen proto-lint proto-breaking proto-check sdk-test docker-up docker-reload
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -71,3 +71,15 @@ ci-fast: fmt clippy proto-lint
 
 ## CI standard tier: fast + tests + SDK tests + proto breaking (merge).
 ci-standard: ci-fast test proto-breaking sdk-test proto-check
+
+# ── Docker ──────────────────────────────────────────
+
+COMPOSE_DEV := -f compose.yaml -f compose.dev.yaml
+
+## First-time image build + start (bakes binary into image).
+docker-up:
+	docker compose up --build -d
+
+## Fast iterate: host-side release build + container restart with bind mount (~15 s).
+docker-reload:
+	PROTOC=$(PROTOC) cargo build --release $(CARGO_FLAGS) && docker compose $(COMPOSE_DEV) up -d --force-recreate hearth

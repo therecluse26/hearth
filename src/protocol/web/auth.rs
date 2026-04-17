@@ -409,9 +409,9 @@ fn redirect_to_login(parts: &Parts) -> Response {
     let path_and_query = parts
         .uri
         .path_and_query()
-        .map_or_else(|| "/ui/".to_string(), |p| p.as_str().to_string());
+        .map_or_else(|| "/ui".to_string(), |p| p.as_str().to_string());
 
-    let sanitized = sanitize_return_to(&path_and_query).unwrap_or_else(|| "/ui/".to_string());
+    let sanitized = sanitize_return_to(&path_and_query).unwrap_or_else(|| "/ui".to_string());
     let encoded = url_encode(&sanitized);
     let location = format!("/ui/login?return_to={encoded}");
 

@@ -1,8 +1,12 @@
 # compose.yaml — local development stack.
 #
-# One command brings up Hearth + a dev SMTP sink:
+# Two workflows:
 #
-#   docker compose up --build
+#   make docker-up       # first time — builds the Docker image + starts stack
+#   make docker-reload   # after code changes — local build + instant restart
+#
+# compose.dev.yaml (loaded by `docker-reload`) bind-mounts the host-built
+# binary over the image's copy, skipping the Docker build (~15 s vs minutes).
 #
 # Once healthy:
 #   - Hearth:     http://localhost:8420  (health at /health)

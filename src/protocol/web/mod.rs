@@ -33,7 +33,7 @@ use std::sync::{Arc, RwLock};
 use axum::body::Body;
 use axum::extract::Path as AxumPath;
 use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{Redirect, Response};
 use axum::Router;
 
 use crate::audit::AuditEngine;
@@ -123,7 +123,7 @@ impl WebState {
 /// | `/ui/setup/sent` | GET | "Check your email" confirmation |
 /// | `/ui/verify-email` | GET | Consume an email-verification token |
 /// | `/ui/login` | GET/POST | Login form + submit |
-/// | `/ui/` | GET | Signed-in dashboard (redirects to login when unauthenticated) |
+/// | `/ui` | GET | Signed-in dashboard (redirects to login when unauthenticated) |
 /// | `/ui/logout` | POST | Revoke session + clear cookies |
 /// | `/ui/account` | GET | My-account page (password, MFA status) |
 /// | `/ui/account/password` | POST | Change password |
@@ -256,11 +256,14 @@ pub fn router(state: WebState) -> Router {
         .route("/static/{file}", axum::routing::get(serve_static))
         .with_state(Arc::clone(&shared));
 
-    // axum 0.8 tightened path matching: `nest("/ui", Router::new().route("/", _))`
-    // matches `/ui` but NOT `/ui/`. Register the trailing-slash variant at the
-    // outer router so both paths hit the dashboard handler.
+    // axum 0.8 nest does NOT match `/ui/` (trailing slash) — only `/ui`
+    // and `/ui/*`. Add a permanent redirect so bookmarks and old links
+    // still work.
     Router::new()
-        .route("/ui/", axum::routing::get(handlers::dashboard))
+        .route(
+            "/ui/",
+            axum::routing::get(|| async { Redirect::permanent("/ui") }),
+        )
         .nest("/ui", ui_routes)
         .with_state(shared)
 }

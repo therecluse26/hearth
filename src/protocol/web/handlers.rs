@@ -168,8 +168,8 @@ impl VerifyOkTemplate {
     }
 }
 
-/// Placeholder dashboard template. Commit 3 replaces this with a
-/// real overview page.
+/// Dashboard template with quick-link tiles for account management
+/// and (for admins) the full management surface.
 #[derive(Template)]
 #[template(path = "ui/dashboard.html")]
 struct DashboardTemplate {
@@ -515,7 +515,7 @@ pub async fn login_submit(
                 // this process resolve consistently.
                 state.set_current_tenant(tenant.id().clone());
 
-                let location = return_to.as_deref().unwrap_or("/ui/");
+                let location = return_to.as_deref().unwrap_or("/ui");
                 let mut response = Redirect::to(location).into_response();
                 append_cookie(&mut response, &session_cookie);
                 append_cookie(&mut response, &csrf_cookie);

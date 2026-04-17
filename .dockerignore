@@ -73,5 +73,6 @@ Dockerfile
 .dockerignore
 compose.yaml
 compose.yml
+compose.dev.yaml
 docker-compose.yaml
 docker-compose.yml

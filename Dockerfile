@@ -87,6 +87,7 @@ RUN mkdir -p src simulation/src benches \
 #      is identical — so it's effectively a no-op beyond `protoc` being called
 #      once more.
 COPY src ./src
+COPY templates ./templates
 COPY simulation ./simulation
 # benches/ is not compiled by `--bin hearth`, but Cargo still validates every
 # `[[bench]]` target path at manifest-parse time — so the files must exist.

@@ -4,17 +4,22 @@
 //! Drives the axum router directly via `tower::ServiceExt::oneshot`, skipping
 //! a real TCP listener. Covers:
 //!
-//! * Unauthenticated `/ui/` → 303 redirect to `/ui/login?return_to=%2Fui%2F`.
-//! * Authenticated `/ui/` → 200 with `Dashboard` content and the sign-out form.
+//! * Unauthenticated `/ui` → 303 redirect to `/ui/login?return_to=%2Fui`.
+//! * Authenticated `/ui` → 200 with `Dashboard` content and the sign-out form.
 //! * `POST /ui/logout` without the CSRF token → 403.
 //! * `POST /ui/logout` with valid CSRF → 303 to `/ui/login`, cookies cleared,
 //!   and the underlying session is revoked on the server.
+//! * Dashboard works when `http::router` and `web::router` are merged (same as
+//!   `main.rs:310`).
 
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
+use hearth::authz::{
+    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
+    SubjectRef, TupleWrite,
+};
 use hearth::core::Clock;
 use hearth::core::SystemClock;
 use hearth::core::{SessionId, TenantId};
@@ -24,6 +29,7 @@ use hearth::identity::{
     CleartextPassword, CreateTenantRequest, CreateUserRequest, CredentialConfig,
     EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, UpdateUserRequest, UserStatus,
 };
+use hearth::protocol::http as hearth_http;
 use hearth::protocol::web::{self, CookieSecret, WebState};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
@@ -58,6 +64,8 @@ const COOKIE_SECRET_BYTES: [u8; 32] = [42u8; 32];
 struct TestRig {
     app: axum::Router,
     identity: Arc<dyn IdentityEngine>,
+    authz: Arc<dyn AuthorizationEngine>,
+    audit: Arc<dyn hearth::audit::AuditEngine>,
     tenant_id: TenantId,
     session_id: SessionId,
 }
@@ -129,6 +137,16 @@ fn build_rig() -> TestRig {
         .create_session(tenant.id(), user.id())
         .expect("create session");
 
+    // Grant the user the hearth#admin relation (same as the onboarding flow).
+    let admin_obj = ObjectRef::new("hearth", "admin").expect("valid object");
+    let admin_subj =
+        SubjectRef::direct("user", &user.id().as_uuid().to_string()).expect("valid subject");
+    let admin_tuple =
+        RelationshipTuple::new(admin_obj, "admin", admin_subj).expect("valid tuple");
+    authz
+        .write_tuples(tenant.id(), &[TupleWrite::Touch(admin_tuple)])
+        .expect("write admin tuple");
+
     let onboarding = Arc::new(OnboardingService::new(
         Arc::clone(&identity),
         Arc::clone(&authz),
@@ -137,8 +155,8 @@ fn build_rig() -> TestRig {
     ));
     let state = WebState::new(
         Arc::clone(&identity),
-        authz,
-        audit,
+        Arc::clone(&authz),
+        Arc::clone(&audit),
         onboarding,
         CookieSecret::from_bytes(COOKIE_SECRET_BYTES),
     );
@@ -147,6 +165,8 @@ fn build_rig() -> TestRig {
     TestRig {
         app,
         identity,
+        authz,
+        audit,
         tenant_id: tenant.id().clone(),
         session_id: session.id().clone(),
     }
@@ -180,7 +200,7 @@ async fn dashboard_redirects_to_login_when_unauthenticated() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/")
+                .uri("/ui")
                 .body(Body::empty())
                 .expect("build request"),
         )
@@ -211,7 +231,7 @@ async fn dashboard_renders_signed_in_page() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/")
+                .uri("/ui")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -232,6 +252,28 @@ async fn dashboard_renders_signed_in_page() {
     assert!(
         body.contains("/ui/logout"),
         "dashboard should render sign-out form"
+    );
+    // Admin tiles must be visible because the test user has the
+    // hearth#admin relation.
+    assert!(
+        body.contains("/ui/admin/users"),
+        "dashboard should show Users admin link"
+    );
+    assert!(
+        body.contains("/ui/admin/tenants"),
+        "dashboard should show Tenants admin link"
+    );
+    assert!(
+        body.contains("/ui/admin/applications"),
+        "dashboard should show Applications admin link"
+    );
+    assert!(
+        body.contains("/ui/admin/sessions"),
+        "dashboard should show Sessions admin link"
+    );
+    assert!(
+        body.contains("/ui/admin/audit"),
+        "dashboard should show Audit log admin link"
     );
 }
 
@@ -372,5 +414,83 @@ async fn static_asset_served_with_immutable_cache_headers() {
 
     // Subject suppresses the unused-field warning when build_rig() returns
     // fields that individual tests don't touch.
-    let _ = (rig.session_id, rig.tenant_id);
+    let _ = (rig.session_id, rig.tenant_id, rig.authz, rig.audit);
+}
+
+/// Reproduces the exact router composition from `main.rs:310`:
+/// `http::router(app_state).merge(web::router(web_state))`. The bug was
+/// that `/ui` returned 404 after the merge because of the ambiguous
+/// double-registration at `/ui/` on both the inner nest and the outer router.
+#[tokio::test]
+async fn dashboard_works_on_merged_router() {
+    let rig = build_rig();
+    let cookie = auth_cookie(&rig, "csrf-merged");
+
+    // Build the HTTP API router exactly as main.rs does.
+    let app_state = Arc::new(hearth_http::AppState::new(
+        Arc::clone(&rig.identity),
+        Arc::clone(&rig.authz),
+        Arc::clone(&rig.audit),
+    ));
+    let merged = hearth_http::router(app_state).merge(rig.app.clone());
+
+    let response = merged
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "GET /ui must return 200 on merged router"
+    );
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+    assert!(
+        body.contains("Welcome"),
+        "merged-router dashboard should have welcome"
+    );
+}
+
+/// Ensures `/ui/` (trailing slash) redirects to `/ui` after removing the
+/// explicit outer route. Axum 0.8's `nest` does not match the bare trailing
+/// slash, so a `Redirect::permanent("/ui")` handler is registered at `/ui/`.
+#[tokio::test]
+async fn dashboard_trailing_slash_redirects() {
+    let rig = build_rig();
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::PERMANENT_REDIRECT,
+        "GET /ui/ must redirect to /ui"
+    );
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .expect("Location header")
+        .to_str()
+        .expect("ascii");
+    assert_eq!(location, "/ui", "redirect target must be /ui");
 }
