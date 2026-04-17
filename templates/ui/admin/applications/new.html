@@ -1,0 +1,39 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Register Application{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>Register application</h1>
+</header>
+
+{% match error %}
+  {% when Some with (msg) %}
+    <div class="hearth-flash hearth-flash--error" role="alert">{{ msg }}</div>
+  {% when None %}
+{% endmatch %}
+
+<form method="post" action="/ui/admin/applications/new" autocomplete="off">
+  {% match csrf %}
+    {% when Some with (token) %}
+      <input type="hidden" name="_csrf" value="{{ token }}">
+    {% when None %}
+  {% endmatch %}
+
+  <label for="client_name">Application name</label>
+  <input type="text" id="client_name" name="client_name" required
+         value="{{ form_client_name }}">
+
+  <label for="redirect_uris">Redirect URIs (one per line)</label>
+  <textarea id="redirect_uris" name="redirect_uris" rows="3" required>{{ form_redirect_uris }}</textarea>
+
+  <label for="confidential">
+    <input type="checkbox" id="confidential" name="confidential" value="true"
+           {% if form_confidential %}checked{% endif %}>
+    Confidential client (server-side app with a client secret)
+  </label>
+
+  <div class="hearth-actions">
+    <button type="submit">Register</button>
+    <a href="/ui/admin/applications">Cancel</a>
+  </div>
+</form>
+{% endblock %}

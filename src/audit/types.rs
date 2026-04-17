@@ -87,6 +87,38 @@ impl AuditAction {
     }
 }
 
+impl std::str::FromStr for AuditAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user_created" => Ok(Self::UserCreated),
+            "user_updated" => Ok(Self::UserUpdated),
+            "user_deleted" => Ok(Self::UserDeleted),
+            "credential_set" => Ok(Self::CredentialSet),
+            "credential_changed" => Ok(Self::CredentialChanged),
+            "credential_verified" => Ok(Self::CredentialVerified),
+            "session_created" => Ok(Self::SessionCreated),
+            "session_revoked" => Ok(Self::SessionRevoked),
+            "token_issued" => Ok(Self::TokenIssued),
+            "token_refreshed" => Ok(Self::TokenRefreshed),
+            "tenant_created" => Ok(Self::TenantCreated),
+            "tenant_updated" => Ok(Self::TenantUpdated),
+            "tenant_deleted" => Ok(Self::TenantDeleted),
+            "client_registered" => Ok(Self::ClientRegistered),
+            "authz_code_issued" => Ok(Self::AuthorizationCodeIssued),
+            "authz_code_exchanged" => Ok(Self::AuthorizationCodeExchanged),
+            "tuple_written" => Ok(Self::TupleWritten),
+            "tuple_deleted" => Ok(Self::TupleDeleted),
+            "client_updated" => Ok(Self::ClientUpdated),
+            "client_deleted" => Ok(Self::ClientDeleted),
+            "bulk_users_created" => Ok(Self::BulkUsersCreated),
+            "bulk_users_disabled" => Ok(Self::BulkUsersDisabled),
+            other => Err(format!("unknown audit action: {other}")),
+        }
+    }
+}
+
 impl std::fmt::Display for AuditAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

@@ -1526,6 +1526,125 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(session)
     }
 
+    fn list_sessions_by_user(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Session>, IdentityError> {
+        let prefix = keys::encode_user_sessions_prefix(user_id);
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            // The index key is `ses:user:{user_uuid}:{session_uuid}`.
+            // Position just after the cursor session.
+            let mut cursor_key = format!("ses:user:{}:{uuid_str}", user_id.as_uuid()).into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let index_entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in index_entries.iter().take(limit + 1) {
+            // Extract session UUID from the index key suffix.
+            let key_str = String::from_utf8_lossy(&entry.key);
+            let Some(session_uuid_str) = key_str.rsplit(':').next() else {
+                continue;
+            };
+            let Ok(session_uuid) = session_uuid_str.parse::<uuid::Uuid>() else {
+                continue;
+            };
+            let session_id = SessionId::new(session_uuid);
+            let session_key = keys::encode_session_id(&session_id);
+            if let Some(data) = self
+                .storage
+                .get(tenant_id, &session_key)
+                .map_err(Self::storage_err)?
+            {
+                let session: Session =
+                    serde_json::from_slice(&data).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                items.push(session);
+            }
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            items
+                .last()
+                .map(|s| URL_SAFE_NO_PAD.encode(s.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn list_sessions_by_tenant(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Session>, IdentityError> {
+        let prefix = keys::session_id_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!("ses:id:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let session: Session =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(session);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            items
+                .last()
+                .map(|s| URL_SAFE_NO_PAD.encode(s.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
     // ===== Token management =====
 
     fn issue_tokens(

@@ -1,0 +1,31 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · {{ tenant.name() }}{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>{{ tenant.name() }}</h1>
+  <div class="hearth-actions">
+    <a href="/ui/admin/tenants/{{ tenant.id().as_uuid() }}/edit">Edit</a>
+  </div>
+</header>
+
+<dl class="hearth-dl">
+  <dt>ID</dt>
+  <dd><code>{{ tenant.id().as_uuid() }}</code></dd>
+
+  <dt>Status</dt>
+  <dd>{{ tenant.status()|fmt("{:?}") }}</dd>
+</dl>
+
+<section style="margin-top: 2rem;">
+  <h2>Danger zone</h2>
+  <form method="post" action="/ui/admin/tenants/{{ tenant.id().as_uuid() }}/delete"
+        onsubmit="return confirm('Delete this tenant and ALL its data? This cannot be undone.');">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+    <button type="submit" class="hearth-button--danger">Delete tenant</button>
+  </form>
+</section>
+{% endblock %}

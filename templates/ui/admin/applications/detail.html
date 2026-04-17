@@ -1,0 +1,53 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · {{ app.client_name() }}{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>{{ app.client_name() }}</h1>
+  <div class="hearth-actions">
+    <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}/edit">Edit</a>
+  </div>
+</header>
+
+{% match client_secret %}
+  {% when Some with (secret) %}
+    <div class="hearth-flash hearth-flash--success" role="alert">
+      <strong>Client secret (shown once):</strong>
+      <code>{{ secret }}</code>
+      <p class="hearth-muted">Copy this now — it will not be shown again.</p>
+    </div>
+  {% when None %}
+{% endmatch %}
+
+<dl class="hearth-dl">
+  <dt>Client ID</dt>
+  <dd><code>{{ app.client_id().as_uuid() }}</code></dd>
+
+  <dt>Type</dt>
+  <dd>{% if app.is_confidential() %}Confidential{% else %}Public{% endif %}</dd>
+
+  <dt>Redirect URIs</dt>
+  <dd>
+    <ul>
+      {% for uri in app.redirect_uris() %}
+        <li><code>{{ uri }}</code></li>
+      {% endfor %}
+    </ul>
+  </dd>
+
+  <dt>Grant types</dt>
+  <dd>{{ app.grant_types().join(", ") }}</dd>
+</dl>
+
+<section style="margin-top: 2rem;">
+  <h2>Danger zone</h2>
+  <form method="post" action="/ui/admin/applications/{{ app.client_id().as_uuid() }}/delete"
+        onsubmit="return confirm('Delete this application? Existing tokens will be invalidated.');">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+    <button type="submit" class="hearth-button--danger">Delete application</button>
+  </form>
+</section>
+{% endblock %}

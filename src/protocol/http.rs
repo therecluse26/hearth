@@ -283,7 +283,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(admin_get_client)
                 .put(admin_update_client)
                 .delete(admin_delete_client),
-        );
+        )
+        .route("/audit", axum::routing::get(admin_list_audit));
 
     Router::new()
         .route("/health", axum::routing::get(health))
@@ -1817,6 +1818,65 @@ async fn admin_delete_client(
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// === Audit Endpoint ===
+
+/// Query params for `GET /admin/audit`.
+#[derive(Debug, Deserialize)]
+struct AuditQueryParams {
+    /// Filter by actor UUID (as string).
+    actor: Option<String>,
+    /// Filter by action name (e.g. `user_created`).
+    action: Option<String>,
+    /// Start of time window (inclusive, Unix micros).
+    start_time: Option<i64>,
+    /// End of time window (exclusive, Unix micros).
+    end_time: Option<i64>,
+    /// Maximum number of events to return (default 50).
+    limit: Option<usize>,
+}
+
+/// `GET /admin/audit` — queries the audit log.
+async fn admin_list_audit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<AuditQueryParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let action = params
+        .action
+        .as_deref()
+        .and_then(|s| s.parse::<crate::audit::AuditAction>().ok());
+
+    let query = crate::audit::AuditQuery {
+        tenant_id: auth.tenant_id.clone(),
+        start_time: params.start_time.map(crate::core::Timestamp::from_micros),
+        end_time: params.end_time.map(crate::core::Timestamp::from_micros),
+        actor: params.actor,
+        action,
+        limit: Some(params.limit.unwrap_or(50).min(200)),
+    };
+
+    match state.audit.query(&query) {
+        Ok(events) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "events": events })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "audit query failed"})),
+            )
+                .into_response()
+        }
     }
 }
 

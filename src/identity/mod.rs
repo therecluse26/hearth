@@ -215,6 +215,29 @@ pub trait IdentityEngine: Send + Sync {
         session_id: &SessionId,
     ) -> Result<Session, IdentityError>;
 
+    /// Lists all sessions belonging to a user, with cursor-based pagination.
+    ///
+    /// Sessions are returned newest-first by their UUID ordering in the
+    /// `ses:user:{user_uuid}:{session_uuid}` index.
+    fn list_sessions_by_user(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Session>, IdentityError>;
+
+    /// Lists all sessions in a tenant, with cursor-based pagination.
+    ///
+    /// Sessions are returned by their UUID ordering in the
+    /// `ses:id:{session_uuid}` primary key space.
+    fn list_sessions_by_tenant(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Session>, IdentityError>;
+
     // ===== Token management =====
 
     /// Issues an access/refresh token pair for a session.

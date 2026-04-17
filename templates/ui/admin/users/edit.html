@@ -1,0 +1,41 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Edit {{ user.display_name() }}{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>Edit user</h1>
+</header>
+
+{% match error %}
+  {% when Some with (msg) %}
+    <div class="hearth-flash hearth-flash--error" role="alert">{{ msg }}</div>
+  {% when None %}
+{% endmatch %}
+
+<form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/edit" autocomplete="off">
+  {% match csrf %}
+    {% when Some with (token) %}
+      <input type="hidden" name="_csrf" value="{{ token }}">
+    {% when None %}
+  {% endmatch %}
+
+  <label for="email">Email</label>
+  <input type="email" id="email" name="email" required
+         value="{{ form_email }}">
+
+  <label for="display_name">Display name</label>
+  <input type="text" id="display_name" name="display_name" required
+         value="{{ form_display_name }}">
+
+  <label for="status">Status</label>
+  <select id="status" name="status">
+    <option value="Active" {% if form_status == "Active" %}selected{% endif %}>Active</option>
+    <option value="Disabled" {% if form_status == "Disabled" %}selected{% endif %}>Disabled</option>
+    <option value="PendingVerification" {% if form_status == "PendingVerification" %}selected{% endif %}>Pending verification</option>
+  </select>
+
+  <div class="hearth-actions">
+    <button type="submit">Save changes</button>
+    <a href="/ui/admin/users/{{ user.id().as_uuid() }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

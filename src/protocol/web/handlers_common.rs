@@ -90,3 +90,28 @@ impl ServerErrorTemplate {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Convenience renderers
+// ---------------------------------------------------------------------------
+
+use axum::http::StatusCode;
+use axum::response::Response;
+
+use super::templates::render_status;
+
+/// Renders a 404 page with a custom message.
+pub(crate) fn not_found(msg: &str) -> Response {
+    render_status(
+        &NotFoundTemplate::new(msg.to_string()),
+        StatusCode::NOT_FOUND,
+    )
+}
+
+/// Renders a generic 500 page.
+pub(crate) fn server_error() -> Response {
+    render_status(
+        &ServerErrorTemplate::new(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+}

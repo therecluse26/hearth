@@ -130,6 +130,13 @@ pub(crate) fn encode_user_sessions_prefix(user_id: &UserId) -> Vec<u8> {
     format!("{SESSION_USER_PREFIX}{}:", user_id.as_uuid()).into_bytes()
 }
 
+/// Returns the scan prefix for listing all sessions in a tenant.
+///
+/// Format: `ses:id:`
+pub(crate) fn session_id_scan_prefix() -> Vec<u8> {
+    SESSION_ID_PREFIX.as_bytes().to_vec()
+}
+
 /// Computes the exclusive end bound for a prefix scan.
 ///
 /// Increments the last byte of the prefix.

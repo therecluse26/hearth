@@ -1,0 +1,44 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Audit Log{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>Audit log</h1>
+</header>
+
+<form method="get" action="/ui/admin/audit" class="hearth-filter-form">
+  <label for="actor">Actor</label>
+  <input type="text" id="actor" name="actor" value="{{ form_actor }}" placeholder="user UUID or 'system'">
+
+  <label for="action">Action</label>
+  <input type="text" id="action" name="action" value="{{ form_action }}" placeholder="e.g. user_created">
+
+  <label for="limit">Limit</label>
+  <input type="number" id="limit" name="limit" value="{{ form_limit }}" min="1" max="200">
+
+  <button type="submit">Filter</button>
+</form>
+
+<table class="hearth-table">
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Action</th>
+      <th>Actor</th>
+      <th>Resource</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in events %}
+      <tr>
+        <td>{{ row.timestamp_display }}</td>
+        <td><code>{{ row.event.action }}</code></td>
+        <td><code>{{ row.event.actor }}</code></td>
+        <td>{{ row.event.resource_type }} <code>{{ row.event.resource_id }}</code></td>
+      </tr>
+    {% endfor %}
+    {% if events.is_empty() %}
+      <tr><td colspan="4" class="hearth-muted">No audit events found.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

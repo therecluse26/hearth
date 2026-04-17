@@ -1,0 +1,51 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Sessions{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>Sessions</h1>
+</header>
+
+<table class="hearth-table">
+  <thead>
+    <tr>
+      <th>Session ID</th>
+      <th>User</th>
+      <th>Created</th>
+      <th>Expires</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in sessions %}
+      <tr>
+        <td><code>{{ s.session.id().as_uuid() }}</code></td>
+        <td>{{ s.user_email }}</td>
+        <td>{{ s.created_at_display }}</td>
+        <td>{{ s.expires_at_display }}</td>
+        <td>
+          <form method="post" action="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke"
+                onsubmit="return confirm('Revoke this session?');">
+            {% match csrf %}
+              {% when Some with (token) %}
+                <input type="hidden" name="_csrf" value="{{ token }}">
+              {% when None %}
+            {% endmatch %}
+            <button type="submit" class="hearth-button--danger">Revoke</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    {% if sessions.is_empty() %}
+      <tr><td colspan="5" class="hearth-muted">No active sessions.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% match next_cursor %}
+  {% when Some with (cursor) %}
+    <nav class="hearth-pagination">
+      <a href="/ui/admin/sessions?cursor={{ cursor }}">Next page &rarr;</a>
+    </nav>
+  {% when None %}
+{% endmatch %}
+{% endblock %}

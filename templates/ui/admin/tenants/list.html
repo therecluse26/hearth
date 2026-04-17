@@ -1,0 +1,40 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Tenants{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>Tenants</h1>
+  <div class="hearth-actions">
+    <a href="/ui/admin/tenants/new" class="hearth-button">Create tenant</a>
+  </div>
+</header>
+
+<table class="hearth-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Status</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in tenants %}
+      <tr>
+        <td><a href="/ui/admin/tenants/{{ t.id().as_uuid() }}">{{ t.name() }}</a></td>
+        <td>{{ t.status()|fmt("{:?}") }}</td>
+        <td><a href="/ui/admin/tenants/{{ t.id().as_uuid() }}/edit">Edit</a></td>
+      </tr>
+    {% endfor %}
+    {% if tenants.is_empty() %}
+      <tr><td colspan="3" class="hearth-muted">No tenants found.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% match next_cursor %}
+  {% when Some with (cursor) %}
+    <nav class="hearth-pagination">
+      <a href="/ui/admin/tenants?cursor={{ cursor }}">Next page &rarr;</a>
+    </nav>
+  {% when None %}
+{% endmatch %}
+{% endblock %}

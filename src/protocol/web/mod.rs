@@ -43,6 +43,7 @@ use crate::identity::onboarding::OnboardingService;
 use crate::identity::IdentityEngine;
 
 pub mod account;
+pub mod admin;
 pub mod auth;
 pub mod handlers;
 pub(crate) mod handlers_common;
@@ -129,7 +130,26 @@ impl WebState {
 /// | `/ui/account/totp` | GET | MFA enrol / disable page |
 /// | `/ui/account/totp/activate` | POST | Activate pending TOTP enrolment |
 /// | `/ui/account/totp/disable` | POST | Disable MFA |
+/// | `/ui/admin/users` | GET | Admin users list |
+/// | `/ui/admin/users/new` | GET/POST | Create user |
+/// | `/ui/admin/users/{id}` | GET | User detail |
+/// | `/ui/admin/users/{id}/edit` | GET/POST | Edit user |
+/// | `/ui/admin/users/{id}/delete` | POST | Delete user |
+/// | `/ui/admin/tenants` | GET | Admin tenants list |
+/// | `/ui/admin/tenants/new` | GET/POST | Create tenant |
+/// | `/ui/admin/tenants/{id}` | GET | Tenant detail |
+/// | `/ui/admin/tenants/{id}/edit` | GET/POST | Edit tenant |
+/// | `/ui/admin/tenants/{id}/delete` | POST | Delete tenant |
+/// | `/ui/admin/applications` | GET | Admin applications list |
+/// | `/ui/admin/applications/new` | GET/POST | Register application |
+/// | `/ui/admin/applications/{id}` | GET | Application detail |
+/// | `/ui/admin/applications/{id}/edit` | GET/POST | Edit application |
+/// | `/ui/admin/applications/{id}/delete` | POST | Delete application |
+/// | `/ui/admin/sessions` | GET | Admin sessions list |
+/// | `/ui/admin/sessions/{id}/revoke` | POST | Revoke session |
+/// | `/ui/admin/audit` | GET | Audit log viewer |
 /// | `/ui/static/{file}` | GET | Embedded static assets (htmx, css) |
+#[allow(clippy::too_many_lines)]
 pub fn router(state: WebState) -> Router {
     let shared = Arc::new(state);
     let ui_routes = Router::new()
@@ -162,6 +182,77 @@ pub fn router(state: WebState) -> Router {
             "/account/totp/disable",
             axum::routing::post(account::totp_disable),
         )
+        .route("/admin/users", axum::routing::get(admin::admin_users_list))
+        .route(
+            "/admin/users/new",
+            axum::routing::get(admin::admin_user_create_form).post(admin::admin_user_create_submit),
+        )
+        .route(
+            "/admin/users/{id}",
+            axum::routing::get(admin::admin_user_detail),
+        )
+        .route(
+            "/admin/users/{id}/edit",
+            axum::routing::get(admin::admin_user_edit_form).post(admin::admin_user_edit_submit),
+        )
+        .route(
+            "/admin/users/{id}/delete",
+            axum::routing::post(admin::admin_user_delete),
+        )
+        // --- Tenants ---
+        .route(
+            "/admin/tenants",
+            axum::routing::get(admin::admin_tenants_list),
+        )
+        .route(
+            "/admin/tenants/new",
+            axum::routing::get(admin::admin_tenant_create_form)
+                .post(admin::admin_tenant_create_submit),
+        )
+        .route(
+            "/admin/tenants/{id}",
+            axum::routing::get(admin::admin_tenant_detail),
+        )
+        .route(
+            "/admin/tenants/{id}/edit",
+            axum::routing::get(admin::admin_tenant_edit_form).post(admin::admin_tenant_edit_submit),
+        )
+        .route(
+            "/admin/tenants/{id}/delete",
+            axum::routing::post(admin::admin_tenant_delete),
+        )
+        // --- Applications ---
+        .route(
+            "/admin/applications",
+            axum::routing::get(admin::admin_apps_list),
+        )
+        .route(
+            "/admin/applications/new",
+            axum::routing::get(admin::admin_app_create_form).post(admin::admin_app_create_submit),
+        )
+        .route(
+            "/admin/applications/{id}",
+            axum::routing::get(admin::admin_app_detail),
+        )
+        .route(
+            "/admin/applications/{id}/edit",
+            axum::routing::get(admin::admin_app_edit_form).post(admin::admin_app_edit_submit),
+        )
+        .route(
+            "/admin/applications/{id}/delete",
+            axum::routing::post(admin::admin_app_delete),
+        )
+        // --- Sessions ---
+        .route(
+            "/admin/sessions",
+            axum::routing::get(admin::admin_sessions_list),
+        )
+        .route(
+            "/admin/sessions/{id}/revoke",
+            axum::routing::post(admin::admin_session_revoke),
+        )
+        // --- Audit ---
+        .route("/admin/audit", axum::routing::get(admin::admin_audit_list))
         .route("/static/{file}", axum::routing::get(serve_static))
         .with_state(Arc::clone(&shared));
 

@@ -1,0 +1,29 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Create Tenant{% endblock %}
+{% block body %}
+<header class="hearth-page-header">
+  <h1>Create tenant</h1>
+</header>
+
+{% match error %}
+  {% when Some with (msg) %}
+    <div class="hearth-flash hearth-flash--error" role="alert">{{ msg }}</div>
+  {% when None %}
+{% endmatch %}
+
+<form method="post" action="/ui/admin/tenants/new" autocomplete="off">
+  {% match csrf %}
+    {% when Some with (token) %}
+      <input type="hidden" name="_csrf" value="{{ token }}">
+    {% when None %}
+  {% endmatch %}
+
+  <label for="name">Tenant name</label>
+  <input type="text" id="name" name="name" required value="{{ form_name }}">
+
+  <div class="hearth-actions">
+    <button type="submit">Create tenant</button>
+    <a href="/ui/admin/tenants">Cancel</a>
+  </div>
+</form>
+{% endblock %}
