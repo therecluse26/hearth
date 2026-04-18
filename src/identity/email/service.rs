@@ -84,7 +84,7 @@ impl EmailService {
     ///
     /// Uses global branding only (no tenant exists yet during setup).
     pub fn send_setup_notification(&self, to: &str, url: &str) -> Result<(), EmailError> {
-        let branding = ResolvedBranding::from_branding(&self.default_branding);
+        let branding = self.resolve_branding(None);
         let mut msg = templates::render_setup(url, &branding, self.custom_templates.as_ref())
             .or_else(|_| templates::render_setup(url, &branding, None))?;
         msg.to = to.to_string();
@@ -132,14 +132,22 @@ impl EmailService {
     /// Computes `logo_svg_inline` based on the resolved `logo_url`:
     /// - No logo URL → inline the built-in Hearth SVG.
     /// - Remote URL (`http://` or `https://`) → use `<img src>` (keep `logo_url`).
-    /// - Local `.svg` path → read and inline from disk.
-    /// - Local non-SVG path → skip (can't inline raster images).
+    /// - Local `.svg` path → read and inline from disk; fall back to default on I/O error.
+    /// - Local non-SVG path → fall back to default Hearth SVG (can't inline raster).
+    ///
+    /// Local file paths are **always** cleared from `logo_url` — they are never valid
+    /// as `<img src>` in emails.
     fn resolve_branding(&self, tenant: Option<&EmailBranding>) -> ResolvedBranding {
         let merged = match tenant {
             Some(t) => EmailBranding::merge(&self.default_branding, t),
             None => self.default_branding.clone(),
         };
         let mut resolved = ResolvedBranding::from_branding(&merged);
+
+        let is_local_path = resolved
+            .logo_url
+            .as_ref()
+            .is_some_and(|url| !url.starts_with("http://") && !url.starts_with("https://"));
 
         let logo_svg_inline = match &resolved.logo_url {
             None => Some(self.default_logo_svg.clone()),
@@ -152,14 +160,19 @@ impl EmailService {
                 std::fs::read_to_string(path).ok()
             }
             _ => None,
-        }
-        .map(|svg| prepare_svg_for_email(&svg));
+        };
 
-        if logo_svg_inline.is_some() {
-            // Template should use one or the other, not both.
+        // Local paths are never valid as email <img src> — always clear them.
+        // If inlining failed (I/O error or non-SVG), fall back to the default logo.
+        if is_local_path {
             resolved.logo_url = None;
+            resolved.logo_svg_inline = logo_svg_inline
+                .map(|svg| prepare_svg_for_email(&svg))
+                .or_else(|| Some(prepare_svg_for_email(&self.default_logo_svg)));
+        } else if let Some(svg) = logo_svg_inline {
+            resolved.logo_url = None;
+            resolved.logo_svg_inline = Some(prepare_svg_for_email(&svg));
         }
-        resolved.logo_svg_inline = logo_svg_inline;
 
         resolved
     }

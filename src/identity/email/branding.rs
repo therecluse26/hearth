@@ -86,9 +86,12 @@ pub(crate) struct ResolvedBranding {
 }
 
 impl ResolvedBranding {
-    /// Resolves branding from an [`EmailBranding`], applying defaults
-    /// for required fields.
-    pub fn from_branding(branding: &EmailBranding) -> Self {
+    /// Converts raw [`EmailBranding`] into resolved fields with defaults.
+    ///
+    /// This does **not** handle logo inlining or local-path cleanup —
+    /// callers outside this module must use [`EmailService::resolve_branding`]
+    /// instead to get a fully resolved result.
+    pub(super) fn from_branding(branding: &EmailBranding) -> Self {
         Self {
             product_name: branding.product_name_or_default().to_string(),
             logo_url: branding.logo_url.clone(),
