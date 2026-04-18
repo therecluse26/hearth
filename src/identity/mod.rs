@@ -41,16 +41,19 @@ pub use tokens::{
 };
 pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
-    BulkResult, CreateTenantRequest, CreateUserRequest, ImportClientRequest, ImportUserRequest,
-    MigrationReport, Page, RawCredential, Session, Tenant, TenantConfig, TenantStatus,
-    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
+    CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
+    Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
+    OrganizationRole, OrganizationStatus, Page, RawCredential, Session, Tenant, TenantConfig,
+    TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest, UpdateUserRequest, User,
+    UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
     WebAuthnAuthResult, WebAuthnCredentialInfo,
 };
 
-use crate::core::{SessionId, TenantId, UserId};
+use crate::core::{InvitationId, OrganizationId, SessionId, TenantId, UserId};
 
 /// Trait defining the identity engine interface.
 ///
@@ -683,6 +686,162 @@ pub trait IdentityEngine: Send + Sync {
         tenant_id: &TenantId,
         user_ids: &[UserId],
     ) -> Result<Vec<BulkResult<()>>, IdentityError>;
+
+    // ===== Organizations =====
+
+    /// Creates a new organization within a tenant.
+    ///
+    /// Validates the slug, checks uniqueness, and persists the org record
+    /// with primary and slug index entries.
+    fn create_organization(
+        &self,
+        tenant_id: &TenantId,
+        request: &CreateOrganizationRequest,
+    ) -> Result<Organization, IdentityError>;
+
+    /// Retrieves an organization by ID. Returns `None` if not found.
+    fn get_organization(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+    ) -> Result<Option<Organization>, IdentityError>;
+
+    /// Retrieves an organization by slug. Returns `None` if not found.
+    fn get_organization_by_slug(
+        &self,
+        tenant_id: &TenantId,
+        slug: &str,
+    ) -> Result<Option<Organization>, IdentityError>;
+
+    /// Updates an existing organization's fields.
+    ///
+    /// Only non-`None` fields in the request are applied.
+    fn update_organization(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        request: &UpdateOrganizationRequest,
+    ) -> Result<Organization, IdentityError>;
+
+    /// Deletes an organization and all associated data.
+    ///
+    /// Cascading deletion removes all memberships (forward + reverse indexes),
+    /// invitations (primary + token + email dedup + list indexes), Zanzibar
+    /// tuples, slug index, and the org record. Idempotent.
+    fn delete_organization(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+    ) -> Result<(), IdentityError>;
+
+    /// Lists all organizations in a tenant with cursor-based pagination.
+    fn list_organizations(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Organization>, IdentityError>;
+
+    /// Adds a user as a member of an organization.
+    ///
+    /// Creates bidirectional membership indexes (org→user and user→org).
+    /// If an authorization engine is configured, writes the corresponding
+    /// Zanzibar tuples atomically.
+    fn add_member(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        role: OrganizationRole,
+    ) -> Result<OrganizationMembership, IdentityError>;
+
+    /// Removes a user from an organization.
+    ///
+    /// Enforces last-owner protection: if the user is the sole Owner,
+    /// returns `Err(LastOwner)`. Deletes both membership indexes and
+    /// any Zanzibar tuples.
+    fn remove_member(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError>;
+
+    /// Updates a member's role within an organization.
+    ///
+    /// Enforces last-owner protection when downgrading from Owner.
+    /// Updates both membership indexes and Zanzibar tuples atomically.
+    fn update_member_role(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        new_role: OrganizationRole,
+    ) -> Result<OrganizationMembership, IdentityError>;
+
+    /// Retrieves a specific membership. Returns `None` if not a member.
+    fn get_membership(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+    ) -> Result<Option<OrganizationMembership>, IdentityError>;
+
+    /// Lists all members of an organization with cursor-based pagination.
+    fn list_members(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OrganizationMembership>, IdentityError>;
+
+    /// Lists all organizations a user belongs to with cursor-based pagination.
+    fn list_user_organizations(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OrganizationMembership>, IdentityError>;
+
+    /// Creates an invitation to join an organization.
+    ///
+    /// Generates a 32-byte random token, stores the SHA-256 hash, and
+    /// returns the invitation record plus the plaintext token (for email
+    /// delivery). The plaintext token is never stored.
+    fn create_invitation(
+        &self,
+        tenant_id: &TenantId,
+        request: &CreateInvitationRequest,
+    ) -> Result<(OrganizationInvitation, String), IdentityError>;
+
+    /// Accepts an invitation using the plaintext token.
+    ///
+    /// Hashes the token, looks up the invitation, validates status and
+    /// expiry, creates the membership, marks the invitation as accepted,
+    /// and returns the new membership.
+    fn accept_invitation(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<OrganizationMembership, IdentityError>;
+
+    /// Revokes a pending invitation.
+    fn revoke_invitation(
+        &self,
+        tenant_id: &TenantId,
+        invitation_id: &InvitationId,
+    ) -> Result<(), IdentityError>;
+
+    /// Lists invitations for an organization with cursor-based pagination.
+    fn list_invitations(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OrganizationInvitation>, IdentityError>;
 
     // ===== Migration / import (Phase 1 Step 30) =====
 

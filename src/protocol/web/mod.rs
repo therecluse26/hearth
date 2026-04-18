@@ -257,6 +257,48 @@ pub fn router(state: WebState) -> Router {
             "/admin/tenants/{id}/delete",
             axum::routing::post(admin::admin_tenant_delete),
         )
+        // --- Organizations ---
+        .route(
+            "/admin/organizations",
+            axum::routing::get(admin::admin_orgs_list),
+        )
+        .route(
+            "/admin/organizations/new",
+            axum::routing::get(admin::admin_org_create_form)
+                .post(admin::admin_org_create_submit),
+        )
+        .route(
+            "/admin/organizations/{id}",
+            axum::routing::get(admin::admin_org_detail),
+        )
+        .route(
+            "/admin/organizations/{id}/edit",
+            axum::routing::get(admin::admin_org_edit_form).post(admin::admin_org_edit_submit),
+        )
+        .route(
+            "/admin/organizations/{id}/delete",
+            axum::routing::post(admin::admin_org_delete),
+        )
+        .route(
+            "/admin/organizations/{id}/members",
+            axum::routing::post(admin::admin_org_add_member),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{uid}/remove",
+            axum::routing::post(admin::admin_org_remove_member),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{uid}/role",
+            axum::routing::post(admin::admin_org_update_role),
+        )
+        .route(
+            "/admin/organizations/{id}/invite",
+            axum::routing::post(admin::admin_org_invite),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations/{iid}/revoke",
+            axum::routing::post(admin::admin_org_revoke_invite),
+        )
         // --- Applications ---
         .route(
             "/admin/applications",

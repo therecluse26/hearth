@@ -14,7 +14,7 @@
 //!
 //! Scan prefix `usr:id:` enables listing all users in a tenant.
 
-use crate::core::{ClientId, SessionId, TenantId, UserId};
+use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId, UserId};
 
 /// Prefix for user primary keys.
 const USER_ID_PREFIX: &str = "usr:id:";
@@ -66,6 +66,30 @@ const EMAIL_VERIFY_PREFIX: &str = "email:verify:";
 
 /// Prefix for password reset token storage (stored by SHA-256 hash).
 const PASSWORD_RESET_PREFIX: &str = "rst:token:";
+
+/// Prefix for organization primary keys.
+const ORG_ID_PREFIX: &str = "org:id:";
+
+/// Prefix for organization slug uniqueness index.
+const ORG_SLUG_PREFIX: &str = "org:slug:";
+
+/// Prefix for membership by org (org → user direction).
+const ORGM_ORG_PREFIX: &str = "orgm:org:";
+
+/// Prefix for membership by user (user → org direction).
+const ORGM_USER_PREFIX: &str = "orgm:user:";
+
+/// Prefix for invitation primary keys.
+const ORGI_ID_PREFIX: &str = "orgi:id:";
+
+/// Prefix for invitation token lookup (hashed).
+const ORGI_TOKEN_PREFIX: &str = "orgi:token:";
+
+/// Prefix for invitation dedup by org+email.
+const ORGI_ORG_PREFIX: &str = "orgi:org:";
+
+/// Prefix for listing invitations by org.
+const ORGI_LIST_PREFIX: &str = "orgi:list:";
 
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
@@ -340,10 +364,189 @@ pub(crate) fn encode_revoked_jti(jti: &str) -> Vec<u8> {
     format!("{REVOKED_JTI_PREFIX}{jti}").into_bytes()
 }
 
+// ===== Organization key encoding =====
+
+/// Encodes the primary key for an organization record.
+///
+/// Format: `org:id:{uuid}`
+pub(crate) fn encode_org_id(org_id: &OrganizationId) -> Vec<u8> {
+    format!("{ORG_ID_PREFIX}{}", org_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for listing all organizations.
+///
+/// Format: `org:id:`
+pub(crate) fn org_id_scan_prefix() -> Vec<u8> {
+    ORG_ID_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the slug uniqueness index key.
+///
+/// Format: `org:slug:{slug}`
+pub(crate) fn encode_org_slug(slug: &str) -> Vec<u8> {
+    format!("{ORG_SLUG_PREFIX}{slug}").into_bytes()
+}
+
+/// Returns the scan prefix for all organization slug entries.
+///
+/// Format: `org:slug:`
+#[allow(dead_code)]
+pub(crate) fn org_slug_scan_prefix() -> Vec<u8> {
+    ORG_SLUG_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the membership key (org → user direction).
+///
+/// Format: `orgm:org:{org_uuid}:user:{user_uuid}`
+pub(crate) fn encode_membership_by_org(
+    org_id: &OrganizationId,
+    user_id: &UserId,
+) -> Vec<u8> {
+    format!(
+        "{ORGM_ORG_PREFIX}{}:user:{}",
+        org_id.as_uuid(),
+        user_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for all members of an organization.
+///
+/// Format: `orgm:org:{org_uuid}:`
+pub(crate) fn membership_by_org_prefix(org_id: &OrganizationId) -> Vec<u8> {
+    format!("{ORGM_ORG_PREFIX}{}:", org_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the reverse membership key (user → org direction).
+///
+/// Format: `orgm:user:{user_uuid}:org:{org_uuid}`
+pub(crate) fn encode_membership_by_user(
+    user_id: &UserId,
+    org_id: &OrganizationId,
+) -> Vec<u8> {
+    format!(
+        "{ORGM_USER_PREFIX}{}:org:{}",
+        user_id.as_uuid(),
+        org_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for all organizations a user belongs to.
+///
+/// Format: `orgm:user:{user_uuid}:`
+pub(crate) fn membership_by_user_prefix(user_id: &UserId) -> Vec<u8> {
+    format!("{ORGM_USER_PREFIX}{}:", user_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all membership-by-org entries (tenant-wide).
+///
+/// Format: `orgm:org:`
+#[allow(dead_code)]
+pub(crate) fn membership_org_scan_prefix() -> Vec<u8> {
+    ORGM_ORG_PREFIX.as_bytes().to_vec()
+}
+
+/// Returns the scan prefix for all membership-by-user entries (tenant-wide).
+///
+/// Format: `orgm:user:`
+#[allow(dead_code)]
+pub(crate) fn membership_user_scan_prefix() -> Vec<u8> {
+    ORGM_USER_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the primary key for an invitation record.
+///
+/// Format: `orgi:id:{uuid}`
+pub(crate) fn encode_invitation_id(invitation_id: &InvitationId) -> Vec<u8> {
+    format!("{ORGI_ID_PREFIX}{}", invitation_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all invitation records.
+///
+/// Format: `orgi:id:`
+#[allow(dead_code)]
+pub(crate) fn invitation_id_scan_prefix() -> Vec<u8> {
+    ORGI_ID_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the token lookup key for an invitation.
+///
+/// Format: `orgi:token:{sha256_hex}`
+///
+/// The token is stored as a SHA-256 hash, never as plaintext.
+pub(crate) fn encode_invitation_token(token_hash: &str) -> Vec<u8> {
+    format!("{ORGI_TOKEN_PREFIX}{token_hash}").into_bytes()
+}
+
+/// Returns the scan prefix for all invitation token entries.
+///
+/// Format: `orgi:token:`
+#[allow(dead_code)]
+pub(crate) fn invitation_token_scan_prefix() -> Vec<u8> {
+    ORGI_TOKEN_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the invitation dedup key (prevents duplicate invites per org+email).
+///
+/// Format: `orgi:org:{org_uuid}:email:{email}`
+pub(crate) fn encode_invitation_org_email(
+    org_id: &OrganizationId,
+    email: &str,
+) -> Vec<u8> {
+    format!("{ORGI_ORG_PREFIX}{}:email:{email}", org_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all invitation dedup entries for an org.
+///
+/// Format: `orgi:org:{org_uuid}:`
+#[allow(dead_code)]
+pub(crate) fn invitation_org_prefix(org_id: &OrganizationId) -> Vec<u8> {
+    format!("{ORGI_ORG_PREFIX}{}:", org_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all invitation org entries (tenant-wide).
+///
+/// Format: `orgi:org:`
+#[allow(dead_code)]
+pub(crate) fn invitation_org_scan_prefix() -> Vec<u8> {
+    ORGI_ORG_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the invitation listing key (for paginated org-scoped listing).
+///
+/// Format: `orgi:list:{org_uuid}:{invitation_uuid}`
+pub(crate) fn encode_invitation_list(
+    org_id: &OrganizationId,
+    invitation_id: &InvitationId,
+) -> Vec<u8> {
+    format!(
+        "{ORGI_LIST_PREFIX}{}:{}",
+        org_id.as_uuid(),
+        invitation_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for listing all invitations for an org.
+///
+/// Format: `orgi:list:{org_uuid}:`
+pub(crate) fn invitation_list_prefix(org_id: &OrganizationId) -> Vec<u8> {
+    format!("{ORGI_LIST_PREFIX}{}:", org_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all invitation list entries (tenant-wide).
+///
+/// Format: `orgi:list:`
+#[allow(dead_code)]
+pub(crate) fn invitation_list_scan_prefix() -> Vec<u8> {
+    ORGI_LIST_PREFIX.as_bytes().to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ClientId, SessionId, TenantId};
+    use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId};
     use uuid::Uuid;
 
     #[test]
@@ -573,5 +776,111 @@ mod tests {
             encode_tenant_signing_key(&id1),
             encode_tenant_signing_key(&id2)
         );
+    }
+
+    // ===== Organization key tests =====
+
+    #[test]
+    fn encode_org_id_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let org_id = OrganizationId::new(uuid);
+        let key = encode_org_id(&org_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "org:id:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn org_id_key_starts_with_scan_prefix() {
+        let org_id = OrganizationId::generate();
+        let key = encode_org_id(&org_id);
+        let prefix = org_id_scan_prefix();
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn encode_org_slug_format() {
+        let key = encode_org_slug("acme-corp");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "org:slug:acme-corp");
+    }
+
+    #[test]
+    fn membership_by_org_format() {
+        let org_id = OrganizationId::generate();
+        let user_id = UserId::generate();
+        let key = encode_membership_by_org(&org_id, &user_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert!(key_str.starts_with("orgm:org:"));
+        assert!(key_str.contains(":user:"));
+    }
+
+    #[test]
+    fn membership_by_org_starts_with_prefix() {
+        let org_id = OrganizationId::generate();
+        let user_id = UserId::generate();
+        let key = encode_membership_by_org(&org_id, &user_id);
+        let prefix = membership_by_org_prefix(&org_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn membership_by_user_format() {
+        let org_id = OrganizationId::generate();
+        let user_id = UserId::generate();
+        let key = encode_membership_by_user(&user_id, &org_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert!(key_str.starts_with("orgm:user:"));
+        assert!(key_str.contains(":org:"));
+    }
+
+    #[test]
+    fn membership_by_user_starts_with_prefix() {
+        let org_id = OrganizationId::generate();
+        let user_id = UserId::generate();
+        let key = encode_membership_by_user(&user_id, &org_id);
+        let prefix = membership_by_user_prefix(&user_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn encode_invitation_id_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let inv_id = InvitationId::new(uuid);
+        let key = encode_invitation_id(&inv_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "orgi:id:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn invitation_id_starts_with_scan_prefix() {
+        let inv_id = InvitationId::generate();
+        let key = encode_invitation_id(&inv_id);
+        let prefix = invitation_id_scan_prefix();
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn encode_invitation_token_format() {
+        let key = encode_invitation_token("abc123def456");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "orgi:token:abc123def456");
+    }
+
+    #[test]
+    fn encode_invitation_org_email_format() {
+        let org_id = OrganizationId::generate();
+        let key = encode_invitation_org_email(&org_id, "alice@example.com");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert!(key_str.starts_with("orgi:org:"));
+        assert!(key_str.ends_with(":email:alice@example.com"));
+    }
+
+    #[test]
+    fn invitation_list_starts_with_prefix() {
+        let org_id = OrganizationId::generate();
+        let inv_id = InvitationId::generate();
+        let key = encode_invitation_list(&org_id, &inv_id);
+        let prefix = invitation_list_prefix(&org_id);
+        assert!(key.starts_with(&prefix));
     }
 }

@@ -180,6 +180,58 @@ pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), IdentityError> {
     Ok(())
 }
 
+/// Minimum length for an organization slug.
+const MIN_SLUG_LENGTH: usize = 3;
+
+/// Maximum length for an organization slug.
+const MAX_SLUG_LENGTH: usize = 63;
+
+/// Validates an organization slug.
+///
+/// Slugs are URL-safe identifiers used in URLs and API paths.
+///
+/// Validation rules:
+/// - 3-63 characters
+/// - Lowercase ASCII alphanumeric and hyphens only
+/// - Must start and end with an alphanumeric character
+/// - No consecutive hyphens
+pub(crate) fn validate_slug(slug: &str) -> Result<String, IdentityError> {
+    if slug.len() < MIN_SLUG_LENGTH {
+        return Err(IdentityError::InvalidInput {
+            reason: format!("slug must be at least {MIN_SLUG_LENGTH} characters"),
+        });
+    }
+
+    if slug.len() > MAX_SLUG_LENGTH {
+        return Err(IdentityError::InvalidInput {
+            reason: format!("slug must not exceed {MAX_SLUG_LENGTH} characters"),
+        });
+    }
+
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(IdentityError::InvalidInput {
+            reason: "slug must contain only lowercase letters, digits, and hyphens".to_string(),
+        });
+    }
+
+    if slug.starts_with('-') || slug.ends_with('-') {
+        return Err(IdentityError::InvalidInput {
+            reason: "slug must not start or end with a hyphen".to_string(),
+        });
+    }
+
+    if slug.contains("--") {
+        return Err(IdentityError::InvalidInput {
+            reason: "slug must not contain consecutive hyphens".to_string(),
+        });
+    }
+
+    Ok(slug.to_string())
+}
+
 /// Returns `true` if the string contains null bytes or ASCII control characters.
 fn contains_null_or_control(s: &str) -> bool {
     s.chars()
@@ -335,5 +387,87 @@ mod tests {
     fn display_name_preserves_case() {
         let result = validate_display_name("Alice McSmith").expect("valid");
         assert_eq!(result, "Alice McSmith");
+    }
+
+    // ===== Slug validation =====
+
+    #[test]
+    fn valid_slug_passes() {
+        let result = validate_slug("acme-corp").expect("should be valid");
+        assert_eq!(result, "acme-corp");
+    }
+
+    #[test]
+    fn slug_minimum_length() {
+        let result = validate_slug("abc").expect("should be valid");
+        assert_eq!(result, "abc");
+    }
+
+    #[test]
+    fn slug_maximum_length() {
+        let slug = "a".repeat(63);
+        let result = validate_slug(&slug).expect("should be valid");
+        assert_eq!(result.len(), 63);
+    }
+
+    #[test]
+    fn slug_too_short_rejected() {
+        let err = validate_slug("ab").expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn slug_too_long_rejected() {
+        let slug = "a".repeat(64);
+        let err = validate_slug(&slug).expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn slug_uppercase_rejected() {
+        let err = validate_slug("Acme-Corp").expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn slug_spaces_rejected() {
+        let err = validate_slug("acme corp").expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn slug_leading_hyphen_rejected() {
+        let err = validate_slug("-acme").expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn slug_trailing_hyphen_rejected() {
+        let err = validate_slug("acme-").expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn slug_consecutive_hyphens_rejected() {
+        let err = validate_slug("acme--corp").expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn slug_with_digits_accepted() {
+        let result = validate_slug("acme-123").expect("should be valid");
+        assert_eq!(result, "acme-123");
+    }
+
+    #[test]
+    fn slug_all_digits_accepted() {
+        let result = validate_slug("123").expect("should be valid");
+        assert_eq!(result, "123");
+    }
+
+    #[test]
+    fn slug_special_chars_rejected() {
+        let err = validate_slug("acme_corp").expect_err("should fail");
+        assert!(matches!(err, IdentityError::InvalidInput { .. }));
     }
 }

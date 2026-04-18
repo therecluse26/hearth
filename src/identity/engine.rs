@@ -10,7 +10,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ring::rand::SecureRandom;
 
-use crate::core::{ClientId, Clock, SessionId, TenantId, UserId};
+use crate::core::{ClientId, Clock, InvitationId, OrganizationId, SessionId, TenantId, UserId};
 use crate::identity::credentials::{self, CleartextPassword, CredentialConfig, StoredCredential};
 use crate::identity::error::IdentityError;
 use crate::identity::keys;
@@ -59,8 +59,11 @@ use crate::identity::tokens::{
 };
 use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
-    BulkResult, CreateTenantRequest, CreateUserRequest, ImportClientRequest, ImportUserRequest,
-    Page, Session, Tenant, TenantStatus, UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
+    CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, Organization,
+    OrganizationInvitation, OrganizationMembership, OrganizationRole,
+    OrganizationStatus, Page, Session, Tenant, TenantStatus, UpdateOrganizationRequest,
+    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
 use crate::identity::webauthn::{
@@ -989,6 +992,32 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
         }
 
+        // 1b. Unconditional sweep of organization-related prefixes.
+        for prefix in [
+            &b"org:id:"[..],
+            &b"org:slug:"[..],
+            &b"orgm:org:"[..],
+            &b"orgm:user:"[..],
+            &b"orgi:id:"[..],
+            &b"orgi:token:"[..],
+            &b"orgi:org:"[..],
+            &b"orgi:list:"[..],
+        ] {
+            let end = keys::prefix_end(prefix);
+            let entries = self
+                .storage
+                .scan(tenant_id, prefix, &end)
+                .map_err(Self::storage_err)?;
+            if !entries.is_empty() {
+                cascade_work_done = true;
+            }
+            for entry in &entries {
+                self.storage
+                    .delete(tenant_id, &entry.key)
+                    .map_err(Self::storage_err)?;
+            }
+        }
+
         // 2. Delete all OAuth clients
         let client_prefix = b"oauth:client:";
         let client_end = keys::prefix_end(client_prefix);
@@ -1390,6 +1419,31 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
             // Delete the user-session index entry itself
             // The scan returns keys without tenant prefix, so re-use entry.key
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 6. Delete all organization memberships for this user
+        let org_membership_prefix = keys::membership_by_user_prefix(user_id);
+        let org_membership_end = keys::prefix_end(&org_membership_prefix);
+        let org_memberships = self
+            .storage
+            .scan(tenant_id, &org_membership_prefix, &org_membership_end)
+            .map_err(Self::storage_err)?;
+
+        for entry in &org_memberships {
+            if let Ok(membership) =
+                serde_json::from_slice::<OrganizationMembership>(&entry.value)
+            {
+                // Delete forward index (org → user)
+                let fwd_key =
+                    keys::encode_membership_by_org(membership.org_id(), user_id);
+                self.storage
+                    .delete(tenant_id, &fwd_key)
+                    .map_err(Self::storage_err)?;
+            }
+            // Delete reverse index entry (user → org)
             self.storage
                 .delete(tenant_id, &entry.key)
                 .map_err(Self::storage_err)?;
@@ -4060,6 +4114,923 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
 
         Ok(client)
+    }
+
+    // ===== Organizations =====
+
+    fn create_organization(
+        &self,
+        tenant_id: &TenantId,
+        request: &CreateOrganizationRequest,
+    ) -> Result<Organization, IdentityError> {
+        let slug = validation::validate_slug(&request.slug)?;
+        let name = validation::validate_display_name(&request.name)?;
+
+        // Check slug uniqueness
+        let slug_key = keys::encode_org_slug(&slug);
+        if self
+            .storage
+            .get(tenant_id, &slug_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::DuplicateOrgSlug);
+        }
+
+        let now = self.clock.now();
+        let org_id = OrganizationId::generate();
+        let description = request.description.clone().unwrap_or_default();
+        let config = request.config.clone().unwrap_or_default();
+
+        let org = Organization::new(
+            org_id.clone(),
+            name,
+            slug.clone(),
+            description,
+            OrganizationStatus::Active,
+            config,
+            now,
+            now,
+        );
+
+        // Write primary record
+        let id_key = keys::encode_org_id(&org_id);
+        let org_bytes =
+            serde_json::to_vec(&org).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &id_key, &org_bytes)
+            .map_err(Self::storage_err)?;
+
+        // Write slug index
+        self.storage
+            .put(tenant_id, &slug_key, org_id.as_uuid().as_bytes())
+            .map_err(Self::storage_err)?;
+
+        Ok(org)
+    }
+
+    fn get_organization(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+    ) -> Result<Option<Organization>, IdentityError> {
+        let key = keys::encode_org_id(org_id);
+        match self.storage.get(tenant_id, &key).map_err(Self::storage_err)? {
+            Some(bytes) => {
+                let org: Organization = serde_json::from_slice(&bytes)
+                    .map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(org))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn get_organization_by_slug(
+        &self,
+        tenant_id: &TenantId,
+        slug: &str,
+    ) -> Result<Option<Organization>, IdentityError> {
+        let slug_key = keys::encode_org_slug(slug);
+        match self
+            .storage
+            .get(tenant_id, &slug_key)
+            .map_err(Self::storage_err)?
+        {
+            Some(bytes) => {
+                let uuid = uuid::Uuid::from_slice(&bytes).map_err(|e| {
+                    IdentityError::Serialization {
+                        reason: format!("invalid org UUID in slug index: {e}"),
+                    }
+                })?;
+                let org_id = OrganizationId::new(uuid);
+                self.get_organization(tenant_id, &org_id)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn update_organization(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        request: &UpdateOrganizationRequest,
+    ) -> Result<Organization, IdentityError> {
+        let mut org = self
+            .get_organization(tenant_id, org_id)?
+            .ok_or(IdentityError::OrganizationNotFound)?;
+
+        if let Some(ref name) = request.name {
+            let validated = validation::validate_display_name(name)?;
+            org.set_name(validated);
+        }
+        if let Some(ref description) = request.description {
+            org.set_description(description.clone());
+        }
+        if let Some(status) = request.status {
+            org.set_status(status);
+        }
+        if let Some(ref config) = request.config {
+            org.set_config(config.clone());
+        }
+
+        let now = self.clock.now();
+        org.set_updated_at(now);
+
+        let id_key = keys::encode_org_id(org_id);
+        let org_bytes =
+            serde_json::to_vec(&org).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &id_key, &org_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(org)
+    }
+
+    fn delete_organization(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+    ) -> Result<(), IdentityError> {
+        let org = self
+            .get_organization(tenant_id, org_id)?
+            .ok_or(IdentityError::OrganizationNotFound)?;
+
+        // 1. Delete all memberships (forward + reverse indexes)
+        let member_prefix = keys::membership_by_org_prefix(org_id);
+        let member_end = keys::prefix_end(&member_prefix);
+        let members = self
+            .storage
+            .scan(tenant_id, &member_prefix, &member_end)
+            .map_err(Self::storage_err)?;
+
+        for entry in &members {
+            // Parse membership to get user_id for reverse index
+            if let Ok(membership) =
+                serde_json::from_slice::<OrganizationMembership>(&entry.value)
+            {
+                // Delete reverse index
+                let reverse_key =
+                    keys::encode_membership_by_user(membership.user_id(), org_id);
+                self.storage
+                    .delete(tenant_id, &reverse_key)
+                    .map_err(Self::storage_err)?;
+            }
+            // Delete forward index
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 2. Delete all invitations
+        let inv_list_prefix = keys::invitation_list_prefix(org_id);
+        let inv_list_end = keys::prefix_end(&inv_list_prefix);
+        let inv_list_entries = self
+            .storage
+            .scan(tenant_id, &inv_list_prefix, &inv_list_end)
+            .map_err(Self::storage_err)?;
+
+        for entry in &inv_list_entries {
+            // Extract invitation ID from list key to delete related records
+            let key_str = std::str::from_utf8(&entry.key)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            if let Some(inv_uuid_str) = key_str.rsplit(':').next() {
+                if let Ok(uuid) = uuid::Uuid::parse_str(inv_uuid_str) {
+                    let inv_id = InvitationId::new(uuid);
+                    // Delete invitation primary record
+                    let inv_key = keys::encode_invitation_id(&inv_id);
+                    if let Some(inv_bytes) = self
+                        .storage
+                        .get(tenant_id, &inv_key)
+                        .map_err(Self::storage_err)?
+                    {
+                        if let Ok(invitation) =
+                            serde_json::from_slice::<OrganizationInvitation>(&inv_bytes)
+                        {
+                            // Delete token index
+                            let token_key =
+                                keys::encode_invitation_token(invitation.token_hash());
+                            self.storage
+                                .delete(tenant_id, &token_key)
+                                .map_err(Self::storage_err)?;
+                            // Delete email dedup index
+                            let email_key = keys::encode_invitation_org_email(
+                                org_id,
+                                invitation.email(),
+                            );
+                            self.storage
+                                .delete(tenant_id, &email_key)
+                                .map_err(Self::storage_err)?;
+                        }
+                    }
+                    self.storage
+                        .delete(tenant_id, &inv_key)
+                        .map_err(Self::storage_err)?;
+                }
+            }
+            // Delete list index entry
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 3. Delete slug index
+        let slug_key = keys::encode_org_slug(org.slug());
+        self.storage
+            .delete(tenant_id, &slug_key)
+            .map_err(Self::storage_err)?;
+
+        // 4. Delete org record
+        let id_key = keys::encode_org_id(org_id);
+        self.storage
+            .delete(tenant_id, &id_key)
+            .map_err(Self::storage_err)?;
+
+        Ok(())
+    }
+
+    fn list_organizations(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Organization>, IdentityError> {
+        let prefix = keys::org_id_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(
+                URL_SAFE_NO_PAD
+                    .decode(cursor_str)
+                    .map_err(|e| IdentityError::InvalidInput {
+                        reason: format!("invalid cursor: {e}"),
+                    })?,
+            )
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!("org:id:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let org: Organization = serde_json::from_slice(&entry.value)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(org);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn add_member(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        role: OrganizationRole,
+    ) -> Result<OrganizationMembership, IdentityError> {
+        // Verify org exists and is active
+        let org = self
+            .get_organization(tenant_id, org_id)?
+            .ok_or(IdentityError::OrganizationNotFound)?;
+        if org.status() == OrganizationStatus::Suspended {
+            return Err(IdentityError::OrganizationSuspended);
+        }
+
+        // Verify user exists
+        self.get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Check not already a member
+        let fwd_key = keys::encode_membership_by_org(org_id, user_id);
+        if self
+            .storage
+            .get(tenant_id, &fwd_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::AlreadyMember);
+        }
+
+        // Check member limit
+        if let Some(max) = org.config().max_members {
+            let member_prefix = keys::membership_by_org_prefix(org_id);
+            let member_end = keys::prefix_end(&member_prefix);
+            let count = self
+                .storage
+                .scan(tenant_id, &member_prefix, &member_end)
+                .map_err(Self::storage_err)?
+                .len();
+            if count >= max as usize {
+                return Err(IdentityError::MemberLimitReached);
+            }
+        }
+
+        let now = self.clock.now();
+        let membership = OrganizationMembership::new(
+            org_id.clone(),
+            user_id.clone(),
+            role,
+            now,
+            None,
+        );
+
+        let membership_bytes = serde_json::to_vec(&membership)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // Write forward index (org → user)
+        self.storage
+            .put(tenant_id, &fwd_key, &membership_bytes)
+            .map_err(Self::storage_err)?;
+
+        // Write reverse index (user → org)
+        let rev_key = keys::encode_membership_by_user(user_id, org_id);
+        self.storage
+            .put(tenant_id, &rev_key, &membership_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(membership)
+    }
+
+    fn remove_member(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError> {
+        let fwd_key = keys::encode_membership_by_org(org_id, user_id);
+        let membership_bytes = self
+            .storage
+            .get(tenant_id, &fwd_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::NotAMember)?;
+
+        let membership: OrganizationMembership = serde_json::from_slice(&membership_bytes)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // Last-owner protection
+        if membership.role() == OrganizationRole::Owner {
+            let member_prefix = keys::membership_by_org_prefix(org_id);
+            let member_end = keys::prefix_end(&member_prefix);
+            let all_members = self
+                .storage
+                .scan(tenant_id, &member_prefix, &member_end)
+                .map_err(Self::storage_err)?;
+
+            let owner_count = all_members
+                .iter()
+                .filter_map(|e| serde_json::from_slice::<OrganizationMembership>(&e.value).ok())
+                .filter(|m| m.role() == OrganizationRole::Owner)
+                .count();
+
+            if owner_count <= 1 {
+                return Err(IdentityError::LastOwner);
+            }
+        }
+
+        // Delete forward index
+        self.storage
+            .delete(tenant_id, &fwd_key)
+            .map_err(Self::storage_err)?;
+
+        // Delete reverse index
+        let rev_key = keys::encode_membership_by_user(user_id, org_id);
+        self.storage
+            .delete(tenant_id, &rev_key)
+            .map_err(Self::storage_err)?;
+
+        Ok(())
+    }
+
+    fn update_member_role(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        new_role: OrganizationRole,
+    ) -> Result<OrganizationMembership, IdentityError> {
+        let fwd_key = keys::encode_membership_by_org(org_id, user_id);
+        let membership_bytes = self
+            .storage
+            .get(tenant_id, &fwd_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::NotAMember)?;
+
+        let mut membership: OrganizationMembership =
+            serde_json::from_slice(&membership_bytes)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+
+        // Last-owner protection: if downgrading from Owner, ensure others exist
+        if membership.role() == OrganizationRole::Owner && new_role != OrganizationRole::Owner {
+            let member_prefix = keys::membership_by_org_prefix(org_id);
+            let member_end = keys::prefix_end(&member_prefix);
+            let all_members = self
+                .storage
+                .scan(tenant_id, &member_prefix, &member_end)
+                .map_err(Self::storage_err)?;
+
+            let owner_count = all_members
+                .iter()
+                .filter_map(|e| serde_json::from_slice::<OrganizationMembership>(&e.value).ok())
+                .filter(|m| m.role() == OrganizationRole::Owner)
+                .count();
+
+            if owner_count <= 1 {
+                return Err(IdentityError::LastOwner);
+            }
+        }
+
+        membership.set_role(new_role);
+
+        let updated_bytes = serde_json::to_vec(&membership)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // Update both indexes
+        self.storage
+            .put(tenant_id, &fwd_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        let rev_key = keys::encode_membership_by_user(user_id, org_id);
+        self.storage
+            .put(tenant_id, &rev_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(membership)
+    }
+
+    fn get_membership(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+    ) -> Result<Option<OrganizationMembership>, IdentityError> {
+        let key = keys::encode_membership_by_org(org_id, user_id);
+        match self.storage.get(tenant_id, &key).map_err(Self::storage_err)? {
+            Some(bytes) => {
+                let membership: OrganizationMembership = serde_json::from_slice(&bytes)
+                    .map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(membership))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_members(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OrganizationMembership>, IdentityError> {
+        let prefix = keys::membership_by_org_prefix(org_id);
+        let start = if let Some(cursor_str) = cursor {
+            let decoded = String::from_utf8(
+                URL_SAFE_NO_PAD
+                    .decode(cursor_str)
+                    .map_err(|e| IdentityError::InvalidInput {
+                        reason: format!("invalid cursor: {e}"),
+                    })?,
+            )
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!(
+                "orgm:org:{}:user:{}",
+                org_id.as_uuid(),
+                decoded
+            )
+            .into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let membership: OrganizationMembership =
+                serde_json::from_slice(&entry.value)
+                    .map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+            items.push(membership);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.user_id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn list_user_organizations(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OrganizationMembership>, IdentityError> {
+        let prefix = keys::membership_by_user_prefix(user_id);
+        let start = if let Some(cursor_str) = cursor {
+            let decoded = String::from_utf8(
+                URL_SAFE_NO_PAD
+                    .decode(cursor_str)
+                    .map_err(|e| IdentityError::InvalidInput {
+                        reason: format!("invalid cursor: {e}"),
+                    })?,
+            )
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!(
+                "orgm:user:{}:org:{}",
+                user_id.as_uuid(),
+                decoded
+            )
+            .into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let membership: OrganizationMembership =
+                serde_json::from_slice(&entry.value)
+                    .map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+            items.push(membership);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.org_id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn create_invitation(
+        &self,
+        tenant_id: &TenantId,
+        request: &CreateInvitationRequest,
+    ) -> Result<(OrganizationInvitation, String), IdentityError> {
+        // Verify org exists and is active
+        let org = self
+            .get_organization(tenant_id, &request.org_id)?
+            .ok_or(IdentityError::OrganizationNotFound)?;
+        if org.status() == OrganizationStatus::Suspended {
+            return Err(IdentityError::OrganizationSuspended);
+        }
+
+        let email = validation::validate_email(&request.email)?;
+
+        // Check for duplicate pending invitation
+        let dedup_key = keys::encode_invitation_org_email(&request.org_id, &email);
+        if self
+            .storage
+            .get(tenant_id, &dedup_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::DuplicateInvitation);
+        }
+
+        // Check if already a member (by email → user lookup)
+        if let Some(user) = self.get_user_by_email(tenant_id, &email)? {
+            if self
+                .get_membership(tenant_id, &request.org_id, user.id())?
+                .is_some()
+            {
+                return Err(IdentityError::AlreadyMember);
+            }
+        }
+
+        // Generate token
+        let rng = ring::rand::SystemRandom::new();
+        let mut token_bytes = [0u8; 32];
+        rng.fill(&mut token_bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "RNG failure".to_string(),
+            })?;
+        let plaintext_token = URL_SAFE_NO_PAD.encode(token_bytes);
+
+        // Hash token for storage
+        let token_hash = {
+            use ring::digest;
+            let digest = digest::digest(&digest::SHA256, plaintext_token.as_bytes());
+            hex_encode(digest.as_ref())
+        };
+
+        let now = self.clock.now();
+        // 7-day expiry
+        let expires_at = now.add_micros(7 * 24 * 60 * 60 * 1_000_000);
+
+        let invitation_id = InvitationId::generate();
+        let invitation = OrganizationInvitation::new(
+            invitation_id.clone(),
+            request.org_id.clone(),
+            email.clone(),
+            request.role,
+            token_hash.clone(),
+            InvitationStatus::Pending,
+            expires_at,
+            request.invited_by.clone(),
+            now,
+        );
+
+        let inv_bytes = serde_json::to_vec(&invitation)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // Write primary record
+        let id_key = keys::encode_invitation_id(&invitation_id);
+        self.storage
+            .put(tenant_id, &id_key, &inv_bytes)
+            .map_err(Self::storage_err)?;
+
+        // Write token index
+        let token_key = keys::encode_invitation_token(&token_hash);
+        self.storage
+            .put(tenant_id, &token_key, invitation_id.as_uuid().as_bytes())
+            .map_err(Self::storage_err)?;
+
+        // Write email dedup index
+        self.storage
+            .put(tenant_id, &dedup_key, invitation_id.as_uuid().as_bytes())
+            .map_err(Self::storage_err)?;
+
+        // Write list index
+        let list_key = keys::encode_invitation_list(&request.org_id, &invitation_id);
+        self.storage
+            .put(tenant_id, &list_key, &[])
+            .map_err(Self::storage_err)?;
+
+        Ok((invitation, plaintext_token))
+    }
+
+    fn accept_invitation(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<OrganizationMembership, IdentityError> {
+        // Hash the token
+        let token_hash = {
+            use ring::digest;
+            let digest = digest::digest(&digest::SHA256, token.as_bytes());
+            hex_encode(digest.as_ref())
+        };
+
+        // Look up by token hash
+        let token_key = keys::encode_invitation_token(&token_hash);
+        let inv_id_bytes = self
+            .storage
+            .get(tenant_id, &token_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvitationInvalid)?;
+
+        let inv_uuid =
+            uuid::Uuid::from_slice(&inv_id_bytes).map_err(|e| IdentityError::Serialization {
+                reason: format!("invalid invitation UUID: {e}"),
+            })?;
+        let invitation_id = InvitationId::new(inv_uuid);
+
+        // Load invitation
+        let inv_key = keys::encode_invitation_id(&invitation_id);
+        let inv_bytes = self
+            .storage
+            .get(tenant_id, &inv_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvitationInvalid)?;
+
+        let mut invitation: OrganizationInvitation = serde_json::from_slice(&inv_bytes)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // Validate status
+        if invitation.status() != InvitationStatus::Pending {
+            return Err(IdentityError::InvitationInvalid);
+        }
+
+        // Validate expiry
+        let now = self.clock.now();
+        if now >= invitation.expires_at() {
+            return Err(IdentityError::InvitationInvalid);
+        }
+
+        // Find or create user by email
+        let user = if let Some(u) = self.get_user_by_email(tenant_id, invitation.email())? {
+            u
+        } else {
+            // Auto-create user for unknown email
+            self.create_user(
+                tenant_id,
+                &CreateUserRequest {
+                    email: invitation.email().to_string(),
+                    display_name: invitation.email().to_string(),
+                },
+            )?
+        };
+
+        // Add member
+        let membership = self.add_member(
+            tenant_id,
+            invitation.org_id(),
+            user.id(),
+            invitation.role(),
+        )?;
+
+        // Mark invitation as accepted
+        invitation.set_accepted();
+        let updated_bytes = serde_json::to_vec(&invitation)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &inv_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // Remove dedup index so a new invitation can be sent if needed
+        let dedup_key =
+            keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
+        self.storage
+            .delete(tenant_id, &dedup_key)
+            .map_err(Self::storage_err)?;
+
+        Ok(membership)
+    }
+
+    fn revoke_invitation(
+        &self,
+        tenant_id: &TenantId,
+        invitation_id: &InvitationId,
+    ) -> Result<(), IdentityError> {
+        let inv_key = keys::encode_invitation_id(invitation_id);
+        let inv_bytes = self
+            .storage
+            .get(tenant_id, &inv_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvitationInvalid)?;
+
+        let mut invitation: OrganizationInvitation = serde_json::from_slice(&inv_bytes)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if invitation.status() != InvitationStatus::Pending {
+            return Err(IdentityError::InvitationInvalid);
+        }
+
+        invitation.set_revoked();
+        let updated_bytes = serde_json::to_vec(&invitation)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &inv_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // Clean up dedup index
+        let dedup_key =
+            keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
+        self.storage
+            .delete(tenant_id, &dedup_key)
+            .map_err(Self::storage_err)?;
+
+        Ok(())
+    }
+
+    fn list_invitations(
+        &self,
+        tenant_id: &TenantId,
+        org_id: &OrganizationId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OrganizationInvitation>, IdentityError> {
+        let prefix = keys::invitation_list_prefix(org_id);
+        let start = if let Some(cursor_str) = cursor {
+            let decoded = String::from_utf8(
+                URL_SAFE_NO_PAD
+                    .decode(cursor_str)
+                    .map_err(|e| IdentityError::InvalidInput {
+                        reason: format!("invalid cursor: {e}"),
+                    })?,
+            )
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!(
+                "orgi:list:{}:{}",
+                org_id.as_uuid(),
+                decoded
+            )
+            .into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            // Extract invitation ID from list key
+            let key_str = std::str::from_utf8(&entry.key)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            if let Some(inv_uuid_str) = key_str.rsplit(':').next() {
+                if let Ok(uuid) = uuid::Uuid::parse_str(inv_uuid_str) {
+                    let inv_id = InvitationId::new(uuid);
+                    let inv_key = keys::encode_invitation_id(&inv_id);
+                    if let Some(inv_bytes) = self
+                        .storage
+                        .get(tenant_id, &inv_key)
+                        .map_err(Self::storage_err)?
+                    {
+                        let invitation: OrganizationInvitation =
+                            serde_json::from_slice(&inv_bytes)
+                                .map_err(|e| IdentityError::Serialization {
+                                    reason: e.to_string(),
+                                })?;
+                        items.push(invitation);
+                    }
+                }
+            }
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
     }
 }
 

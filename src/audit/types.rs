@@ -55,6 +55,12 @@ pub enum AuditAction {
     BulkUsersCreated,
     /// Users were bulk-disabled via admin API.
     BulkUsersDisabled,
+    /// An organization was created.
+    OrgCreated,
+    /// An organization was updated.
+    OrgUpdated,
+    /// An organization was deleted.
+    OrgDeleted,
 }
 
 impl AuditAction {
@@ -83,6 +89,9 @@ impl AuditAction {
             Self::ClientDeleted => "client_deleted",
             Self::BulkUsersCreated => "bulk_users_created",
             Self::BulkUsersDisabled => "bulk_users_disabled",
+            Self::OrgCreated => "org_created",
+            Self::OrgUpdated => "org_updated",
+            Self::OrgDeleted => "org_deleted",
         }
     }
 }
@@ -114,6 +123,9 @@ impl std::str::FromStr for AuditAction {
             "client_deleted" => Ok(Self::ClientDeleted),
             "bulk_users_created" => Ok(Self::BulkUsersCreated),
             "bulk_users_disabled" => Ok(Self::BulkUsersDisabled),
+            "org_created" => Ok(Self::OrgCreated),
+            "org_updated" => Ok(Self::OrgUpdated),
+            "org_deleted" => Ok(Self::OrgDeleted),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

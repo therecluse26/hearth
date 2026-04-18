@@ -135,6 +135,27 @@ pub enum IdentityError {
     ///
     /// Intentionally vague to avoid leaking lockout state to attackers.
     RateLimited,
+    /// The requested organization was not found.
+    OrganizationNotFound,
+    /// An organization with the given slug already exists in this tenant.
+    DuplicateOrgSlug,
+    /// The organization is suspended; operations are denied.
+    OrganizationSuspended,
+    /// The user is already a member of this organization.
+    AlreadyMember,
+    /// The user is not a member of this organization.
+    NotAMember,
+    /// Cannot remove the last owner of an organization.
+    LastOwner,
+    /// The organization has reached its maximum member count.
+    MemberLimitReached,
+    /// The invitation is invalid, expired, or already used.
+    ///
+    /// Intentionally conflates not-found, expired, and already-used for
+    /// enumeration resistance — callers cannot distinguish the three.
+    InvitationInvalid,
+    /// An invitation for this email already exists for this organization.
+    DuplicateInvitation,
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -198,6 +219,19 @@ impl fmt::Display for IdentityError {
             }
             Self::UserNotVerified => write!(f, "user email not verified"),
             Self::RateLimited => write!(f, "too many failed attempts"),
+            Self::OrganizationNotFound => write!(f, "organization not found"),
+            Self::DuplicateOrgSlug => {
+                write!(f, "an organization with this slug already exists")
+            }
+            Self::OrganizationSuspended => write!(f, "organization is suspended"),
+            Self::AlreadyMember => write!(f, "user is already a member of this organization"),
+            Self::NotAMember => write!(f, "user is not a member of this organization"),
+            Self::LastOwner => write!(f, "cannot remove the last owner of an organization"),
+            Self::MemberLimitReached => write!(f, "organization member limit reached"),
+            Self::InvitationInvalid => write!(f, "invalid or expired invitation"),
+            Self::DuplicateInvitation => {
+                write!(f, "an invitation for this email already exists")
+            }
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -247,6 +281,15 @@ impl std::error::Error for IdentityError {
             | Self::PasswordResetTokenInvalid
             | Self::UserNotVerified
             | Self::RateLimited
+            | Self::OrganizationNotFound
+            | Self::DuplicateOrgSlug
+            | Self::OrganizationSuspended
+            | Self::AlreadyMember
+            | Self::NotAMember
+            | Self::LastOwner
+            | Self::MemberLimitReached
+            | Self::InvitationInvalid
+            | Self::DuplicateInvitation
             | Self::Serialization { .. } => None,
         }
     }
@@ -602,6 +645,72 @@ mod tests {
     }
 
     #[test]
+    fn display_organization_not_found() {
+        let err = IdentityError::OrganizationNotFound;
+        let display = format!("{err}");
+        assert!(display.contains("organization not found"), "got: {display}");
+    }
+
+    #[test]
+    fn display_duplicate_org_slug() {
+        let err = IdentityError::DuplicateOrgSlug;
+        let display = format!("{err}");
+        assert!(display.contains("slug already exists"), "got: {display}");
+    }
+
+    #[test]
+    fn display_organization_suspended() {
+        let err = IdentityError::OrganizationSuspended;
+        let display = format!("{err}");
+        assert!(display.contains("suspended"), "got: {display}");
+    }
+
+    #[test]
+    fn display_already_member() {
+        let err = IdentityError::AlreadyMember;
+        let display = format!("{err}");
+        assert!(display.contains("already a member"), "got: {display}");
+    }
+
+    #[test]
+    fn display_not_a_member() {
+        let err = IdentityError::NotAMember;
+        let display = format!("{err}");
+        assert!(display.contains("not a member"), "got: {display}");
+    }
+
+    #[test]
+    fn display_last_owner() {
+        let err = IdentityError::LastOwner;
+        let display = format!("{err}");
+        assert!(display.contains("last owner"), "got: {display}");
+    }
+
+    #[test]
+    fn display_member_limit_reached() {
+        let err = IdentityError::MemberLimitReached;
+        let display = format!("{err}");
+        assert!(display.contains("member limit"), "got: {display}");
+    }
+
+    #[test]
+    fn display_invitation_invalid() {
+        let err = IdentityError::InvitationInvalid;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid or expired invitation"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_duplicate_invitation() {
+        let err = IdentityError::DuplicateInvitation;
+        let display = format!("{err}");
+        assert!(display.contains("already exists"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
         assert!(IdentityError::TenantNotFound.source().is_none());
         assert!(IdentityError::TenantSuspended.source().is_none());
@@ -674,6 +783,15 @@ mod tests {
         assert!(IdentityError::PasswordResetTokenInvalid.source().is_none());
         assert!(IdentityError::UserNotVerified.source().is_none());
         assert!(IdentityError::RateLimited.source().is_none());
+        assert!(IdentityError::OrganizationNotFound.source().is_none());
+        assert!(IdentityError::DuplicateOrgSlug.source().is_none());
+        assert!(IdentityError::OrganizationSuspended.source().is_none());
+        assert!(IdentityError::AlreadyMember.source().is_none());
+        assert!(IdentityError::NotAMember.source().is_none());
+        assert!(IdentityError::LastOwner.source().is_none());
+        assert!(IdentityError::MemberLimitReached.source().is_none());
+        assert!(IdentityError::InvitationInvalid.source().is_none());
+        assert!(IdentityError::DuplicateInvitation.source().is_none());
         assert!((IdentityError::Serialization {
             reason: "x".to_string()
         })

@@ -713,6 +713,19 @@ fn identity_error_to_response(
         }
         IdentityError::UserNotVerified => (StatusCode::FORBIDDEN, "email not verified"),
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
+        IdentityError::OrganizationNotFound => (StatusCode::NOT_FOUND, "organization not found"),
+        IdentityError::DuplicateOrgSlug => (StatusCode::CONFLICT, "duplicate organization slug"),
+        IdentityError::OrganizationSuspended => {
+            (StatusCode::FORBIDDEN, "organization suspended")
+        }
+        IdentityError::AlreadyMember => (StatusCode::CONFLICT, "already a member"),
+        IdentityError::NotAMember => (StatusCode::NOT_FOUND, "not a member"),
+        IdentityError::LastOwner => (StatusCode::CONFLICT, "cannot remove last owner"),
+        IdentityError::MemberLimitReached => {
+            (StatusCode::UNPROCESSABLE_ENTITY, "member limit reached")
+        }
+        IdentityError::InvitationInvalid => (StatusCode::BAD_REQUEST, "invalid invitation"),
+        IdentityError::DuplicateInvitation => (StatusCode::CONFLICT, "duplicate invitation"),
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)
         | IdentityError::Serialization { .. } => {

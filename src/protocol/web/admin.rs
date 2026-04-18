@@ -36,10 +36,12 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
 
-use crate::core::{ClientId, SessionId, TenantId};
+use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId};
 use crate::identity::{
-    CleartextPassword, CreateTenantRequest, CreateUserRequest, IdentityError, OAuthClient,
-    RegisterClientRequest, Session, Tenant, TenantStatus, UpdateClientRequest, UpdateTenantRequest,
+    CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
+    CreateUserRequest, IdentityError, OAuthClient, Organization, OrganizationInvitation,
+    OrganizationMembership, OrganizationRole, OrganizationStatus, RegisterClientRequest, Session,
+    Tenant, TenantStatus, UpdateClientRequest, UpdateOrganizationRequest, UpdateTenantRequest,
     UpdateUserRequest, User, UserStatus,
 };
 
@@ -1621,5 +1623,707 @@ pub async fn admin_test_email(
             }
         }
         None => Redirect::to("/ui/admin/settings?flash=test_email_no_transport").into_response(),
+    }
+}
+
+// =========================================================================
+// Organizations
+// =========================================================================
+
+// ---------------------------------------------------------------------------
+// Organization list
+// ---------------------------------------------------------------------------
+
+/// Template for `GET /ui/admin/organizations`.
+#[derive(Template)]
+#[template(path = "ui/admin/organizations/list.html")]
+#[allow(clippy::struct_excessive_bools)]
+struct OrgListTemplate {
+    organizations: Vec<Organization>,
+    next_cursor: Option<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+/// `GET /ui/admin/organizations`.
+pub async fn admin_orgs_list(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Query(params): Query<PaginationParams>,
+) -> Response {
+    match state
+        .identity
+        .list_organizations(&session.tenant_id, params.cursor.as_deref(), 20)
+    {
+        Ok(page) => render(&OrgListTemplate {
+            organizations: page.items,
+            next_cursor: page.next_cursor,
+            chrome: true,
+            active: "organizations",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+        }),
+        Err(e) => {
+            tracing::warn!(error = %e, "list_organizations failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Create organization
+// ---------------------------------------------------------------------------
+
+/// Template for `GET /ui/admin/organizations/new`.
+#[derive(Template)]
+#[template(path = "ui/admin/organizations/new.html")]
+struct OrgNewTemplate {
+    error: Option<String>,
+    form_name: String,
+    form_slug: String,
+    form_description: String,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+/// `GET /ui/admin/organizations/new`.
+pub async fn admin_org_create_form(RequireAdmin(session): RequireAdmin) -> Response {
+    render(&OrgNewTemplate {
+        error: None,
+        form_name: String::new(),
+        form_slug: String::new(),
+        form_description: String::new(),
+        chrome: true,
+        active: "organizations",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: true,
+    })
+}
+
+/// Form data for `POST /ui/admin/organizations/new`.
+#[derive(Debug, Deserialize)]
+pub struct CreateOrgForm {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/new`.
+pub async fn admin_org_create_submit(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Form(form): Form<CreateOrgForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let description = if form.description.trim().is_empty() {
+        None
+    } else {
+        Some(form.description.clone())
+    };
+
+    match state.identity.create_organization(
+        &session.tenant_id,
+        &CreateOrganizationRequest {
+            name: form.name.clone(),
+            slug: form.slug.clone(),
+            description,
+            config: None,
+        },
+    ) {
+        Ok(org) => {
+            audit_org_event(&state, &session, org.id(), "create");
+            Redirect::to(&format!(
+                "/ui/admin/organizations/{}",
+                org.id().as_uuid()
+            ))
+            .into_response()
+        }
+        Err(IdentityError::DuplicateOrgSlug) => render(&OrgNewTemplate {
+            error: Some("An organization with that slug already exists.".to_string()),
+            form_name: form.name,
+            form_slug: form.slug,
+            form_description: form.description,
+            chrome: true,
+            active: "organizations",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: true,
+        }),
+        Err(e) => {
+            tracing::warn!(error = %e, "create_organization failed");
+            render(&OrgNewTemplate {
+                error: Some(format!("Unable to create organization: {e}")),
+                form_name: form.name,
+                form_slug: form.slug,
+                form_description: form.description,
+                chrome: true,
+                active: "organizations",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: true,
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Organization detail
+// ---------------------------------------------------------------------------
+
+/// Template for `GET /ui/admin/organizations/:id`.
+#[derive(Template)]
+#[template(path = "ui/admin/organizations/detail.html")]
+struct OrgDetailTemplate {
+    org: Organization,
+    members: Vec<OrganizationMembership>,
+    invitations: Vec<OrganizationInvitation>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+/// `GET /ui/admin/organizations/:id`.
+pub async fn admin_org_detail(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+) -> Response {
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let org = match state.identity.get_organization(&session.tenant_id, &org_id) {
+        Ok(Some(o)) => o,
+        Ok(None) => return super::handlers_common::not_found("Organization not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_organization failed");
+            return super::handlers_common::server_error();
+        }
+    };
+
+    let members = state
+        .identity
+        .list_members(&session.tenant_id, &org_id, None, 100)
+        .map(|p| p.items)
+        .unwrap_or_default();
+
+    let invitations = state
+        .identity
+        .list_invitations(&session.tenant_id, &org_id, None, 100)
+        .map(|p| p.items)
+        .unwrap_or_default();
+
+    render(&OrgDetailTemplate {
+        org,
+        members,
+        invitations,
+        chrome: true,
+        active: "organizations",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Edit organization
+// ---------------------------------------------------------------------------
+
+/// Template for `GET /ui/admin/organizations/:id/edit`.
+#[derive(Template)]
+#[template(path = "ui/admin/organizations/edit.html")]
+struct OrgEditTemplate {
+    org: Organization,
+    error: Option<String>,
+    form_name: String,
+    form_description: String,
+    form_status: String,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+}
+
+/// `GET /ui/admin/organizations/:id/edit`.
+pub async fn admin_org_edit_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+) -> Response {
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    match state
+        .identity
+        .get_organization(&session.tenant_id, &org_id)
+    {
+        Ok(Some(org)) => render(&OrgEditTemplate {
+            form_name: org.name().to_string(),
+            form_description: org.description().to_string(),
+            form_status: format!("{:?}", org.status()),
+            org,
+            error: None,
+            chrome: true,
+            active: "organizations",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: true,
+        }),
+        Ok(None) => super::handlers_common::not_found("Organization not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_organization failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// Form data for `POST /ui/admin/organizations/:id/edit`.
+#[derive(Debug, Deserialize)]
+pub struct EditOrgForm {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/:id/edit`.
+pub async fn admin_org_edit_submit(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+    Form(form): Form<EditOrgForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let status = match form.status.as_str() {
+        "Active" => Some(OrganizationStatus::Active),
+        "Suspended" => Some(OrganizationStatus::Suspended),
+        _ => None,
+    };
+
+    let description = if form.description.trim().is_empty() {
+        None
+    } else {
+        Some(form.description.clone())
+    };
+
+    match state.identity.update_organization(
+        &session.tenant_id,
+        &org_id,
+        &UpdateOrganizationRequest {
+            name: Some(form.name.clone()),
+            description,
+            status,
+            config: None,
+        },
+    ) {
+        Ok(_) => {
+            audit_org_event(&state, &session, &org_id, "update");
+            Redirect::to(&format!(
+                "/ui/admin/organizations/{}",
+                org_id.as_uuid()
+            ))
+            .into_response()
+        }
+        Err(IdentityError::OrganizationNotFound) => {
+            super::handlers_common::not_found("Organization not found")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "update_organization failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Delete organization
+// ---------------------------------------------------------------------------
+
+/// `POST /ui/admin/organizations/:id/delete`.
+pub async fn admin_org_delete(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+    Form(form): Form<DeleteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    match state
+        .identity
+        .delete_organization(&session.tenant_id, &org_id)
+    {
+        Ok(()) => {
+            audit_org_event(&state, &session, &org_id, "delete");
+            Redirect::to("/ui/admin/organizations").into_response()
+        }
+        Err(IdentityError::OrganizationNotFound) => {
+            super::handlers_common::not_found("Organization not found")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "delete_organization failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Add member
+// ---------------------------------------------------------------------------
+
+/// Form data for `POST /ui/admin/organizations/:id/members`.
+#[derive(Debug, Deserialize)]
+pub struct AddMemberForm {
+    #[serde(default)]
+    pub user_email: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/:id/members`.
+pub async fn admin_org_add_member(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+    Form(form): Form<AddMemberForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let role = parse_org_role(&form.role);
+
+    // Look up user by email
+    let user = match state
+        .identity
+        .get_user_by_email(&session.tenant_id, form.user_email.trim())
+    {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return Redirect::to(&format!(
+                "/ui/admin/organizations/{}",
+                org_id.as_uuid()
+            ))
+            .into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "get_user_by_email failed");
+            return super::handlers_common::server_error();
+        }
+    };
+
+    match state
+        .identity
+        .add_member(&session.tenant_id, &org_id, user.id(), role)
+    {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "add_member failed");
+        }
+    }
+
+    Redirect::to(&format!(
+        "/ui/admin/organizations/{}",
+        org_id.as_uuid()
+    ))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Remove member
+// ---------------------------------------------------------------------------
+
+/// `POST /ui/admin/organizations/:id/members/:uid/remove`.
+pub async fn admin_org_remove_member(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    Form(form): Form<DeleteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let user_id = match uid.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+
+    match state
+        .identity
+        .remove_member(&session.tenant_id, &org_id, &user_id)
+    {
+        Ok(()) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "remove_member failed");
+        }
+    }
+
+    Redirect::to(&format!(
+        "/ui/admin/organizations/{}",
+        org_id.as_uuid()
+    ))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Update member role
+// ---------------------------------------------------------------------------
+
+/// Form data for `POST /ui/admin/organizations/:id/members/:uid/role`.
+#[derive(Debug, Deserialize)]
+pub struct UpdateRoleForm {
+    #[serde(default)]
+    pub role: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/:id/members/:uid/role`.
+pub async fn admin_org_update_role(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    Form(form): Form<UpdateRoleForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let user_id = match uid.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+
+    let role = parse_org_role(&form.role);
+
+    match state
+        .identity
+        .update_member_role(&session.tenant_id, &org_id, &user_id, role)
+    {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "update_member_role failed");
+        }
+    }
+
+    Redirect::to(&format!(
+        "/ui/admin/organizations/{}",
+        org_id.as_uuid()
+    ))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Create invitation
+// ---------------------------------------------------------------------------
+
+/// Form data for `POST /ui/admin/organizations/:id/invite`.
+#[derive(Debug, Deserialize)]
+pub struct InviteForm {
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/:id/invite`.
+pub async fn admin_org_invite(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+    Form(form): Form<InviteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let role = parse_org_role(&form.role);
+
+    match state.identity.create_invitation(
+        &session.tenant_id,
+        &CreateInvitationRequest {
+            org_id: org_id.clone(),
+            email: form.email.clone(),
+            role,
+            invited_by: session.user_id.clone(),
+        },
+    ) {
+        Ok((_invitation, _token)) => {
+            // TODO: send invitation email with token
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, email = %form.email, "create_invitation failed");
+        }
+    }
+
+    Redirect::to(&format!(
+        "/ui/admin/organizations/{}",
+        org_id.as_uuid()
+    ))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Revoke invitation
+// ---------------------------------------------------------------------------
+
+/// `POST /ui/admin/organizations/:id/invitations/:iid/revoke`.
+pub async fn admin_org_revoke_invite(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath((oid, iid)): AxumPath<(String, String)>,
+    Form(form): Form<DeleteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let invitation_id = match iid.parse::<uuid::Uuid>() {
+        Ok(u) => InvitationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Invitation not found"),
+    };
+
+    match state
+        .identity
+        .revoke_invitation(&session.tenant_id, &invitation_id)
+    {
+        Ok(()) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "revoke_invitation failed");
+        }
+    }
+
+    Redirect::to(&format!(
+        "/ui/admin/organizations/{}",
+        org_id.as_uuid()
+    ))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Organization helpers
+// ---------------------------------------------------------------------------
+
+/// Parses an organization role string from a form field.
+fn parse_org_role(s: &str) -> OrganizationRole {
+    match s {
+        "Owner" => OrganizationRole::Owner,
+        "Admin" => OrganizationRole::Admin,
+        _ => OrganizationRole::Member,
+    }
+}
+
+/// Best-effort audit for organization operations.
+fn audit_org_event(
+    state: &Arc<WebState>,
+    session: &super::auth::UiSession,
+    org_id: &OrganizationId,
+    op: &'static str,
+) {
+    use crate::audit::{AuditAction, CreateAuditEvent};
+    let action = match op {
+        "create" => AuditAction::OrgCreated,
+        "update" => AuditAction::OrgUpdated,
+        "delete" => AuditAction::OrgDeleted,
+        _ => return,
+    };
+    if let Err(e) = state.audit.append(&CreateAuditEvent {
+        tenant_id: session.tenant_id.clone(),
+        actor: session.user_id.as_uuid().to_string(),
+        action,
+        resource_type: "organization".to_string(),
+        resource_id: org_id.as_uuid().to_string(),
+        metadata: Some(serde_json::json!({ "via": "ui" })),
+    }) {
+        tracing::warn!(error = %e, "org admin audit append failed");
     }
 }

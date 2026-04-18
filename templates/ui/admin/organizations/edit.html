@@ -1,0 +1,52 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Edit {{ org.name() }}{% endblock %}
+{% block body %}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">Edit organization</h1>
+</div>
+
+<div class="rounded-xl bg-white p-6 shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+  {% match error %}
+    {% when Some with (msg) %}
+      <div class="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm font-medium text-red-800 dark:bg-red-900/30 dark:text-red-400" role="alert">{{ msg }}</div>
+    {% when None %}
+  {% endmatch %}
+
+  <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/edit" autocomplete="off" class="space-y-4">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+
+    <div>
+      <label for="name" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Organization name</label>
+      <input type="text" id="name" name="name" required value="{{ form_name }}"
+             class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+    </div>
+
+    <div>
+      <label for="description" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Description</label>
+      <textarea id="description" name="description" rows="3"
+                class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">{{ form_description }}</textarea>
+    </div>
+
+    <div>
+      <label for="status" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Status</label>
+      <select id="status" name="status"
+              class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+        <option value="Active" {% if form_status == "Active" %}selected{% endif %}>Active</option>
+        <option value="Suspended" {% if form_status == "Suspended" %}selected{% endif %}>Suspended</option>
+      </select>
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+      <button type="submit"
+              class="rounded-lg bg-hearth-500 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-hearth-600 focus:outline-none focus:ring-2 focus:ring-hearth-500/50 focus:ring-offset-2 dark:focus:ring-offset-slate-800">
+        Save changes
+      </button>
+      <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}" class="text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

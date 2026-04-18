@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{SessionId, TenantId, Timestamp, UserId};
+use crate::core::{InvitationId, OrganizationId, SessionId, TenantId, Timestamp, UserId};
 use crate::identity::email::EmailBranding;
 
 /// A cursor-based page of results.
@@ -361,6 +361,362 @@ pub struct UpdateTenantRequest {
     pub config: Option<TenantConfig>,
 }
 
+// ===== Organization types =====
+
+/// The lifecycle status of an organization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrganizationStatus {
+    /// Organization is active; members can operate normally.
+    Active,
+    /// Organization is suspended by an administrator.
+    Suspended,
+}
+
+/// Per-organization configuration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizationConfig {
+    /// Maximum number of members allowed. `None` means unlimited.
+    pub max_members: Option<u32>,
+}
+
+/// An organization within a tenant.
+///
+/// Organizations represent B2B customer groups. Users can be members of
+/// multiple organizations within the same tenant. Fields are private;
+/// access via accessor methods.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Organization {
+    id: OrganizationId,
+    name: String,
+    slug: String,
+    description: String,
+    status: OrganizationStatus,
+    config: OrganizationConfig,
+    created_at: Timestamp,
+    updated_at: Timestamp,
+}
+
+impl Organization {
+    /// Creates a new organization. Used internally by the identity engine.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        id: OrganizationId,
+        name: String,
+        slug: String,
+        description: String,
+        status: OrganizationStatus,
+        config: OrganizationConfig,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            slug,
+            description,
+            status,
+            config,
+            created_at,
+            updated_at,
+        }
+    }
+
+    /// Returns the organization's unique identifier.
+    pub fn id(&self) -> &OrganizationId {
+        &self.id
+    }
+
+    /// Returns the organization's display name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the organization's URL-safe slug.
+    pub fn slug(&self) -> &str {
+        &self.slug
+    }
+
+    /// Returns the organization's description.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// Returns the organization's lifecycle status.
+    pub fn status(&self) -> OrganizationStatus {
+        self.status
+    }
+
+    /// Returns the organization's configuration.
+    pub fn config(&self) -> &OrganizationConfig {
+        &self.config
+    }
+
+    /// Returns when the organization was created (UTC microseconds).
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
+    }
+
+    /// Returns when the organization was last updated (UTC microseconds).
+    pub fn updated_at(&self) -> Timestamp {
+        self.updated_at
+    }
+
+    /// Updates the name. Used internally during organization updates.
+    pub(crate) fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    /// Updates the description. Used internally during organization updates.
+    pub(crate) fn set_description(&mut self, description: String) {
+        self.description = description;
+    }
+
+    /// Updates the status. Used internally during organization updates.
+    pub(crate) fn set_status(&mut self, status: OrganizationStatus) {
+        self.status = status;
+    }
+
+    /// Updates the configuration. Used internally during organization updates.
+    pub(crate) fn set_config(&mut self, config: OrganizationConfig) {
+        self.config = config;
+    }
+
+    /// Updates the `updated_at` timestamp.
+    pub(crate) fn set_updated_at(&mut self, ts: Timestamp) {
+        self.updated_at = ts;
+    }
+}
+
+/// A role within an organization.
+///
+/// Roles form a hierarchy: Owner > Admin > Member. Higher roles
+/// inherit the capabilities of lower roles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrganizationRole {
+    /// Full control including delete, role management, and billing.
+    Owner,
+    /// Can manage members and settings but not delete the org.
+    Admin,
+    /// Basic membership with access to org resources.
+    Member,
+}
+
+/// A membership record linking a user to an organization.
+///
+/// Stored as bidirectional indexes (org→user and user→org) for
+/// efficient lookups in both directions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizationMembership {
+    org_id: OrganizationId,
+    user_id: UserId,
+    role: OrganizationRole,
+    joined_at: Timestamp,
+    invited_by: Option<UserId>,
+}
+
+impl OrganizationMembership {
+    /// Creates a new membership. Used internally by the identity engine.
+    pub(crate) fn new(
+        org_id: OrganizationId,
+        user_id: UserId,
+        role: OrganizationRole,
+        joined_at: Timestamp,
+        invited_by: Option<UserId>,
+    ) -> Self {
+        Self {
+            org_id,
+            user_id,
+            role,
+            joined_at,
+            invited_by,
+        }
+    }
+
+    /// Returns the organization this membership belongs to.
+    pub fn org_id(&self) -> &OrganizationId {
+        &self.org_id
+    }
+
+    /// Returns the user who is a member.
+    pub fn user_id(&self) -> &UserId {
+        &self.user_id
+    }
+
+    /// Returns the member's role within the organization.
+    pub fn role(&self) -> OrganizationRole {
+        self.role
+    }
+
+    /// Returns when the user joined the organization (UTC microseconds).
+    pub fn joined_at(&self) -> Timestamp {
+        self.joined_at
+    }
+
+    /// Returns who invited this member, if applicable.
+    pub fn invited_by(&self) -> Option<&UserId> {
+        self.invited_by.as_ref()
+    }
+
+    /// Updates the role. Used internally during role changes.
+    pub(crate) fn set_role(&mut self, role: OrganizationRole) {
+        self.role = role;
+    }
+}
+
+/// The status of an organization invitation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InvitationStatus {
+    /// Invitation has been sent but not yet acted upon.
+    Pending,
+    /// Invitation was accepted; the user is now a member.
+    Accepted,
+    /// Invitation was revoked by an admin before acceptance.
+    Revoked,
+    /// Invitation expired before the recipient acted.
+    Expired,
+}
+
+/// An invitation to join an organization.
+///
+/// The token is stored as a SHA-256 hash. The plaintext token is returned
+/// only once at creation time and never persisted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrganizationInvitation {
+    id: InvitationId,
+    org_id: OrganizationId,
+    email: String,
+    role: OrganizationRole,
+    token_hash: String,
+    status: InvitationStatus,
+    expires_at: Timestamp,
+    invited_by: UserId,
+    created_at: Timestamp,
+}
+
+impl OrganizationInvitation {
+    /// Creates a new invitation. Used internally by the identity engine.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        id: InvitationId,
+        org_id: OrganizationId,
+        email: String,
+        role: OrganizationRole,
+        token_hash: String,
+        status: InvitationStatus,
+        expires_at: Timestamp,
+        invited_by: UserId,
+        created_at: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            org_id,
+            email,
+            role,
+            token_hash,
+            status,
+            expires_at,
+            invited_by,
+            created_at,
+        }
+    }
+
+    /// Returns the invitation's unique identifier.
+    pub fn id(&self) -> &InvitationId {
+        &self.id
+    }
+
+    /// Returns which organization this invitation is for.
+    pub fn org_id(&self) -> &OrganizationId {
+        &self.org_id
+    }
+
+    /// Returns the email address the invitation was sent to.
+    pub fn email(&self) -> &str {
+        &self.email
+    }
+
+    /// Returns the role the invitee will receive upon acceptance.
+    pub fn role(&self) -> OrganizationRole {
+        self.role
+    }
+
+    /// Returns the SHA-256 hash of the invitation token.
+    pub(crate) fn token_hash(&self) -> &str {
+        &self.token_hash
+    }
+
+    /// Returns the invitation's current status.
+    pub fn status(&self) -> InvitationStatus {
+        self.status
+    }
+
+    /// Returns when the invitation expires (UTC microseconds).
+    pub fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+
+    /// Returns who created this invitation.
+    pub fn invited_by(&self) -> &UserId {
+        &self.invited_by
+    }
+
+    /// Returns when the invitation was created (UTC microseconds).
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
+    }
+
+    /// Marks the invitation as accepted.
+    pub(crate) fn set_accepted(&mut self) {
+        self.status = InvitationStatus::Accepted;
+    }
+
+    /// Marks the invitation as revoked.
+    pub(crate) fn set_revoked(&mut self) {
+        self.status = InvitationStatus::Revoked;
+    }
+}
+
+/// Request to create a new organization.
+#[derive(Clone, Debug)]
+pub struct CreateOrganizationRequest {
+    /// Display name for the organization.
+    pub name: String,
+    /// URL-safe slug (lowercase alphanumeric + hyphens, 3-63 chars).
+    pub slug: String,
+    /// Optional description.
+    pub description: Option<String>,
+    /// Optional configuration overrides.
+    pub config: Option<OrganizationConfig>,
+}
+
+/// Request to update an existing organization.
+///
+/// Only `Some` fields are applied; `None` fields are left unchanged.
+#[derive(Clone, Debug, Default)]
+pub struct UpdateOrganizationRequest {
+    /// New display name.
+    pub name: Option<String>,
+    /// New description.
+    pub description: Option<String>,
+    /// New lifecycle status.
+    pub status: Option<OrganizationStatus>,
+    /// New configuration overrides.
+    pub config: Option<OrganizationConfig>,
+}
+
+/// Request to create an invitation to join an organization.
+#[derive(Clone, Debug)]
+pub struct CreateInvitationRequest {
+    /// Organization to invite the user to.
+    pub org_id: OrganizationId,
+    /// Email address of the invitee.
+    pub email: String,
+    /// Role to assign upon acceptance.
+    pub role: OrganizationRole,
+    /// User who is creating the invitation.
+    pub invited_by: UserId,
+}
+
 // ===== Migration / import request types (Phase 1 Step 30) =====
 
 /// A pre-hashed credential to attach to an imported user.
@@ -618,6 +974,196 @@ mod tests {
     fn update_tenant_request_default_is_all_none() {
         let req = UpdateTenantRequest::default();
         assert!(req.name.is_none());
+        assert!(req.status.is_none());
+        assert!(req.config.is_none());
+    }
+
+    // ===== Organization type tests =====
+
+    #[test]
+    fn organization_accessors() {
+        let id = OrganizationId::generate();
+        let now = Timestamp::from_micros(1_000_000);
+        let config = OrganizationConfig {
+            max_members: Some(100),
+        };
+        let org = Organization::new(
+            id.clone(),
+            "Acme Corp".to_string(),
+            "acme-corp".to_string(),
+            "A test org".to_string(),
+            OrganizationStatus::Active,
+            config.clone(),
+            now,
+            now,
+        );
+
+        assert_eq!(org.id(), &id);
+        assert_eq!(org.name(), "Acme Corp");
+        assert_eq!(org.slug(), "acme-corp");
+        assert_eq!(org.description(), "A test org");
+        assert_eq!(org.status(), OrganizationStatus::Active);
+        assert_eq!(org.config(), &config);
+        assert_eq!(org.created_at(), now);
+        assert_eq!(org.updated_at(), now);
+    }
+
+    #[test]
+    fn organization_serde_round_trip() {
+        let org = Organization::new(
+            OrganizationId::generate(),
+            "Test Org".to_string(),
+            "test-org".to_string(),
+            String::new(),
+            OrganizationStatus::Active,
+            OrganizationConfig::default(),
+            Timestamp::from_micros(1_000),
+            Timestamp::from_micros(2_000),
+        );
+
+        let json = serde_json::to_string(&org).expect("serialize");
+        let deserialized: Organization = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(org, deserialized);
+    }
+
+    #[test]
+    fn organization_mutators() {
+        let mut org = Organization::new(
+            OrganizationId::generate(),
+            "Old Name".to_string(),
+            "old-name".to_string(),
+            "Old desc".to_string(),
+            OrganizationStatus::Active,
+            OrganizationConfig::default(),
+            Timestamp::from_micros(1_000),
+            Timestamp::from_micros(1_000),
+        );
+
+        org.set_name("New Name".to_string());
+        org.set_description("New desc".to_string());
+        org.set_status(OrganizationStatus::Suspended);
+        org.set_config(OrganizationConfig {
+            max_members: Some(50),
+        });
+        org.set_updated_at(Timestamp::from_micros(2_000));
+
+        assert_eq!(org.name(), "New Name");
+        assert_eq!(org.description(), "New desc");
+        assert_eq!(org.status(), OrganizationStatus::Suspended);
+        assert_eq!(org.config().max_members, Some(50));
+        assert_eq!(org.updated_at(), Timestamp::from_micros(2_000));
+    }
+
+    #[test]
+    fn membership_accessors() {
+        let org_id = OrganizationId::generate();
+        let user_id = UserId::generate();
+        let inviter = UserId::generate();
+        let now = Timestamp::from_micros(1_000_000);
+
+        let membership = OrganizationMembership::new(
+            org_id.clone(),
+            user_id.clone(),
+            OrganizationRole::Admin,
+            now,
+            Some(inviter.clone()),
+        );
+
+        assert_eq!(membership.org_id(), &org_id);
+        assert_eq!(membership.user_id(), &user_id);
+        assert_eq!(membership.role(), OrganizationRole::Admin);
+        assert_eq!(membership.joined_at(), now);
+        assert_eq!(membership.invited_by(), Some(&inviter));
+    }
+
+    #[test]
+    fn membership_serde_round_trip() {
+        let membership = OrganizationMembership::new(
+            OrganizationId::generate(),
+            UserId::generate(),
+            OrganizationRole::Member,
+            Timestamp::from_micros(1_000),
+            None,
+        );
+
+        let json = serde_json::to_string(&membership).expect("serialize");
+        let deserialized: OrganizationMembership =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(membership, deserialized);
+    }
+
+    #[test]
+    fn invitation_accessors() {
+        let inv_id = InvitationId::generate();
+        let org_id = OrganizationId::generate();
+        let inviter = UserId::generate();
+        let now = Timestamp::from_micros(1_000_000);
+        let expires = Timestamp::from_micros(2_000_000);
+
+        let invitation = OrganizationInvitation::new(
+            inv_id.clone(),
+            org_id.clone(),
+            "alice@example.com".to_string(),
+            OrganizationRole::Member,
+            "abc123hash".to_string(),
+            InvitationStatus::Pending,
+            expires,
+            inviter.clone(),
+            now,
+        );
+
+        assert_eq!(invitation.id(), &inv_id);
+        assert_eq!(invitation.org_id(), &org_id);
+        assert_eq!(invitation.email(), "alice@example.com");
+        assert_eq!(invitation.role(), OrganizationRole::Member);
+        assert_eq!(invitation.token_hash(), "abc123hash");
+        assert_eq!(invitation.status(), InvitationStatus::Pending);
+        assert_eq!(invitation.expires_at(), expires);
+        assert_eq!(invitation.invited_by(), &inviter);
+        assert_eq!(invitation.created_at(), now);
+    }
+
+    #[test]
+    fn invitation_status_transitions() {
+        let mut invitation = OrganizationInvitation::new(
+            InvitationId::generate(),
+            OrganizationId::generate(),
+            "bob@example.com".to_string(),
+            OrganizationRole::Admin,
+            "hash".to_string(),
+            InvitationStatus::Pending,
+            Timestamp::from_micros(2_000_000),
+            UserId::generate(),
+            Timestamp::from_micros(1_000_000),
+        );
+
+        assert_eq!(invitation.status(), InvitationStatus::Pending);
+
+        invitation.set_accepted();
+        assert_eq!(invitation.status(), InvitationStatus::Accepted);
+
+        // Test revoke on a fresh invitation
+        let mut invitation2 = OrganizationInvitation::new(
+            InvitationId::generate(),
+            OrganizationId::generate(),
+            "carol@example.com".to_string(),
+            OrganizationRole::Member,
+            "hash2".to_string(),
+            InvitationStatus::Pending,
+            Timestamp::from_micros(2_000_000),
+            UserId::generate(),
+            Timestamp::from_micros(1_000_000),
+        );
+
+        invitation2.set_revoked();
+        assert_eq!(invitation2.status(), InvitationStatus::Revoked);
+    }
+
+    #[test]
+    fn update_organization_request_default_is_all_none() {
+        let req = UpdateOrganizationRequest::default();
+        assert!(req.name.is_none());
+        assert!(req.description.is_none());
         assert!(req.status.is_none());
         assert!(req.config.is_none());
     }

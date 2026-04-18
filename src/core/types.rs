@@ -73,6 +73,16 @@ define_id_type!(
     AuditEventId, "audit_"
 );
 
+define_id_type!(
+    /// Unique identifier for an organization within a tenant.
+    OrganizationId, "org_"
+);
+
+define_id_type!(
+    /// Unique identifier for an organization invitation.
+    InvitationId, "inv_"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +150,34 @@ mod tests {
 
         let json = serde_json::to_string(&id).expect("serialize");
         let deserialized: SessionId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn organization_id_basics() {
+        let uuid = Uuid::new_v4();
+        let id = OrganizationId::new(uuid);
+        assert_eq!(*id.as_uuid(), uuid);
+
+        let display = format!("{id}");
+        assert!(display.starts_with("org_"), "got: {display}");
+
+        let json = serde_json::to_string(&id).expect("serialize");
+        let deserialized: OrganizationId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn invitation_id_basics() {
+        let uuid = Uuid::new_v4();
+        let id = InvitationId::new(uuid);
+        assert_eq!(*id.as_uuid(), uuid);
+
+        let display = format!("{id}");
+        assert!(display.starts_with("inv_"), "got: {display}");
+
+        let json = serde_json::to_string(&id).expect("serialize");
+        let deserialized: InvitationId = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(id, deserialized);
     }
 }
