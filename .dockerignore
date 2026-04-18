@@ -76,3 +76,5 @@ compose.yml
 compose.dev.yaml
 docker-compose.yaml
 docker-compose.yml
+
+hearth.yaml
