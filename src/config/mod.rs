@@ -7,6 +7,7 @@ mod env;
 pub mod error;
 mod types;
 
+pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
 pub use types::{
     EmailConfig, EmailTransport, MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig,
@@ -53,18 +54,27 @@ pub struct Config {
     /// Whether development mode is active. Not serialized — set by [`Config::dev`].
     #[serde(skip)]
     pub dev_mode: bool,
+    /// Env-var substitution warnings from config loading (missing/empty variables).
+    /// Skipped during serde deserialization — populated by [`Config::from_file`]
+    /// and [`Config::from_yaml_str`].
+    #[serde(skip)]
+    pub config_warnings: Vec<EnvVarWarning>,
 }
 
 impl Config {
     /// Parses a YAML string into a validated [`Config`].
     ///
-    /// Environment variables referenced as `${VAR_NAME}` are substituted
-    /// before parsing. Returns an error for invalid YAML, missing env vars,
-    /// or values that fail validation.
+    /// Environment variables referenced as `${VAR_NAME}` or
+    /// `${VAR_NAME:-default}` are substituted before parsing. Missing or
+    /// empty variables (without a default) produce warnings rather than
+    /// errors — see [`EnvVarWarning`].
+    ///
+    /// Returns an error for invalid YAML or values that fail validation.
     pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
-        let substituted = env::substitute_env_vars(yaml)?;
-        let config: Self = serde_yaml::from_str(&substituted)
+        let (substituted, warnings) = env::substitute_env_vars(yaml);
+        let mut config: Self = serde_yaml::from_str(&substituted)
             .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        config.config_warnings = warnings;
         config.validate()?;
         Ok(config)
     }
@@ -116,6 +126,7 @@ impl Config {
             email: EmailConfig::default(),
             onboarding: OnboardingConfig::default(),
             dev_mode: true,
+            config_warnings: Vec::new(),
         }
     }
 

@@ -39,6 +39,7 @@ use axum::Router;
 
 use crate::audit::AuditEngine;
 use crate::authz::AuthorizationEngine;
+use crate::config::EnvVarWarning;
 use crate::core::TenantId;
 use crate::identity::onboarding::OnboardingService;
 use crate::identity::{EmailService, IdentityEngine};
@@ -80,6 +81,9 @@ pub struct WebState {
     /// on successful login for subsequent requests. `None` at startup
     /// until a tenant is known.
     pub current_tenant: Arc<RwLock<Option<TenantId>>>,
+    /// Configuration warnings (missing/empty env vars) surfaced on the
+    /// admin dashboard.
+    pub config_warnings: Vec<EnvVarWarning>,
 }
 
 impl WebState {
@@ -101,7 +105,15 @@ impl WebState {
             email,
             cookie_secret,
             current_tenant: Arc::new(RwLock::new(None)),
+            config_warnings: Vec::new(),
         }
+    }
+
+    /// Attaches configuration warnings to this state.
+    #[must_use]
+    pub fn with_config_warnings(mut self, warnings: Vec<EnvVarWarning>) -> Self {
+        self.config_warnings = warnings;
+        self
     }
 
     /// Pins a tenant as the "current" one for this process. Called by

@@ -26,6 +26,9 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
 
+use qrcode::render::svg;
+use qrcode::QrCode;
+
 use crate::identity::{CleartextPassword, IdentityError};
 
 use super::auth::{verify_csrf_form_field, UiSession};
@@ -228,6 +231,34 @@ fn audit_password_changed(
 }
 
 // ---------------------------------------------------------------------------
+// QR code helper
+// ---------------------------------------------------------------------------
+
+/// Renders the given `otpauth://` URI as an inline SVG QR code.
+///
+/// Returns an empty string on error (the template falls back to showing
+/// only the manual secret). This is a presentation concern and belongs
+/// in the protocol layer — the identity engine only produces the URI.
+fn generate_qr_svg(provisioning_uri: &str) -> String {
+    if provisioning_uri.is_empty() {
+        return String::new();
+    }
+    match QrCode::new(provisioning_uri.as_bytes()) {
+        Ok(code) => code
+            .render()
+            .min_dimensions(200, 200)
+            .quiet_zone(true)
+            .dark_color(svg::Color("#000000"))
+            .light_color(svg::Color("#ffffff"))
+            .build(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to generate QR code for TOTP enrolment");
+            String::new()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TOTP / MFA enrolment
 // ---------------------------------------------------------------------------
 
@@ -246,6 +277,8 @@ struct TotpEnrollTemplate {
     secret_base32: String,
     /// `otpauth://` URI for authenticator apps (only when `!mfa_enabled`).
     provisioning_uri: String,
+    /// Inline SVG of the QR code encoding `provisioning_uri` (empty on error/disabled).
+    qr_svg: String,
     /// Plaintext recovery codes shown once (only when `!mfa_enabled`).
     recovery_codes: Vec<String>,
     /// Inline error shown above the activation form (e.g. "Invalid code").
@@ -261,11 +294,13 @@ struct TotpEnrollTemplate {
 }
 
 impl TotpEnrollTemplate {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         session: &UiSession,
         mfa_enabled: bool,
         secret_base32: String,
         provisioning_uri: String,
+        qr_svg: String,
         recovery_codes: Vec<String>,
         activation_error: Option<String>,
         is_admin: bool,
@@ -274,6 +309,7 @@ impl TotpEnrollTemplate {
             mfa_enabled,
             secret_base32,
             provisioning_uri,
+            qr_svg,
             recovery_codes,
             activation_error,
             chrome: true,
@@ -307,6 +343,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             true,
             String::new(),
             String::new(),
+            String::new(),
             Vec::new(),
             None,
             admin,
@@ -317,18 +354,23 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
         .identity
         .enroll_totp(&session.tenant_id, &session.user_id)
     {
-        Ok(enrollment) => render(&TotpEnrollTemplate::new(
-            &session,
-            false,
-            enrollment.secret_base32,
-            enrollment.provisioning_uri,
-            enrollment.recovery_codes.as_slice().to_vec(),
-            None,
-            admin,
-        )),
+        Ok(enrollment) => {
+            let qr_svg = generate_qr_svg(&enrollment.provisioning_uri);
+            render(&TotpEnrollTemplate::new(
+                &session,
+                false,
+                enrollment.secret_base32,
+                enrollment.provisioning_uri,
+                qr_svg,
+                enrollment.recovery_codes.as_slice().to_vec(),
+                None,
+                admin,
+            ))
+        }
         Err(IdentityError::MfaAlreadyEnabled) => render(&TotpEnrollTemplate::new(
             &session,
             true,
+            String::new(),
             String::new(),
             String::new(),
             Vec::new(),
@@ -340,6 +382,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             render(&TotpEnrollTemplate::new(
                 &session,
                 false,
+                String::new(),
                 String::new(),
                 String::new(),
                 Vec::new(),
@@ -452,6 +495,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
             true,
             String::new(),
             String::new(),
+            String::new(),
             Vec::new(),
             None,
             admin,
@@ -464,6 +508,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
     render(&TotpEnrollTemplate::new(
         session,
         false,
+        String::new(),
         String::new(),
         String::new(),
         Vec::new(),

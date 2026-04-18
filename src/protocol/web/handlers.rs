@@ -184,6 +184,7 @@ struct DashboardTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    config_warnings: Vec<crate::config::EnvVarWarning>,
 }
 
 /// Invalid / expired / malformed verification link page.
@@ -737,6 +738,11 @@ pub async fn dashboard(
     session: super::auth::UiSession,
 ) -> Response {
     let is_admin = is_admin(&state, &session);
+    let config_warnings = if is_admin {
+        state.config_warnings.clone()
+    } else {
+        Vec::new()
+    };
     render(&DashboardTemplate {
         chrome: true,
         active: "dashboard",
@@ -745,6 +751,7 @@ pub async fn dashboard(
         flash: None,
         csrf: session.csrf.clone(),
         narrow: false,
+        config_warnings,
     })
 }
 

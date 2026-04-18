@@ -431,9 +431,10 @@ async fn totp_enroll_page_renders_qr_and_recovery_codes() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("Enrol a new authenticator"));
+    assert!(body.contains("Register a new authenticator"));
     assert!(body.contains("hearth-secret"));
     assert!(body.contains("otpauth://"));
+    assert!(body.contains("<svg"), "QR code SVG should be present");
     assert!(body.contains("name=\"code\""));
     assert!(body.contains("name=\"_csrf\""));
 }

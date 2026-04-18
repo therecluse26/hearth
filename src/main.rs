@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
-use hearth::config::{Config, EmailTransport};
+use hearth::config::{Config, EmailTransport, EnvVarWarningKind};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::email::mailgun::MailgunRegion;
 use hearth::identity::email::{
@@ -195,10 +195,32 @@ async fn run_serve(
         config.server.bind_address = bind;
     }
 
+    // Safety-net: print config warnings to stderr before tracing initialises
+    // so they are visible even if the subscriber setup fails.
+    for w in &config.config_warnings {
+        eprintln!(
+            "[hearth] config warning: {} — {}",
+            w.var_name,
+            w.kind_label()
+        );
+    }
+
     // Initialize tracing
     let filter = EnvFilter::try_new(&config.observability.log_level)
         .unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // Log config warnings through the structured tracing pipeline
+    for w in &config.config_warnings {
+        match w.kind {
+            EnvVarWarningKind::Missing => {
+                warn!(var = %w.var_name, "config references unset environment variable — substituted empty string");
+            }
+            EnvVarWarningKind::Empty => {
+                warn!(var = %w.var_name, "environment variable is set but empty — this is likely a misconfiguration");
+            }
+        }
+    }
 
     info!(
         dev_mode = config.dev_mode,
@@ -312,7 +334,8 @@ async fn run_serve(
         Arc::clone(&onboarding_service),
         web::CookieSecret::random(),
         Some(Arc::clone(&email_service)),
-    );
+    )
+    .with_config_warnings(config.config_warnings.clone());
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
     // Check for TLS configuration

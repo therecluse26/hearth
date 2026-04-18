@@ -12,9 +12,10 @@
 #   - Hearth:     http://localhost:8420  (health at /health)
 #   - Mailpit UI: http://localhost:8025
 #
-# Hearth config lives in `deploy/hearth.docker.yaml` and is mounted read-only
-# at `/etc/hearth/hearth.yaml`. Application-level knobs belong there, not in
-# this compose file — see README "Running with Docker Compose" for details.
+# Hearth config lives in the project-root `hearth.yaml` and is mounted
+# read-only at `/etc/hearth/hearth.yaml`. Application-level knobs belong
+# there, not in this compose file — see README "Running with Docker Compose"
+# for details.
 
 services:
   hearth:
@@ -38,11 +39,19 @@ services:
       - hearth_data:/var/lib/hearth
       # Read-only bind for the config file — edit on the host, SIGHUP on
       # the container (or `docker compose restart hearth`) to reload.
-      - ./deploy/hearth.docker.yaml:/etc/hearth/hearth.yaml:ro
+      - ./hearth.yaml:/etc/hearth/hearth.yaml:ro
+    # Pass host .env vars (e.g. MAILTRAP_API_KEY) into the container.
+    # `environment` values below override duplicates from the file.
+    env_file:
+      - path: .env
+        required: false
     environment:
       # tracing-subscriber honours RUST_LOG; the YAML sets log_level for the
       # app itself, but env-var filters give per-module overrides for debug.
       RUST_LOG: "info,hearth=debug"
+      # Inside Docker we must bind all interfaces; local dev defaults to
+      # 127.0.0.1 via the ${HEARTH_BIND_ADDRESS:-127.0.0.1} in hearth.yaml.
+      HEARTH_BIND_ADDRESS: "0.0.0.0"
     restart: unless-stopped
     # Uses the same endpoint as Kubernetes readiness probes.
     healthcheck:
