@@ -21,6 +21,7 @@ Read these before writing any code. They are the canonical source of truth:
 - `docs/specs/TEST_SCENARIOS.md` — granular checkbox-tracked test scenario checklist by module and layer.
 - `docs/specs/IMPLEMENTATION_ORDER.md` — **mandatory build sequence for Phase 0.** Steps MUST be completed in order (1→18). Do not skip ahead or work out of sequence.
 - `docs/vision/VISION.md` — design rationale, performance targets, competitive positioning, roadmap. Read this to understand *why* decisions were made.
+- `docs/specs/THEME.md` — **mandatory design theme for all UI code.** See § UI Theme below.
 
 ## Implementation Order (MANDATORY)
 
@@ -86,6 +87,21 @@ Everything else (user creation, hashing, token issuance, WAL writes, cold-tier p
 ### API Contracts
 
 - `.proto` files in `proto/` are the single source of truth for all API contracts (`prost` + `buf`). See ARCHITECTURE.md § 4.
+
+### UI Theme (MANDATORY)
+
+All UI templates, CSS, and front-end code MUST comply with `docs/specs/THEME.md`. This is not optional.
+
+**Rules:**
+- Read `docs/specs/THEME.md` before writing or modifying any template in `templates/ui/`.
+- **Dark-mode only.** No light mode, no `dark:` Tailwind prefixes, no theme toggle.
+- **Color tokens:** Use the graphite neutral scale (950–050), ember brand colors, accent ramps (teal, violet, rose, steel), and semantic states (success, warning, danger, info) defined in `ui/tailwind.config.js`. Never use raw hex outside the config.
+- **Typography:** Fraunces (display), Manrope (body/UI), JetBrains Mono (code/labels). No substitutions.
+- **Ember gradient** (`btn-ember` class) appears at most once per visible region. Text on the gradient is `graphite-950`, never white.
+- **Borders** use alpha-based white (`border-white/6`, `border-white/10`, `border-white/[0.18]`), not solid grays.
+- **Primary text** is `graphite-50` (`#f5f1e8`), never `#ffffff`. Secondary text is `graphite-300`.
+- **Shape tokens:** `rounded-sm` (6px inputs), `rounded` (10px buttons/cards), `rounded-lg` (14px panels), `rounded-xl` (20px hero).
+- After any template or CSS change, rebuild Tailwind: `cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify`
 
 ## TDD Workflow (Mandatory)
 
@@ -176,7 +192,7 @@ CI runs four tiers: Fast (every commit), Standard (merge), Extended (nightly), F
 
 ## Dependency Policy
 
-- New deps MUST be justified in PR, pass `cargo-audit`, and have compatible license (Apache 2.0/MIT/BSD/MPL-2.0).
+- New deps MUST be justified in PR, pass `cargo-audit`, and have compatible license (Apache 2.0/MIT/BSD/MPL-2.0). Note: Hearth itself is dual-licensed AGPL-3.0 / Commercial, but *dependency* licenses must remain permissive to preserve the commercial license track.
 - Bans: no ORM, no `lazy_static`, no `async-trait` on hot path, no `reqwest` in prod. See ARCHITECTURE.md § 15 for approved crates.
 
 ## Async Model

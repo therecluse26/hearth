@@ -481,7 +481,7 @@ src/storage/
 
 - Adding a new dependency MUST be justified in the PR description: what it provides, why a hand-written solution is not appropriate, and its maintenance status (last release, bus factor, known issues).
 - All new dependencies MUST pass `cargo-audit` with no known vulnerabilities.
-- All new dependencies MUST be reviewed for license compatibility. Acceptable: Apache 2.0, MIT, BSD, MPL-2.0. Not acceptable: GPL, AGPL, SSPL.
+- All new dependencies MUST be reviewed for license compatibility. Acceptable: Apache 2.0, MIT, BSD, MPL-2.0. Not acceptable: GPL, AGPL, SSPL. (Note: this refers to *dependency* licenses. Hearth itself is AGPL-3.0 licensed with a commercial option. AGPL/GPL dependencies are banned because they would complicate the commercial license track.)
 - Dependencies MUST NOT introduce a C/C++ build toolchain requirement unless absolutely necessary (`ring` is acceptable; a dependency requiring `cmake` is suspect).
 
 ### 15.2 Approved Crates

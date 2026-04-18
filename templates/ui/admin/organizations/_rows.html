@@ -1,23 +1,23 @@
 {% for o in organizations %}
-<tr class="border-b border-slate-100 dark:border-slate-700/50">
+<tr class="border-b border-white/6">
   <td class="px-4 py-3">
-    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}" class="text-sm font-medium text-hearth-600 hover:text-hearth-700 dark:text-hearth-400 dark:hover:text-hearth-300">{{ o.name() }}</a>
+    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}" class="text-sm font-medium text-ember-gold hover:text-ember-orange">{{ o.name() }}</a>
   </td>
   <td class="px-4 py-3">
-    <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-700 dark:text-slate-300">{{ o.slug() }}</code>
+    <code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ o.slug() }}</code>
   </td>
   <td class="px-4 py-3">
     {% if o.status()|fmt("{:?}") == "Active" %}
-      <span class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">Active</span>
+      <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
     {% else %}
-      <span class="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">Suspended</span>
+      <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Suspended</span>
     {% endif %}
   </td>
   <td class="px-4 py-3 text-right">
-    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}/edit" class="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300">Edit</a>
+    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}/edit" class="text-sm text-graphite-400 hover:text-graphite-300">Edit</a>
   </td>
 </tr>
 {% endfor %}
 {% if organizations.is_empty() %}
-<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-slate-400 dark:text-slate-500">No organizations found.</td></tr>
+<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-graphite-500">No organizations found.</td></tr>
 {% endif %}

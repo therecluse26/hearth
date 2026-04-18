@@ -1,22 +1,22 @@
 {% for t in tenants %}
-<tr class="border-b border-slate-100 dark:border-slate-700/50">
+<tr class="border-b border-white/6">
   <td class="px-4 py-3">
-    <a href="/ui/admin/tenants/{{ t.id().as_uuid() }}" class="text-sm font-medium text-hearth-600 hover:text-hearth-700 dark:text-hearth-400 dark:hover:text-hearth-300">{{ t.name() }}</a>
+    <a href="/ui/admin/tenants/{{ t.id().as_uuid() }}" class="text-sm font-medium text-ember-gold hover:text-ember-orange">{{ t.name() }}</a>
   </td>
   <td class="px-4 py-3">
     {% if t.status()|fmt("{:?}") == "Active" %}
-      <span class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">Active</span>
+      <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
     {% else if t.status()|fmt("{:?}") == "Archived" %}
-      <span class="inline-flex items-center rounded-full bg-slate-200 px-2 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-400">Archived</span>
+      <span class="inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-xs font-medium text-steel-fg">Archived</span>
     {% else %}
-      <span class="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">Suspended</span>
+      <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Suspended</span>
     {% endif %}
   </td>
-  <td class="px-4 py-3 text-right text-sm text-slate-500 dark:text-slate-400">
+  <td class="px-4 py-3 text-right text-sm text-graphite-400">
     Configured in hearth.yaml
   </td>
 </tr>
 {% endfor %}
 {% if tenants.is_empty() %}
-<tr><td colspan="3" class="px-4 py-8 text-center text-sm text-slate-400 dark:text-slate-500">No tenants found.</td></tr>
+<tr><td colspan="3" class="px-4 py-8 text-center text-sm text-graphite-500">No tenants found.</td></tr>
 {% endif %}

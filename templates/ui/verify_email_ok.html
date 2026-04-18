@@ -1,18 +1,18 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Email verified{% endblock %}
 {% block body %}
-<div class="rounded-xl bg-white p-8 shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+<div class="rounded-md bg-graphite-800 p-8 ring-1 ring-white/6">
   <div class="mb-4 flex justify-center">
-    <div class="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
-      <svg class="h-6 w-6 text-green-600 dark:text-green-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    <div class="flex h-12 w-12 items-center justify-center rounded-full bg-success/[0.12]">
+      <svg class="h-6 w-6 text-success-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
     </div>
   </div>
 
-  <h1 class="mb-2 text-center text-lg font-semibold text-slate-900 dark:text-white">Email verified</h1>
-  <p class="mb-6 text-center text-sm text-slate-600 dark:text-slate-300">Your account is now active. You can sign in.</p>
+  <h1 class="mb-2 text-center text-lg font-semibold text-graphite-50">Email verified</h1>
+  <p class="mb-6 text-center text-sm text-graphite-300">Your account is now active. You can sign in.</p>
 
   <div class="text-center">
-    <a href="/ui/login" class="inline-block rounded-lg bg-hearth-500 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-hearth-600 focus:outline-none focus:ring-2 focus:ring-hearth-500/50 focus:ring-offset-2 dark:focus:ring-offset-slate-800">Sign in</a>
+    <a href="/ui/login" class="inline-block btn-ember rounded px-6 py-2.5 text-sm font-semibold">Sign in</a>
   </div>
 </div>
 {% endblock %}

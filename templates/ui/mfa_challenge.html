@@ -1,35 +1,35 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · Two-factor authentication{% endblock %}
 {% block body %}
-<div class="rounded-xl bg-white p-8 shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+<div class="rounded-md bg-graphite-800 p-8 ring-1 ring-white/6">
   <div class="mb-6 flex items-center justify-center gap-2.5">
-    <svg class="h-7 w-7 text-hearth-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
-    <span class="text-xl font-semibold text-slate-900 dark:text-white">Hearth</span>
+    <svg class="h-7 w-7 text-ember-gold" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+    <span class="text-xl font-semibold text-graphite-50">Hearth</span>
   </div>
 
-  <h1 class="mb-6 text-center text-lg font-semibold text-slate-900 dark:text-white">Two-factor authentication</h1>
+  <h1 class="mb-6 text-center text-lg font-semibold text-graphite-50">Two-factor authentication</h1>
 
   {% match error %}
     {% when Some with (msg) %}
-      <div class="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm font-medium text-red-800 dark:bg-red-900/30 dark:text-red-400" role="alert">{{ msg }}</div>
+      <div class="mb-4 rounded-lg bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
     {% when None %}
   {% endmatch %}
 
   <form method="post" action="/ui/mfa-challenge" class="space-y-4">
     <div>
-      <label for="code" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Authentication code</label>
+      <label for="code" class="block text-sm font-medium text-graphite-300">Authentication code</label>
       <input type="text" id="code" name="code" required autocomplete="one-time-code" inputmode="numeric" pattern="[A-Za-z0-9]*"
-             class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20"
+             class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 placeholder:text-graphite-500 focus:border-ember-gold focus:outline-none focus:shadow-focus"
              placeholder="Enter 6-digit code">
     </div>
 
     <button type="submit"
-            class="w-full rounded-lg bg-hearth-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-hearth-600 focus:outline-none focus:ring-2 focus:ring-hearth-500/50 focus:ring-offset-2 dark:focus:ring-offset-slate-800">
+            class="w-full btn-ember rounded px-4 py-2.5 text-sm font-semibold">
       Verify
     </button>
   </form>
 
-  <p class="mt-4 text-center text-xs text-slate-500 dark:text-slate-400">
+  <p class="mt-4 text-center text-xs text-graphite-400">
     You can also enter a recovery code if you have lost access to your authenticator app.
   </p>
 </div>

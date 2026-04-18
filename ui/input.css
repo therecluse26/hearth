@@ -2,6 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    background-color: #141418; /* graphite-900 */
+    color: #f5f1e8; /* graphite-050 */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  /* Primary CTA — ember gradient (THEME.md § Colors/Brand) */
+  .btn-ember {
+    background: linear-gradient(135deg, #f5b544 0%, #e8743b 55%, #a8321f 100%);
+    color: #0e0e12; /* graphite-950: text on gradient must be darkest, never white */
+    transition: transform 180ms ease, box-shadow 180ms ease;
+  }
+  .btn-ember:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px -4px rgba(232, 116, 59, 0.35);
+  }
+  .btn-ember:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.15);
+  }
+
+  /* Danger button — muted coral */
+  .btn-danger {
+    background-color: #e05d5d;
+    color: #f5f1e8;
+    transition: background-color 180ms ease;
+  }
+  .btn-danger:hover {
+    background-color: #c94e4e;
+  }
+  .btn-danger:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(224, 93, 93, 0.25);
+  }
+}
+
 /* HTMX indicator: show spinner while request is in flight */
 .htmx-indicator {
   opacity: 0;

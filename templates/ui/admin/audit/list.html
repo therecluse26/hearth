@@ -2,51 +2,51 @@
 {% block title %}Hearth · Audit Log{% endblock %}
 {% block body %}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">Audit log</h1>
+  <h1 class="text-2xl font-semibold text-graphite-50">Audit log</h1>
 </div>
 
 {# Filter form #}
-<div class="mb-6 rounded-xl bg-white p-4 shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+<div class="mb-6 rounded-md bg-graphite-800 p-4 ring-1 ring-white/6">
   <form method="get" action="/ui/admin/audit"
         hx-get="/ui/admin/audit" hx-target="#table-body" hx-swap="innerHTML"
         hx-indicator="#audit-spinner"
         class="flex flex-wrap items-end gap-4">
     <div class="min-w-0 flex-1">
-      <label for="actor" class="block text-xs font-medium text-slate-500 dark:text-slate-400">Actor</label>
+      <label for="actor" class="block text-xs font-medium text-graphite-400">Actor</label>
       <input type="text" id="actor" name="actor" value="{{ form_actor }}" placeholder="user UUID or 'system'"
-             class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+             class="mt-1 block w-full rounded border border-strong bg-graphite-900 px-3 py-1.5 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:ring-2 focus:ring-ember-gold/20">
     </div>
     <div class="min-w-0 flex-1">
-      <label for="action" class="block text-xs font-medium text-slate-500 dark:text-slate-400">Action</label>
+      <label for="action" class="block text-xs font-medium text-graphite-400">Action</label>
       <input type="text" id="action" name="action" value="{{ form_action }}" placeholder="e.g. user_created"
-             class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+             class="mt-1 block w-full rounded border border-strong bg-graphite-900 px-3 py-1.5 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:ring-2 focus:ring-ember-gold/20">
     </div>
     <div class="w-24">
-      <label for="limit" class="block text-xs font-medium text-slate-500 dark:text-slate-400">Limit</label>
+      <label for="limit" class="block text-xs font-medium text-graphite-400">Limit</label>
       <input type="number" id="limit" name="limit" value="{{ form_limit }}" min="1" max="200"
-             class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+             class="mt-1 block w-full rounded border border-strong bg-graphite-900 px-3 py-1.5 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:ring-2 focus:ring-ember-gold/20">
     </div>
     <div class="flex items-center gap-2">
       <button type="submit"
-              class="rounded-lg bg-hearth-500 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-hearth-600 focus:outline-none focus:ring-2 focus:ring-hearth-500/50 focus:ring-offset-2 dark:focus:ring-offset-slate-800">
+              class="btn-ember rounded px-4 py-1.5 text-sm font-semibold">
         Filter
       </button>
       <div id="audit-spinner" class="htmx-indicator">
-        <div class="h-4 w-4 animate-spinner rounded-full border-2 border-slate-300 border-t-hearth-500"></div>
+        <div class="h-4 w-4 animate-spinner rounded-full border-2 border-graphite-600 border-t-ember-gold"></div>
       </div>
     </div>
   </form>
 </div>
 
-<div class="overflow-hidden rounded-xl bg-white shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+<div class="overflow-hidden rounded-md bg-graphite-800 ring-1 ring-white/6">
   <div class="overflow-x-auto">
     <table class="w-full">
       <thead>
-        <tr class="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50">
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Time</th>
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Action</th>
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actor</th>
-          <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Resource</th>
+        <tr class="border-b border-white/10 bg-graphite-850">
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Time</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Action</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Actor</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Resource</th>
         </tr>
       </thead>
       <tbody id="table-body">

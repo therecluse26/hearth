@@ -3,35 +3,35 @@
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <div>
-    <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">{{ user.display_name() }}</h1>
-    <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{{ user.email() }}</p>
+    <h1 class="font-display text-2xl font-medium text-graphite-50">{{ user.display_name() }}</h1>
+    <p class="mt-1 text-sm text-graphite-400">{{ user.email() }}</p>
   </div>
   <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
-     class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
+     class="inline-flex items-center gap-1.5 rounded border border-strong bg-graphite-800 px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
     Edit
   </a>
 </div>
 
 {# Info card #}
-<div class="rounded-xl bg-white p-6 shadow-card ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+<div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
   <dl class="grid gap-4 sm:grid-cols-3">
     <div>
-      <dt class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">ID</dt>
-      <dd class="mt-1"><code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-700 dark:text-slate-300">{{ user.id().as_uuid() }}</code></dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">ID</dt>
+      <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ user.id().as_uuid() }}</code></dd>
     </div>
     <div>
-      <dt class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Email</dt>
-      <dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ user.email() }}</dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Email</dt>
+      <dd class="mt-1 text-sm text-graphite-50">{{ user.email() }}</dd>
     </div>
     <div>
-      <dt class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</dt>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Status</dt>
       <dd class="mt-1">
         {% if user.status()|fmt("{:?}") == "Active" %}
-          <span class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">Active</span>
+          <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
         {% else if user.status()|fmt("{:?}") == "Disabled" %}
-          <span class="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-400">Disabled</span>
+          <span class="inline-flex items-center rounded-full bg-danger/[0.12] px-2 py-0.5 text-xs font-medium text-danger-fg">Disabled</span>
         {% else %}
-          <span class="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">Pending</span>
+          <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Pending</span>
         {% endif %}
       </dd>
     </div>
@@ -39,22 +39,22 @@
 </div>
 
 {# Danger zone #}
-<div class="mt-6 rounded-xl border border-red-200 bg-white p-6 dark:border-red-900/50 dark:bg-slate-800" x-data="{ showDialog: false }">
-  <h2 class="text-base font-semibold text-red-700 dark:text-red-400">Danger zone</h2>
-  <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Deleting this user is permanent and cannot be undone.</p>
+<div class="mt-6 rounded-md border border-danger/30 bg-graphite-800 p-6" x-data="{ showDialog: false }">
+  <h2 class="text-base font-semibold text-danger-fg">Danger zone</h2>
+  <p class="mt-1 text-sm text-graphite-300">Deleting this user is permanent and cannot be undone.</p>
   <button @click="showDialog = true" type="button"
-          class="mt-4 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500/50 focus:ring-offset-2 dark:focus:ring-offset-slate-800">
+          class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
     Delete user
   </button>
 
   {# Confirm dialog #}
   <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
-    <div class="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl dark:bg-slate-800" @click.outside="showDialog = false">
-      <h3 class="text-lg font-semibold text-slate-900 dark:text-white">Delete user?</h3>
-      <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">This will permanently delete <strong>{{ user.display_name() }}</strong>. This action cannot be undone.</p>
+    <div class="w-full max-w-sm rounded-md bg-graphite-800 p-6 shadow-md" @click.outside="showDialog = false">
+      <h3 class="text-lg font-semibold text-graphite-50">Delete user?</h3>
+      <p class="mt-2 text-sm text-graphite-400">This will permanently delete <strong>{{ user.display_name() }}</strong>. This action cannot be undone.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
-                class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
           Cancel
         </button>
         <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/delete">
@@ -64,7 +64,7 @@
             {% when None %}
           {% endmatch %}
           <button type="submit"
-                  class="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-700">
+                  class="btn-danger rounded px-4 py-2 text-sm font-semibold">
             Delete
           </button>
         </form>
