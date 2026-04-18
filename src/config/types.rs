@@ -312,6 +312,13 @@ pub struct MailgunConfig {
 pub struct MailtrapConfig {
     /// `Mailtrap` API key.
     pub api_key: String,
+    /// Mailtrap inbox ID for sandbox/testing mode.
+    ///
+    /// When set, emails are sent to the sandbox API
+    /// (`sandbox.api.mailtrap.io`) instead of the sending API
+    /// (`send.api.mailtrap.io`). Obtain the inbox ID from your
+    /// Mailtrap dashboard URL (e.g. `https://mailtrap.io/inboxes/12345/messages`).
+    pub inbox_id: Option<u64>,
 }
 
 /// Email sender configuration.

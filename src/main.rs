@@ -440,6 +440,7 @@ fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std:
                 UreqTransport,
                 ApiKey::new(mt.api_key.clone()),
                 from.clone(),
+                mt.inbox_id,
             ))
         }
     })
