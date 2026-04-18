@@ -53,6 +53,10 @@ pub(crate) mod templates;
 
 pub use auth::CookieSecret;
 
+/// Default logo URL served from the embedded static assets. Used when
+/// no custom `branding.logo_url` is configured.
+pub const DEFAULT_LOGO_URL: &str = "/ui/static/img/hearth-wide-web.svg";
+
 /// Shared state for the `/ui/*` routes.
 ///
 /// Every field is cheap to clone — engines are `Arc<dyn _>`,
@@ -88,6 +92,9 @@ pub struct WebState {
     /// Used by the setup-sent page to show a "check your server logs"
     /// callout only when emails are not actually being sent.
     pub email_is_log_transport: bool,
+    /// Logo URL injected into every template. Defaults to the built-in
+    /// Hearth SVG when no `branding.logo_url` is configured.
+    pub logo_url: String,
 }
 
 impl WebState {
@@ -111,6 +118,7 @@ impl WebState {
             current_tenant: Arc::new(RwLock::new(None)),
             config_warnings: Vec::new(),
             email_is_log_transport: false,
+            logo_url: DEFAULT_LOGO_URL.to_string(),
         }
     }
 
@@ -125,6 +133,13 @@ impl WebState {
     #[must_use]
     pub fn with_email_log_transport(mut self, val: bool) -> Self {
         self.email_is_log_transport = val;
+        self
+    }
+
+    /// Sets a custom logo URL (overriding the built-in default).
+    #[must_use]
+    pub fn with_logo_url(mut self, url: String) -> Self {
+        self.logo_url = url;
         self
     }
 

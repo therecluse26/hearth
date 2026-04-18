@@ -259,9 +259,17 @@ async fn run_serve(
         identity_config,
     )?);
 
+    // Base URL for email links and onboarding (computed once, reused).
+    let base_url = config.onboarding.base_url.clone().unwrap_or_else(|| {
+        format!(
+            "http://{}:{}",
+            config.server.bind_address, config.server.port
+        )
+    });
+
     // Email sender + service (default: log transport — stderr at WARN level).
     let email_sender: SharedEmailSender = build_email_sender(&config)?;
-    let email_service = Arc::new(build_email_service(email_sender, &config)?);
+    let email_service = Arc::new(build_email_service(email_sender, &config, &base_url)?);
 
     // Ensure a first-run setup token exists BEFORE tenant reconciliation.
     // Reconciliation may auto-create tenants from YAML config, which would
@@ -273,12 +281,6 @@ async fn run_serve(
         PathBuf::from(&config.storage.data_dir)
     };
     if config.onboarding.enabled {
-        let base_url = config.onboarding.base_url.clone().unwrap_or_else(|| {
-            format!(
-                "http://{}:{}",
-                config.server.bind_address, config.server.port
-            )
-        });
         if let Err(e) = onboarding::ensure_setup_token(
             identity_engine.as_ref(),
             &data_dir,
@@ -360,7 +362,14 @@ async fn run_serve(
         Some(Arc::clone(&email_service)),
     )
     .with_config_warnings(config.config_warnings.clone())
-    .with_email_log_transport(config.email.transport == EmailTransport::Log);
+    .with_email_log_transport(config.email.transport == EmailTransport::Log)
+    .with_logo_url(
+        config
+            .branding
+            .logo_url
+            .clone()
+            .unwrap_or_else(|| web::DEFAULT_LOGO_URL.to_string()),
+    );
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
     // Check for TLS configuration
@@ -472,11 +481,25 @@ fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std:
 }
 
 /// Builds the email service (orchestration layer) wrapping a sender.
+///
+/// The logo URL for email templates follows a 3-tier fallback:
+/// 1. `email.branding.logo_url` (explicit email-specific override)
+/// 2. `branding.logo_url` (global branding — must be an absolute URL)
+/// 3. `{base_url}/ui/static/img/hearth-wide-web.svg` (derived from onboarding base URL)
 fn build_email_service(
     sender: SharedEmailSender,
     config: &Config,
+    base_url: &str,
 ) -> Result<EmailService, Box<dyn std::error::Error>> {
-    let branding = config.email.branding.clone().unwrap_or_default();
+    let mut branding = config.email.branding.clone().unwrap_or_default();
+    // Fall back to global branding logo, then to default SVG
+    if branding.logo_url.is_none() {
+        branding.logo_url = config
+            .branding
+            .logo_url
+            .clone()
+            .or_else(|| Some(format!("{base_url}/ui/static/img/hearth-wide-web.svg")));
+    }
     let templates_dir = config
         .email
         .templates_dir

@@ -57,6 +57,7 @@ struct AccountIndexTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl AccountIndexTemplate {
@@ -66,6 +67,7 @@ impl AccountIndexTemplate {
         flash: Option<Flash>,
         password_error: Option<String>,
         is_admin: bool,
+        logo_url: String,
     ) -> Self {
         Self {
             password_error,
@@ -77,6 +79,7 @@ impl AccountIndexTemplate {
             flash,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url,
         }
     }
 }
@@ -94,6 +97,7 @@ pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSessio
         None,
         None,
         admin,
+        state.logo_url.clone(),
     ))
 }
 
@@ -193,6 +197,7 @@ fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &
         None,
         Some(msg.to_string()),
         admin,
+        state.logo_url.clone(),
     ))
 }
 
@@ -209,6 +214,7 @@ fn render_with_flash(state: &Arc<WebState>, session: &UiSession, flash: Flash) -
         Some(flash),
         None,
         admin,
+        state.logo_url.clone(),
     ))
 }
 
@@ -291,6 +297,7 @@ struct TotpEnrollTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl TotpEnrollTemplate {
@@ -304,6 +311,7 @@ impl TotpEnrollTemplate {
         recovery_codes: Vec<String>,
         activation_error: Option<String>,
         is_admin: bool,
+        logo_url: String,
     ) -> Self {
         Self {
             mfa_enabled,
@@ -319,6 +327,7 @@ impl TotpEnrollTemplate {
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url,
         }
     }
 }
@@ -347,6 +356,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             Vec::new(),
             None,
             admin,
+            state.logo_url.clone(),
         ));
     }
 
@@ -365,6 +375,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 enrollment.recovery_codes.as_slice().to_vec(),
                 None,
                 admin,
+                state.logo_url.clone(),
             ))
         }
         Err(IdentityError::MfaAlreadyEnabled) => render(&TotpEnrollTemplate::new(
@@ -376,6 +387,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             Vec::new(),
             None,
             admin,
+            state.logo_url.clone(),
         )),
         Err(e) => {
             tracing::warn!(error = %e, "enroll_totp failed");
@@ -388,6 +400,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 Vec::new(),
                 Some("Unable to start MFA enrolment right now.".to_string()),
                 admin,
+                state.logo_url.clone(),
             ))
         }
     }
@@ -499,6 +512,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
             Vec::new(),
             None,
             admin,
+            state.logo_url.clone(),
         ));
     }
 
@@ -514,6 +528,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
         Vec::new(),
         Some(msg.to_string()),
         admin,
+        state.logo_url.clone(),
     ))
 }
 

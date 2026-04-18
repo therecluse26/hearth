@@ -11,9 +11,10 @@ pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
 pub use types::parse_duration_to_micros;
 pub use types::{
-    AuthConfig, EmailConfig, EmailTransport, MailgunConfig, MailgunRegion, MailtrapConfig,
-    ObservabilityConfig, OnboardingConfig, OperationalConfig, PostmarkConfig, SendgridConfig,
-    ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TenantEmailYaml, TenantYamlConfig,
+    AuthConfig, BrandingConfig, EmailConfig, EmailTransport, MailgunConfig, MailgunRegion,
+    MailtrapConfig, ObservabilityConfig, OnboardingConfig, OperationalConfig, PostmarkConfig,
+    SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TenantEmailYaml,
+    TenantYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -52,6 +53,9 @@ pub struct Config {
     /// First-run onboarding settings.
     #[serde(default)]
     pub onboarding: OnboardingConfig,
+    /// Global branding settings (logo URL).
+    #[serde(default)]
+    pub branding: BrandingConfig,
     /// Global authentication defaults (session TTL, password hashing params).
     #[serde(default)]
     pub auth: AuthConfig,
@@ -136,6 +140,7 @@ impl Config {
             operational: OperationalConfig::default(),
             email: EmailConfig::default(),
             onboarding: OnboardingConfig::default(),
+            branding: BrandingConfig::default(),
             auth: AuthConfig::default(),
             tenants: None,
             dev_mode: true,

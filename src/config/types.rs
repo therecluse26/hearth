@@ -361,6 +361,22 @@ pub struct EmailConfig {
     pub templates_dir: Option<String>,
 }
 
+/// Global branding configuration.
+///
+/// Applies across the admin UI and email templates. When `logo_url` is
+/// `None`, the built-in Hearth SVG logo is used everywhere.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BrandingConfig {
+    /// URL for the logo image. Applies to both the admin UI and email
+    /// templates. When `None`, the built-in Hearth logo is used.
+    ///
+    /// For the UI, a relative path (e.g. `/ui/static/img/hearth-wide-web.svg`)
+    /// is fine. For emails, an absolute URL is required — when the default
+    /// logo is used, the server constructs `{base_url}/ui/static/img/hearth-wide-web.svg`.
+    #[serde(default)]
+    pub logo_url: Option<String>,
+}
+
 /// First-run onboarding configuration.
 ///
 /// When `enabled`, Hearth generates a setup token at startup if no tenant

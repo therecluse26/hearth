@@ -78,6 +78,7 @@ struct UserListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/users`.
@@ -100,6 +101,7 @@ pub async fn admin_users_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_users failed");
@@ -127,10 +129,14 @@ struct UserNewTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/users/new`.
-pub async fn admin_user_create_form(RequireAdmin(session): RequireAdmin) -> Response {
+pub async fn admin_user_create_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+) -> Response {
     render(&UserNewTemplate {
         error: None,
         form_email: String::new(),
@@ -142,6 +148,7 @@ pub async fn admin_user_create_form(RequireAdmin(session): RequireAdmin) -> Resp
         flash: None,
         csrf: session.csrf.clone(),
         narrow: true,
+        logo_url: state.logo_url.clone(),
     })
 }
 
@@ -210,6 +217,7 @@ pub async fn admin_user_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Err(IdentityError::InvalidInput { reason }) => render(&UserNewTemplate {
             error: Some(reason),
@@ -222,6 +230,7 @@ pub async fn admin_user_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "create_user failed");
@@ -236,6 +245,7 @@ pub async fn admin_user_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                logo_url: state.logo_url.clone(),
             })
         }
     }
@@ -258,6 +268,7 @@ struct UserDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/users/:id`.
@@ -281,6 +292,7 @@ pub async fn admin_user_detail(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -311,6 +323,7 @@ struct UserEditTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/users/:id/edit`.
@@ -338,6 +351,7 @@ pub async fn admin_user_edit_form(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -495,6 +509,7 @@ fn render_edit_error(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         None => super::handlers_common::not_found("User not found"),
     }
@@ -550,6 +565,7 @@ struct TenantListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/tenants`.
@@ -569,6 +585,7 @@ pub async fn admin_tenants_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_tenants failed");
@@ -592,6 +609,7 @@ struct TenantDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/tenants/:id`.
@@ -615,6 +633,7 @@ pub async fn admin_tenant_detail(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Tenant not found"),
         Err(e) => {
@@ -724,6 +743,7 @@ struct AppListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/applications`.
@@ -746,6 +766,7 @@ pub async fn admin_apps_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_clients failed");
@@ -773,10 +794,14 @@ struct AppNewTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/applications/new`.
-pub async fn admin_app_create_form(RequireAdmin(session): RequireAdmin) -> Response {
+pub async fn admin_app_create_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+) -> Response {
     render(&AppNewTemplate {
         error: None,
         form_client_name: String::new(),
@@ -789,6 +814,7 @@ pub async fn admin_app_create_form(RequireAdmin(session): RequireAdmin) -> Respo
         flash: None,
         csrf: session.csrf.clone(),
         narrow: true,
+        logo_url: state.logo_url.clone(),
     })
 }
 
@@ -851,6 +877,7 @@ pub async fn admin_app_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                logo_url: state.logo_url.clone(),
             })
         }
         Err(IdentityError::InvalidInput { reason }) => render(&AppNewTemplate {
@@ -865,6 +892,7 @@ pub async fn admin_app_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "register_client failed");
@@ -880,6 +908,7 @@ pub async fn admin_app_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                logo_url: state.logo_url.clone(),
             })
         }
     }
@@ -901,6 +930,7 @@ struct AppDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/applications/:id`.
@@ -925,6 +955,7 @@ pub async fn admin_app_detail(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Application not found"),
         Err(e) => {
@@ -952,6 +983,7 @@ struct AppEditTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/applications/:id/edit`.
@@ -978,6 +1010,7 @@ pub async fn admin_app_edit_form(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Application not found"),
         Err(e) => {
@@ -1133,6 +1166,7 @@ struct SessionListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
@@ -1217,6 +1251,7 @@ pub async fn admin_sessions_list(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: false,
+                logo_url: state.logo_url.clone(),
             })
         }
         Err(e) => {
@@ -1329,13 +1364,16 @@ struct AuditListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// Rows-only partial returned when the audit filter is triggered via HTMX.
 #[derive(Template)]
 #[template(path = "ui/admin/audit/_rows_only.html")]
+#[allow(dead_code)]
 struct AuditRowsTemplate {
     events: Vec<AuditRow>,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/audit`.
@@ -1370,7 +1408,10 @@ pub async fn admin_audit_list(
                 })
                 .collect();
             if htmx.0 {
-                render(&AuditRowsTemplate { events: rows })
+                render(&AuditRowsTemplate {
+                    events: rows,
+                    logo_url: String::new(),
+                })
             } else {
                 render(&AuditListTemplate {
                     events: rows,
@@ -1384,6 +1425,7 @@ pub async fn admin_audit_list(
                     flash: None,
                     csrf: session.csrf.clone(),
                     narrow: false,
+                    logo_url: state.logo_url.clone(),
                 })
             }
         }
@@ -1470,6 +1512,7 @@ struct OrgListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/organizations`.
@@ -1492,6 +1535,7 @@ pub async fn admin_orgs_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_organizations failed");
@@ -1519,10 +1563,14 @@ struct OrgNewTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/organizations/new`.
-pub async fn admin_org_create_form(RequireAdmin(session): RequireAdmin) -> Response {
+pub async fn admin_org_create_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+) -> Response {
     render(&OrgNewTemplate {
         error: None,
         form_name: String::new(),
@@ -1535,6 +1583,7 @@ pub async fn admin_org_create_form(RequireAdmin(session): RequireAdmin) -> Respo
         flash: None,
         csrf: session.csrf.clone(),
         narrow: true,
+        logo_url: state.logo_url.clone(),
     })
 }
 
@@ -1592,6 +1641,7 @@ pub async fn admin_org_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "create_organization failed");
@@ -1607,6 +1657,7 @@ pub async fn admin_org_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                logo_url: state.logo_url.clone(),
             })
         }
     }
@@ -1640,6 +1691,7 @@ struct OrgDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// Query params for org detail page (flash messages via PRG).
@@ -1727,6 +1779,7 @@ pub async fn admin_org_detail(
         flash,
         csrf: session.csrf.clone(),
         narrow: false,
+        logo_url: state.logo_url.clone(),
     })
 }
 
@@ -1750,6 +1803,7 @@ struct OrgEditTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/organizations/:id/edit`.
@@ -1777,6 +1831,7 @@ pub async fn admin_org_edit_form(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Organization not found"),
         Err(e) => {
@@ -2139,9 +2194,11 @@ pub struct UserSearchParams {
 /// Template for HTMX user search result partial.
 #[derive(Template)]
 #[template(path = "ui/admin/organizations/_user_search_results.html")]
+#[allow(dead_code)]
 struct UserSearchResultsTemplate {
     users: Vec<User>,
     query: String,
+    logo_url: String,
 }
 
 /// `GET /ui/admin/api/users/search?q=...` — returns HTML fragment for HTMX.
@@ -2160,7 +2217,11 @@ pub async fn admin_api_user_search(
             .unwrap_or_default()
     };
 
-    render(&UserSearchResultsTemplate { users, query })
+    render(&UserSearchResultsTemplate {
+        users,
+        query,
+        logo_url: String::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -69,6 +69,7 @@ struct SetupTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl SetupTemplate {
@@ -83,6 +84,7 @@ impl SetupTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -102,6 +104,7 @@ struct SetupSentTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl SetupSentTemplate {
@@ -115,6 +118,7 @@ impl SetupSentTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -132,10 +136,11 @@ struct LoginTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl LoginTemplate {
-    fn new(error: Option<String>, return_to: Option<String>) -> Self {
+    fn new(error: Option<String>, return_to: Option<String>, logo_url: String) -> Self {
         Self {
             error,
             return_to,
@@ -146,6 +151,7 @@ impl LoginTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url,
         }
     }
 }
@@ -161,6 +167,7 @@ struct VerifyOkTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl VerifyOkTemplate {
@@ -173,6 +180,7 @@ impl VerifyOkTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -189,6 +197,7 @@ struct DashboardTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
     config_warnings: Vec<crate::config::EnvVarWarning>,
 }
 
@@ -205,6 +214,7 @@ struct VerifyInvalidTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl VerifyInvalidTemplate {
@@ -219,6 +229,7 @@ impl VerifyInvalidTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -236,6 +247,7 @@ struct MfaChallengeTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl MfaChallengeTemplate {
@@ -249,6 +261,7 @@ impl MfaChallengeTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -476,9 +489,12 @@ pub struct LoginQuery {
 }
 
 /// Renders the login form.
-pub async fn login_form(Query(query): Query<LoginQuery>) -> Response {
+pub async fn login_form(
+    State(state): State<Arc<WebState>>,
+    Query(query): Query<LoginQuery>,
+) -> Response {
     let return_to = query.return_to.as_deref().and_then(sanitize_return_to);
-    render(&LoginTemplate::new(None, return_to))
+    render(&LoginTemplate::new(None, return_to, state.logo_url.clone()))
 }
 
 /// Credentials submitted by the login form.
@@ -509,11 +525,13 @@ pub async fn login_submit(
     let email = form.email.trim();
     let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
 
+    let logo_url = state.logo_url.clone();
     let generic_error = || {
         render_status(
             &LoginTemplate::new(
                 Some("Sign-in failed. Check your credentials and try again.".to_string()),
                 return_to.clone(),
+                logo_url.clone(),
             ),
             StatusCode::UNAUTHORIZED,
         )
@@ -593,6 +611,7 @@ pub async fn login_submit(
                                 .to_string(),
                         ),
                         return_to.clone(),
+                        state.logo_url.clone(),
                     ),
                     StatusCode::FORBIDDEN,
                 );
@@ -756,6 +775,7 @@ pub async fn dashboard(
         flash: None,
         csrf: session.csrf.clone(),
         narrow: false,
+        logo_url: state.logo_url.clone(),
         config_warnings,
     })
 }
@@ -883,6 +903,7 @@ struct ForgotPasswordTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl ForgotPasswordTemplate {
@@ -896,6 +917,7 @@ impl ForgotPasswordTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -911,6 +933,7 @@ struct ForgotPasswordSentTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl ForgotPasswordSentTemplate {
@@ -923,6 +946,7 @@ impl ForgotPasswordSentTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -940,6 +964,7 @@ struct ResetPasswordTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl ResetPasswordTemplate {
@@ -954,6 +979,7 @@ impl ResetPasswordTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }
@@ -969,6 +995,7 @@ struct ResetPasswordOkTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    logo_url: String,
 }
 
 impl ResetPasswordOkTemplate {
@@ -981,6 +1008,7 @@ impl ResetPasswordOkTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            logo_url: super::DEFAULT_LOGO_URL.to_string(),
         }
     }
 }

@@ -109,4 +109,5 @@ docker-up:
 ## BuildKit cache mounts persist cargo registry + target dir across builds, so
 ## only the hearth crate recompiles. Works on Linux, macOS, and Windows.
 docker-reload:
+	docker compose down
 	DOCKER_BUILDKIT=1 docker compose up --build -d hearth
