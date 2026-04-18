@@ -1,0 +1,38 @@
+meta {
+  name: Bootstrap
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/admin/bootstrap
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "admin_email": "admin@example.com",
+    "admin_password": "change-me-in-production"
+  }
+}
+
+script:post-response {
+  const status = res.getStatus();
+  if (status >= 200 && status < 300 && res.getBody()) {
+    const body = res.getBody();
+    if (body.access_token)  bru.setEnvVar("accessToken",  body.access_token);
+    if (body.refresh_token) bru.setEnvVar("refreshToken", body.refresh_token);
+    if (body.tenant_id)     bru.setEnvVar("tenantId",     body.tenant_id);
+    if (body.user_id)       bru.setEnvVar("userId",       body.user_id);
+  }
+}

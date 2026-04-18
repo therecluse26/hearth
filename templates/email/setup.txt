@@ -1,0 +1,13 @@
+{{ product_name }} — Setup Required
+
+{{ product_name }} is running for the first time and requires initial setup.
+
+Open the following URL to create the initial admin account:
+
+{{ setup_url }}
+
+This link is valid until setup is complete.
+{% if support_email.is_some() %}
+Need help? Contact {{ support_email.as_deref().unwrap_or_default() }}
+{% endif %}
+{% if custom_footer_text.is_some() %}{{ custom_footer_text.as_deref().unwrap_or_default() }}{% endif %}

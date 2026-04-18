@@ -16,7 +16,7 @@ use crate::storage::fs::{Fs, RealFs};
 use crate::storage::memtable::{Memtable, MemtableConfig, MemtableValue};
 use crate::storage::sst::{SstReader, SstWriter};
 use crate::storage::tiered::{HotTier, TieredConfig};
-use crate::storage::wal::{Wal, WalConfig, WalEntry, WalOperation};
+use crate::storage::wal::{BatchEntry, Wal, WalConfig, WalEntry, WalOperation};
 use crate::storage::{ScanEntry, StorageEngine};
 
 /// Configuration for the embedded storage engine.
@@ -296,6 +296,57 @@ impl StorageEngine for EmbeddedStorageEngine {
         self.hot_tier.invalidate(tenant_id, key);
 
         // 4. Check flush threshold
+        if self.active_memtable.should_flush() {
+            self.trigger_flush()?;
+        }
+
+        Ok(())
+    }
+
+    fn put_batch(
+        &self,
+        tenant_id: &TenantId,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<(), StorageError> {
+        // Trivial case: the caller supplied no work. Treat as a no-op so
+        // higher layers don't need to guard against empty batches.
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Build and append a single WAL record containing all entries.
+        //    The existing `[len][payload][crc32]` framing + `read_all()`'s
+        //    "stop on bad CRC/truncation" recovery policy together give us
+        //    all-or-nothing durability for free.
+        let sub_entries: Vec<BatchEntry> = entries
+            .iter()
+            .map(|(k, v)| BatchEntry {
+                operation: WalOperation::Put,
+                key: k.clone(),
+                value: v.clone(),
+            })
+            .collect();
+        let payload = crate::storage::wal::encode_batch_payload(&sub_entries)?;
+        let wal_entry = WalEntry {
+            timestamp: crate::core::Timestamp::now(),
+            tenant_id: tenant_id.clone(),
+            operation: WalOperation::Batch,
+            key: Vec::new(),
+            value: payload,
+        };
+        self.wal.append(&wal_entry)?;
+
+        // 2. Apply each sub-entry to the in-memory state. If a failure
+        //    occurs here (e.g., memtable mutex poisoned), the WAL record is
+        //    already durable; recovery on the next open will replay the
+        //    batch in full, re-establishing consistency.
+        for (key, value) in entries {
+            self.active_memtable.put(tenant_id, key, value)?;
+            self.hot_tier.invalidate(tenant_id, key);
+        }
+
+        // 3. Single flush check at the tail — the batch may have pushed us
+        //    over the threshold, but we don't need to check per-entry.
         if self.active_memtable.should_flush() {
             self.trigger_flush()?;
         }

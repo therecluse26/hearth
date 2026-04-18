@@ -19,24 +19,48 @@ path = "src/main.rs"
 
 [dependencies]
 arc-swap = "1"
+askama = "0.12"
+pbjson = "0.7"
+pbjson-types = "0.7"
+prost = "0.13"
 argon2 = "0.5"
 axum = "0.8"
 base64 = "0.22"
 bcrypt = "0.16"
+ciborium = "0.2"
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 crossbeam-epoch = "0.9"
+data-encoding = "2"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "service", "server-auto"] }
+hmac = "0.12"
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "rustls-tls",
+    "builder",
+    "hostname",
+] }
 memmap2 = "0.9"
 password-hash = "0.5"
+pbkdf2 = { version = "0.12", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+sha2 = "0.10"
+subtle = "2"
 rand_core = { version = "0.6", features = ["getrandom"] }
 ring = "0.17"
+rustls = "0.23"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
 scrypt = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 tempfile = "3"
+tera = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 ureq = { version = "3", features = ["json"] }
@@ -45,12 +69,23 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
 
+[features]
+# Exposes internal test probes (e.g., backend call counters on the authz
+# engine) for use by the simulation crate. Never enable in production.
+test-hooks = []
+
+[build-dependencies]
+pbjson-build = "0.7"
+prost-build = "0.13"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
+rcgen = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
 
 [[bench]]
 name = "permission_check"
@@ -74,6 +109,22 @@ harness = false
 
 [[bench]]
 name = "tiered_storage"
+harness = false
+
+[[bench]]
+name = "oauth"
+harness = false
+
+[[bench]]
+name = "admin"
+harness = false
+
+[[bench]]
+name = "audit"
+harness = false
+
+[[bench]]
+name = "zanzibar_watch"
 harness = false
 
 [lints.clippy]

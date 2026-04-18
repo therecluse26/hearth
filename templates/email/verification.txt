@@ -1,0 +1,11 @@
+{{ product_name }} — Verify Your Email
+
+Click the link below to verify your email address and activate your account:
+
+{{ verification_url }}
+
+If you didn't request this, you can safely ignore this message.
+{% if support_email.is_some() %}
+Need help? Contact {{ support_email.as_deref().unwrap_or_default() }}
+{% endif %}
+{% if custom_footer_text.is_some() %}{{ custom_footer_text.as_deref().unwrap_or_default() }}{% endif %}

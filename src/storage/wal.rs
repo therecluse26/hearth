@@ -33,6 +33,12 @@ pub enum WalOperation {
     Put,
     /// Remove a key.
     Delete,
+    /// Atomic multi-entry write. The outer `WalEntry`'s `value` field encodes
+    /// the nested list of `(sub_op, key, value)` tuples; its `key` field is
+    /// unused (empty). Readers that do not recognise this opcode must treat
+    /// the record as corrupt and stop replay — preserving the all-or-nothing
+    /// guarantee on downgrade.
+    Batch,
 }
 
 /// A single entry in the write-ahead log.
@@ -65,6 +71,7 @@ impl WalEntry {
         let op_byte: u8 = match self.operation {
             WalOperation::Put => 0,
             WalOperation::Delete => 1,
+            WalOperation::Batch => 2,
         };
         buf.push(op_byte);
 
@@ -121,6 +128,7 @@ impl WalEntry {
         let operation = match data[pos] {
             0 => WalOperation::Put,
             1 => WalOperation::Delete,
+            2 => WalOperation::Batch,
             other => {
                 return Err(StorageError::DeserializationFailed {
                     reason: format!("unknown operation byte: {other}"),
@@ -182,6 +190,144 @@ impl WalEntry {
             value,
         })
     }
+}
+
+/// A single sub-operation inside a `WalOperation::Batch` record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchEntry {
+    /// Put or Delete. Batch is disallowed — batches cannot nest.
+    pub operation: WalOperation,
+    /// Target key within the batch's tenant.
+    pub key: Vec<u8>,
+    /// Value (empty for Delete).
+    pub value: Vec<u8>,
+}
+
+/// Encodes a sequence of batch entries into the `value` field of a batch
+/// `WalEntry`. The outer record's timestamp + tenant apply to every sub-entry.
+///
+/// Layout:
+/// ```text
+/// [4 bytes: count (u32 LE)]
+/// for each entry:
+///   [1 byte: sub-op (0=Put, 1=Delete)]
+///   [4 bytes: key length (u32 LE)]
+///   [N bytes: key]
+///   [4 bytes: value length (u32 LE)]
+///   [M bytes: value]
+/// ```
+pub fn encode_batch_payload(entries: &[BatchEntry]) -> Result<Vec<u8>, StorageError> {
+    let mut buf = Vec::with_capacity(4 + entries.len() * 16);
+    #[allow(clippy::cast_possible_truncation)]
+    let count = entries.len() as u32;
+    buf.extend_from_slice(&count.to_le_bytes());
+    for entry in entries {
+        let sub_op: u8 = match entry.operation {
+            WalOperation::Put => 0,
+            WalOperation::Delete => 1,
+            WalOperation::Batch => {
+                return Err(StorageError::DeserializationFailed {
+                    reason: "batches cannot nest".to_string(),
+                })
+            }
+        };
+        buf.push(sub_op);
+        #[allow(clippy::cast_possible_truncation)]
+        let k_len = entry.key.len() as u32;
+        buf.extend_from_slice(&k_len.to_le_bytes());
+        buf.extend_from_slice(&entry.key);
+        #[allow(clippy::cast_possible_truncation)]
+        let v_len = entry.value.len() as u32;
+        buf.extend_from_slice(&v_len.to_le_bytes());
+        buf.extend_from_slice(&entry.value);
+    }
+    Ok(buf)
+}
+
+/// Inverse of [`encode_batch_payload`]. Returns `Err` for any truncation or
+/// malformed sub-op so the WAL reader falls back to its "stop at corruption"
+/// policy — preserving all-or-nothing semantics.
+pub fn decode_batch_payload(data: &[u8]) -> Result<Vec<BatchEntry>, StorageError> {
+    if data.len() < 4 {
+        return Err(StorageError::DeserializationFailed {
+            reason: "batch payload missing count".to_string(),
+        });
+    }
+    let count_bytes: [u8; 4] =
+        data[0..4]
+            .try_into()
+            .map_err(|_| StorageError::DeserializationFailed {
+                reason: "invalid batch count".to_string(),
+            })?;
+    let count = u32::from_le_bytes(count_bytes) as usize;
+    let mut pos = 4usize;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        if pos + 1 > data.len() {
+            return Err(StorageError::DeserializationFailed {
+                reason: "truncated batch sub-op".to_string(),
+            });
+        }
+        let operation = match data[pos] {
+            0 => WalOperation::Put,
+            1 => WalOperation::Delete,
+            other => {
+                return Err(StorageError::DeserializationFailed {
+                    reason: format!("invalid batch sub-op byte: {other}"),
+                })
+            }
+        };
+        pos += 1;
+
+        if pos + 4 > data.len() {
+            return Err(StorageError::DeserializationFailed {
+                reason: "truncated batch key length".to_string(),
+            });
+        }
+        let k_len_bytes: [u8; 4] =
+            data[pos..pos + 4]
+                .try_into()
+                .map_err(|_| StorageError::DeserializationFailed {
+                    reason: "invalid batch key length".to_string(),
+                })?;
+        let k_len = u32::from_le_bytes(k_len_bytes) as usize;
+        pos += 4;
+        if pos + k_len > data.len() {
+            return Err(StorageError::DeserializationFailed {
+                reason: "truncated batch key".to_string(),
+            });
+        }
+        let key = data[pos..pos + k_len].to_vec();
+        pos += k_len;
+
+        if pos + 4 > data.len() {
+            return Err(StorageError::DeserializationFailed {
+                reason: "truncated batch value length".to_string(),
+            });
+        }
+        let v_len_bytes: [u8; 4] =
+            data[pos..pos + 4]
+                .try_into()
+                .map_err(|_| StorageError::DeserializationFailed {
+                    reason: "invalid batch value length".to_string(),
+                })?;
+        let v_len = u32::from_le_bytes(v_len_bytes) as usize;
+        pos += 4;
+        if pos + v_len > data.len() {
+            return Err(StorageError::DeserializationFailed {
+                reason: "truncated batch value".to_string(),
+            });
+        }
+        let value = data[pos..pos + v_len].to_vec();
+        pos += v_len;
+
+        entries.push(BatchEntry {
+            operation,
+            key,
+            value,
+        });
+    }
+    Ok(entries)
 }
 
 /// Controls when the WAL fsyncs to disk.

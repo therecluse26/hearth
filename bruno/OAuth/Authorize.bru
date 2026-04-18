@@ -1,0 +1,38 @@
+meta {
+  name: Authorize
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/authorize
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "client_id": "{{clientId}}",
+    "redirect_uri": "http://localhost:3000/callback",
+    "response_type": "code",
+    "scope": "openid profile email",
+    "state": "random-state-value",
+    "code_challenge": "code-challenge-value",
+    "code_challenge_method": "S256",
+    "username": "alice@example.com",
+    "password": "hunter2"
+  }
+}
+
+script:post-response {
+  const status = res.getStatus();
+  if (status >= 200 && status < 300 && res.getBody()) {
+    const body = res.getBody();
+    if (body.code) bru.setEnvVar("authCode", body.code);
+  }
+}

@@ -1,0 +1,85 @@
+# compose.yaml — local development stack.
+#
+# Two workflows:
+#
+#   make docker-up       # first time — builds the Docker image + starts stack
+#   make docker-reload   # after code changes — local build + instant restart
+#
+# compose.dev.yaml (loaded by `docker-reload`) bind-mounts the host-built
+# binary over the image's copy, skipping the Docker build (~15 s vs minutes).
+#
+# Once healthy:
+#   - Hearth:     http://localhost:8420  (health at /health)
+#   - Mailpit UI: http://localhost:8025
+#
+# Hearth config lives in the project-root `hearth.yaml` and is mounted
+# read-only at `/etc/hearth/hearth.yaml`. Application-level knobs belong
+# there, not in this compose file — see README "Running with Docker Compose"
+# for details.
+
+services:
+  hearth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hearth:dev
+    container_name: hearth
+    # Mailpit is dormant today (email transport is `log`), but we declare the
+    # dependency so the compose DNS alias `mailpit` exists by the time Hearth
+    # boots. When SMTP transport lands, switch `service_started` →
+    # `service_healthy` so Hearth waits for Mailpit's /readyz to pass.
+    depends_on:
+      mailpit:
+        condition: service_started
+    ports:
+      - "8420:8420"
+    volumes:
+      # Named volume keeps WAL + SSTs across `docker compose down`. Use
+      # `docker compose down -v` to wipe.
+      - hearth_data:/var/lib/hearth
+      # Read-only bind for the config file — edit on the host, SIGHUP on
+      # the container (or `docker compose restart hearth`) to reload.
+      - ./hearth.yaml:/etc/hearth/hearth.yaml:ro
+    # Pass host .env vars (e.g. MAILTRAP_API_KEY) into the container.
+    # `environment` values below override duplicates from the file.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # tracing-subscriber honours RUST_LOG; the YAML sets log_level for the
+      # app itself, but env-var filters give per-module overrides for debug.
+      RUST_LOG: "info,hearth=debug"
+      # Inside Docker we must bind all interfaces; local dev defaults to
+      # 127.0.0.1 via the ${HEARTH_BIND_ADDRESS:-127.0.0.1} in hearth.yaml.
+      HEARTH_BIND_ADDRESS: "0.0.0.0"
+    restart: unless-stopped
+    # Uses the same endpoint as Kubernetes readiness probes.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8420/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  mailpit:
+    # Dev-only SMTP sink + web UI. Captures every message Hearth sends and
+    # renders it at http://localhost:8025. The SMTP listener on :1025 is
+    # intentionally NOT published to the host — only reachable from inside
+    # the compose network as `mailpit:1025`.
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    ports:
+      - "8025:8025"       # web UI
+      # 1025 deliberately unpublished — see note above
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  # Single named volume persists WAL, SSTs, signing keys, indexes — everything
+  # Hearth writes under `storage.data_dir`. Destroying it is the equivalent of
+  # factory-resetting the instance.
+  hearth_data:

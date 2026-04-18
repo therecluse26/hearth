@@ -7,9 +7,15 @@
 use std::fmt;
 
 use argon2::Argon2;
+use base64::engine::general_purpose::STANDARD_NO_PAD;
+use base64::Engine as _;
+use hmac::Hmac;
 use password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use pbkdf2::pbkdf2;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::identity::error::IdentityError;
@@ -59,6 +65,10 @@ pub enum PasswordAlgorithm {
     Bcrypt,
     /// Scrypt — supported for migration from legacy systems.
     Scrypt,
+    /// PBKDF2-HMAC-SHA256 — supported for migration from Keycloak and
+    /// similar legacy systems. Verification only: new credentials are
+    /// always hashed with Argon2id.
+    Pbkdf2Sha256,
 }
 
 /// A stored password credential.
@@ -187,6 +197,13 @@ pub(crate) fn verify_hash(
         return Ok(bcrypt::verify(password.as_bytes(), hash_str).unwrap_or(false));
     }
 
+    // PBKDF2-SHA256: `$pbkdf2-sha256$i=N$<salt-b64>$<hash-b64>`.
+    // The `password-hash` crate does not ship a PBKDF2 verifier, so we
+    // parse the PHC string manually and compare in constant time.
+    if hash_str.starts_with("$pbkdf2-sha256$") {
+        return verify_pbkdf2_sha256(password.as_bytes(), hash_str);
+    }
+
     // Parse as PHC string for argon2id and scrypt
     let parsed = PasswordHash::new(hash_str).map_err(|e| IdentityError::InvalidInput {
         reason: format!("invalid password hash format: {e}"),
@@ -207,6 +224,103 @@ pub(crate) fn verify_hash(
             reason: format!("unsupported password hash algorithm: {alg_id}"),
         })
     }
+}
+
+/// Verifies a password against a PBKDF2-HMAC-SHA256 PHC string.
+///
+/// Format: `$pbkdf2-sha256$i=<iterations>$<salt-b64>$<hash-b64>`.
+///
+/// Base64 encoding is the PHC standard-no-padding variant. The hash
+/// length in the PHC string determines how many derived bytes to
+/// compute; this matches Keycloak's default of 32 bytes but also
+/// supports other sizes produced by alternative exporters.
+fn verify_pbkdf2_sha256(password: &[u8], hash_str: &str) -> Result<bool, IdentityError> {
+    let mut parts = hash_str.split('$');
+    // The PHC string starts with an empty segment because of the
+    // leading '$'; skip it, then consume the four payload segments.
+    let _empty = parts.next();
+    let algo = parts.next().ok_or_else(|| IdentityError::InvalidInput {
+        reason: "invalid pbkdf2 hash: missing algorithm".to_string(),
+    })?;
+    if algo != "pbkdf2-sha256" {
+        return Err(IdentityError::InvalidInput {
+            reason: format!("unexpected pbkdf2 variant: {algo}"),
+        });
+    }
+    let params = parts.next().ok_or_else(|| IdentityError::InvalidInput {
+        reason: "invalid pbkdf2 hash: missing parameters".to_string(),
+    })?;
+    let iterations = params
+        .strip_prefix("i=")
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or_else(|| IdentityError::InvalidInput {
+            reason: format!("invalid pbkdf2 iterations: {params}"),
+        })?;
+    if iterations == 0 {
+        return Err(IdentityError::InvalidInput {
+            reason: "pbkdf2 iterations must be non-zero".to_string(),
+        });
+    }
+    let salt_b64 = parts.next().ok_or_else(|| IdentityError::InvalidInput {
+        reason: "invalid pbkdf2 hash: missing salt".to_string(),
+    })?;
+    let hash_b64 = parts.next().ok_or_else(|| IdentityError::InvalidInput {
+        reason: "invalid pbkdf2 hash: missing hash".to_string(),
+    })?;
+    if parts.next().is_some() {
+        return Err(IdentityError::InvalidInput {
+            reason: "invalid pbkdf2 hash: trailing data".to_string(),
+        });
+    }
+
+    let salt = STANDARD_NO_PAD
+        .decode(salt_b64)
+        .map_err(|e| IdentityError::InvalidInput {
+            reason: format!("invalid pbkdf2 salt: {e}"),
+        })?;
+    let expected = STANDARD_NO_PAD
+        .decode(hash_b64)
+        .map_err(|e| IdentityError::InvalidInput {
+            reason: format!("invalid pbkdf2 hash: {e}"),
+        })?;
+
+    let mut derived = vec![0u8; expected.len()];
+    pbkdf2::<Hmac<Sha256>>(password, &salt, iterations, &mut derived).map_err(|e| {
+        IdentityError::InvalidInput {
+            reason: format!("pbkdf2 derivation failed: {e}"),
+        }
+    })?;
+
+    // Constant-time equality — prevents timing oracles on hash comparison.
+    Ok(derived.ct_eq(&expected).into())
+}
+
+/// Hashes a raw secret (e.g., client secret) with Argon2id.
+///
+/// Returns the PHC-formatted hash string. Used for confidential OAuth
+/// client authentication where we don't have a `CleartextPassword` wrapper.
+pub(crate) fn hash_raw_secret(
+    secret: &[u8],
+    config: &CredentialConfig,
+) -> Result<String, IdentityError> {
+    let argon2 = config.to_argon2()?;
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = argon2
+        .hash_password(secret, &salt)
+        .map_err(|e| IdentityError::InvalidInput {
+            reason: format!("secret hashing failed: {e}"),
+        })?;
+    Ok(hash.to_string())
+}
+
+/// Verifies a raw secret against an Argon2id hash string.
+///
+/// Returns `true` if the secret matches the hash.
+pub(crate) fn verify_raw_secret(secret: &[u8], hash_str: &str) -> Result<bool, IdentityError> {
+    let parsed = PasswordHash::new(hash_str).map_err(|e| IdentityError::InvalidInput {
+        reason: format!("invalid hash format: {e}"),
+    })?;
+    Ok(Argon2::default().verify_password(secret, &parsed).is_ok())
 }
 
 /// Pre-computes a dummy hash for timing-oracle prevention.
@@ -381,6 +495,65 @@ mod tests {
             !result,
             "wrong password should not verify against scrypt hash"
         );
+    }
+
+    // ===== PBKDF2-SHA256 verification (migration path) =====
+
+    /// Helper: builds a PBKDF2-SHA256 PHC string for a given password.
+    fn build_pbkdf2_phc(password: &[u8], iterations: u32, salt: &[u8]) -> String {
+        let mut derived = [0u8; 32];
+        pbkdf2::<Hmac<Sha256>>(password, salt, iterations, &mut derived)
+            .expect("pbkdf2 derivation");
+        format!(
+            "$pbkdf2-sha256$i={iterations}${}${}",
+            STANDARD_NO_PAD.encode(salt),
+            STANDARD_NO_PAD.encode(derived),
+        )
+    }
+
+    #[test]
+    fn verify_pbkdf2_sha256_correct_password() {
+        // 27,500 is Keycloak's historical default; we use a smaller value
+        // here purely for test speed. The verifier is identical either way.
+        let phc = build_pbkdf2_phc(b"keycloak-password", 1000, b"keycloak-salt-16");
+        let pw = CleartextPassword::from_string("keycloak-password".to_string());
+        assert!(
+            verify_hash(&pw, &phc).expect("verify"),
+            "should accept correct password"
+        );
+    }
+
+    #[test]
+    fn verify_pbkdf2_sha256_wrong_password() {
+        let phc = build_pbkdf2_phc(b"keycloak-password", 1000, b"keycloak-salt-16");
+        let wrong = CleartextPassword::from_string("different".to_string());
+        assert!(
+            !verify_hash(&wrong, &phc).expect("verify"),
+            "should reject wrong password"
+        );
+    }
+
+    #[test]
+    fn verify_pbkdf2_sha256_via_stored_credential() {
+        // Round-trips through the public `verify_password` entry point so
+        // a Keycloak-migrated credential works end-to-end without any
+        // special-casing at the engine layer.
+        let phc = build_pbkdf2_phc(b"migrated-password", 1000, b"stable-salt-abc");
+        let cred = StoredCredential {
+            algorithm: PasswordAlgorithm::Pbkdf2Sha256,
+            hash: phc,
+            created_at: 1_000_000,
+        };
+        let pw = CleartextPassword::from_string("migrated-password".to_string());
+        assert!(verify_password(&pw, &cred).expect("verify"));
+    }
+
+    #[test]
+    fn verify_pbkdf2_sha256_rejects_malformed_phc() {
+        let pw = CleartextPassword::from_string("x".to_string());
+        // Missing iterations parameter
+        let bad = "$pbkdf2-sha256$i=$c2FsdA$aGFzaA";
+        assert!(verify_hash(&pw, bad).is_err(), "malformed PHC must error");
     }
 
     // ===== Scenario 4 (P1): Custom params =====

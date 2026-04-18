@@ -3,13 +3,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use hearth::config::Config;
+use hearth::audit::EmbeddedAuditEngine;
+use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
+use hearth::config::{Config, EmailTransport, EnvVarWarningKind};
 use hearth::core::{Clock, SystemClock};
-use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
+use hearth::identity::email::mailgun::MailgunRegion;
+use hearth::identity::email::{
+    smtp_sender_from_config, ApiKey, EmailService, LoggingEmailSender, MailgunEmailSender,
+    MailtrapEmailSender, PostmarkEmailSender, SendgridEmailSender, SharedEmailSender,
+};
+use hearth::identity::onboarding::{self, OnboardingService};
+use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::protocol::http::{self, AppState};
+use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
+use hearth::protocol::web::{self, WebState};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Hearth — a purpose-built identity database.
@@ -50,6 +60,39 @@ enum Commands {
     App {
         #[command(subcommand)]
         action: AppAction,
+    },
+    /// Import data from another identity provider.
+    Migrate {
+        #[command(subcommand)]
+        source: MigrateSource,
+    },
+}
+
+/// Supported migration sources.
+#[derive(Subcommand)]
+enum MigrateSource {
+    /// Import a Keycloak realm export (JSON).
+    Keycloak {
+        /// Path to a Keycloak realm export file (JSON).
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Data directory of the target Hearth store. Required unless
+        /// `--dry-run` is set; the store will be created if it does not
+        /// exist.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Optional tenant UUID to import into. When omitted, the realm
+        /// `id` field from the export is used; if that is also missing
+        /// or malformed, a fresh UUID is generated.
+        #[arg(long)]
+        tenant: Option<String>,
+
+        /// Validate the export and print the report without writing any
+        /// data. `--data-dir` is not required in this mode.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -115,10 +158,26 @@ async fn main() {
                 }
             }
         },
+        Commands::Migrate { source } => match source {
+            MigrateSource::Keycloak {
+                file,
+                data_dir,
+                tenant,
+                dry_run,
+            } => {
+                if let Err(e) =
+                    run_migrate_keycloak(&file, data_dir.as_deref(), tenant.as_deref(), dry_run)
+                {
+                    error!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        },
     }
 }
 
 /// Runs the `hearth serve` command.
+#[allow(clippy::too_many_lines)]
 async fn run_serve(
     dev: bool,
     config_path: Option<PathBuf>,
@@ -136,10 +195,32 @@ async fn run_serve(
         config.server.bind_address = bind;
     }
 
+    // Safety-net: print config warnings to stderr before tracing initialises
+    // so they are visible even if the subscriber setup fails.
+    for w in &config.config_warnings {
+        eprintln!(
+            "[hearth] config warning: {} — {}",
+            w.var_name,
+            w.kind_label()
+        );
+    }
+
     // Initialize tracing
     let filter = EnvFilter::try_new(&config.observability.log_level)
         .unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // Log config warnings through the structured tracing pipeline
+    for w in &config.config_warnings {
+        match w.kind {
+            EnvVarWarningKind::Missing => {
+                warn!(var = %w.var_name, "config references unset environment variable — substituted empty string");
+            }
+            EnvVarWarningKind::Empty => {
+                warn!(var = %w.var_name, "environment variable is set but empty — this is likely a misconfiguration");
+            }
+        }
+    }
 
     info!(
         dev_mode = config.dev_mode,
@@ -172,33 +253,287 @@ async fn run_serve(
         IdentityConfig::default()
     };
 
-    let identity_engine = EmbeddedIdentityEngine::new(
+    let identity_engine: Arc<dyn IdentityEngine> = Arc::new(EmbeddedIdentityEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+        identity_config,
+    )?);
+
+    let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        AuthzConfig::default(),
+    ));
+
+    let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         clock,
-        identity_config,
-    )?;
+    ));
 
-    let app_state = Arc::new(AppState {
-        identity: Arc::new(identity_engine),
-    });
+    // Email sender + service (default: log transport — stderr at WARN level).
+    let email_sender: SharedEmailSender = build_email_sender(&config)?;
+    let email_service = Arc::new(build_email_service(email_sender, &config)?);
+
+    // Ensure a first-run setup token exists iff no tenant is configured.
+    // The resolved data-dir differs between dev (tempdir) and prod; for
+    // dev mode we place the token under the OS temp dir so the startup
+    // log URL still works against `cargo run -- serve --dev`.
+    let data_dir: PathBuf = if config.dev_mode {
+        std::env::temp_dir().join("hearth-dev-onboarding")
+    } else {
+        PathBuf::from(&config.storage.data_dir)
+    };
+    if config.onboarding.enabled {
+        let base_url = config.onboarding.base_url.clone().unwrap_or_else(|| {
+            format!(
+                "http://{}:{}",
+                config.server.bind_address, config.server.port
+            )
+        });
+        if let Err(e) = onboarding::ensure_setup_token(
+            identity_engine.as_ref(),
+            &data_dir,
+            Some(&base_url),
+            Some(email_service.as_ref()),
+            config.onboarding.notification_email.as_deref(),
+        ) {
+            error!(error = %e, "failed to ensure setup token; onboarding will be unavailable");
+        }
+    }
+
+    let onboarding_service = Arc::new(OnboardingService::new(
+        Arc::clone(&identity_engine),
+        Arc::clone(&authz_engine),
+        Arc::clone(&email_service),
+        data_dir.clone(),
+    ));
+
+    let app_state = if config.dev_mode {
+        Arc::new(AppState::new_dev(
+            Arc::clone(&identity_engine),
+            Arc::clone(&authz_engine),
+            Arc::clone(&audit_engine),
+        ))
+    } else {
+        Arc::new(AppState::new(
+            Arc::clone(&identity_engine),
+            Arc::clone(&authz_engine),
+            Arc::clone(&audit_engine),
+        ))
+    };
 
     // Build server address
     let addr: SocketAddr = format!("{}:{}", config.server.bind_address, config.server.port)
         .parse()
         .map_err(|e| format!("invalid bind address: {e}"))?;
 
+    // Compose JSON API router + web UI router.
+    let web_state = WebState::new(
+        Arc::clone(&identity_engine),
+        Arc::clone(&authz_engine),
+        Arc::clone(&audit_engine),
+        Arc::clone(&onboarding_service),
+        web::CookieSecret::random(),
+        Some(Arc::clone(&email_service)),
+    )
+    .with_config_warnings(config.config_warnings.clone());
+    let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
+
+    // Check for TLS configuration
+    if let (Some(cert_path), Some(key_path)) =
+        (&config.server.tls_cert_path, &config.server.tls_key_path)
+    {
+        run_serve_tls(addr, &config, app_router, cert_path, key_path).await?;
+    } else {
+        let shutdown = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install Ctrl+C handler");
+            info!("shutdown signal received, stopping server");
+        };
+        http::serve_router(addr, app_router, shutdown).await?;
+    }
+
+    info!("Hearth server stopped");
+    Ok(())
+}
+
+/// Builds the outbound email sender from configuration.
+///
+/// Returns the appropriate transport adapter based on the configured
+/// `email.transport`. Fails if the transport rejects the configuration
+/// at startup — better to fail early than on the first send attempt.
+fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std::error::Error>> {
+    use hearth::identity::email::http::UreqTransport;
+
+    Ok(match config.email.transport {
+        EmailTransport::Log => Arc::new(LoggingEmailSender::new()),
+        EmailTransport::Smtp => Arc::new(smtp_sender_from_config(&config.email)?),
+        EmailTransport::Sendgrid => {
+            let sg = config
+                .email
+                .sendgrid
+                .as_ref()
+                .ok_or("email.sendgrid block is required for sendgrid transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for sendgrid transport")?;
+            Arc::new(SendgridEmailSender::new(
+                UreqTransport,
+                ApiKey::new(sg.api_key.clone()),
+                from.clone(),
+            ))
+        }
+        EmailTransport::Postmark => {
+            let pm = config
+                .email
+                .postmark
+                .as_ref()
+                .ok_or("email.postmark block is required for postmark transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for postmark transport")?;
+            Arc::new(PostmarkEmailSender::new(
+                UreqTransport,
+                ApiKey::new(pm.server_token.clone()),
+                from.clone(),
+            ))
+        }
+        EmailTransport::Mailgun => {
+            let mg = config
+                .email
+                .mailgun
+                .as_ref()
+                .ok_or("email.mailgun block is required for mailgun transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for mailgun transport")?;
+            let region = match mg.region {
+                hearth::config::MailgunRegion::Us => MailgunRegion::Us,
+                hearth::config::MailgunRegion::Eu => MailgunRegion::Eu,
+            };
+            Arc::new(MailgunEmailSender::new(
+                UreqTransport,
+                ApiKey::new(mg.api_key.clone()),
+                mg.domain.clone(),
+                from.clone(),
+                region,
+            ))
+        }
+        EmailTransport::Mailtrap => {
+            let mt = config
+                .email
+                .mailtrap
+                .as_ref()
+                .ok_or("email.mailtrap block is required for mailtrap transport")?;
+            let from = config
+                .email
+                .from
+                .as_ref()
+                .ok_or("email.from is required for mailtrap transport")?;
+            Arc::new(MailtrapEmailSender::new(
+                UreqTransport,
+                ApiKey::new(mt.api_key.clone()),
+                from.clone(),
+                mt.inbox_id,
+            ))
+        }
+    })
+}
+
+/// Builds the email service (orchestration layer) wrapping a sender.
+fn build_email_service(
+    sender: SharedEmailSender,
+    config: &Config,
+) -> Result<EmailService, Box<dyn std::error::Error>> {
+    let branding = config.email.branding.clone().unwrap_or_default();
+    let templates_dir = config
+        .email
+        .templates_dir
+        .as_ref()
+        .map(std::path::Path::new);
+    Ok(EmailService::new(sender, branding, templates_dir)?)
+}
+
+/// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert reload.
+async fn run_serve_tls(
+    addr: SocketAddr,
+    config: &Config,
+    app_router: axum::Router,
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reloadable = ReloadableTlsConfig::load(cert_path.to_path_buf(), key_path.to_path_buf())
+        .map_err(|e| format!("failed to load TLS certificates: {e}"))?;
+
+    let params = TlsConfigParams {
+        resolver: Arc::new(reloadable.resolver()),
+        client_ca_path: config.server.tls_client_ca_path.clone(),
+        require_client_cert: config.server.tls_require_client_cert,
+    };
+    let server_config =
+        build_server_config(params).map_err(|e| format!("failed to build TLS config: {e}"))?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+
+    // Spawn HTTP→HTTPS redirect listener
+    let redirect_port = if config.server.port == 443 {
+        80
+    } else {
+        config.server.port.saturating_sub(1)
+    };
+    let redirect_addr: SocketAddr = format!("{}:{redirect_port}", config.server.bind_address)
+        .parse()
+        .map_err(|e| format!("invalid redirect bind address: {e}"))?;
+    let https_port = config.server.port;
+    let mut redirect_shutdown_rx = shutdown_rx.clone();
+    let redirect_handle = tokio::spawn(async move {
+        let shutdown = async move {
+            let _ = redirect_shutdown_rx.changed().await;
+        };
+        if let Err(e) = http::serve_redirect(redirect_addr, https_port, shutdown).await {
+            warn!(error = %e, "HTTP redirect server failed");
+        }
+    });
+
+    // Register SIGHUP handler for cert hot-reload
+    #[cfg(unix)]
+    {
+        let reloadable = Arc::new(reloadable);
+        let reloadable_clone = Arc::clone(&reloadable);
+        tokio::spawn(async move {
+            let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("failed to register SIGHUP handler");
+            loop {
+                sig.recv().await;
+                info!("SIGHUP received, reloading TLS certificates");
+                if let Err(e) = reloadable_clone.reload() {
+                    error!(error = %e, "TLS certificate reload failed, keeping old cert");
+                }
+            }
+        });
+    }
+
     // Set up graceful shutdown on Ctrl+C
-    let shutdown = async {
+    tokio::spawn(async move {
         tokio::signal::ctrl_c()
             .await
             .expect("failed to install Ctrl+C handler");
         info!("shutdown signal received, stopping server");
-    };
+        drop(shutdown_tx);
+    });
 
-    // Start HTTP server
-    http::serve(addr, app_state, shutdown).await?;
+    // Start HTTPS server
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    http::serve_tls_router(listener, app_router, acceptor, shutdown_rx).await?;
 
-    info!("Hearth server stopped");
+    let _ = redirect_handle.await;
     Ok(())
 }
 
@@ -257,4 +592,115 @@ fn run_app_create(
 
     println!("{response}");
     Ok(())
+}
+
+/// Runs the `hearth migrate keycloak` command.
+///
+/// Parses a Keycloak realm export and imports its tenant, users, clients,
+/// and realm roles. In dry-run mode no state is written; otherwise a data
+/// directory is required.
+fn run_migrate_keycloak(
+    file: &std::path::Path,
+    data_dir: Option<&std::path::Path>,
+    tenant: Option<&str>,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use hearth::core::TenantId;
+    use hearth::identity::migration::{ImportOptions, KeycloakImporter, KeycloakRealmExport};
+    use uuid::Uuid;
+
+    let bytes = std::fs::read(file)?;
+    let export: KeycloakRealmExport = KeycloakImporter::parse(&bytes)?;
+
+    let requested_tenant = tenant
+        .map(|s| -> Result<TenantId, Box<dyn std::error::Error>> {
+            let uuid = Uuid::parse_str(s).map_err(|e| format!("invalid --tenant UUID: {e}"))?;
+            Ok(TenantId::new(uuid))
+        })
+        .transpose()?;
+
+    if dry_run {
+        // Dry-run uses a temporary store so the importer still exercises
+        // its full validation path (parsing, tuple shape checks) without
+        // touching the user's data directory.
+        let temp_dir = tempfile::tempdir()?;
+        let storage_config = StorageConfig::dev(temp_dir.path().to_path_buf());
+        let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+        let (identity, authz) = build_engines(&storage, true)?;
+        let importer = KeycloakImporter::new(identity, authz);
+        let report =
+            importer.import_realm(&export, requested_tenant, &ImportOptions { dry_run: true })?;
+        print_migration_report(&report);
+        return Ok(());
+    }
+
+    let data_dir = data_dir.ok_or(
+        "--data-dir is required for a real migration (use --dry-run to validate without writing)",
+    )?;
+    std::fs::create_dir_all(data_dir)?;
+    let storage_config = StorageConfig::dev(data_dir.to_path_buf());
+    let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+    let (identity, authz) = build_engines(&storage, false)?;
+    let importer = KeycloakImporter::new(identity, authz);
+
+    let report =
+        importer.import_realm(&export, requested_tenant, &ImportOptions { dry_run: false })?;
+    print_migration_report(&report);
+    Ok(())
+}
+
+/// Identity + authz pair returned by [`build_engines`].
+type AdminEngines = (
+    Arc<dyn hearth::identity::IdentityEngine>,
+    Arc<dyn hearth::authz::AuthorizationEngine>,
+);
+
+/// Builds the identity + authz engine pair used by one-shot admin
+/// commands (migrations, etc.). Keeps the wiring in one place.
+fn build_engines(
+    storage: &Arc<EmbeddedStorageEngine>,
+    dev_mode: bool,
+) -> Result<AdminEngines, Box<dyn std::error::Error>> {
+    let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let identity_config = if dev_mode {
+        IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        }
+    } else {
+        IdentityConfig::default()
+    };
+    let identity = Arc::new(EmbeddedIdentityEngine::new(
+        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        clock,
+        identity_config,
+    )?) as Arc<dyn hearth::identity::IdentityEngine>;
+    let authz = Arc::new(EmbeddedAuthzEngine::new(
+        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        AuthzConfig::default(),
+    )) as Arc<dyn hearth::authz::AuthorizationEngine>;
+    Ok((identity, authz))
+}
+
+/// Prints a `MigrationReport` as a human-readable summary.
+fn print_migration_report(report: &hearth::identity::MigrationReport) {
+    println!("Migration summary:");
+    if let Some(tid) = &report.tenant_id {
+        println!("  tenant:                {tid}");
+    } else {
+        println!("  tenant:                <none>");
+    }
+    println!("  users imported:        {}", report.users_imported);
+    println!(
+        "  users w/ skipped cred: {}",
+        report.users_with_skipped_credentials
+    );
+    println!("  clients imported:      {}", report.clients_imported);
+    println!("  tuples written:        {}", report.tuples_written);
+    if !report.warnings.is_empty() {
+        println!("Warnings:");
+        for w in &report.warnings {
+            println!("  - {w}");
+        }
+    }
 }

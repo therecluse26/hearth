@@ -15,6 +15,10 @@ pub(crate) const PRESENCE_MARKER: &[u8] = &[0x01];
 const FWD_PREFIX: &str = "fwd:";
 /// Reverse index prefix.
 const REV_PREFIX: &str = "rev:";
+/// Key for namespace configuration.
+const NAMESPACE_CONFIG_KEY: &[u8] = b"ns:config";
+/// Prefix for watch event keys.
+const WATCH_EVT_PREFIX: &str = "watch:evt:";
 
 /// Encodes a subject reference to its string form for key embedding.
 fn encode_subject(subject: &SubjectRef) -> String {
@@ -80,6 +84,25 @@ pub(crate) fn encode_reverse(object: &ObjectRef, relation: &str, subject: &Subje
         object.object_id()
     )
     .into_bytes()
+}
+
+/// Returns the storage key for the namespace configuration.
+pub(crate) fn encode_namespace_config() -> &'static [u8] {
+    NAMESPACE_CONFIG_KEY
+}
+
+/// Encodes a watch event key with zero-padded sequence and event index.
+///
+/// Format: `watch:evt:{sequence:020}:{index:05}` — zero-padded for
+/// lexicographic ordering. Multiple events in a single `write_tuples`
+/// batch share the same sequence but have different indexes.
+pub(crate) fn encode_watch_event(sequence: u64, index: u32) -> Vec<u8> {
+    format!("{WATCH_EVT_PREFIX}{sequence:020}:{index:05}").into_bytes()
+}
+
+/// Returns the prefix for scanning all watch events.
+pub(crate) fn encode_watch_event_prefix() -> &'static [u8] {
+    WATCH_EVT_PREFIX.as_bytes()
 }
 
 /// Decoded subject from a forward index scan entry.

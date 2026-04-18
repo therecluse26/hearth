@@ -1,0 +1,78 @@
+# .dockerignore — keep the build context small.
+#
+# The full repo including `target/` is 2-3 GB; this trims it to well under
+# 2 MB so `docker build` spends <1 s streaming the context and can immediately
+# start compiling.
+#
+# Rule of thumb: if the file can be regenerated from source (build output,
+# coverage reports, proptest regressions) or is host-specific (.git, IDE
+# metadata, OS cruft), exclude it.
+
+# Rust build output
+target/
+**/target/
+
+# Generated protobuf code — recreated by build.rs inside the container
+src/protocol/generated/
+
+# Proptest shrunk regressions
+**/proptest-regressions/
+
+# Git and GitHub metadata
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Reflex / search indexes
+.reflex/
+
+# Docs and specs (not needed to build the binary)
+docs/
+CONTRIBUTING.md
+
+# Bruno API request collection — dev-time only
+bruno/
+
+# SDK build artefacts (sources are kept so SDK tests could run via docker
+# buildkit secondary stages in future; dist/build/node_modules never needed)
+sdks/*/node_modules/
+sdks/*/dist/
+sdks/*/build/
+sdks/*/.next/
+sdks/go/bin/
+
+# Local runtime state — never ship a dev data dir into the image
+data/
+*.wal
+
+# Fuzz corpus / artefacts
+fuzz/artifacts/
+fuzz/corpus/
+
+# IDE / OS cruft
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Coverage
+lcov.info
+*.profraw
+
+# Node tooling at repo root (only needed for JS-side dev)
+node_modules/
+package.json
+package-lock.json
+
+# Docker itself — no self-reference
+Dockerfile
+.dockerignore
+compose.yaml
+compose.yml
+compose.dev.yaml
+docker-compose.yaml
+docker-compose.yml

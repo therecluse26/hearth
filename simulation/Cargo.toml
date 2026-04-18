@@ -7,7 +7,7 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-hearth = { path = ".." }
+hearth = { path = "..", features = ["test-hooks"] }
 madsim = "0.2"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }

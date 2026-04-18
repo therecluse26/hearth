@@ -1,0 +1,27 @@
+meta {
+  name: Update Application
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/admin/applications/{{clientId}}
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "client_name": "My Service (Updated)",
+    "redirect_uris": ["http://localhost:3000/callback", "http://localhost:3000/auth"]
+  }
+}

@@ -1,0 +1,35 @@
+meta {
+  name: Bulk Users
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/admin/users/bulk
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "users": [
+      {
+        "email": "user1@example.com",
+        "display_name": "User One"
+      },
+      {
+        "email": "user2@example.com",
+        "display_name": "User Two"
+      }
+    ]
+  }
+}

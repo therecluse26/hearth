@@ -1,0 +1,35 @@
+meta {
+  name: Register Client (Public)
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/clients
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "client_name": "My App",
+    "redirect_uris": ["http://localhost:3000/callback"],
+    "grant_types": ["authorization_code"],
+    "response_types": ["code"],
+    "token_endpoint_auth_method": "none"
+  }
+}
+
+script:post-response {
+  const status = res.getStatus();
+  if (status >= 200 && status < 300 && res.getBody()) {
+    const body = res.getBody();
+    if (body.client_id)     bru.setEnvVar("clientId",     body.client_id);
+    if (body.client_secret) bru.setEnvVar("clientSecret", body.client_secret);
+  }
+}

@@ -68,6 +68,11 @@ define_id_type!(
     ClientId, "client_"
 );
 
+define_id_type!(
+    /// Unique identifier for an audit log event.
+    AuditEventId, "audit_"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,7 @@
 //! Single-binary Rust server for authentication, authorization (Zanzibar-style),
 //! and session management with a custom embedded storage engine.
 
+pub mod audit;
 pub mod authz;
 pub mod cluster;
 pub mod config;

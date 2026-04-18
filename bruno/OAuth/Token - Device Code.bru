@@ -1,0 +1,33 @@
+meta {
+  name: Token - Device Code
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/token
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    "client_id": "{{clientId}}",
+    "device_code": "{{deviceCode}}"
+  }
+}
+
+script:post-response {
+  const status = res.getStatus();
+  if (status >= 200 && status < 300 && res.getBody()) {
+    const body = res.getBody();
+    if (body.access_token)  bru.setEnvVar("accessToken",  body.access_token);
+    if (body.refresh_token) bru.setEnvVar("refreshToken", body.refresh_token);
+  }
+}

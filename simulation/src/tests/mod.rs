@@ -1,4 +1,9 @@
+mod audit_crash;
+mod cache_stampede;
 mod session_crash;
 mod sst_crash;
+mod tenant_concurrent_io;
+mod tenant_crash;
 mod tiered_crash;
 mod wal_crash;
+mod watch_partition;

@@ -7,6 +7,8 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::identity::email::EmailBranding;
+
 /// Server network configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -20,6 +22,11 @@ pub struct ServerConfig {
     pub tls_cert_path: Option<PathBuf>,
     /// Path to TLS private key file (optional; no TLS if absent).
     pub tls_key_path: Option<PathBuf>,
+    /// Path to a CA certificate for client certificate verification (mTLS).
+    pub tls_client_ca_path: Option<PathBuf>,
+    /// Whether to require a client certificate (mTLS). Requires `tls_client_ca_path`.
+    #[serde(default)]
+    pub tls_require_client_cert: bool,
 }
 
 impl ServerConfig {
@@ -39,6 +46,8 @@ impl Default for ServerConfig {
             port: Self::default_port(),
             tls_cert_path: None,
             tls_key_path: None,
+            tls_client_ca_path: None,
+            tls_require_client_cert: false,
         }
     }
 }
@@ -183,6 +192,216 @@ impl Default for OperationalConfig {
     }
 }
 
+/// Email delivery transport selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailTransport {
+    /// Write email contents (subject, recipient, verification URL) to the
+    /// `tracing` log at WARN level. No external delivery. Default.
+    Log,
+    /// Deliver via SMTP to an external mail server. Requires an
+    /// accompanying [`SmtpConfig`] block and a `from` address.
+    Smtp,
+    /// Deliver via the `SendGrid` v3 API. Requires a [`SendgridConfig`].
+    Sendgrid,
+    /// Deliver via the `Postmark` API. Requires a [`PostmarkConfig`].
+    Postmark,
+    /// Deliver via the `Mailgun` API. Requires a [`MailgunConfig`].
+    Mailgun,
+    /// Deliver via the `Mailtrap` Sending API. Requires a [`MailtrapConfig`].
+    Mailtrap,
+}
+
+impl Default for EmailTransport {
+    fn default() -> Self {
+        Self::Log
+    }
+}
+
+/// SMTP transport-level encryption mode.
+///
+/// Mirrors the semantics of `lettre::transport::smtp::client::Tls`:
+///
+/// - [`SmtpEncryption::None`] — cleartext SMTP (e.g. a local Mailpit
+///   on `:1025`). Never use over untrusted networks.
+/// - [`SmtpEncryption::Starttls`] — explicit TLS upgrade (RFC 3207) on
+///   the submission port. Default; matches modern providers on :587.
+/// - [`SmtpEncryption::Tls`] — implicit TLS (RFC 8314), historically
+///   "SMTPS" on :465.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpEncryption {
+    /// Plaintext SMTP. No encryption.
+    None,
+    /// Explicit TLS upgrade via STARTTLS. Default.
+    #[default]
+    Starttls,
+    /// Implicit TLS (SMTPS).
+    Tls,
+}
+
+/// SMTP transport settings.
+///
+/// Required when [`EmailTransport::Smtp`] is selected. Credentials are
+/// optional; if `username` is set then `password` MUST also be set (and
+/// vice versa) — the config validator enforces the pair.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SmtpConfig {
+    /// SMTP server hostname (e.g. `smtp.example.com`, `mailpit`).
+    pub host: String,
+    /// SMTP server port (typically 25, 465, 587, or 1025 for Mailpit).
+    pub port: u16,
+    /// Transport-level encryption mode. Defaults to `starttls`.
+    #[serde(default)]
+    pub encryption: SmtpEncryption,
+    /// SMTP AUTH username. When `Some`, `password` MUST also be `Some`.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// SMTP AUTH password. Must accompany `username`.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// `SendGrid` transport settings.
+///
+/// Required when [`EmailTransport::Sendgrid`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SendgridConfig {
+    /// `SendGrid` API key.
+    pub api_key: String,
+}
+
+/// `Postmark` transport settings.
+///
+/// Required when [`EmailTransport::Postmark`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostmarkConfig {
+    /// `Postmark` server token.
+    pub server_token: String,
+}
+
+/// `Mailgun` region selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailgunRegion {
+    /// US region (default).
+    #[default]
+    Us,
+    /// EU region.
+    Eu,
+}
+
+/// `Mailgun` transport settings.
+///
+/// Required when [`EmailTransport::Mailgun`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MailgunConfig {
+    /// `Mailgun` API key.
+    pub api_key: String,
+    /// `Mailgun` sending domain (e.g. `mg.example.com`).
+    pub domain: String,
+    /// Region selector. Defaults to US.
+    #[serde(default)]
+    pub region: MailgunRegion,
+}
+
+/// `Mailtrap` transport settings.
+///
+/// Required when [`EmailTransport::Mailtrap`] is selected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MailtrapConfig {
+    /// `Mailtrap` API key.
+    pub api_key: String,
+    /// Mailtrap inbox ID for sandbox/testing mode.
+    ///
+    /// When set, emails are sent to the sandbox API
+    /// (`sandbox.api.mailtrap.io`) instead of the sending API
+    /// (`send.api.mailtrap.io`). Obtain the inbox ID from your
+    /// Mailtrap dashboard URL (e.g. `https://mailtrap.io/inboxes/12345/messages`).
+    pub inbox_id: Option<u64>,
+}
+
+/// Email sender configuration.
+///
+/// Controls how verification emails (and later, other transactional mail)
+/// are delivered. Defaults to the `Log` transport, suitable for local
+/// development. Production deployments should set `transport: smtp` (or
+/// one of the HTTP providers) and provide the corresponding config block.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmailConfig {
+    /// Which transport to use for outbound email.
+    #[serde(default)]
+    pub transport: EmailTransport,
+    /// Sender address used in the `From:` header. Required when
+    /// `transport` is not `Log`; ignored otherwise.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// SMTP-specific settings. Required when `transport == Smtp`.
+    #[serde(default)]
+    pub smtp: Option<SmtpConfig>,
+    /// `SendGrid`-specific settings. Required when `transport == Sendgrid`.
+    #[serde(default)]
+    pub sendgrid: Option<SendgridConfig>,
+    /// `Postmark`-specific settings. Required when `transport == Postmark`.
+    #[serde(default)]
+    pub postmark: Option<PostmarkConfig>,
+    /// `Mailgun`-specific settings. Required when `transport == Mailgun`.
+    #[serde(default)]
+    pub mailgun: Option<MailgunConfig>,
+    /// `Mailtrap`-specific settings. Required when `transport == Mailtrap`.
+    #[serde(default)]
+    pub mailtrap: Option<MailtrapConfig>,
+    /// Global email branding defaults. Per-tenant overrides are stored
+    /// in `TenantConfig.email_branding`.
+    #[serde(default)]
+    pub branding: Option<EmailBranding>,
+    /// Optional directory containing custom Tera email templates.
+    /// If set, templates from this directory override the compiled defaults.
+    #[serde(default)]
+    pub templates_dir: Option<String>,
+}
+
+/// First-run onboarding configuration.
+///
+/// When `enabled`, Hearth generates a setup token at startup if no tenant
+/// exists and logs a one-time setup URL (Jenkins-style).
+#[derive(Debug, Clone, Deserialize)]
+pub struct OnboardingConfig {
+    /// When `true`, the onboarding flow is available at `/ui/setup` until
+    /// the first admin is created. Set to `false` to permanently disable.
+    #[serde(default = "OnboardingConfig::default_enabled")]
+    pub enabled: bool,
+    /// Public base URL used in verification-email links (e.g.
+    /// `https://auth.example.com`). Falls back to the request `Host`
+    /// header when `None`.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Email address to send the first-run setup URL to on startup.
+    ///
+    /// When set and SMTP is configured, Hearth emails the setup URL to
+    /// this address at startup (in addition to the WARN log). Useful in
+    /// environments where console output is not readily accessible (e.g.
+    /// Docker containers). Leave unset to rely on the log only.
+    #[serde(default)]
+    pub notification_email: Option<String>,
+}
+
+impl OnboardingConfig {
+    const fn default_enabled() -> bool {
+        true
+    }
+}
+
+impl Default for OnboardingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            base_url: None,
+            notification_email: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +439,19 @@ mod tests {
         assert_eq!(cfg.shutdown_timeout_secs, 10);
         assert_eq!(cfg.max_connections, 1024);
         assert_eq!(cfg.queue_depth, 4096);
+    }
+
+    #[test]
+    fn email_config_defaults() {
+        let cfg = EmailConfig::default();
+        assert_eq!(cfg.transport, EmailTransport::Log);
+        assert!(cfg.from.is_none());
+    }
+
+    #[test]
+    fn onboarding_config_defaults() {
+        let cfg = OnboardingConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.base_url.is_none());
     }
 }

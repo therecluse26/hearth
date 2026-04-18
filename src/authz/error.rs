@@ -18,6 +18,24 @@ pub enum AuthzError {
         /// Description of what was invalid.
         reason: String,
     },
+    /// A conditional write precondition was not met.
+    ///
+    /// Returned when `TouchIfAbsent` finds an existing tuple or
+    /// `DeleteIfPresent` finds no tuple. The entire batch is rejected.
+    PreconditionFailed {
+        /// Description of which precondition failed.
+        reason: String,
+    },
+    /// The namespace configuration is invalid or a tuple violates the schema.
+    InvalidNamespace {
+        /// Description of the namespace violation.
+        reason: String,
+    },
+    /// The caller is not authorized to perform this operation.
+    Unauthorized {
+        /// Description of the authorization failure.
+        reason: String,
+    },
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -28,6 +46,9 @@ impl fmt::Display for AuthzError {
             Self::InvalidTuple { reason } => write!(f, "invalid tuple: {reason}"),
             Self::MaxDepthExceeded => write!(f, "graph traversal exceeded maximum depth"),
             Self::InvalidReference { reason } => write!(f, "invalid reference: {reason}"),
+            Self::PreconditionFailed { reason } => write!(f, "precondition failed: {reason}"),
+            Self::InvalidNamespace { reason } => write!(f, "invalid namespace: {reason}"),
+            Self::Unauthorized { reason } => write!(f, "unauthorized: {reason}"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
         }
     }
@@ -37,9 +58,86 @@ impl std::error::Error for AuthzError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Storage(err) => Some(&**err),
-            Self::InvalidTuple { .. } | Self::MaxDepthExceeded | Self::InvalidReference { .. } => {
-                None
-            }
+            Self::InvalidTuple { .. }
+            | Self::MaxDepthExceeded
+            | Self::InvalidReference { .. }
+            | Self::PreconditionFailed { .. }
+            | Self::InvalidNamespace { .. }
+            | Self::Unauthorized { .. } => None,
+        }
+    }
+}
+
+/// Cheap, cloneable summary of an `AuthzError`.
+///
+/// `AuthzError` itself contains a `Box<dyn Error + Send + Sync>` in the
+/// `Storage` variant, so it cannot implement `Clone` or `Copy`. The
+/// cache-stampede single-flight coalescer needs to broadcast a `check()`
+/// outcome to many waiters, which requires a cloneable payload. This enum
+/// preserves enough structure for waiters to reconstruct a proper
+/// `AuthzError` without round-tripping the original error data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AuthzErrorCode {
+    /// The supplied tuple was malformed.
+    InvalidTuple,
+    /// BFS traversal exceeded configured depth.
+    MaxDepthExceeded,
+    /// An object or subject reference was malformed.
+    InvalidReference,
+    /// A conditional-write precondition was not met.
+    PreconditionFailed,
+    /// The namespace config is invalid or the tuple violates schema.
+    InvalidNamespace,
+    /// The caller is not authorized.
+    Unauthorized,
+    /// An underlying storage operation failed.
+    Storage,
+}
+
+impl From<&AuthzError> for AuthzErrorCode {
+    fn from(err: &AuthzError) -> Self {
+        match err {
+            AuthzError::InvalidTuple { .. } => Self::InvalidTuple,
+            AuthzError::MaxDepthExceeded => Self::MaxDepthExceeded,
+            AuthzError::InvalidReference { .. } => Self::InvalidReference,
+            AuthzError::PreconditionFailed { .. } => Self::PreconditionFailed,
+            AuthzError::InvalidNamespace { .. } => Self::InvalidNamespace,
+            AuthzError::Unauthorized { .. } => Self::Unauthorized,
+            AuthzError::Storage(_) => Self::Storage,
+        }
+    }
+}
+
+impl AuthzErrorCode {
+    /// Reconstructs a representative `AuthzError` from this code.
+    ///
+    /// The reconstructed error carries the canonical reason text for the
+    /// variant. The original dynamic payload (notably the storage error
+    /// source) is NOT preserved — that full context is available only to
+    /// the leader task that executed the resolve. Waiters receive a
+    /// structurally equivalent error of the same variant.
+    pub fn into_authz_error(self) -> AuthzError {
+        match self {
+            Self::InvalidTuple => AuthzError::InvalidTuple {
+                reason: "coalesced waiter saw leader report InvalidTuple".to_string(),
+            },
+            Self::MaxDepthExceeded => AuthzError::MaxDepthExceeded,
+            Self::InvalidReference => AuthzError::InvalidReference {
+                reason: "coalesced waiter saw leader report InvalidReference".to_string(),
+            },
+            Self::PreconditionFailed => AuthzError::PreconditionFailed {
+                reason: "coalesced waiter saw leader report PreconditionFailed".to_string(),
+            },
+            Self::InvalidNamespace => AuthzError::InvalidNamespace {
+                reason: "coalesced waiter saw leader report InvalidNamespace".to_string(),
+            },
+            Self::Unauthorized => AuthzError::Unauthorized {
+                reason: "coalesced waiter saw leader report Unauthorized".to_string(),
+            },
+            Self::Storage => AuthzError::Storage(Box::new(std::io::Error::other(
+                "coalesced waiter saw leader report Storage",
+            ))),
         }
     }
 }
@@ -100,6 +198,36 @@ mod tests {
     }
 
     #[test]
+    fn authz_error_display_precondition_failed() {
+        let err = AuthzError::PreconditionFailed {
+            reason: "tuple already exists".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("precondition failed"), "got: {display}");
+        assert!(display.contains("tuple already exists"), "got: {display}");
+    }
+
+    #[test]
+    fn authz_error_display_invalid_namespace() {
+        let err = AuthzError::InvalidNamespace {
+            reason: "unknown type".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid namespace"), "got: {display}");
+        assert!(display.contains("unknown type"), "got: {display}");
+    }
+
+    #[test]
+    fn authz_error_display_unauthorized() {
+        let err = AuthzError::Unauthorized {
+            reason: "missing tenant".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("unauthorized"), "got: {display}");
+        assert!(display.contains("missing tenant"), "got: {display}");
+    }
+
+    #[test]
     fn authz_error_source_others_none() {
         let err = AuthzError::InvalidTuple {
             reason: "bad".to_string(),
@@ -110,6 +238,21 @@ mod tests {
         assert!(err.source().is_none());
 
         let err = AuthzError::InvalidReference {
+            reason: "bad".to_string(),
+        };
+        assert!(err.source().is_none());
+
+        let err = AuthzError::PreconditionFailed {
+            reason: "bad".to_string(),
+        };
+        assert!(err.source().is_none());
+
+        let err = AuthzError::InvalidNamespace {
+            reason: "bad".to_string(),
+        };
+        assert!(err.source().is_none());
+
+        let err = AuthzError::Unauthorized {
             reason: "bad".to_string(),
         };
         assert!(err.source().is_none());

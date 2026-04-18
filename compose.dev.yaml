@@ -1,0 +1,9 @@
+# compose.dev.yaml — development overrides.
+#
+# Layered on top of compose.yaml with:
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+#
+# Currently empty. Add dev-specific overrides here (extra env vars, debug
+# ports, volume mounts, etc.) without touching the base compose file.
+
+services: {}

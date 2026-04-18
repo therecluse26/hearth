@@ -3,6 +3,8 @@
 **/*.rs.bk
 Cargo.lock
 
+.env
+
 # IDE files
 .idea/
 .vscode/
@@ -27,3 +29,25 @@ fuzz/corpus/
 
 node_modules/
 .reflex/
+
+# Tailwind standalone CLI (binary, not committed — install via `make tailwind-install`)
+ui/tailwindcss
+
+# Generated protobuf code (produced by build.rs on every build)
+/src/protocol/generated/
+
+hearth
+*.wal
+
+# Local runtime data (compose named volume + `cargo run` default path)
+/data/
+
+*.jpg
+*.jpeg
+*.png
+*.log
+
+.playwright-mcp/
+
+hearth.yaml
+hearth.yml

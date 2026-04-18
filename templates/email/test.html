@@ -1,0 +1,6 @@
+{% extends "email/base.html" %}
+{% block title %}{{ product_name }} — Test Email{% endblock %}
+{% block content %}
+<p>This is a test email from {{ product_name }}.</p>
+<p>If you received this message, your email transport is configured correctly.</p>
+{% endblock %}

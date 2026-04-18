@@ -6,6 +6,12 @@ use std::fmt;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum IdentityError {
+    /// The requested tenant was not found.
+    TenantNotFound,
+    /// The tenant is suspended; operations are denied.
+    TenantSuspended,
+    /// A tenant with the given name already exists.
+    DuplicateTenantName,
     /// The requested user was not found.
     UserNotFound,
     /// A user with the given email already exists in this tenant.
@@ -50,6 +56,81 @@ pub enum IdentityError {
         /// Description of why the grant was invalid.
         reason: String,
     },
+    /// The client secret is invalid.
+    ///
+    /// Intentionally vague — does not distinguish wrong vs. expired
+    /// for enumeration resistance.
+    InvalidClientSecret,
+    /// The device authorization is still pending user action.
+    AuthorizationPending,
+    /// The device is polling too frequently; must slow down.
+    SlowDown,
+    /// The device authorization code has expired.
+    DeviceCodeExpired,
+    /// The device authorization was denied by the user.
+    DeviceCodeDenied,
+    /// The token has been revoked (grant family revoked).
+    TokenRevoked,
+    /// The requested grant type is not supported for this client.
+    UnsupportedGrantType,
+    /// Password authentication succeeded but MFA verification is required.
+    MfaRequired,
+    /// The TOTP code or recovery code is invalid.
+    InvalidMfaCode,
+    /// MFA is not enabled for this user.
+    MfaNotEnabled,
+    /// MFA is already enabled; disable it before re-enrolling.
+    MfaAlreadyEnabled,
+    /// A `WebAuthn` registration ceremony failed.
+    WebAuthnRegistrationFailed {
+        /// Description of the failure (no secrets).
+        reason: String,
+    },
+    /// A `WebAuthn` authentication ceremony failed.
+    WebAuthnAuthenticationFailed {
+        /// Description of the failure (no secrets).
+        reason: String,
+    },
+    /// The requested `WebAuthn` credential was not found.
+    WebAuthnCredentialNotFound,
+    /// The attestation provided during registration is invalid or unsupported.
+    InvalidAttestation {
+        /// Description of the attestation failure.
+        reason: String,
+    },
+    /// The assertion provided during authentication is invalid.
+    InvalidAssertion {
+        /// Description of the assertion failure.
+        reason: String,
+    },
+    /// The caller is not authorized to perform this operation.
+    ///
+    /// Used for admin API access control. Intentionally vague to
+    /// prevent information leakage about what resources exist.
+    Unauthorized,
+    /// The requested OAuth client was not found.
+    ClientNotFound,
+    /// The magic link token is invalid, expired, or already used.
+    ///
+    /// Intentionally conflates not-found, expired, and already-used for
+    /// enumeration resistance — callers cannot distinguish the three.
+    MagicLinkTokenInvalid,
+    /// The email-verification token is invalid, expired, or already used.
+    ///
+    /// Intentionally conflates not-found, expired, and already-used for
+    /// enumeration resistance — callers cannot distinguish the three.
+    VerificationTokenInvalid,
+    /// The password-reset token is invalid, expired, or already used.
+    ///
+    /// Intentionally conflates not-found, expired, and already-used for
+    /// enumeration resistance — callers cannot distinguish the three.
+    PasswordResetTokenInvalid,
+    /// The user account has not yet verified their email address.
+    ///
+    /// Returned by `create_session` when a user in `PendingVerification`
+    /// status attempts to log in. Callers should direct the user to the
+    /// email-verification flow.
+    UserNotVerified,
     /// Too many failed credential attempts; the account is temporarily locked.
     ///
     /// Intentionally vague to avoid leaking lockout state to attackers.
@@ -66,6 +147,9 @@ pub enum IdentityError {
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TenantNotFound => write!(f, "tenant not found"),
+            Self::TenantSuspended => write!(f, "tenant is suspended"),
+            Self::DuplicateTenantName => write!(f, "a tenant with this name already exists"),
             Self::UserNotFound => write!(f, "user not found"),
             Self::DuplicateEmail => write!(f, "a user with this email already exists"),
             Self::InvalidInput { reason } => write!(f, "invalid input: {reason}"),
@@ -81,6 +165,38 @@ impl fmt::Display for IdentityError {
             Self::InvalidRedirectUri => write!(f, "invalid redirect URI"),
             Self::InvalidAuthorizationCode => write!(f, "invalid authorization code"),
             Self::InvalidGrant { reason } => write!(f, "invalid grant: {reason}"),
+            Self::InvalidClientSecret => write!(f, "invalid client secret"),
+            Self::AuthorizationPending => write!(f, "authorization pending"),
+            Self::SlowDown => write!(f, "polling too frequently"),
+            Self::DeviceCodeExpired => write!(f, "device code expired"),
+            Self::DeviceCodeDenied => write!(f, "device authorization denied"),
+            Self::TokenRevoked => write!(f, "token has been revoked"),
+            Self::UnsupportedGrantType => write!(f, "unsupported grant type"),
+            Self::MfaRequired => write!(f, "MFA verification required"),
+            Self::InvalidMfaCode => write!(f, "invalid MFA code"),
+            Self::MfaNotEnabled => write!(f, "MFA is not enabled for this user"),
+            Self::MfaAlreadyEnabled => write!(f, "MFA is already enabled"),
+            Self::WebAuthnRegistrationFailed { reason } => {
+                write!(f, "WebAuthn registration failed: {reason}")
+            }
+            Self::WebAuthnAuthenticationFailed { reason } => {
+                write!(f, "WebAuthn authentication failed: {reason}")
+            }
+            Self::WebAuthnCredentialNotFound => write!(f, "WebAuthn credential not found"),
+            Self::InvalidAttestation { reason } => {
+                write!(f, "invalid attestation: {reason}")
+            }
+            Self::InvalidAssertion { reason } => {
+                write!(f, "invalid assertion: {reason}")
+            }
+            Self::Unauthorized => write!(f, "forbidden"),
+            Self::ClientNotFound => write!(f, "client not found"),
+            Self::MagicLinkTokenInvalid => write!(f, "invalid or expired magic link"),
+            Self::VerificationTokenInvalid => write!(f, "invalid or expired verification link"),
+            Self::PasswordResetTokenInvalid => {
+                write!(f, "invalid or expired password reset link")
+            }
+            Self::UserNotVerified => write!(f, "user email not verified"),
             Self::RateLimited => write!(f, "too many failed attempts"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
@@ -92,7 +208,10 @@ impl std::error::Error for IdentityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Storage(err) => Some(&**err),
-            Self::UserNotFound
+            Self::TenantNotFound
+            | Self::TenantSuspended
+            | Self::DuplicateTenantName
+            | Self::UserNotFound
             | Self::DuplicateEmail
             | Self::InvalidInput { .. }
             | Self::CredentialNotFound
@@ -105,6 +224,28 @@ impl std::error::Error for IdentityError {
             | Self::InvalidRedirectUri
             | Self::InvalidAuthorizationCode
             | Self::InvalidGrant { .. }
+            | Self::InvalidClientSecret
+            | Self::AuthorizationPending
+            | Self::SlowDown
+            | Self::DeviceCodeExpired
+            | Self::DeviceCodeDenied
+            | Self::TokenRevoked
+            | Self::UnsupportedGrantType
+            | Self::MfaRequired
+            | Self::InvalidMfaCode
+            | Self::MfaNotEnabled
+            | Self::MfaAlreadyEnabled
+            | Self::WebAuthnRegistrationFailed { .. }
+            | Self::WebAuthnAuthenticationFailed { .. }
+            | Self::WebAuthnCredentialNotFound
+            | Self::InvalidAttestation { .. }
+            | Self::InvalidAssertion { .. }
+            | Self::Unauthorized
+            | Self::ClientNotFound
+            | Self::MagicLinkTokenInvalid
+            | Self::VerificationTokenInvalid
+            | Self::PasswordResetTokenInvalid
+            | Self::UserNotVerified
             | Self::RateLimited
             | Self::Serialization { .. } => None,
         }
@@ -116,6 +257,27 @@ mod tests {
     use std::error::Error;
 
     use super::*;
+
+    #[test]
+    fn display_tenant_not_found() {
+        let err = IdentityError::TenantNotFound;
+        let display = format!("{err}");
+        assert!(display.contains("tenant not found"), "got: {display}");
+    }
+
+    #[test]
+    fn display_tenant_suspended() {
+        let err = IdentityError::TenantSuspended;
+        let display = format!("{err}");
+        assert!(display.contains("suspended"), "got: {display}");
+    }
+
+    #[test]
+    fn display_duplicate_tenant_name() {
+        let err = IdentityError::DuplicateTenantName;
+        let display = format!("{err}");
+        assert!(display.contains("already exists"), "got: {display}");
+    }
 
     #[test]
     fn display_user_not_found() {
@@ -256,7 +418,194 @@ mod tests {
     }
 
     #[test]
+    fn display_invalid_client_secret() {
+        let err = IdentityError::InvalidClientSecret;
+        let display = format!("{err}");
+        assert!(display.contains("invalid client secret"), "got: {display}");
+    }
+
+    #[test]
+    fn display_authorization_pending() {
+        let err = IdentityError::AuthorizationPending;
+        let display = format!("{err}");
+        assert!(display.contains("authorization pending"), "got: {display}");
+    }
+
+    #[test]
+    fn display_slow_down() {
+        let err = IdentityError::SlowDown;
+        let display = format!("{err}");
+        assert!(display.contains("polling too frequently"), "got: {display}");
+    }
+
+    #[test]
+    fn display_device_code_expired() {
+        let err = IdentityError::DeviceCodeExpired;
+        let display = format!("{err}");
+        assert!(display.contains("device code expired"), "got: {display}");
+    }
+
+    #[test]
+    fn display_device_code_denied() {
+        let err = IdentityError::DeviceCodeDenied;
+        let display = format!("{err}");
+        assert!(display.contains("denied"), "got: {display}");
+    }
+
+    #[test]
+    fn display_token_revoked() {
+        let err = IdentityError::TokenRevoked;
+        let display = format!("{err}");
+        assert!(display.contains("revoked"), "got: {display}");
+    }
+
+    #[test]
+    fn display_unsupported_grant_type() {
+        let err = IdentityError::UnsupportedGrantType;
+        let display = format!("{err}");
+        assert!(display.contains("unsupported grant type"), "got: {display}");
+    }
+
+    #[test]
+    fn display_mfa_required() {
+        let err = IdentityError::MfaRequired;
+        let display = format!("{err}");
+        assert!(
+            display.contains("MFA verification required"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_invalid_mfa_code() {
+        let err = IdentityError::InvalidMfaCode;
+        let display = format!("{err}");
+        assert!(display.contains("invalid MFA code"), "got: {display}");
+    }
+
+    #[test]
+    fn display_mfa_not_enabled() {
+        let err = IdentityError::MfaNotEnabled;
+        let display = format!("{err}");
+        assert!(display.contains("not enabled"), "got: {display}");
+    }
+
+    #[test]
+    fn display_mfa_already_enabled() {
+        let err = IdentityError::MfaAlreadyEnabled;
+        let display = format!("{err}");
+        assert!(display.contains("already enabled"), "got: {display}");
+    }
+
+    #[test]
+    fn display_webauthn_registration_failed() {
+        let err = IdentityError::WebAuthnRegistrationFailed {
+            reason: "challenge mismatch".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(
+            display.contains("WebAuthn registration failed"),
+            "got: {display}"
+        );
+        assert!(display.contains("challenge mismatch"), "got: {display}");
+    }
+
+    #[test]
+    fn display_webauthn_authentication_failed() {
+        let err = IdentityError::WebAuthnAuthenticationFailed {
+            reason: "signature invalid".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(
+            display.contains("WebAuthn authentication failed"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_webauthn_credential_not_found() {
+        let err = IdentityError::WebAuthnCredentialNotFound;
+        let display = format!("{err}");
+        assert!(
+            display.contains("WebAuthn credential not found"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_invalid_attestation() {
+        let err = IdentityError::InvalidAttestation {
+            reason: "unsupported format".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid attestation"), "got: {display}");
+    }
+
+    #[test]
+    fn display_invalid_assertion() {
+        let err = IdentityError::InvalidAssertion {
+            reason: "counter replay".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("invalid assertion"), "got: {display}");
+    }
+
+    #[test]
+    fn display_unauthorized() {
+        let err = IdentityError::Unauthorized;
+        let display = format!("{err}");
+        assert!(display.contains("forbidden"), "got: {display}");
+    }
+
+    #[test]
+    fn display_client_not_found() {
+        let err = IdentityError::ClientNotFound;
+        let display = format!("{err}");
+        assert!(display.contains("client not found"), "got: {display}");
+    }
+
+    #[test]
+    fn display_magic_link_token_invalid() {
+        let err = IdentityError::MagicLinkTokenInvalid;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid or expired magic link"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_verification_token_invalid() {
+        let err = IdentityError::VerificationTokenInvalid;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid or expired verification link"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_password_reset_token_invalid() {
+        let err = IdentityError::PasswordResetTokenInvalid;
+        let display = format!("{err}");
+        assert!(
+            display.contains("invalid or expired password reset link"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn display_user_not_verified() {
+        let err = IdentityError::UserNotVerified;
+        let display = format!("{err}");
+        assert!(display.contains("not verified"), "got: {display}");
+    }
+
+    #[test]
     fn source_others_none() {
+        assert!(IdentityError::TenantNotFound.source().is_none());
+        assert!(IdentityError::TenantSuspended.source().is_none());
+        assert!(IdentityError::DuplicateTenantName.source().is_none());
         assert!(IdentityError::UserNotFound.source().is_none());
         assert!(IdentityError::DuplicateEmail.source().is_none());
         assert!(IdentityError::CredentialNotFound.source().is_none());
@@ -266,6 +615,13 @@ mod tests {
         assert!(IdentityError::InvalidClient.source().is_none());
         assert!(IdentityError::InvalidRedirectUri.source().is_none());
         assert!(IdentityError::InvalidAuthorizationCode.source().is_none());
+        assert!(IdentityError::InvalidClientSecret.source().is_none());
+        assert!(IdentityError::AuthorizationPending.source().is_none());
+        assert!(IdentityError::SlowDown.source().is_none());
+        assert!(IdentityError::DeviceCodeExpired.source().is_none());
+        assert!(IdentityError::DeviceCodeDenied.source().is_none());
+        assert!(IdentityError::TokenRevoked.source().is_none());
+        assert!(IdentityError::UnsupportedGrantType.source().is_none());
         assert!((IdentityError::InvalidInput {
             reason: "x".to_string()
         })
@@ -286,6 +642,37 @@ mod tests {
         })
         .source()
         .is_none());
+        assert!(IdentityError::MfaRequired.source().is_none());
+        assert!(IdentityError::InvalidMfaCode.source().is_none());
+        assert!(IdentityError::MfaNotEnabled.source().is_none());
+        assert!(IdentityError::MfaAlreadyEnabled.source().is_none());
+        assert!((IdentityError::WebAuthnRegistrationFailed {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!((IdentityError::WebAuthnAuthenticationFailed {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!(IdentityError::WebAuthnCredentialNotFound.source().is_none());
+        assert!((IdentityError::InvalidAttestation {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!((IdentityError::InvalidAssertion {
+            reason: "x".to_string()
+        })
+        .source()
+        .is_none());
+        assert!(IdentityError::Unauthorized.source().is_none());
+        assert!(IdentityError::ClientNotFound.source().is_none());
+        assert!(IdentityError::MagicLinkTokenInvalid.source().is_none());
+        assert!(IdentityError::VerificationTokenInvalid.source().is_none());
+        assert!(IdentityError::PasswordResetTokenInvalid.source().is_none());
+        assert!(IdentityError::UserNotVerified.source().is_none());
         assert!(IdentityError::RateLimited.source().is_none());
         assert!((IdentityError::Serialization {
             reason: "x".to_string()

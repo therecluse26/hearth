@@ -68,7 +68,7 @@ struct JwtHeader {
 /// and tenant binding.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenClaims {
-    /// Subject — the user ID.
+    /// Subject — the user ID (or client ID for client credentials).
     pub sub: String,
     /// Issuer.
     pub iss: String,
@@ -84,6 +84,30 @@ pub struct TokenClaims {
     pub tid: String,
     /// Token type: `"access"` or `"refresh"`.
     pub token_type: String,
+    /// JWT ID — unique identifier for this token (RFC 7519 §4.1.7).
+    ///
+    /// Ensures each issued JWT is unique even when all other claims
+    /// are identical (e.g., during refresh token rotation within the
+    /// same clock second).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
+    /// Grant family ID — links tokens from the same authorization grant.
+    ///
+    /// Used for refresh token rotation and theft detection. When a
+    /// refresh token is rotated, the new token inherits the same `fid`.
+    /// If a previously-rotated token is reused, the entire family is
+    /// revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fid: Option<String>,
+    /// OAuth 2.0 scope string (space-delimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// OIDC nonce — echoed from the authorization request into the ID token.
+    ///
+    /// Per `OpenID` Connect Core 1.0 §2, when a nonce is provided in the
+    /// authorization request, the ID token MUST include it unmodified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 /// A pair of access and refresh tokens.
@@ -96,6 +120,14 @@ pub struct TokenPair {
 }
 
 impl TokenPair {
+    /// Creates a new token pair from access and refresh token strings.
+    pub(crate) fn new(access_token: String, refresh_token: String) -> Self {
+        Self {
+            access_token,
+            refresh_token,
+        }
+    }
+
     /// Returns the access token string.
     pub fn access_token(&self) -> &str {
         &self.access_token
@@ -142,7 +174,7 @@ pub struct SigningKey {
     /// A stable key identifier derived from the public key.
     key_id: String,
     /// The raw PKCS#8 document, zeroized on drop.
-    _pkcs8_doc: ZeroizingBytes,
+    pkcs8_doc: ZeroizingBytes,
 }
 
 /// A wrapper around `Vec<u8>` that zeroizes on drop.
@@ -183,8 +215,32 @@ impl SigningKey {
         Ok(Self {
             key_pair,
             key_id,
-            _pkcs8_doc: ZeroizingBytes(pkcs8_bytes.as_ref().to_vec()),
+            pkcs8_doc: ZeroizingBytes(pkcs8_bytes.as_ref().to_vec()),
         })
+    }
+
+    /// Reconstructs a signing key from a PKCS#8 DER document.
+    ///
+    /// Used to load per-tenant keys from storage.
+    pub fn from_pkcs8(pkcs8_der: &[u8]) -> Result<Self, IdentityError> {
+        let key_pair =
+            Ed25519KeyPair::from_pkcs8(pkcs8_der).map_err(|e| IdentityError::SigningError {
+                reason: format!("key parsing failed: {e}"),
+            })?;
+        let key_id = compute_key_id(key_pair.public_key().as_ref());
+        Ok(Self {
+            key_pair,
+            key_id,
+            pkcs8_doc: ZeroizingBytes(pkcs8_der.to_vec()),
+        })
+    }
+
+    /// Returns a reference to the raw PKCS#8 DER bytes.
+    ///
+    /// Used to persist signing keys to storage. The caller MUST NOT
+    /// log, display, or serialize these bytes.
+    pub fn pkcs8_bytes(&self) -> &[u8] {
+        &self.pkcs8_doc.0
     }
 
     /// Returns the key ID (derived from the public key).
@@ -263,6 +319,10 @@ impl SigningKey {
             sid: request.sid.to_string(),
             tid: request.tid.to_string(),
             token_type: "access".to_string(),
+            jti: None,
+            fid: None,
+            scope: None,
+            nonce: None,
         };
 
         let refresh_claims = TokenClaims {
@@ -274,6 +334,10 @@ impl SigningKey {
             sid: request.sid.to_string(),
             tid: request.tid.to_string(),
             token_type: "refresh".to_string(),
+            jti: None,
+            fid: None,
+            scope: None,
+            nonce: None,
         };
 
         let access_token = self.issue_token(&access_claims)?;
@@ -422,6 +486,10 @@ mod tests {
             sid: "session_660e8400-e29b-41d4-a716-446655440000".to_string(),
             tid: "tenant_770e8400-e29b-41d4-a716-446655440000".to_string(),
             token_type: "access".to_string(),
+            jti: None,
+            fid: None,
+            scope: None,
+            nonce: None,
         }
     }
 

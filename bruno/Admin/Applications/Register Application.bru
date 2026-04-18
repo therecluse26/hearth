@@ -1,0 +1,31 @@
+meta {
+  name: Register Application
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/admin/applications
+  body: json
+  auth: bearer
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "client_name": "My Service",
+    "redirect_uris": ["http://localhost:3000/callback"],
+    "grant_types": ["authorization_code", "refresh_token"],
+    "response_types": ["code"],
+    "scope": "openid profile email",
+    "token_endpoint_auth_method": "client_secret_basic"
+  }
+}

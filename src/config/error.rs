@@ -15,6 +15,13 @@ pub enum ConfigError {
         /// The name of the missing environment variable.
         var_name: String,
     },
+    /// A line in a `.env` file could not be parsed.
+    DotenvParse {
+        /// 1-based line number in the `.env` file.
+        line: usize,
+        /// Description of the parse failure.
+        message: String,
+    },
     /// A configuration value failed validation.
     ValidationError {
         /// The config field that failed validation.
@@ -32,6 +39,9 @@ impl fmt::Display for ConfigError {
             Self::MissingEnvVar { var_name } => {
                 write!(f, "environment variable not set: {var_name}")
             }
+            Self::DotenvParse { line, message } => {
+                write!(f, "failed to parse .env file at line {line}: {message}")
+            }
             Self::ValidationError { field, reason } => {
                 write!(f, "invalid configuration for '{field}': {reason}")
             }
@@ -43,7 +53,10 @@ impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::FileRead(err) => Some(err),
-            Self::ParseError(_) | Self::MissingEnvVar { .. } | Self::ValidationError { .. } => None,
+            Self::ParseError(_)
+            | Self::MissingEnvVar { .. }
+            | Self::DotenvParse { .. }
+            | Self::ValidationError { .. } => None,
         }
     }
 }

@@ -1,0 +1,12 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Not Found{% endblock %}
+{% block body %}
+<div class="flex flex-col items-center py-16 text-center">
+  <div class="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700">
+    <svg class="h-8 w-8 text-slate-400 dark:text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+  </div>
+  <h1 class="mb-2 text-2xl font-semibold text-slate-900 dark:text-white">Not Found</h1>
+  <p class="mb-6 text-sm text-slate-500 dark:text-slate-400">{{ message }}</p>
+  <a href="/ui/" class="text-sm font-medium text-hearth-500 hover:text-hearth-600 dark:text-hearth-400 dark:hover:text-hearth-300">Return to the dashboard</a>
+</div>
+{% endblock %}

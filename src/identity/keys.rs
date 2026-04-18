@@ -1,13 +1,20 @@
-//! Storage key encoding for user records.
+//! Storage key encoding for identity records.
 //!
-//! Two indexes are maintained, both tenant-scoped via `StorageEngine`:
+//! Indexes maintained, all tenant-scoped via `StorageEngine`:
 //!
-//! - **Primary**: `usr:id:{uuid}` → JSON-serialized `User`
-//! - **Email index**: `usr:email:{normalized_email}` → `UserId` UUID string bytes
+//! - **User primary**: `usr:id:{uuid}` → JSON-serialized `User`
+//! - **User email index**: `usr:email:{normalized_email}` → `UserId` UUID bytes
+//! - **Session primary**: `ses:id:{uuid}` → JSON-serialized `Session`
+//! - **Session user index**: `ses:user:{user_uuid}:{session_uuid}` → empty
+//! - **Credential**: `cred:user:{uuid}` → JSON-serialized `StoredCredential`
+//! - **OAuth client**: `oauth:client:{uuid}` → JSON-serialized `OAuthClient`
+//! - **OAuth code**: `oauth:code:{sha256_hex}` → JSON-serialized code
+//! - **Tenant primary**: `tenant:id:{uuid}` → JSON-serialized `Tenant` (system tenant scope)
+//! - **Tenant signing key**: `tenant:key:{uuid}` → PKCS#8 DER bytes (system tenant scope)
 //!
 //! Scan prefix `usr:id:` enables listing all users in a tenant.
 
-use crate::core::{ClientId, SessionId, UserId};
+use crate::core::{ClientId, SessionId, TenantId, UserId};
 
 /// Prefix for user primary keys.
 const USER_ID_PREFIX: &str = "usr:id:";
@@ -23,6 +30,42 @@ const OAUTH_CLIENT_PREFIX: &str = "oauth:client:";
 
 /// Prefix for OAuth authorization code keys (stored by hash).
 const OAUTH_CODE_PREFIX: &str = "oauth:code:";
+
+/// Prefix for tenant primary keys (stored under system tenant).
+const TENANT_ID_PREFIX: &str = "tenant:id:";
+
+/// Prefix for tenant signing key storage (stored under system tenant).
+const TENANT_KEY_PREFIX: &str = "tenant:key:";
+
+/// Prefix for grant family storage (refresh token rotation).
+const GRANT_FAMILY_PREFIX: &str = "oauth:family:";
+
+/// Prefix for device authorization code storage.
+const DEVICE_CODE_PREFIX: &str = "oauth:device:";
+
+/// Prefix for user code to device code mapping.
+const USER_CODE_PREFIX: &str = "oauth:ucode:";
+
+/// Prefix for revoked token JTI storage (sessionless token revocation).
+const REVOKED_JTI_PREFIX: &str = "oauth:revjti:";
+
+/// Prefix for MFA TOTP state per user.
+const MFA_TOTP_PREFIX: &str = "mfa:totp:";
+
+/// Prefix for `WebAuthn` credential storage.
+const WEBAUTHN_CRED_PREFIX: &str = "webauthn:cred:";
+
+/// Prefix for `WebAuthn` discoverable credential index.
+const WEBAUTHN_DISC_PREFIX: &str = "webauthn:disc:";
+
+/// Prefix for magic link token storage (stored by SHA-256 hash of token).
+const MAGIC_LINK_PREFIX: &str = "magic:link:";
+
+/// Prefix for email verification token storage (stored by SHA-256 hash).
+const EMAIL_VERIFY_PREFIX: &str = "email:verify:";
+
+/// Prefix for password reset token storage (stored by SHA-256 hash).
+const PASSWORD_RESET_PREFIX: &str = "rst:token:";
 
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
@@ -90,6 +133,13 @@ pub(crate) fn encode_user_sessions_prefix(user_id: &UserId) -> Vec<u8> {
     format!("{SESSION_USER_PREFIX}{}:", user_id.as_uuid()).into_bytes()
 }
 
+/// Returns the scan prefix for listing all sessions in a tenant.
+///
+/// Format: `ses:id:`
+pub(crate) fn session_id_scan_prefix() -> Vec<u8> {
+    SESSION_ID_PREFIX.as_bytes().to_vec()
+}
+
 /// Computes the exclusive end bound for a prefix scan.
 ///
 /// Increments the last byte of the prefix.
@@ -100,6 +150,13 @@ pub(crate) fn prefix_end(prefix: &[u8]) -> Vec<u8> {
         *last = last.saturating_add(1);
     }
     end
+}
+
+/// Returns the scan prefix for listing all OAuth clients.
+///
+/// Format: `oauth:client:`
+pub(crate) fn oauth_client_scan_prefix() -> Vec<u8> {
+    OAUTH_CLIENT_PREFIX.as_bytes().to_vec()
 }
 
 /// Encodes the storage key for an OAuth client.
@@ -117,10 +174,176 @@ pub(crate) fn encode_oauth_code(code_hash: &str) -> Vec<u8> {
     format!("{OAUTH_CODE_PREFIX}{code_hash}").into_bytes()
 }
 
+// ===== Tenant key encoding =====
+
+/// The well-known system `TenantId` used for storing tenant metadata.
+///
+/// Uses the nil UUID (`00000000-0000-0000-0000-000000000000`) as a
+/// reserved namespace. Real tenants use random v4 UUIDs and will
+/// never collide with this.
+pub(crate) fn system_tenant_id() -> TenantId {
+    TenantId::new(uuid::Uuid::nil())
+}
+
+/// Encodes the primary key for a tenant record.
+///
+/// Format: `tenant:id:{uuid}`
+///
+/// Stored under the system tenant namespace.
+pub(crate) fn encode_tenant_id(tenant_id: &TenantId) -> Vec<u8> {
+    format!("{TENANT_ID_PREFIX}{}", tenant_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for listing all tenant records.
+///
+/// Format: `tenant:id:`
+#[allow(dead_code)]
+pub(crate) fn tenant_id_scan_prefix() -> Vec<u8> {
+    TENANT_ID_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a tenant's signing key material.
+///
+/// Format: `tenant:key:{uuid}`
+///
+/// Stored under the system tenant namespace.
+pub(crate) fn encode_tenant_signing_key(tenant_id: &TenantId) -> Vec<u8> {
+    format!("{TENANT_KEY_PREFIX}{}", tenant_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the storage key for a grant family (refresh token rotation).
+///
+/// Format: `oauth:family:{family_id}`
+pub(crate) fn encode_grant_family(family_id: &str) -> Vec<u8> {
+    format!("{GRANT_FAMILY_PREFIX}{family_id}").into_bytes()
+}
+
+/// Returns the scan prefix for all grant families.
+///
+/// Format: `oauth:family:`
+#[allow(dead_code)]
+pub(crate) fn grant_family_scan_prefix() -> Vec<u8> {
+    GRANT_FAMILY_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a device authorization code.
+///
+/// Format: `oauth:device:{device_code_hash}`
+pub(crate) fn encode_device_code(device_code_hash: &str) -> Vec<u8> {
+    format!("{DEVICE_CODE_PREFIX}{device_code_hash}").into_bytes()
+}
+
+/// Returns the scan prefix for all device codes.
+///
+/// Format: `oauth:device:`
+#[allow(dead_code)]
+pub(crate) fn device_code_scan_prefix() -> Vec<u8> {
+    DEVICE_CODE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a user code to device code mapping.
+///
+/// Format: `oauth:ucode:{user_code}`
+pub(crate) fn encode_user_code(user_code: &str) -> Vec<u8> {
+    format!("{USER_CODE_PREFIX}{user_code}").into_bytes()
+}
+
+/// Returns the scan prefix for all user codes.
+///
+/// Format: `oauth:ucode:`
+#[allow(dead_code)]
+pub(crate) fn user_code_scan_prefix() -> Vec<u8> {
+    USER_CODE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a user's MFA TOTP state.
+///
+/// Format: `mfa:totp:{user_uuid}`
+pub(crate) fn encode_mfa_totp_key(user_id: &UserId) -> Vec<u8> {
+    format!("{MFA_TOTP_PREFIX}{}", user_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the storage key for a `WebAuthn` credential.
+///
+/// Format: `webauthn:cred:{user_uuid}:{credential_id_b64url}`
+///
+/// Supports prefix scanning all credentials for a user.
+pub(crate) fn encode_webauthn_credential(user_id: &UserId, credential_id_b64: &str) -> Vec<u8> {
+    format!(
+        "{WEBAUTHN_CRED_PREFIX}{}:{credential_id_b64}",
+        user_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for listing all `WebAuthn` credentials for a user.
+///
+/// Format: `webauthn:cred:{user_uuid}:`
+pub(crate) fn encode_webauthn_credentials_prefix(user_id: &UserId) -> Vec<u8> {
+    format!("{WEBAUTHN_CRED_PREFIX}{}:", user_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the discoverable credential index key.
+///
+/// Format: `webauthn:disc:{credential_id_b64url}`
+///
+/// Maps a credential ID to a user UUID for username-less authentication.
+pub(crate) fn encode_webauthn_discoverable(credential_id_b64: &str) -> Vec<u8> {
+    format!("{WEBAUTHN_DISC_PREFIX}{credential_id_b64}").into_bytes()
+}
+
+/// Encodes the storage key for a magic link token.
+///
+/// Format: `magic:link:{sha256_hex_of_token}`
+///
+/// The token hash is the SHA-256 hex digest of the plaintext token.
+/// The plaintext is never stored.
+pub(crate) fn encode_magic_link_token(token_hash: &str) -> Vec<u8> {
+    format!("{MAGIC_LINK_PREFIX}{token_hash}").into_bytes()
+}
+
+/// Encodes the storage key for an email verification token.
+///
+/// Format: `email:verify:{sha256_hex_of_token}`
+///
+/// The token hash is the SHA-256 hex digest of the plaintext token.
+/// The plaintext is never stored.
+pub(crate) fn encode_email_verify_token(token_hash: &str) -> Vec<u8> {
+    format!("{EMAIL_VERIFY_PREFIX}{token_hash}").into_bytes()
+}
+
+/// Encodes the storage key for a password reset token.
+///
+/// Format: `rst:token:{sha256_hex_of_token}`
+///
+/// The token hash is the SHA-256 hex digest of the plaintext token.
+/// The plaintext is never stored.
+pub(crate) fn encode_password_reset_token(token_hash: &str) -> Vec<u8> {
+    format!("{PASSWORD_RESET_PREFIX}{token_hash}").into_bytes()
+}
+
+/// Returns the scan prefix for password reset tokens (cascade deletion).
+///
+/// Format: `rst:token:`
+#[allow(dead_code)]
+pub(crate) fn password_reset_scan_prefix() -> Vec<u8> {
+    PASSWORD_RESET_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a revoked token JTI.
+///
+/// Format: `oauth:revjti:{jti}`
+///
+/// Used for revoking sessionless tokens (e.g., `client_credentials` access tokens)
+/// that cannot be revoked via session revocation.
+pub(crate) fn encode_revoked_jti(jti: &str) -> Vec<u8> {
+    format!("{REVOKED_JTI_PREFIX}{jti}").into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ClientId, SessionId};
+    use crate::core::{ClientId, SessionId, TenantId};
     use uuid::Uuid;
 
     #[test]
@@ -264,5 +487,91 @@ mod tests {
         let key1 = encode_oauth_client(&id1);
         let key2 = encode_oauth_client(&id2);
         assert_ne!(key1, key2);
+    }
+
+    // ===== Tenant key tests =====
+
+    #[test]
+    fn system_tenant_id_is_nil_uuid() {
+        let sys = system_tenant_id();
+        assert_eq!(*sys.as_uuid(), Uuid::nil());
+    }
+
+    #[test]
+    fn system_tenant_id_is_stable() {
+        assert_eq!(system_tenant_id(), system_tenant_id());
+    }
+
+    #[test]
+    fn encode_tenant_id_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let tenant_id = TenantId::new(uuid);
+        let key = encode_tenant_id(&tenant_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "tenant:id:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn tenant_id_key_starts_with_scan_prefix() {
+        let tenant_id = TenantId::generate();
+        let key = encode_tenant_id(&tenant_id);
+        let prefix = tenant_id_scan_prefix();
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn encode_tenant_signing_key_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let tenant_id = TenantId::new(uuid);
+        let key = encode_tenant_signing_key(&tenant_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "tenant:key:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn encode_mfa_totp_key_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let user_id = UserId::new(uuid);
+        let key = encode_mfa_totp_key(&user_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "mfa:totp:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn encode_webauthn_credential_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let user_id = UserId::new(uuid);
+        let key = encode_webauthn_credential(&user_id, "cred123");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(
+            key_str,
+            "webauthn:cred:550e8400-e29b-41d4-a716-446655440000:cred123"
+        );
+    }
+
+    #[test]
+    fn webauthn_credential_prefix_enables_scan() {
+        let user_id = UserId::generate();
+        let key = encode_webauthn_credential(&user_id, "credABC");
+        let prefix = encode_webauthn_credentials_prefix(&user_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn encode_webauthn_discoverable_format() {
+        let key = encode_webauthn_discoverable("abc123");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "webauthn:disc:abc123");
+    }
+
+    #[test]
+    fn different_tenants_produce_different_keys() {
+        let id1 = TenantId::generate();
+        let id2 = TenantId::generate();
+        assert_ne!(encode_tenant_id(&id1), encode_tenant_id(&id2));
+        assert_ne!(
+            encode_tenant_signing_key(&id1),
+            encode_tenant_signing_key(&id2)
+        );
     }
 }

@@ -3,6 +3,10 @@
 //! Implements the core data model: `(object#relation@subject)` tuples
 //! where subjects can be direct references or usersets.
 
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
 use crate::authz::error::AuthzError;
 
 /// Maximum length for object type and ID fields.
@@ -204,13 +208,169 @@ impl std::fmt::Display for RelationshipTuple {
 /// A write operation on a relationship tuple.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TupleWrite {
-    /// Add a relationship tuple.
+    /// Add a relationship tuple (upsert — succeeds even if already present).
     Touch(RelationshipTuple),
-    /// Remove a relationship tuple.
+    /// Remove a relationship tuple (succeeds even if not present).
     Delete(RelationshipTuple),
+    /// Add a relationship tuple only if it does not already exist.
+    ///
+    /// Fails with `AuthzError::PreconditionFailed` if the tuple is already present.
+    /// When used in a batch, all preconditions are validated before any writes
+    /// are applied (all-or-nothing semantics).
+    TouchIfAbsent(RelationshipTuple),
+    /// Remove a relationship tuple only if it currently exists.
+    ///
+    /// Fails with `AuthzError::PreconditionFailed` if the tuple is not present.
+    /// When used in a batch, all preconditions are validated before any writes
+    /// are applied (all-or-nothing semantics).
+    DeleteIfPresent(RelationshipTuple),
 }
 
-/// Filter for the `watch()` operation (stub for Phase 1+).
+/// An opaque consistency token returned from write operations.
+///
+/// In Zanzibar terminology, this is a "zookie" — a monotonically increasing
+/// version that establishes causal ordering. Clients pass tokens to read
+/// operations via `at_least` to guarantee they see the effects of prior writes.
+///
+/// In single-node mode, consistency is always satisfied. The token contract
+/// becomes meaningful in Phase 2 clustering where reads may hit stale replicas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ConsistencyToken(u64);
+
+impl ConsistencyToken {
+    /// Creates a new consistency token with the given version.
+    ///
+    /// This is the internal constructor. External callers receive tokens
+    /// from `write_tuples()` and pass them to `check()`, `expand()`, or `watch()`.
+    pub fn new(version: u64) -> Self {
+        Self(version)
+    }
+
+    /// Returns the underlying version number.
+    pub fn version(&self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ConsistencyToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "zookie:{}", self.0)
+    }
+}
+
+/// Namespace configuration defining valid object types, relations, and subject types.
+///
+/// When set for a tenant, `write_tuples()` validates every tuple against this
+/// schema before persisting. If not set, all tuples are accepted (backward
+/// compatible with Phase 0).
+///
+/// Stored as JSON in storage under the `ns:config` key per tenant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamespaceConfig {
+    /// Map of object type names to their configuration.
+    pub object_types: HashMap<String, ObjectTypeConfig>,
+}
+
+/// Configuration for a single object type within the namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectTypeConfig {
+    /// Map of relation names to their configuration.
+    pub relations: HashMap<String, RelationConfig>,
+}
+
+/// Configuration for a single relation within an object type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationConfig {
+    /// Object types allowed as subjects for this relation.
+    ///
+    /// If a tuple's subject type is not in this list, `write_tuples()` will
+    /// reject it with `AuthzError::InvalidNamespace`.
+    pub allowed_subject_types: Vec<String>,
+}
+
+/// The action type in a tuple change event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TupleChangeAction {
+    /// A tuple was added.
+    Touch,
+    /// A tuple was removed.
+    Delete,
+}
+
+/// An event representing a change to a relationship tuple.
+///
+/// Emitted by the watch API for real-time notification of tuple changes.
+/// Events are persisted in storage for replay on reconnection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TupleChangeEvent {
+    /// Monotonic sequence number (same counter as `ConsistencyToken`).
+    pub sequence: u64,
+    /// Whether the tuple was added or removed.
+    pub action: TupleChangeAction,
+    /// The object type of the affected tuple.
+    pub object_type: String,
+    /// The object ID of the affected tuple.
+    pub object_id: String,
+    /// The relation of the affected tuple.
+    pub relation: String,
+    /// The subject display string of the affected tuple.
+    pub subject: String,
+    /// The tenant this event belongs to.
+    pub tenant_id: String,
+    /// Timestamp in Unix microseconds.
+    pub timestamp_us: u64,
+}
+
+/// A receiver for watch events from the authorization engine.
+///
+/// Wraps a `tokio::sync::broadcast::Receiver` for real-time delivery,
+/// and optionally replays persisted events for catch-up on reconnection.
+pub struct WatchReceiver {
+    /// The broadcast receiver for live events.
+    pub(crate) rx: tokio::sync::broadcast::Receiver<TupleChangeEvent>,
+    /// Persisted events replayed from storage (empty after initial delivery).
+    pub(crate) replay_events: Vec<TupleChangeEvent>,
+}
+
+impl WatchReceiver {
+    /// Drains any replayed events from storage (catch-up after reconnection).
+    ///
+    /// Returns `None` when all replay events have been consumed.
+    /// After replay is exhausted, use `recv()` for live events.
+    pub fn drain_replay(&mut self) -> Option<TupleChangeEvent> {
+        if self.replay_events.is_empty() {
+            None
+        } else {
+            Some(self.replay_events.remove(0))
+        }
+    }
+
+    /// Receives the next live event from the broadcast channel.
+    ///
+    /// Returns `None` if the channel is closed (all senders dropped).
+    /// Lagged events (if the receiver falls behind) are skipped.
+    pub async fn recv(&mut self) -> Option<TupleChangeEvent> {
+        loop {
+            match self.rx.recv().await {
+                Ok(event) => return Some(event),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // Receiver fell behind — skip lagged events and try again
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for WatchReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchReceiver")
+            .field("replay_count", &self.replay_events.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Filter for the `watch()` operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchFilter {
     /// Optional object type to filter on.

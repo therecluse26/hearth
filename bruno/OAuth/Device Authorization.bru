@@ -1,0 +1,32 @@
+meta {
+  name: Device Authorization
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/device_authorization
+  body: json
+  auth: none
+}
+
+headers {
+  X-Tenant-ID: {{tenantId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "client_id": "{{clientId}}",
+    "scope": "openid profile email"
+  }
+}
+
+script:post-response {
+  const status = res.getStatus();
+  if (status >= 200 && status < 300 && res.getBody()) {
+    const body = res.getBody();
+    if (body.device_code) bru.setEnvVar("deviceCode", body.device_code);
+    if (body.user_code)   bru.setEnvVar("userCode",   body.user_code);
+  }
+}

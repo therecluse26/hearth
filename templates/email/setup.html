@@ -1,0 +1,10 @@
+{% extends "email/base.html" %}
+{% block title %}{{ product_name }} Setup Required{% endblock %}
+{% block content %}
+<p>{{ product_name }} is running for the first time and requires initial setup.</p>
+<div class="btn-wrapper">
+  <a href="{{ setup_url }}" class="btn">Complete Setup</a>
+</div>
+<p class="url-fallback">If the button doesn't work, copy and paste this URL into your browser:<br>{{ setup_url }}</p>
+<p>This link is valid until setup is complete.</p>
+{% endblock %}

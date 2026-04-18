@@ -7,8 +7,22 @@ mod env;
 pub mod error;
 mod types;
 
+pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
-pub use types::{ObservabilityConfig, OperationalConfig, ServerConfig, StorageSection};
+pub use types::{
+    EmailConfig, EmailTransport, MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig,
+    OnboardingConfig, OperationalConfig, PostmarkConfig, SendgridConfig, ServerConfig, SmtpConfig,
+    SmtpEncryption, StorageSection,
+};
+
+/// Helper: construct a validation error without repeating the struct
+/// literal everywhere the email validator fires.
+fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
+    ConfigError::ValidationError {
+        field: field.to_string(),
+        reason: reason.into(),
+    }
+}
 
 use serde::Deserialize;
 use std::path::Path;
@@ -31,30 +45,51 @@ pub struct Config {
     /// Operational limits and timeouts.
     #[serde(default)]
     pub operational: OperationalConfig,
+    /// Outbound email delivery settings.
+    #[serde(default)]
+    pub email: EmailConfig,
+    /// First-run onboarding settings.
+    #[serde(default)]
+    pub onboarding: OnboardingConfig,
     /// Whether development mode is active. Not serialized — set by [`Config::dev`].
     #[serde(skip)]
     pub dev_mode: bool,
+    /// Env-var substitution warnings from config loading (missing/empty variables).
+    /// Skipped during serde deserialization — populated by [`Config::from_file`]
+    /// and [`Config::from_yaml_str`].
+    #[serde(skip)]
+    pub config_warnings: Vec<EnvVarWarning>,
 }
 
 impl Config {
     /// Parses a YAML string into a validated [`Config`].
     ///
-    /// Environment variables referenced as `${VAR_NAME}` are substituted
-    /// before parsing. Returns an error for invalid YAML, missing env vars,
-    /// or values that fail validation.
+    /// Environment variables referenced as `${VAR_NAME}` or
+    /// `${VAR_NAME:-default}` are substituted before parsing. Missing or
+    /// empty variables (without a default) produce warnings rather than
+    /// errors — see [`EnvVarWarning`].
+    ///
+    /// Returns an error for invalid YAML or values that fail validation.
     pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
-        let substituted = env::substitute_env_vars(yaml)?;
-        let config: Self = serde_yaml::from_str(&substituted)
+        let (substituted, warnings) = env::substitute_env_vars(yaml);
+        let mut config: Self = serde_yaml::from_str(&substituted)
             .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        config.config_warnings = warnings;
         config.validate()?;
         Ok(config)
     }
 
     /// Loads configuration from a YAML file on disk.
     ///
-    /// Reads the file, substitutes environment variables, parses YAML,
-    /// and validates the result.
+    /// Before reading the YAML, looks for a `.env` file in the same directory
+    /// as `path` and loads it if present (missing `.env` is silently ignored).
+    /// Variables already set in the process environment take precedence over
+    /// `.env` values. After that, substitutes `${VAR}` references, parses
+    /// YAML, and validates the result.
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
+        if let Some(dir) = path.parent() {
+            env::load_dotenv(&dir.join(".env"))?;
+        }
         let content = std::fs::read_to_string(path)?;
         Self::from_yaml_str(&content)
     }
@@ -73,6 +108,8 @@ impl Config {
                 port: 8420,
                 tls_cert_path: None,
                 tls_key_path: None,
+                tls_client_ca_path: None,
+                tls_require_client_cert: false,
             },
             storage: StorageSection {
                 data_dir: String::new(),
@@ -86,7 +123,10 @@ impl Config {
                 log_format: "text".to_string(),
             },
             operational: OperationalConfig::default(),
+            email: EmailConfig::default(),
+            onboarding: OnboardingConfig::default(),
             dev_mode: true,
+            config_warnings: Vec::new(),
         }
     }
 
@@ -100,6 +140,32 @@ impl Config {
             return Err(ConfigError::ValidationError {
                 field: "server.port".to_string(),
                 reason: "must be between 1 and 65535".to_string(),
+            });
+        }
+
+        // TLS: cert and key must both be present or both absent
+        match (&self.server.tls_cert_path, &self.server.tls_key_path) {
+            (Some(_), None) => {
+                return Err(ConfigError::ValidationError {
+                    field: "server.tls_key_path".to_string(),
+                    reason: "tls_key_path is required when tls_cert_path is set".to_string(),
+                });
+            }
+            (None, Some(_)) => {
+                return Err(ConfigError::ValidationError {
+                    field: "server.tls_cert_path".to_string(),
+                    reason: "tls_cert_path is required when tls_key_path is set".to_string(),
+                });
+            }
+            _ => {}
+        }
+
+        // mTLS: require_client_cert needs a CA path
+        if self.server.tls_require_client_cert && self.server.tls_client_ca_path.is_none() {
+            return Err(ConfigError::ValidationError {
+                field: "server.tls_client_ca_path".to_string(),
+                reason: "tls_client_ca_path is required when tls_require_client_cert is true"
+                    .to_string(),
             });
         }
 
@@ -164,8 +230,159 @@ impl Config {
             });
         }
 
+        validate_email(&self.email)?;
+
+        // notification_email: if set, must be a valid RFC 5322 mailbox
+        if let Some(addr) = &self.onboarding.notification_email {
+            addr.parse::<lettre::message::Mailbox>().map_err(|e| {
+                invalid(
+                    "onboarding.notification_email",
+                    format!("could not parse as an RFC 5322 mailbox: {e}"),
+                )
+            })?;
+        }
+
         Ok(())
     }
+}
+
+/// Validates the `email` section.
+///
+/// Each transport has its own structural requirements. `Log` accepts
+/// any combination (including all `None`).
+fn validate_email(email: &EmailConfig) -> Result<(), ConfigError> {
+    match email.transport {
+        EmailTransport::Log => return Ok(()),
+        EmailTransport::Smtp => validate_email_smtp(email)?,
+        EmailTransport::Sendgrid => validate_email_sendgrid(email)?,
+        EmailTransport::Postmark => validate_email_postmark(email)?,
+        EmailTransport::Mailgun => validate_email_mailgun(email)?,
+        EmailTransport::Mailtrap => validate_email_mailtrap(email)?,
+    }
+    Ok(())
+}
+
+/// Validates SMTP transport configuration.
+fn validate_email_smtp(email: &EmailConfig) -> Result<(), ConfigError> {
+    let smtp = email.smtp.as_ref().ok_or_else(|| {
+        invalid(
+            "email.smtp",
+            "smtp block is required when email.transport is smtp",
+        )
+    })?;
+
+    validate_from_address(email)?;
+
+    // Credentials: either both or neither.
+    match (&smtp.username, &smtp.password) {
+        (Some(u), _) if u.is_empty() => {
+            return Err(invalid("email.smtp.username", "must not be empty"));
+        }
+        (Some(_), None) => {
+            return Err(invalid(
+                "email.smtp.password",
+                "password is required when username is set",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(invalid(
+                "email.smtp.username",
+                "username is required when password is set",
+            ));
+        }
+        _ => {}
+    }
+
+    if smtp.host.is_empty() {
+        return Err(invalid("email.smtp.host", "must not be empty"));
+    }
+    if smtp.port == 0 {
+        return Err(invalid("email.smtp.port", "must be between 1 and 65535"));
+    }
+    Ok(())
+}
+
+/// Validates `SendGrid` transport configuration.
+fn validate_email_sendgrid(email: &EmailConfig) -> Result<(), ConfigError> {
+    let sg = email.sendgrid.as_ref().ok_or_else(|| {
+        invalid(
+            "email.sendgrid",
+            "sendgrid block is required when email.transport is sendgrid",
+        )
+    })?;
+    validate_from_address(email)?;
+    if sg.api_key.is_empty() {
+        return Err(invalid("email.sendgrid.api_key", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates `Postmark` transport configuration.
+fn validate_email_postmark(email: &EmailConfig) -> Result<(), ConfigError> {
+    let pm = email.postmark.as_ref().ok_or_else(|| {
+        invalid(
+            "email.postmark",
+            "postmark block is required when email.transport is postmark",
+        )
+    })?;
+    validate_from_address(email)?;
+    if pm.server_token.is_empty() {
+        return Err(invalid("email.postmark.server_token", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates `Mailgun` transport configuration.
+fn validate_email_mailgun(email: &EmailConfig) -> Result<(), ConfigError> {
+    let mg = email.mailgun.as_ref().ok_or_else(|| {
+        invalid(
+            "email.mailgun",
+            "mailgun block is required when email.transport is mailgun",
+        )
+    })?;
+    validate_from_address(email)?;
+    if mg.api_key.is_empty() {
+        return Err(invalid("email.mailgun.api_key", "must not be empty"));
+    }
+    if mg.domain.is_empty() {
+        return Err(invalid("email.mailgun.domain", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates `Mailtrap` transport configuration.
+fn validate_email_mailtrap(email: &EmailConfig) -> Result<(), ConfigError> {
+    let mt = email.mailtrap.as_ref().ok_or_else(|| {
+        invalid(
+            "email.mailtrap",
+            "mailtrap block is required when email.transport is mailtrap",
+        )
+    })?;
+    validate_from_address(email)?;
+    if mt.api_key.is_empty() {
+        return Err(invalid("email.mailtrap.api_key", "must not be empty"));
+    }
+    Ok(())
+}
+
+/// Validates the `from` address (shared across all non-log transports).
+fn validate_from_address(email: &EmailConfig) -> Result<(), ConfigError> {
+    let from = email.from.as_ref().ok_or_else(|| {
+        invalid(
+            "email.from",
+            format!(
+                "from address is required when email.transport is {:?}",
+                email.transport
+            ),
+        )
+    })?;
+    from.parse::<lettre::message::Mailbox>().map_err(|e| {
+        invalid(
+            "email.from",
+            format!("could not parse as an RFC 5322 mailbox: {e}"),
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -380,6 +597,57 @@ storage:
     }
 
     #[test]
+    fn from_file_auto_loads_dotenv_sibling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        std::fs::write(
+            dir.path().join(".env"),
+            "HEARTH_FFILE_DOTENV_PORT=7654\nHEARTH_FFILE_DOTENV_DIR=/dotenv/data\n",
+        )
+        .expect("write .env");
+        std::fs::write(
+            dir.path().join("hearth.yaml"),
+            "server:\n  port: ${HEARTH_FFILE_DOTENV_PORT}\nstorage:\n  data_dir: ${HEARTH_FFILE_DOTENV_DIR}\n",
+        )
+        .expect("write hearth.yaml");
+
+        std::env::remove_var("HEARTH_FFILE_DOTENV_PORT");
+        std::env::remove_var("HEARTH_FFILE_DOTENV_DIR");
+
+        let config =
+            Config::from_file(&dir.path().join("hearth.yaml")).expect("load with .env sibling");
+        assert_eq!(config.server.port, 7654);
+        assert_eq!(config.storage.data_dir, "/dotenv/data");
+
+        std::env::remove_var("HEARTH_FFILE_DOTENV_PORT");
+        std::env::remove_var("HEARTH_FFILE_DOTENV_DIR");
+    }
+
+    #[test]
+    fn from_file_real_env_beats_dotenv() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        std::fs::write(
+            dir.path().join(".env"),
+            "HEARTH_FFILE_PRIORITY=from_dotenv\n",
+        )
+        .expect("write .env");
+        std::fs::write(
+            dir.path().join("hearth.yaml"),
+            "storage:\n  data_dir: ${HEARTH_FFILE_PRIORITY}\n",
+        )
+        .expect("write hearth.yaml");
+
+        std::env::set_var("HEARTH_FFILE_PRIORITY", "from_real_env");
+
+        let config =
+            Config::from_file(&dir.path().join("hearth.yaml")).expect("real env takes precedence");
+        assert_eq!(config.storage.data_dir, "from_real_env");
+
+        std::env::remove_var("HEARTH_FFILE_PRIORITY");
+    }
+
+    #[test]
     fn load_from_missing_file_returns_error() {
         let result = Config::from_file(Path::new("/nonexistent/hearth.yaml"));
         assert!(result.is_err());
@@ -407,11 +675,244 @@ storage:
         std::env::remove_var("HEARTH_CFG_DIR");
     }
 
+    // === TLS config validation ===
+
+    #[test]
+    fn reject_cert_without_key() {
+        let yaml = r#"
+server:
+  tls_cert_path: "/etc/hearth/cert.pem"
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("tls_key_path"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_key_without_cert() {
+        let yaml = r#"
+server:
+  tls_key_path: "/etc/hearth/key.pem"
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("tls_cert_path"), "got: {display}");
+    }
+
+    #[test]
+    fn reject_require_client_cert_without_ca() {
+        let yaml = r#"
+server:
+  tls_cert_path: "/etc/hearth/cert.pem"
+  tls_key_path: "/etc/hearth/key.pem"
+  tls_require_client_cert: true
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err());
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("tls_client_ca_path"), "got: {display}");
+    }
+
+    #[test]
+    fn accept_valid_tls_config() {
+        let yaml = r#"
+server:
+  tls_cert_path: "/etc/hearth/cert.pem"
+  tls_key_path: "/etc/hearth/key.pem"
+  tls_client_ca_path: "/etc/hearth/ca.pem"
+  tls_require_client_cert: true
+storage:
+  data_dir: "/tmp/hearth"
+"#;
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_ok(), "valid TLS config should pass: {result:?}");
+    }
+
     // === Config is Send + Sync (for Arc<Config>) ===
 
     #[test]
     fn config_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Config>();
+    }
+
+    // === Email / SMTP validation ===
+
+    #[test]
+    fn email_smtp_requires_smtp_block() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing smtp should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.smtp"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_requires_from() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing from should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.from"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_rejects_malformed_from() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "not an address"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("malformed from should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.from"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_rejects_username_without_password() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    username: "u"
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing password should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.smtp.password"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_rejects_password_without_username() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    password: "p"
+"#;
+        let err = Config::from_yaml_str(yaml).expect_err("missing username should fail");
+        let display = format!("{err}");
+        assert!(display.contains("email.smtp.username"), "got: {display}");
+    }
+
+    #[test]
+    fn email_smtp_accepts_minimal_valid_config() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "Hearth <auth@example.com>"
+  smtp:
+    host: "mailpit"
+    port: 1025
+    encryption: none
+"#;
+        let config = Config::from_yaml_str(yaml).expect("valid SMTP config should parse");
+        assert_eq!(config.email.transport, EmailTransport::Smtp);
+        let smtp = config.email.smtp.as_ref().expect("smtp present");
+        assert_eq!(smtp.host, "mailpit");
+        assert_eq!(smtp.port, 1025);
+        assert_eq!(smtp.encryption, SmtpEncryption::None);
+        assert!(smtp.username.is_none());
+    }
+
+    #[test]
+    fn onboarding_notification_email_accepts_valid_address() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+onboarding:
+  notification_email: "ops@example.com"
+"#;
+        let config = Config::from_yaml_str(yaml).expect("valid notification_email should parse");
+        assert_eq!(
+            config.onboarding.notification_email.as_deref(),
+            Some("ops@example.com")
+        );
+    }
+
+    #[test]
+    fn onboarding_notification_email_rejects_malformed_address() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+onboarding:
+  notification_email: "not an address"
+"#;
+        let err =
+            Config::from_yaml_str(yaml).expect_err("malformed notification_email should fail");
+        let display = format!("{err}");
+        assert!(
+            display.contains("onboarding.notification_email"),
+            "got: {display}"
+        );
+    }
+
+    #[test]
+    fn onboarding_notification_email_accepts_absent() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+onboarding: {}
+"#;
+        let config = Config::from_yaml_str(yaml).expect("absent notification_email is fine");
+        assert!(config.onboarding.notification_email.is_none());
+    }
+
+    #[test]
+    fn email_smtp_accepts_credentialed_config() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+email:
+  transport: smtp
+  from: "auth@example.com"
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    encryption: starttls
+    username: "notifications"
+    password: "hunter2"
+"#;
+        let config = Config::from_yaml_str(yaml).expect("credentialed config should parse");
+        let smtp = config.email.smtp.expect("smtp present");
+        assert_eq!(smtp.encryption, SmtpEncryption::Starttls);
+        assert_eq!(smtp.username.as_deref(), Some("notifications"));
+        assert_eq!(smtp.password.as_deref(), Some("hunter2"));
     }
 }

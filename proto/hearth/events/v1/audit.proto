@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package hearth.events.v1;
+
+option go_package = "github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1";
+
+// Categories of security-critical actions recorded in the audit log.
+enum AuditAction {
+  AUDIT_ACTION_UNSPECIFIED = 0;
+  AUDIT_ACTION_USER_CREATED = 1;
+  AUDIT_ACTION_USER_UPDATED = 2;
+  AUDIT_ACTION_USER_DELETED = 3;
+  AUDIT_ACTION_CREDENTIAL_SET = 4;
+  AUDIT_ACTION_CREDENTIAL_CHANGED = 5;
+  AUDIT_ACTION_CREDENTIAL_VERIFIED = 6;
+  AUDIT_ACTION_SESSION_CREATED = 7;
+  AUDIT_ACTION_SESSION_REVOKED = 8;
+  AUDIT_ACTION_TOKEN_ISSUED = 9;
+  AUDIT_ACTION_TOKEN_REFRESHED = 10;
+  AUDIT_ACTION_TENANT_CREATED = 11;
+  AUDIT_ACTION_TENANT_UPDATED = 12;
+  AUDIT_ACTION_TENANT_DELETED = 13;
+  AUDIT_ACTION_CLIENT_REGISTERED = 14;
+  AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED = 15;
+  AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED = 16;
+  AUDIT_ACTION_TUPLE_WRITTEN = 17;
+  AUDIT_ACTION_TUPLE_DELETED = 18;
+  AUDIT_ACTION_CLIENT_UPDATED = 19;
+  AUDIT_ACTION_CLIENT_DELETED = 20;
+  AUDIT_ACTION_BULK_USERS_CREATED = 21;
+  AUDIT_ACTION_BULK_USERS_DISABLED = 22;
+}
+
+// A recorded audit event in the append-only log.
+message AuditEvent {
+  string id = 1;
+  string tenant_id = 2;
+  string actor = 3;
+  AuditAction action = 4;
+  string resource_type = 5;
+  string resource_id = 6;
+  int64 timestamp = 7;
+  // Optional additional context (JSON-encoded).
+  optional string metadata = 8;
+  string integrity_hash = 9;
+}
+
+// Request to append a new audit event.
+message CreateAuditEvent {
+  string tenant_id = 1;
+  string actor = 2;
+  AuditAction action = 3;
+  string resource_type = 4;
+  string resource_id = 5;
+  // Optional additional context (JSON-encoded).
+  optional string metadata = 6;
+}
+
+// Query parameters for filtering audit events.
+message AuditQuery {
+  string tenant_id = 1;
+  optional int64 start_time = 2;
+  optional int64 end_time = 3;
+  optional string actor = 4;
+  optional AuditAction action = 5;
+  optional uint32 limit = 6;
+}

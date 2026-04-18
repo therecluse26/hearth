@@ -46,6 +46,8 @@ async fn oidc_authorization_code_flow_roundtrip() {
             &RegisterClientRequest {
                 client_name: "Integration Test App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                client_secret: None,
+                grant_types: vec!["authorization_code".to_string()],
             },
         )
         .expect("register client");
@@ -332,6 +334,8 @@ async fn oidc_pkce_s256_flow() {
             &RegisterClientRequest {
                 client_name: "PKCE Test App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                client_secret: None,
+                grant_types: vec!["authorization_code".to_string()],
             },
         )
         .expect("register client");
@@ -635,6 +639,8 @@ async fn conformance_token_endpoint_rfc6749() {
             &hearth::identity::RegisterClientRequest {
                 client_name: "RFC 6749 Conformance App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                client_secret: None,
+                grant_types: vec!["authorization_code".to_string()],
             },
         )
         .expect("register client");

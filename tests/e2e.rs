@@ -56,6 +56,8 @@ async fn developer_onramp_tenant_app_oidc_login() {
             &RegisterClientRequest {
                 client_name: "My SaaS App".to_string(),
                 redirect_uris: vec!["https://app.startup.io/callback".to_string()],
+                client_secret: None,
+                grant_types: vec!["authorization_code".to_string()],
             },
         )
         .expect("register client");
@@ -268,21 +270,21 @@ async fn auth_plus_authz_permission_grant_and_check() {
     // 5. Check permission — should be granted
     let has_access = harness
         .authz()
-        .check(&tenant, &object, "owner", &subject)
+        .check(&tenant, &object, "owner", &subject, None)
         .expect("check");
     assert!(has_access, "user should have owner permission");
 
     // 6. Check non-existent permission — should be denied
     let no_access = harness
         .authz()
-        .check(&tenant, &object, "admin", &subject)
+        .check(&tenant, &object, "admin", &subject, None)
         .expect("check admin");
     assert!(!no_access, "user should NOT have admin permission");
 
     // 7. Expand should list the user as owner
     let owners = harness
         .authz()
-        .expand(&tenant, &object, "owner")
+        .expand(&tenant, &object, "owner", None)
         .expect("expand");
     assert!(
         owners.contains(&subject),

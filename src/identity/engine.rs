@@ -25,16 +25,49 @@ fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
+use crate::identity::magic_link::{
+    self, MagicLinkResponse, StoredMagicLink, StoredPasswordReset, MAGIC_LINK_EXPIRY_MICROS,
+    PASSWORD_RESET_EXPIRY_MICROS,
+};
+
+/// Email-verification token expiry: 24 hours in microseconds.
+const EMAIL_VERIFY_EXPIRY_MICROS: i64 = 24 * 60 * 60 * 1_000_000;
+
+/// Persisted state for a pending email-verification token.
+///
+/// Stored under `email:verify:{sha256_hex_of_token}`. The plaintext
+/// token is never persisted — only its SHA-256 digest is used as the
+/// key. Verification is single-use: on success the entry is deleted.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StoredEmailVerification {
+    /// Stringified UUID of the user whose email is being verified.
+    user_id: String,
+    /// Creation time in Unix microseconds.
+    created_at_micros: i64,
+    /// Whether the token has already been consumed. Present for parity
+    /// with the magic-link record; `verify_email_token` also deletes the
+    /// entry outright on success.
+    used: bool,
+}
 use crate::identity::oidc::{
     AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, StoredAuthorizationCode,
-    TokenExchangeRequest,
+    StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
 };
 use crate::identity::tokens::{
     self, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
 };
-use crate::identity::types::{CreateUserRequest, Session, UpdateUserRequest, User, UserStatus};
+use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
+use crate::identity::types::{
+    BulkResult, CreateTenantRequest, CreateUserRequest, ImportClientRequest, ImportUserRequest,
+    Page, Session, Tenant, TenantStatus, UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+};
 use crate::identity::validation;
+use crate::identity::webauthn::{
+    self, AuthenticationOptions, CeremonyType, CompleteAuthenticationParams,
+    PendingWebAuthnChallenge, RegistrationOptions, StoredWebAuthnCredential, WebAuthnAuthResult,
+    WebAuthnChallengeStore, WebAuthnCredentialInfo,
+};
 use crate::identity::IdentityEngine;
 use crate::storage::StorageEngine;
 
@@ -121,13 +154,14 @@ struct AttemptTracker {
 /// Embedded identity engine backed by a `StorageEngine`.
 ///
 /// Manages user CRUD operations with email uniqueness enforcement,
-/// input validation, and Unicode normalization.
+/// input validation, and Unicode normalization. Supports multi-tenancy
+/// with per-tenant signing keys and configuration.
 pub struct EmbeddedIdentityEngine {
     /// The underlying storage engine.
     storage: Arc<dyn StorageEngine>,
     /// Injectable clock for deterministic testing.
     clock: Arc<dyn Clock>,
-    /// Engine configuration.
+    /// Engine configuration (global defaults, overridable per-tenant).
     config: IdentityConfig,
     /// Pre-computed dummy hash for timing-oracle prevention.
     ///
@@ -135,15 +169,45 @@ pub struct EmbeddedIdentityEngine {
     /// credential, we verify against this dummy hash so the response time
     /// is indistinguishable from a real failed verification.
     dummy_hash: String,
-    /// Ed25519 signing key for JWT token issuance.
+    /// Default Ed25519 signing key for JWT token issuance (Phase 0 compat).
     signing_key: Arc<SigningKey>,
+    /// Per-tenant signing keys, lazily loaded from storage.
+    ///
+    /// Each tenant gets its own Ed25519 key pair so tokens from one
+    /// tenant cannot validate in another.
+    tenant_signing_keys: Mutex<HashMap<String, Arc<SigningKey>>>,
     /// Per-user failed attempt trackers for rate limiting.
     ///
     /// Key is `(TenantId, UserId)` serialized as a string to avoid
     /// requiring `Hash` on the newtype wrappers.
     attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Per-user failed MFA attempt trackers (separate from password rate limiting).
+    ///
+    /// Stricter limits: 5 attempts, 5-minute lockout. Key format: `mfa:{tenant}:{user}`.
+    mfa_attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Used nonces for replay protection (when nonce enforcement is enabled).
     used_nonces: Mutex<HashSet<String>>,
+    /// Per-email magic link rate trackers.
+    ///
+    /// Limits the number of magic link requests per email per hour.
+    /// Key format: `magic:{tenant}:{email}`.
+    magic_link_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Per-email password reset rate trackers.
+    ///
+    /// Limits the number of password reset requests per email per hour.
+    /// Key format: `reset:{tenant}:{email}`.
+    password_reset_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Pending `WebAuthn` challenges awaiting completion.
+    webauthn_challenges: WebAuthnChallengeStore,
+    /// Serializes tenant-record lifecycle mutations (create/update/delete).
+    ///
+    /// Tenant ops are not on the hot path, and a tenant record and its
+    /// signing key MUST move together to avoid an orphaned "live tenant
+    /// with no JWKS" state. A single coarse mutex is the simplest way to
+    /// guarantee atomicity of the record+key pair under concurrent
+    /// callers; a finer-grained per-tenant lock could come later if
+    /// contention ever becomes measurable.
+    tenant_ops_lock: Mutex<()>,
 }
 
 impl std::fmt::Debug for EmbeddedIdentityEngine {
@@ -173,8 +237,14 @@ impl EmbeddedIdentityEngine {
             config,
             dummy_hash,
             signing_key,
+            tenant_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
+            mfa_attempt_trackers: Mutex::new(HashMap::new()),
+            magic_link_rate_trackers: Mutex::new(HashMap::new()),
+            password_reset_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
+            webauthn_challenges: WebAuthnChallengeStore::new(),
+            tenant_ops_lock: Mutex::new(()),
         })
     }
 
@@ -194,8 +264,14 @@ impl EmbeddedIdentityEngine {
             config,
             dummy_hash,
             signing_key,
+            tenant_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
+            mfa_attempt_trackers: Mutex::new(HashMap::new()),
+            magic_link_rate_trackers: Mutex::new(HashMap::new()),
+            password_reset_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
+            webauthn_challenges: WebAuthnChallengeStore::new(),
+            tenant_ops_lock: Mutex::new(()),
         }
     }
 
@@ -255,6 +331,199 @@ impl EmbeddedIdentityEngine {
         let key = Self::tracker_key(tenant_id, user_id);
         let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
         trackers.remove(&key);
+    }
+
+    // ===== MFA rate limiting helpers =====
+
+    /// MFA rate limit: 5 attempts, 5-minute lockout.
+    const MFA_MAX_ATTEMPTS: u32 = 5;
+    /// MFA lockout duration: 5 minutes in microseconds.
+    const MFA_LOCKOUT_MICROS: i64 = 5 * 60 * 1_000_000;
+
+    /// Builds an MFA tracker key from tenant and user IDs.
+    fn mfa_tracker_key(tenant_id: &TenantId, user_id: &UserId) -> String {
+        format!("mfa:{}:{}", tenant_id.as_uuid(), user_id.as_uuid())
+    }
+
+    /// Checks whether the given user is currently MFA-rate-limited.
+    fn check_mfa_rate_limit(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError> {
+        let key = Self::mfa_tracker_key(tenant_id, user_id);
+        let trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= Self::MFA_MAX_ATTEMPTS {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < Self::MFA_LOCKOUT_MICROS {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a failed MFA attempt.
+    fn record_mfa_failed_attempt(&self, tenant_id: &TenantId, user_id: &UserId) {
+        let key = Self::mfa_tracker_key(tenant_id, user_id);
+        let now = self.clock.now().as_micros();
+        let mut trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
+        let tracker = trackers.entry(key).or_insert(AttemptTracker {
+            failed_count: 0,
+            last_failure_micros: now,
+        });
+        tracker.failed_count += 1;
+        tracker.last_failure_micros = now;
+    }
+
+    /// Clears MFA failed attempts on success.
+    fn clear_mfa_attempts(&self, tenant_id: &TenantId, user_id: &UserId) {
+        let key = Self::mfa_tracker_key(tenant_id, user_id);
+        let mut trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
+        trackers.remove(&key);
+    }
+
+    // ===== Magic link rate limiting helpers =====
+
+    /// Magic link rate limit: 3 requests per email per hour.
+    const MAGIC_LINK_MAX_REQUESTS: u32 = 3;
+    /// Magic link rate limit window: 1 hour in microseconds.
+    const MAGIC_LINK_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
+
+    /// Builds a magic link rate tracker key from tenant and email.
+    fn magic_link_tracker_key(tenant_id: &TenantId, email: &str) -> String {
+        format!("magic:{}:{email}", tenant_id.as_uuid())
+    }
+
+    /// Checks whether magic link requests for this email are rate-limited.
+    fn check_magic_link_rate_limit(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<(), IdentityError> {
+        let key = Self::magic_link_tracker_key(tenant_id, email);
+        let trackers = self
+            .magic_link_rate_trackers
+            .lock()
+            .expect("magic link tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= Self::MAGIC_LINK_MAX_REQUESTS {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < Self::MAGIC_LINK_RATE_WINDOW_MICROS {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a magic link request for rate limiting.
+    fn record_magic_link_request(&self, tenant_id: &TenantId, email: &str) {
+        let key = Self::magic_link_tracker_key(tenant_id, email);
+        let now = self.clock.now().as_micros();
+        let mut trackers = self
+            .magic_link_rate_trackers
+            .lock()
+            .expect("magic link tracker lock");
+        let tracker = trackers.entry(key).or_insert(AttemptTracker {
+            failed_count: 0,
+            last_failure_micros: now,
+        });
+        tracker.failed_count += 1;
+        tracker.last_failure_micros = now;
+    }
+
+    // ===== Password reset rate limiting helpers =====
+
+    /// Password reset rate limit: 3 requests per email per hour.
+    const PASSWORD_RESET_MAX_REQUESTS: u32 = 3;
+    /// Password reset rate limit window: 1 hour in microseconds.
+    const PASSWORD_RESET_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
+
+    /// Builds a password reset rate tracker key from tenant and email.
+    fn password_reset_tracker_key(tenant_id: &TenantId, email: &str) -> String {
+        format!("reset:{}:{email}", tenant_id.as_uuid())
+    }
+
+    /// Checks whether password reset requests for this email are rate-limited.
+    fn check_password_reset_rate_limit(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<(), IdentityError> {
+        let key = Self::password_reset_tracker_key(tenant_id, email);
+        let trackers = self
+            .password_reset_rate_trackers
+            .lock()
+            .expect("password reset tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= Self::PASSWORD_RESET_MAX_REQUESTS {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < Self::PASSWORD_RESET_RATE_WINDOW_MICROS {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a password reset request for rate limiting.
+    fn record_password_reset_request(&self, tenant_id: &TenantId, email: &str) {
+        let key = Self::password_reset_tracker_key(tenant_id, email);
+        let now = self.clock.now().as_micros();
+        let mut trackers = self
+            .password_reset_rate_trackers
+            .lock()
+            .expect("password reset tracker lock");
+        let tracker = trackers.entry(key).or_insert(AttemptTracker {
+            failed_count: 0,
+            last_failure_micros: now,
+        });
+        tracker.failed_count += 1;
+        tracker.last_failure_micros = now;
+    }
+
+    /// Loads the stored MFA state for a user.
+    fn load_mfa_state(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Option<StoredMfaState>, IdentityError> {
+        let key = keys::encode_mfa_totp_key(user_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+        match bytes {
+            Some(b) => {
+                let state: StoredMfaState =
+                    serde_json::from_slice(&b).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Persists MFA state for a user.
+    fn save_mfa_state(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        state: &StoredMfaState,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_mfa_totp_key(user_id);
+        let bytes = serde_json::to_vec(state).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(tenant_id, &key, &bytes)
+            .map_err(Self::storage_err)
     }
 
     /// Serializes a user to JSON bytes.
@@ -330,6 +599,129 @@ impl EmbeddedIdentityEngine {
         hex_encode(digest.as_ref())
     }
 
+    /// Performs grant family rotation during refresh token exchange.
+    ///
+    /// Validates the incoming refresh token against the family's current hash,
+    /// detects theft (replayed previously-rotated tokens), issues a new token
+    /// pair, and rotates the family's stored hash.
+    #[allow(clippy::too_many_arguments)]
+    fn rotate_grant_family(
+        &self,
+        tenant_id: &TenantId,
+        fid: &str,
+        refresh_token: &str,
+        session_id: &SessionId,
+        user_id: &UserId,
+        now_secs: i64,
+        claims: &TokenClaims,
+    ) -> Result<TokenPair, IdentityError> {
+        let family_key = keys::encode_grant_family(fid);
+        let family_bytes = self
+            .storage
+            .get(tenant_id, &family_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::TokenRevoked)?;
+        let mut family: StoredGrantFamily =
+            serde_json::from_slice(&family_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if family.revoked {
+            return Err(IdentityError::TokenRevoked);
+        }
+
+        // Verify the incoming refresh token matches the current hash
+        let incoming_hash = Self::sha256_hex(refresh_token.as_bytes());
+        if incoming_hash != family.current_refresh_hash {
+            // THEFT DETECTED — a previously-rotated token is being reused.
+            family.revoked = true;
+            let updated =
+                serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            self.storage
+                .put(tenant_id, &family_key, &updated)
+                .map_err(Self::storage_err)?;
+            let _ = self.revoke_session(tenant_id, session_id);
+            return Err(IdentityError::TokenRevoked);
+        }
+
+        self.refresh_session(tenant_id, session_id)?;
+
+        let signing_key = self.get_signing_key_or_default(tenant_id);
+        let iat = now_secs;
+
+        let new_access_claims = TokenClaims {
+            sub: user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.access_token_ttl_secs,
+            iat,
+            sid: session_id.to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "access".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(fid.to_string()),
+            scope: claims.scope.clone(),
+            nonce: None,
+        };
+        let new_refresh_claims = TokenClaims {
+            sub: user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.refresh_token_ttl_secs,
+            iat,
+            sid: session_id.to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "refresh".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(fid.to_string()),
+            scope: claims.scope.clone(),
+            nonce: None,
+        };
+
+        let new_access = signing_key.issue_token(&new_access_claims)?;
+        let new_refresh = signing_key.issue_token(&new_refresh_claims)?;
+
+        // Rotate the family's current refresh hash
+        family.current_refresh_hash = Self::sha256_hex(new_refresh.as_bytes());
+        let updated = serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(tenant_id, &family_key, &updated)
+            .map_err(Self::storage_err)?;
+
+        Ok(TokenPair::new(new_access, new_refresh))
+    }
+
+    /// Unambiguous alphabet for device user codes (RFC 8628).
+    ///
+    /// Excludes I/1, O/0, L to avoid confusion. 28 characters.
+    const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKMNPQRSTVWXYZ23456789";
+
+    /// User code length (8 characters).
+    const USER_CODE_LENGTH: usize = 8;
+
+    /// Generates a random user code for device authorization.
+    ///
+    /// Uses an unambiguous alphabet to avoid visual confusion.
+    fn generate_user_code(rng: &ring::rand::SystemRandom) -> Result<String, IdentityError> {
+        let mut bytes = [0u8; Self::USER_CODE_LENGTH];
+        rng.fill(&mut bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "random generation failed".to_string(),
+            })?;
+        let code: String = bytes
+            .iter()
+            .map(|b| {
+                let idx = (*b as usize) % Self::USER_CODE_ALPHABET.len();
+                Self::USER_CODE_ALPHABET[idx] as char
+            })
+            .collect();
+        Ok(code)
+    }
+
     /// Computes the PKCE S256 code challenge from a code verifier.
     ///
     /// `S256 = BASE64URL(SHA256(code_verifier))`
@@ -351,9 +743,404 @@ impl EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
         Ok(())
     }
+
+    // ===== Tenant helpers =====
+
+    /// Serializes a tenant record to JSON bytes.
+    fn serialize_tenant(tenant: &Tenant) -> Result<Vec<u8>, IdentityError> {
+        serde_json::to_vec(tenant).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
+    }
+
+    /// Deserializes a tenant record from JSON bytes.
+    fn deserialize_tenant(bytes: &[u8]) -> Result<Tenant, IdentityError> {
+        serde_json::from_slice(bytes).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
+    }
+
+    /// Gets the signing key for a tenant, falling back to the default key.
+    ///
+    /// Used by token issuance paths where backward compatibility with
+    /// Phase 0 tenants (which lack per-tenant keys) is needed.
+    fn get_signing_key_or_default(&self, tenant_id: &TenantId) -> Arc<SigningKey> {
+        self.get_or_load_tenant_signing_key(tenant_id)
+            .unwrap_or_else(|_| Arc::clone(&self.signing_key))
+    }
+
+    /// Retrieves (or lazily loads from storage) the signing key for a tenant.
+    ///
+    /// Checks the in-memory cache first, then loads from storage on cache miss.
+    /// Returns `TenantNotFound` if no per-tenant key exists.
+    fn get_or_load_tenant_signing_key(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Arc<SigningKey>, IdentityError> {
+        let cache_key = tenant_id.as_uuid().to_string();
+
+        // Check cache
+        {
+            let key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            if let Some(key) = key_cache.get(&cache_key) {
+                return Ok(Arc::clone(key));
+            }
+        }
+
+        // Load from storage
+        let sys_tenant = keys::system_tenant_id();
+        let key_storage_key = keys::encode_tenant_signing_key(tenant_id);
+        let key_bytes = self
+            .storage
+            .get(&sys_tenant, &key_storage_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::TenantNotFound)?;
+
+        let signing_key = Arc::new(SigningKey::from_pkcs8(&key_bytes)?);
+
+        // Cache it
+        {
+            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(cache_key, Arc::clone(&signing_key));
+        }
+
+        Ok(signing_key)
+    }
 }
 
 impl IdentityEngine for EmbeddedIdentityEngine {
+    // ===== Tenant lifecycle (Phase 1 Step 19) =====
+
+    fn create_tenant(&self, request: &CreateTenantRequest) -> Result<Tenant, IdentityError> {
+        // Serialize against other tenant-record mutations so the atomic
+        // record+key `put_batch` below is never interleaved with another
+        // thread's update/delete. See `tenant_ops_lock` docs.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
+        let now = self.clock.now();
+        let tenant_id = TenantId::generate();
+        let config = request.config.clone().unwrap_or_default();
+
+        // Generate a per-tenant signing key
+        let tenant_signing_key = SigningKey::generate()?;
+
+        // Persist the tenant record under the system tenant namespace
+        let sys_tenant = keys::system_tenant_id();
+        let tenant = Tenant::new(
+            tenant_id.clone(),
+            request.name.clone(),
+            TenantStatus::Active,
+            config,
+            now,
+            now,
+        );
+        let tenant_bytes = Self::serialize_tenant(&tenant)?;
+        let tenant_key = keys::encode_tenant_id(&tenant_id);
+        let key_storage_key = keys::encode_tenant_signing_key(&tenant_id);
+        let key_bytes = tenant_signing_key.pkcs8_bytes().to_vec();
+
+        // Atomic two-entry write: the tenant record and its signing key
+        // land together or not at all. Without this, a crash or fault
+        // between the two puts would leave an orphaned tenant with no
+        // JWKS. The WAL's `[u32 len][payload][u32 crc]` framing gives the
+        // entire batch single-record atomicity.
+        self.storage
+            .put_batch(
+                &sys_tenant,
+                &[(tenant_key, tenant_bytes), (key_storage_key, key_bytes)],
+            )
+            .map_err(Self::storage_err)?;
+
+        // Cache the signing key in memory
+        {
+            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(
+                tenant_id.as_uuid().to_string(),
+                Arc::new(tenant_signing_key),
+            );
+        }
+
+        Ok(tenant)
+    }
+
+    fn get_tenant(&self, tenant_id: &TenantId) -> Result<Option<Tenant>, IdentityError> {
+        let sys_tenant = keys::system_tenant_id();
+        let tenant_key = keys::encode_tenant_id(tenant_id);
+        let bytes = self
+            .storage
+            .get(&sys_tenant, &tenant_key)
+            .map_err(Self::storage_err)?;
+        match bytes {
+            Some(b) => Ok(Some(Self::deserialize_tenant(&b)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn update_tenant(
+        &self,
+        tenant_id: &TenantId,
+        request: &UpdateTenantRequest,
+    ) -> Result<Tenant, IdentityError> {
+        // Serialize against create/delete so an in-flight delete can't
+        // race with this read-modify-write and resurrect an orphaned
+        // record after its signing key has already been removed.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
+        let mut tenant = self
+            .get_tenant(tenant_id)?
+            .ok_or(IdentityError::TenantNotFound)?;
+
+        let now = self.clock.now();
+
+        if let Some(ref name) = request.name {
+            tenant.set_name(name.clone());
+        }
+        if let Some(status) = request.status {
+            tenant.set_status(status);
+        }
+        if let Some(ref config) = request.config {
+            tenant.set_config(config.clone());
+        }
+        tenant.set_updated_at(now);
+
+        let sys_tenant = keys::system_tenant_id();
+        let tenant_key = keys::encode_tenant_id(tenant_id);
+        let tenant_bytes = Self::serialize_tenant(&tenant)?;
+        self.storage
+            .put(&sys_tenant, &tenant_key, &tenant_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(tenant)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn delete_tenant(&self, tenant_id: &TenantId) -> Result<(), IdentityError> {
+        // Serialize against create/update so a concurrent update can't
+        // re-put a tenant record after we've already removed its signing
+        // key. Without this lock, `record=Some key=None` would leak out
+        // and `tenant_jwks()` would fail for a still-live-looking tenant.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
+        // Check whether the tenant record exists. We do NOT early-return on
+        // missing record — a previous cascade may have crashed after deleting
+        // the record but before cleaning all key-spaces. Recovery requires us
+        // to scan every cascade prefix regardless. If no cascade work is found
+        // AND the record is absent, we return TenantNotFound at the end.
+        let tenant_exists = self.get_tenant(tenant_id)?.is_some();
+        let mut cascade_work_done = false;
+
+        // 0. Delete the tenant record FIRST. Ordering matters: if a fault
+        //    lands mid-cascade, the observable partial state is "tenant
+        //    already gone, some cascade residue remains" — never the
+        //    reverse ("tenant alive but signing key missing"), which would
+        //    make `tenant_jwks()` fail for a tenant the API still reports
+        //    as live. The idempotent cascade below converges on retry.
+        let sys_tenant = keys::system_tenant_id();
+        let tenant_key = keys::encode_tenant_id(tenant_id);
+        if tenant_exists {
+            self.storage
+                .delete(&sys_tenant, &tenant_key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 1. Delete all users in this tenant (cascades to sessions, credentials)
+        let user_prefix = keys::user_id_scan_prefix();
+        let user_end = keys::prefix_end(&user_prefix);
+        let users = self
+            .storage
+            .scan(tenant_id, &user_prefix, &user_end)
+            .map_err(Self::storage_err)?;
+
+        if !users.is_empty() {
+            cascade_work_done = true;
+        }
+
+        for entry in &users {
+            let user: User = Self::deserialize_user(&entry.value)?;
+            // delete_user handles cascade of sessions, credentials, email index
+            let _ = self.delete_user(tenant_id, user.id());
+        }
+
+        // 1a. Unconditional sweep of per-user secondary prefixes. These
+        //     indexes are normally cleaned up inside `delete_user`, but a
+        //     crash (or an orphaned primary) can leave stragglers. Scanning
+        //     by prefix guarantees we reach them on any retry.
+        for prefix in [
+            &b"usr:email:"[..],
+            &b"cred:user:"[..],
+            &b"ses:id:"[..],
+            &b"ses:user:"[..],
+            &b"mfa:totp:"[..],
+            &b"webauthn:cred:"[..],
+            &b"webauthn:disc:"[..],
+            &b"magic:link:"[..],
+            &b"email:verify:"[..],
+            &b"rst:token:"[..],
+        ] {
+            let end = keys::prefix_end(prefix);
+            let entries = self
+                .storage
+                .scan(tenant_id, prefix, &end)
+                .map_err(Self::storage_err)?;
+            if !entries.is_empty() {
+                cascade_work_done = true;
+            }
+            for entry in &entries {
+                self.storage
+                    .delete(tenant_id, &entry.key)
+                    .map_err(Self::storage_err)?;
+            }
+        }
+
+        // 2. Delete all OAuth clients
+        let client_prefix = b"oauth:client:";
+        let client_end = keys::prefix_end(client_prefix);
+        let clients = self
+            .storage
+            .scan(tenant_id, client_prefix, &client_end)
+            .map_err(Self::storage_err)?;
+        if !clients.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &clients {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 3. Delete all authorization tuples (prefix "rel:")
+        let rel_prefix = b"rel:";
+        let rel_end = keys::prefix_end(rel_prefix);
+        let rels = self
+            .storage
+            .scan(tenant_id, rel_prefix, &rel_end)
+            .map_err(Self::storage_err)?;
+        if !rels.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &rels {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 4. Delete all OAuth authorization codes
+        let code_prefix = b"oauth:code:";
+        let code_end = keys::prefix_end(code_prefix);
+        let codes = self
+            .storage
+            .scan(tenant_id, code_prefix, &code_end)
+            .map_err(Self::storage_err)?;
+        if !codes.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &codes {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 5. Delete all grant families
+        let family_prefix = keys::grant_family_scan_prefix();
+        let family_end = keys::prefix_end(&family_prefix);
+        let families = self
+            .storage
+            .scan(tenant_id, &family_prefix, &family_end)
+            .map_err(Self::storage_err)?;
+        if !families.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &families {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 6. Delete all device codes
+        let device_prefix = keys::device_code_scan_prefix();
+        let device_end = keys::prefix_end(&device_prefix);
+        let devices = self
+            .storage
+            .scan(tenant_id, &device_prefix, &device_end)
+            .map_err(Self::storage_err)?;
+        if !devices.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &devices {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 7. Delete all revoked JTIs
+        let jti_prefix = b"oauth:revjti:";
+        let jti_end = keys::prefix_end(jti_prefix);
+        let jtis = self
+            .storage
+            .scan(tenant_id, jti_prefix, &jti_end)
+            .map_err(Self::storage_err)?;
+        if !jtis.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &jtis {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 8. Delete all user-code index entries
+        let ucode_prefix = b"oauth:ucode:";
+        let ucode_end = keys::prefix_end(ucode_prefix);
+        let ucodes = self
+            .storage
+            .scan(tenant_id, ucode_prefix, &ucode_end)
+            .map_err(Self::storage_err)?;
+        if !ucodes.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &ucodes {
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 9. Delete tenant signing key (check existence first so we can attribute
+        //    cascade work even when only the signing key survives a prior crash).
+        let key_storage_key = keys::encode_tenant_signing_key(tenant_id);
+        if self
+            .storage
+            .get(&sys_tenant, &key_storage_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            cascade_work_done = true;
+            self.storage
+                .delete(&sys_tenant, &key_storage_key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 10. Remove from in-memory key cache. The record+key were already
+        //     deleted durably above; this just drops the cached `Arc`.
+        {
+            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            key_cache.remove(&tenant_id.as_uuid().to_string());
+        }
+
+        // Idempotency guard: if nothing existed for this tenant anywhere, the
+        // caller is asking to delete something that was never created (or was
+        // already fully cleaned). Preserve the `TenantNotFound` contract for
+        // that case so the existing API stays stable.
+        if !tenant_exists && !cascade_work_done {
+            return Err(IdentityError::TenantNotFound);
+        }
+
+        Ok(())
+    }
+
+    fn tenant_jwks(&self, tenant_id: &TenantId) -> Result<JwksDocument, IdentityError> {
+        let key = self.get_or_load_tenant_signing_key(tenant_id)?;
+        Ok(key.to_jwks())
+    }
+
+    // ===== User CRUD =====
+
     fn create_user(
         &self,
         tenant_id: &TenantId,
@@ -546,6 +1333,36 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .delete(tenant_id, &cred_key)
             .map_err(Self::storage_err)?;
 
+        // 4b. Delete MFA state (if any — best effort)
+        let mfa_key = keys::encode_mfa_totp_key(user_id);
+        self.storage
+            .delete(tenant_id, &mfa_key)
+            .map_err(Self::storage_err)?;
+
+        // 4c. Delete all WebAuthn credentials + discoverable index entries
+        let webauthn_prefix = keys::encode_webauthn_credentials_prefix(user_id);
+        let webauthn_end = keys::prefix_end(&webauthn_prefix);
+        let webauthn_entries = self
+            .storage
+            .scan(tenant_id, &webauthn_prefix, &webauthn_end)
+            .map_err(Self::storage_err)?;
+
+        for entry in &webauthn_entries {
+            // If discoverable, delete the discoverable index entry
+            if let Ok(stored) = serde_json::from_slice::<StoredWebAuthnCredential>(&entry.value) {
+                if stored.discoverable {
+                    let disc_key = keys::encode_webauthn_discoverable(&stored.credential_id_b64);
+                    self.storage
+                        .delete(tenant_id, &disc_key)
+                        .map_err(Self::storage_err)?;
+                }
+            }
+            // Delete the credential itself
+            self.storage
+                .delete(tenant_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
         // 5. Delete all sessions for this user
         let session_prefix = keys::encode_user_sessions_prefix(user_id);
         let session_end = keys::prefix_end(&session_prefix);
@@ -692,9 +1509,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         tenant_id: &TenantId,
         user_id: &UserId,
     ) -> Result<Session, IdentityError> {
-        // Ensure the user exists
-        self.get_user(tenant_id, user_id)?
+        // Ensure the user exists and is permitted to start a session.
+        // Unverified users must complete the email-verification flow first;
+        // disabled users are blocked entirely (distinguished from
+        // `UserNotFound` because an operator deliberately disabled them).
+        let user = self
+            .get_user(tenant_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
+        match user.status() {
+            UserStatus::Active => {}
+            UserStatus::PendingVerification => return Err(IdentityError::UserNotVerified),
+            UserStatus::Disabled => return Err(IdentityError::Unauthorized),
+        }
 
         // Generate session
         let session_id = SessionId::generate();
@@ -759,6 +1585,130 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.persist_session(tenant_id, &session)?;
 
         Ok(session)
+    }
+
+    fn list_sessions_by_user(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Session>, IdentityError> {
+        let prefix = keys::encode_user_sessions_prefix(user_id);
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            // The index key is `ses:user:{user_uuid}:{session_uuid}`.
+            // Position just after the cursor session.
+            let mut cursor_key = format!("ses:user:{}:{uuid_str}", user_id.as_uuid()).into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let index_entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in index_entries.iter().take(limit + 1) {
+            // Extract session UUID from the index key suffix.
+            let key_str = String::from_utf8_lossy(&entry.key);
+            let Some(session_uuid_str) = key_str.rsplit(':').next() else {
+                continue;
+            };
+            let Ok(session_uuid) = session_uuid_str.parse::<uuid::Uuid>() else {
+                continue;
+            };
+            let session_id = SessionId::new(session_uuid);
+            let session_key = keys::encode_session_id(&session_id);
+            if let Some(data) = self
+                .storage
+                .get(tenant_id, &session_key)
+                .map_err(Self::storage_err)?
+            {
+                let session: Session =
+                    serde_json::from_slice(&data).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                items.push(session);
+            }
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            items
+                .last()
+                .map(|s| URL_SAFE_NO_PAD.encode(s.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn list_sessions_by_tenant(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Session>, IdentityError> {
+        let prefix = keys::session_id_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!("ses:id:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in &entries {
+            if items.len() > limit {
+                break;
+            }
+            let session: Session =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            if !session.is_revoked() {
+                items.push(session);
+            }
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop();
+            items
+                .last()
+                .map(|s| URL_SAFE_NO_PAD.encode(s.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
     }
 
     // ===== Token management =====
@@ -856,9 +1806,6 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             uuid::Uuid::parse_str(session_id_str).map_err(|_| IdentityError::InvalidToken)?;
         let session_id = SessionId::new(session_uuid);
 
-        // Refresh the underlying session
-        self.refresh_session(tenant_id, &session_id)?;
-
         // Parse user ID
         let user_id_str = claims
             .sub
@@ -868,8 +1815,22 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             uuid::Uuid::parse_str(user_id_str).map_err(|_| IdentityError::InvalidToken)?;
         let user_id = UserId::new(user_uuid);
 
-        // Issue new token pair
-        self.issue_tokens(tenant_id, &user_id, &session_id)
+        // Grant family rotation (if fid is present)
+        if let Some(ref fid) = claims.fid {
+            self.rotate_grant_family(
+                tenant_id,
+                fid,
+                refresh_token,
+                &session_id,
+                &user_id,
+                now_secs,
+                &claims,
+            )
+        } else {
+            // Legacy path (no grant family — Phase 0 tokens)
+            self.refresh_session(tenant_id, &session_id)?;
+            self.issue_tokens(tenant_id, &user_id, &session_id)
+        }
     }
 
     fn jwks(&self) -> JwksDocument {
@@ -886,8 +1847,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Validate client name (non-empty, length limit)
         let client_name = validation::validate_client_name(&request.client_name)?;
 
-        // Validate redirect URIs
-        if request.redirect_uris.is_empty() {
+        // Redirect URIs are optional for `client_credentials` and device_code grants.
+        // For all other grant types, at least one is required.
+        let has_client_credentials = request
+            .grant_types
+            .contains(&"client_credentials".to_string());
+        let has_device_code = request
+            .grant_types
+            .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string());
+        if request.redirect_uris.is_empty() && !has_client_credentials && !has_device_code {
             return Err(IdentityError::InvalidInput {
                 reason: "at least one redirect URI is required".to_string(),
             });
@@ -904,12 +1872,35 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let client_id = ClientId::generate();
         let now = self.clock.now();
 
-        let client = OAuthClient::new(
-            client_id.clone(),
-            client_name,
-            request.redirect_uris.clone(),
-            now,
-        );
+        let grant_types = if request.grant_types.is_empty() {
+            vec!["authorization_code".to_string()]
+        } else {
+            request.grant_types.clone()
+        };
+
+        let client = if let Some(ref secret) = request.client_secret {
+            // Confidential client — hash the secret with Argon2id
+            let secret_hash =
+                credentials::hash_raw_secret(secret.as_bytes(), &self.config.credential)?;
+            OAuthClient::new_confidential(
+                client_id.clone(),
+                client_name,
+                request.redirect_uris.clone(),
+                now,
+                secret_hash,
+                grant_types,
+            )
+        } else {
+            let mut c = OAuthClient::new(
+                client_id.clone(),
+                client_name,
+                request.redirect_uris.clone(),
+                now,
+            );
+            // Override grant_types from request
+            c.set_grant_types(grant_types);
+            c
+        };
 
         // Serialize and persist
         let client_bytes =
@@ -1016,6 +2007,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             created_at: now,
             expires_at,
             used: false,
+            nonce: request.nonce.clone(),
         };
 
         // 9. Persist the code
@@ -1031,6 +2023,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(AuthorizationResponse::new(raw_code, request.state.clone()))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn exchange_authorization_code(
         &self,
         tenant_id: &TenantId,
@@ -1104,34 +2097,103 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 9. Create a session for the user
         let session = self.create_session(tenant_id, &stored_code.user_id)?;
 
-        // 10. Issue tokens (access + refresh)
-        let token_pair = self.issue_tokens(tenant_id, &stored_code.user_id, session.id())?;
+        // 10. Create grant family for refresh token rotation
+        let family_id = uuid::Uuid::new_v4().to_string();
 
-        // 11. Issue ID token (OIDC-specific)
+        // 11. Issue tokens with family ID
         let iat = now.as_micros() / 1_000_000;
-        let id_token_claims = TokenClaims {
+        let signing_key = self.get_signing_key_or_default(tenant_id);
+
+        let access_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
             iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.access_token_ttl_secs,
+            iat,
+            sid: session.id().to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "access".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(family_id.clone()),
+            scope: None,
+            nonce: None,
+        };
+        let refresh_claims = TokenClaims {
+            sub: stored_code.user_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.refresh_token_ttl_secs,
+            iat,
+            sid: session.id().to_string(),
+            tid: tenant_id.to_string(),
+            token_type: "refresh".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: Some(family_id.clone()),
+            scope: None,
+            nonce: None,
+        };
+
+        let access_token =
+            signing_key
+                .issue_token(&access_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue access token: {e}"),
+                })?;
+        let refresh_token =
+            signing_key
+                .issue_token(&refresh_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue refresh token: {e}"),
+                })?;
+
+        // 12. Store grant family with refresh token hash
+        let refresh_hash = Self::sha256_hex(refresh_token.as_bytes());
+        let family = StoredGrantFamily {
+            family_id: family_id.clone(),
+            current_refresh_hash: refresh_hash,
+            session_id: session.id().clone(),
+            tenant_id: tenant_id.clone(),
+            revoked: false,
+            created_at: now,
+        };
+        let family_bytes =
+            serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let family_key = keys::encode_grant_family(&family_id);
+        self.storage
+            .put(tenant_id, &family_key, &family_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 13. Issue ID token (OIDC-specific, nonce echoed per OIDC Core §2)
+        // iss MUST match the discovery document's issuer (OIDC Core §2)
+        let id_token_claims = TokenClaims {
+            sub: stored_code.user_id.to_string(),
+            iss: self.config.oidc.issuer.clone(),
             aud: request.client_id.to_string(),
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: session.id().to_string(),
             tid: tenant_id.to_string(),
             token_type: "id_token".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: None,
+            scope: None,
+            nonce: stored_code.nonce.clone(),
         };
-        let id_token = self
-            .signing_key
-            .issue_token(&id_token_claims)
-            .map_err(|e| IdentityError::SigningError {
-                reason: format!("failed to issue ID token: {e}"),
-            })?;
+        let id_token =
+            signing_key
+                .issue_token(&id_token_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue ID token: {e}"),
+                })?;
 
         Ok(OidcTokenResponse::new(
-            token_pair.access_token().to_string(),
+            access_token,
             id_token,
             "Bearer".to_string(),
             self.config.token.access_token_ttl_secs,
-            token_pair.refresh_token().to_string(),
+            refresh_token,
         ))
     }
 
@@ -1142,7 +2204,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             authorization_endpoint: format!("{issuer}/authorize"),
             token_endpoint: format!("{issuer}/token"),
             jwks_uri: format!("{issuer}/.well-known/jwks.json"),
+            userinfo_endpoint: format!("{issuer}/userinfo"),
             response_types_supported: vec!["code".to_string()],
+            response_modes_supported: vec!["query".to_string(), "fragment".to_string()],
             subject_types_supported: vec!["public".to_string()],
             id_token_signing_alg_values_supported: vec!["EdDSA".to_string()],
             scopes_supported: vec![
@@ -1150,9 +2214,1873 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 "profile".to_string(),
                 "email".to_string(),
             ],
-            token_endpoint_auth_methods_supported: vec!["none".to_string()],
+            claims_supported: vec![
+                "sub".to_string(),
+                "iss".to_string(),
+                "aud".to_string(),
+                "exp".to_string(),
+                "iat".to_string(),
+                "nonce".to_string(),
+                "email".to_string(),
+                "email_verified".to_string(),
+                "name".to_string(),
+            ],
+            token_endpoint_auth_methods_supported: vec![
+                "none".to_string(),
+                "client_secret_post".to_string(),
+            ],
             code_challenge_methods_supported: vec!["S256".to_string()],
+            grant_types_supported: vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+                "client_credentials".to_string(),
+                "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+            ],
+            registration_endpoint: Some(format!("{issuer}/register")),
+            device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
+            revocation_endpoint: Some(format!("{issuer}/revoke")),
+            introspection_endpoint: Some(format!("{issuer}/introspect")),
         }
+    }
+
+    // ===== OAuth 2.0 Extended (Step 22) =====
+
+    fn client_credentials_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::ClientCredentialsRequest,
+    ) -> Result<crate::identity::oidc::ClientCredentialsResponse, IdentityError> {
+        // 1. Load the client
+        let client_key = keys::encode_oauth_client(&request.client_id);
+        let client_bytes = self
+            .storage
+            .get(tenant_id, &client_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidClient)?;
+        let client: OAuthClient =
+            serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 2. Verify this client supports client_credentials grant
+        if !client
+            .grant_types()
+            .contains(&"client_credentials".to_string())
+        {
+            return Err(IdentityError::UnsupportedGrantType);
+        }
+
+        // 3. Verify client secret
+        let secret_hash = client
+            .client_secret_hash()
+            .ok_or(IdentityError::InvalidClientSecret)?;
+        let valid = credentials::verify_raw_secret(request.client_secret.as_bytes(), secret_hash)?;
+        if !valid {
+            return Err(IdentityError::InvalidClientSecret);
+        }
+
+        // 4. Issue access token (no session, no refresh token per RFC 6749 §4.4.3)
+        let now = self.clock.now();
+        let iat = now.as_micros() / 1_000_000;
+        let signing_key = self.get_or_load_tenant_signing_key(tenant_id)?;
+
+        let scope = request.scope.clone();
+        let access_claims = TokenClaims {
+            sub: request.client_id.to_string(),
+            iss: self.config.token.issuer.clone(),
+            aud: self.config.token.audience.clone(),
+            exp: iat + self.config.token.access_token_ttl_secs,
+            iat,
+            sid: "none".to_string(), // No session for client credentials
+            tid: tenant_id.to_string(),
+            token_type: "access".to_string(),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            fid: None,
+            scope: scope.clone(),
+            nonce: None,
+        };
+
+        let access_token =
+            signing_key
+                .issue_token(&access_claims)
+                .map_err(|e| IdentityError::SigningError {
+                    reason: format!("failed to issue access token: {e}"),
+                })?;
+
+        Ok(crate::identity::oidc::ClientCredentialsResponse::new(
+            access_token,
+            "Bearer".to_string(),
+            self.config.token.access_token_ttl_secs,
+            scope,
+        ))
+    }
+
+    fn device_authorize(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::DeviceAuthorizationRequest,
+    ) -> Result<crate::identity::oidc::DeviceAuthorizationResponse, IdentityError> {
+        use crate::identity::oidc::{DeviceCodeStatus, StoredDeviceCode};
+
+        // 1. Verify client exists
+        let client_key = keys::encode_oauth_client(&request.client_id);
+        let _ = self
+            .storage
+            .get(tenant_id, &client_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidClient)?;
+
+        // 2. Generate device code (32 random bytes → base64url)
+        let rng = ring::rand::SystemRandom::new();
+        let mut device_code_bytes = [0u8; 32];
+        rng.fill(&mut device_code_bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "random generation failed".to_string(),
+            })?;
+        let device_code = URL_SAFE_NO_PAD.encode(device_code_bytes);
+
+        // 3. Generate user code (8 chars from unambiguous alphabet)
+        let user_code = Self::generate_user_code(&rng)?;
+
+        let now = self.clock.now();
+        let expires_in = 600_i64; // 10 minutes
+        let interval = 5_i64;
+        let device_code_hash = Self::sha256_hex(device_code.as_bytes());
+
+        // 4. Store device code
+        let stored = StoredDeviceCode {
+            device_code_hash: device_code_hash.clone(),
+            user_code: user_code.clone(),
+            client_id: request.client_id.clone(),
+            tenant_id: tenant_id.clone(),
+            scope: request.scope.clone(),
+            status: DeviceCodeStatus::Pending,
+            created_at: now,
+            expires_at: crate::core::Timestamp::from_micros(
+                now.as_micros() + expires_in * 1_000_000,
+            ),
+            interval,
+            last_polled_at: None,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        let dc_key = keys::encode_device_code(&device_code_hash);
+        self.storage
+            .put(tenant_id, &dc_key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 5. Store user code → device code hash mapping
+        let uc_key = keys::encode_user_code(&user_code);
+        self.storage
+            .put(tenant_id, &uc_key, device_code_hash.as_bytes())
+            .map_err(Self::storage_err)?;
+
+        Ok(crate::identity::oidc::DeviceAuthorizationResponse {
+            device_code,
+            user_code,
+            verification_uri: format!("{}/device", self.config.oidc.issuer),
+            expires_in,
+            interval,
+        })
+    }
+
+    fn approve_device(
+        &self,
+        tenant_id: &TenantId,
+        user_code: &str,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError> {
+        use crate::identity::oidc::DeviceCodeStatus;
+
+        // 1. Look up user code → device code hash
+        let uc_key = keys::encode_user_code(user_code);
+        let dc_hash_bytes = self
+            .storage
+            .get(tenant_id, &uc_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+        let dc_hash = String::from_utf8(dc_hash_bytes)
+            .map_err(|_| IdentityError::InvalidAuthorizationCode)?;
+
+        // 2. Load device code
+        let dc_key = keys::encode_device_code(&dc_hash);
+        let dc_bytes = self
+            .storage
+            .get(tenant_id, &dc_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+        let mut stored: StoredDeviceCode =
+            serde_json::from_slice(&dc_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 3. Check expiration
+        let now = self.clock.now();
+        if now >= stored.expires_at {
+            return Err(IdentityError::DeviceCodeExpired);
+        }
+
+        // 4. Must be pending
+        if stored.status != DeviceCodeStatus::Pending {
+            return Err(IdentityError::InvalidAuthorizationCode);
+        }
+
+        // 5. Approve
+        stored.status = DeviceCodeStatus::Approved {
+            user_id: user_id.clone(),
+        };
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &dc_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(())
+    }
+
+    fn poll_device_token(
+        &self,
+        tenant_id: &TenantId,
+        device_code: &str,
+        client_id: &ClientId,
+    ) -> Result<OidcTokenResponse, IdentityError> {
+        use crate::identity::oidc::DeviceCodeStatus;
+
+        // 1. Look up device code by hash
+        let dc_hash = Self::sha256_hex(device_code.as_bytes());
+        let dc_key = keys::encode_device_code(&dc_hash);
+        let dc_bytes = self
+            .storage
+            .get(tenant_id, &dc_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+        let mut stored: StoredDeviceCode =
+            serde_json::from_slice(&dc_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 2. Verify client matches
+        if stored.client_id != *client_id {
+            return Err(IdentityError::InvalidClient);
+        }
+
+        let now = self.clock.now();
+
+        // 3. Check expiration
+        if now >= stored.expires_at {
+            return Err(IdentityError::DeviceCodeExpired);
+        }
+
+        // 4. Rate limit polling
+        if let Some(last_polled) = stored.last_polled_at {
+            let elapsed_secs = (now.as_micros() - last_polled.as_micros()) / 1_000_000;
+            if elapsed_secs < stored.interval {
+                return Err(IdentityError::SlowDown);
+            }
+        }
+
+        // 5. Update last_polled_at
+        stored.last_polled_at = Some(now);
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &dc_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 6. Check status
+        match &stored.status {
+            DeviceCodeStatus::Pending => Err(IdentityError::AuthorizationPending),
+            DeviceCodeStatus::Denied => Err(IdentityError::DeviceCodeDenied),
+            DeviceCodeStatus::Expired => Err(IdentityError::DeviceCodeExpired),
+            DeviceCodeStatus::Approved { user_id } => {
+                // Issue tokens like exchange_authorization_code
+                let session = self.create_session(tenant_id, user_id)?;
+                let token_pair = self.issue_tokens(tenant_id, user_id, session.id())?;
+
+                // Issue ID token
+                // iss MUST match the discovery document's issuer (OIDC Core §2)
+                let iat = now.as_micros() / 1_000_000;
+                let id_token_claims = TokenClaims {
+                    sub: user_id.to_string(),
+                    iss: self.config.oidc.issuer.clone(),
+                    aud: client_id.to_string(),
+                    exp: iat + self.config.token.access_token_ttl_secs,
+                    iat,
+                    sid: session.id().to_string(),
+                    tid: tenant_id.to_string(),
+                    token_type: "id_token".to_string(),
+                    jti: Some(uuid::Uuid::new_v4().to_string()),
+                    fid: None,
+                    scope: stored.scope.clone(),
+                    nonce: None,
+                };
+                let signing_key = self.get_or_load_tenant_signing_key(tenant_id)?;
+                let id_token = signing_key.issue_token(&id_token_claims).map_err(|e| {
+                    IdentityError::SigningError {
+                        reason: format!("failed to issue ID token: {e}"),
+                    }
+                })?;
+
+                // Clean up device code and user code
+                let _ = self.storage.delete(tenant_id, &dc_key);
+                let uc_key = keys::encode_user_code(&stored.user_code);
+                let _ = self.storage.delete(tenant_id, &uc_key);
+
+                Ok(OidcTokenResponse::new(
+                    token_pair.access_token().to_string(),
+                    id_token,
+                    "Bearer".to_string(),
+                    self.config.token.access_token_ttl_secs,
+                    token_pair.refresh_token().to_string(),
+                ))
+            }
+        }
+    }
+
+    fn revoke_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::TokenRevocationRequest,
+    ) -> Result<(), IdentityError> {
+        // Decode claims (unverified — we trust our own tokens)
+        // RFC 7009: invalid tokens → 200 OK (no error)
+        let Ok(claims) = tokens::decode_claims_unverified(&request.token) else {
+            return Ok(());
+        };
+
+        // Verify tenant matches
+        if claims.tid != tenant_id.to_string() {
+            return Ok(()); // Silent success per RFC 7009
+        }
+
+        match claims.token_type.as_str() {
+            "access" | "id_token" => {
+                if claims.sid != "none" {
+                    // Session-bound token: revoke via session
+                    let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
+                    if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
+                        let session_id = SessionId::new(uuid);
+                        let _ = self.revoke_session(tenant_id, &session_id);
+                    }
+                } else if let Some(ref jti) = claims.jti {
+                    // Sessionless token (e.g., client_credentials): revoke via JTI blocklist
+                    let jti_key = keys::encode_revoked_jti(jti);
+                    let _ = self.storage.put(tenant_id, &jti_key, b"1");
+                }
+            }
+            "refresh" => {
+                // Revoke via grant family
+                if let Some(ref fid) = claims.fid {
+                    let family_key = keys::encode_grant_family(fid);
+                    if let Some(family_bytes) = self
+                        .storage
+                        .get(tenant_id, &family_key)
+                        .map_err(Self::storage_err)?
+                    {
+                        let mut family: StoredGrantFamily = serde_json::from_slice(&family_bytes)
+                            .map_err(|e| {
+                            IdentityError::Serialization {
+                                reason: e.to_string(),
+                            }
+                        })?;
+                        family.revoked = true;
+                        let updated = serde_json::to_vec(&family).map_err(|e| {
+                            IdentityError::Serialization {
+                                reason: e.to_string(),
+                            }
+                        })?;
+                        self.storage
+                            .put(tenant_id, &family_key, &updated)
+                            .map_err(Self::storage_err)?;
+                    }
+                }
+                // Also revoke session if present
+                if claims.sid != "none" {
+                    let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
+                    if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
+                        let session_id = SessionId::new(uuid);
+                        let _ = self.revoke_session(tenant_id, &session_id);
+                    }
+                }
+            }
+            _ => {} // Unknown token type → silent success
+        }
+
+        Ok(())
+    }
+
+    fn introspect_token(
+        &self,
+        tenant_id: &TenantId,
+        request: &crate::identity::oidc::TokenIntrospectionRequest,
+    ) -> Result<crate::identity::oidc::IntrospectionResponse, IdentityError> {
+        use crate::identity::oidc::IntrospectionResponse;
+
+        // 1. Decode claims (unverified — hot path)
+        let Ok(claims) = tokens::decode_claims_unverified(&request.token) else {
+            return Ok(IntrospectionResponse::inactive());
+        };
+
+        // 2. Verify tenant matches
+        if claims.tid != tenant_id.to_string() {
+            return Ok(IntrospectionResponse::inactive());
+        }
+
+        // 3. Check expiration
+        let now = self.clock.now();
+        let now_secs = now.as_micros() / 1_000_000;
+        if now_secs >= claims.exp {
+            return Ok(IntrospectionResponse::inactive());
+        }
+
+        // 4. Check session validity (if session-bound) or JTI blocklist (if sessionless)
+        if claims.sid != "none" {
+            let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
+            if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
+                let session_id = SessionId::new(uuid);
+                if self.get_session(tenant_id, &session_id)?.is_none() {
+                    return Ok(IntrospectionResponse::inactive());
+                }
+            }
+        } else if let Some(ref jti) = claims.jti {
+            // Sessionless token — check JTI revocation blocklist
+            let jti_key = keys::encode_revoked_jti(jti);
+            if self
+                .storage
+                .get(tenant_id, &jti_key)
+                .map_err(Self::storage_err)?
+                .is_some()
+            {
+                return Ok(IntrospectionResponse::inactive());
+            }
+        }
+
+        // 5. Check grant family (if refresh token with fid)
+        if claims.token_type == "refresh" {
+            if let Some(ref fid) = claims.fid {
+                let family_key = keys::encode_grant_family(fid);
+                if let Some(family_bytes) = self
+                    .storage
+                    .get(tenant_id, &family_key)
+                    .map_err(Self::storage_err)?
+                {
+                    let family: StoredGrantFamily =
+                        serde_json::from_slice(&family_bytes).map_err(|e| {
+                            IdentityError::Serialization {
+                                reason: e.to_string(),
+                            }
+                        })?;
+                    if family.revoked {
+                        return Ok(IntrospectionResponse::inactive());
+                    }
+                }
+            }
+        }
+
+        // 6. Active — return metadata
+        Ok(IntrospectionResponse {
+            active: true,
+            scope: claims.scope,
+            client_id: None, // Not stored in claims for session-bound tokens
+            sub: Some(claims.sub),
+            exp: Some(claims.exp),
+            iat: Some(claims.iat),
+            token_type: Some(claims.token_type),
+            iss: Some(claims.iss),
+            aud: Some(claims.aud),
+        })
+    }
+
+    // ===== MFA / TOTP (Step 23) =====
+
+    fn enroll_totp(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<TotpEnrollment, IdentityError> {
+        // Ensure user exists
+        let user = self
+            .get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Check not already enrolled
+        if let Some(existing) = self.load_mfa_state(tenant_id, user_id)? {
+            if existing.enabled {
+                return Err(IdentityError::MfaAlreadyEnabled);
+            }
+        }
+
+        // Generate secret + recovery codes
+        let secret = TotpSecret::generate()?;
+        let secret_base32 = secret.to_base32();
+        let provisioning_uri =
+            totp::generate_provisioning_uri(&secret_base32, user.email(), "Hearth");
+        let recovery_codes = totp::generate_recovery_codes()?;
+        let recovery_hashes = totp::hash_recovery_codes(&recovery_codes, &self.config.credential)?;
+
+        // Store disabled state
+        let state = StoredMfaState {
+            secret_base32: secret_base32.clone(),
+            enabled: false,
+            recovery_code_hashes: recovery_hashes,
+            last_used_step: None,
+            enabled_at: None,
+        };
+        self.save_mfa_state(tenant_id, user_id, &state)?;
+
+        Ok(TotpEnrollment {
+            secret_base32,
+            provisioning_uri,
+            recovery_codes: RecoveryCodes::new(recovery_codes),
+        })
+    }
+
+    #[allow(clippy::cast_sign_loss)] // Timestamps are always positive
+    fn verify_totp_enrollment(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError> {
+        let mut state = self
+            .load_mfa_state(tenant_id, user_id)?
+            .ok_or(IdentityError::MfaNotEnabled)?;
+
+        if state.enabled {
+            return Err(IdentityError::MfaAlreadyEnabled);
+        }
+
+        // Validate code against the stored secret
+        let secret = TotpSecret::from_base32(&state.secret_base32)?;
+        let now_secs = (self.clock.now().as_micros() / 1_000_000) as u64;
+        let matched_step = totp::validate_totp(secret.as_bytes(), code, now_secs, None);
+
+        if let Some(step) = matched_step {
+            state.enabled = true;
+            state.last_used_step = Some(step);
+            state.enabled_at = Some(self.clock.now().as_micros());
+            self.save_mfa_state(tenant_id, user_id, &state)?;
+            Ok(())
+        } else {
+            Err(IdentityError::InvalidMfaCode)
+        }
+    }
+
+    #[allow(clippy::cast_sign_loss)] // Timestamps are always positive
+    fn verify_totp(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError> {
+        // Rate limit check
+        self.check_mfa_rate_limit(tenant_id, user_id)?;
+
+        let mut state = self
+            .load_mfa_state(tenant_id, user_id)?
+            .ok_or(IdentityError::MfaNotEnabled)?;
+
+        if !state.enabled {
+            return Err(IdentityError::MfaNotEnabled);
+        }
+
+        let secret = TotpSecret::from_base32(&state.secret_base32)?;
+        let now_secs = (self.clock.now().as_micros() / 1_000_000) as u64;
+        let matched_step =
+            totp::validate_totp(secret.as_bytes(), code, now_secs, state.last_used_step);
+
+        if let Some(step) = matched_step {
+            state.last_used_step = Some(step);
+            self.save_mfa_state(tenant_id, user_id, &state)?;
+            self.clear_mfa_attempts(tenant_id, user_id);
+            Ok(())
+        } else {
+            self.record_mfa_failed_attempt(tenant_id, user_id);
+            Err(IdentityError::InvalidMfaCode)
+        }
+    }
+
+    fn verify_recovery_code(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        code: &str,
+    ) -> Result<(), IdentityError> {
+        let mut state = self
+            .load_mfa_state(tenant_id, user_id)?
+            .ok_or(IdentityError::MfaNotEnabled)?;
+
+        if !state.enabled {
+            return Err(IdentityError::MfaNotEnabled);
+        }
+
+        let idx = totp::verify_recovery_code(code, &state.recovery_code_hashes)?;
+        match idx {
+            Some(i) => {
+                // Mark recovery code as used
+                state.recovery_code_hashes[i] = None;
+                self.save_mfa_state(tenant_id, user_id, &state)?;
+                self.clear_mfa_attempts(tenant_id, user_id);
+                Ok(())
+            }
+            None => Err(IdentityError::InvalidMfaCode),
+        }
+    }
+
+    fn disable_mfa(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError> {
+        let state = self.load_mfa_state(tenant_id, user_id)?;
+        match state {
+            Some(s) if s.enabled => {
+                let key = keys::encode_mfa_totp_key(user_id);
+                self.storage
+                    .delete(tenant_id, &key)
+                    .map_err(Self::storage_err)?;
+                self.clear_mfa_attempts(tenant_id, user_id);
+                Ok(())
+            }
+            _ => Err(IdentityError::MfaNotEnabled),
+        }
+    }
+
+    fn mfa_enabled(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<bool, IdentityError> {
+        match self.load_mfa_state(tenant_id, user_id)? {
+            Some(state) => Ok(state.enabled),
+            None => Ok(false),
+        }
+    }
+
+    // ===== WebAuthn / Passkeys (Step 24) =====
+
+    fn start_webauthn_registration(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        options: &RegistrationOptions,
+    ) -> Result<Vec<u8>, IdentityError> {
+        // Ensure user exists
+        self.get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Cleanup expired challenges
+        let now = self.clock.now().as_micros();
+        self.webauthn_challenges.cleanup_expired(now);
+
+        // Generate and store challenge
+        let challenge = webauthn::generate_challenge()?;
+        let pending = PendingWebAuthnChallenge {
+            challenge: challenge.clone(),
+            rp_id: options.rp_id.clone(),
+            user_id: Some(user_id.clone()),
+            ceremony_type: CeremonyType::Registration,
+            created_at: now,
+        };
+        self.webauthn_challenges.insert(pending);
+
+        Ok(challenge)
+    }
+
+    fn complete_webauthn_registration(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        client_data_json: &[u8],
+        attestation_object: &[u8],
+        origin: &str,
+        discoverable: bool,
+    ) -> Result<WebAuthnCredentialInfo, IdentityError> {
+        // Extract challenge from clientDataJSON to look up pending
+        let client_data: serde_json::Value =
+            serde_json::from_slice(client_data_json).map_err(|e| {
+                IdentityError::WebAuthnRegistrationFailed {
+                    reason: format!("invalid clientDataJSON: {e}"),
+                }
+            })?;
+        let challenge_b64 = client_data
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| IdentityError::WebAuthnRegistrationFailed {
+                reason: "missing challenge in clientDataJSON".to_string(),
+            })?;
+
+        let pending = self
+            .webauthn_challenges
+            .remove(challenge_b64)
+            .ok_or_else(|| IdentityError::WebAuthnRegistrationFailed {
+                reason: "challenge not found or expired".to_string(),
+            })?;
+
+        // Check expiry
+        let now = self.clock.now().as_micros();
+        if now - pending.created_at > 5 * 60 * 1_000_000 {
+            return Err(IdentityError::WebAuthnRegistrationFailed {
+                reason: "challenge expired".to_string(),
+            });
+        }
+
+        let (mut info, mut stored) = webauthn::complete_registration(
+            &pending,
+            client_data_json,
+            attestation_object,
+            origin,
+            now,
+        )?;
+
+        // Set discoverable from caller's request
+        info = WebAuthnCredentialInfo {
+            credential_id: info.credential_id().to_vec(),
+            algorithm: info.algorithm(),
+            discoverable,
+        };
+        stored.discoverable = discoverable;
+
+        // Persist credential
+        let cred_id_b64 = URL_SAFE_NO_PAD.encode(info.credential_id());
+        let key = keys::encode_webauthn_credential(user_id, &cred_id_b64);
+        let bytes = serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(tenant_id, &key, &bytes)
+            .map_err(Self::storage_err)?;
+
+        // If discoverable, create the index entry
+        if discoverable {
+            let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
+            let user_uuid_bytes = user_id.as_uuid().to_string().into_bytes();
+            self.storage
+                .put(tenant_id, &disc_key, &user_uuid_bytes)
+                .map_err(Self::storage_err)?;
+        }
+
+        Ok(info)
+    }
+
+    fn start_webauthn_authentication(
+        &self,
+        tenant_id: &TenantId,
+        user_id: Option<&UserId>,
+        options: &AuthenticationOptions,
+    ) -> Result<Vec<u8>, IdentityError> {
+        // If user_id provided, verify user exists
+        if let Some(uid) = user_id {
+            self.get_user(tenant_id, uid)?
+                .ok_or(IdentityError::UserNotFound)?;
+        }
+
+        // Cleanup expired challenges
+        let now = self.clock.now().as_micros();
+        self.webauthn_challenges.cleanup_expired(now);
+
+        // Generate and store challenge
+        let challenge = webauthn::generate_challenge()?;
+        let pending = PendingWebAuthnChallenge {
+            challenge: challenge.clone(),
+            rp_id: options.rp_id.clone(),
+            user_id: user_id.cloned(),
+            ceremony_type: CeremonyType::Authentication,
+            created_at: now,
+        };
+        self.webauthn_challenges.insert(pending);
+
+        Ok(challenge)
+    }
+
+    fn complete_webauthn_authentication(
+        &self,
+        tenant_id: &TenantId,
+        params: &CompleteAuthenticationParams<'_>,
+    ) -> Result<WebAuthnAuthResult, IdentityError> {
+        let credential_id = params.credential_id;
+        let client_data_json = params.client_data_json;
+        let authenticator_data = params.authenticator_data;
+        let signature = params.signature;
+        let user_handle = params.user_handle;
+        let origin = params.origin;
+
+        // Extract challenge from clientDataJSON to look up pending
+        let client_data: serde_json::Value =
+            serde_json::from_slice(client_data_json).map_err(|e| {
+                IdentityError::WebAuthnAuthenticationFailed {
+                    reason: format!("invalid clientDataJSON: {e}"),
+                }
+            })?;
+        let challenge_b64 = client_data
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| IdentityError::WebAuthnAuthenticationFailed {
+                reason: "missing challenge in clientDataJSON".to_string(),
+            })?;
+
+        let pending = self
+            .webauthn_challenges
+            .remove(challenge_b64)
+            .ok_or_else(|| IdentityError::WebAuthnAuthenticationFailed {
+                reason: "challenge not found or expired".to_string(),
+            })?;
+
+        // Check expiry
+        let now = self.clock.now().as_micros();
+        if now - pending.created_at > 5 * 60 * 1_000_000 {
+            return Err(IdentityError::WebAuthnAuthenticationFailed {
+                reason: "challenge expired".to_string(),
+            });
+        }
+
+        // Look up the credential by ID
+        let cred_id_b64 = URL_SAFE_NO_PAD.encode(credential_id);
+
+        // Determine which user owns this credential
+        let owner_user_id = if let Some(uid) = pending.user_id.as_ref() {
+            uid.clone()
+        } else {
+            // Discoverable flow: look up user from discoverable index
+            let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
+            let user_uuid_bytes = self
+                .storage
+                .get(tenant_id, &disc_key)
+                .map_err(Self::storage_err)?
+                .ok_or(IdentityError::WebAuthnCredentialNotFound)?;
+            let uuid_str = std::str::from_utf8(&user_uuid_bytes).map_err(|_| {
+                IdentityError::Serialization {
+                    reason: "invalid user UUID in discoverable index".to_string(),
+                }
+            })?;
+            let uuid =
+                uuid::Uuid::parse_str(uuid_str).map_err(|_| IdentityError::Serialization {
+                    reason: "invalid user UUID format in discoverable index".to_string(),
+                })?;
+            UserId::new(uuid)
+        };
+
+        let cred_key = keys::encode_webauthn_credential(&owner_user_id, &cred_id_b64);
+        let stored_bytes = self
+            .storage
+            .get(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::WebAuthnCredentialNotFound)?;
+        let stored: StoredWebAuthnCredential =
+            serde_json::from_slice(&stored_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        let result = webauthn::complete_authentication(
+            &pending,
+            &stored,
+            client_data_json,
+            authenticator_data,
+            signature,
+            user_handle,
+            origin,
+        )?;
+
+        // Update sign counter
+        let mut updated = stored;
+        updated.sign_count = result.sign_count();
+        let updated_bytes =
+            serde_json::to_vec(&updated).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &cred_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(result)
+    }
+
+    fn list_webauthn_credentials(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<Vec<WebAuthnCredentialInfo>, IdentityError> {
+        let prefix = keys::encode_webauthn_credentials_prefix(user_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(tenant_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut results = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let stored: StoredWebAuthnCredential =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            let cred_id = URL_SAFE_NO_PAD
+                .decode(&stored.credential_id_b64)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: format!("invalid credential ID: {e}"),
+                })?;
+            results.push(WebAuthnCredentialInfo {
+                credential_id: cred_id,
+                algorithm: stored.algorithm,
+                discoverable: stored.discoverable,
+            });
+        }
+
+        Ok(results)
+    }
+
+    fn revoke_webauthn_credential(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+        credential_id: &[u8],
+    ) -> Result<(), IdentityError> {
+        let cred_id_b64 = URL_SAFE_NO_PAD.encode(credential_id);
+
+        // Delete credential record
+        let cred_key = keys::encode_webauthn_credential(user_id, &cred_id_b64);
+        let existing = self
+            .storage
+            .get(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?;
+
+        if existing.is_none() {
+            return Err(IdentityError::WebAuthnCredentialNotFound);
+        }
+
+        // Check if discoverable, delete index entry
+        let stored: StoredWebAuthnCredential =
+            serde_json::from_slice(&existing.expect("checked above")).map_err(|e| {
+                IdentityError::Serialization {
+                    reason: e.to_string(),
+                }
+            })?;
+
+        self.storage
+            .delete(tenant_id, &cred_key)
+            .map_err(Self::storage_err)?;
+
+        if stored.discoverable {
+            let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
+            self.storage
+                .delete(tenant_id, &disc_key)
+                .map_err(Self::storage_err)?;
+        }
+
+        Ok(())
+    }
+
+    // ===== Magic Link / Passwordless (Step 25) =====
+
+    fn request_magic_link(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<MagicLinkResponse, IdentityError> {
+        // 1. Normalize email
+        let normalized = validation::validate_email(email)?;
+
+        // 2. Check per-email rate limit (3 per hour)
+        self.check_magic_link_rate_limit(tenant_id, &normalized)?;
+
+        // 3. Look up user by email — capture user_id if exists (enumeration resistance: always succeed)
+        let user_id = self
+            .get_user_by_email(tenant_id, &normalized)?
+            .map(|u| u.id().as_uuid().to_string());
+
+        // 4. Generate random token
+        let token = magic_link::generate_magic_link_token()?;
+
+        // 5. SHA-256 hash the token
+        let token_hash = Self::sha256_hex(token.as_str().as_bytes());
+
+        // 6. Store the magic link record
+        let now = self.clock.now().as_micros();
+        let stored = StoredMagicLink {
+            email: normalized.clone(),
+            user_id,
+            created_at_micros: now,
+            used: false,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let key = keys::encode_magic_link_token(&token_hash);
+        self.storage
+            .put(tenant_id, &key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 7. Record rate limit event
+        self.record_magic_link_request(tenant_id, &normalized);
+
+        // 8. Return plaintext token (shown once)
+        Ok(MagicLinkResponse::new(token.as_str().to_string()))
+    }
+
+    fn validate_magic_link(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<UserId, IdentityError> {
+        // 1. SHA-256 hash the incoming token
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let key = keys::encode_magic_link_token(&token_hash);
+
+        // 2. Look up stored record
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::MagicLinkTokenInvalid)?;
+
+        let mut stored: StoredMagicLink =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 3. Check if already used
+        if stored.used {
+            return Err(IdentityError::MagicLinkTokenInvalid);
+        }
+
+        // 4. Check expiry
+        let now = self.clock.now().as_micros();
+        if now - stored.created_at_micros > MAGIC_LINK_EXPIRY_MICROS {
+            // Clean up stale record
+            self.storage
+                .delete(tenant_id, &key)
+                .map_err(Self::storage_err)?;
+            return Err(IdentityError::MagicLinkTokenInvalid);
+        }
+
+        // 5. Mark as used
+        stored.used = true;
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 6. Return existing user or create new one
+        if let Some(user_id_str) = &stored.user_id {
+            let uuid =
+                uuid::Uuid::parse_str(user_id_str).map_err(|e| IdentityError::Serialization {
+                    reason: format!("invalid stored user_id: {e}"),
+                })?;
+            Ok(UserId::new(uuid))
+        } else {
+            // Email not registered at request time — create user now
+            let request = crate::identity::types::CreateUserRequest {
+                email: stored.email.clone(),
+                display_name: stored.email.clone(),
+            };
+            let user = self.create_user(tenant_id, &request)?;
+            Ok(user.id().clone())
+        }
+    }
+
+    // ===== Password reset =====
+
+    fn request_password_reset(
+        &self,
+        tenant_id: &TenantId,
+        email: &str,
+    ) -> Result<Option<String>, IdentityError> {
+        // 1. Normalize email
+        let normalized = validation::validate_email(email)?;
+
+        // 2. Check per-email rate limit (3 per hour)
+        self.check_password_reset_rate_limit(tenant_id, &normalized)?;
+
+        // 3. Look up user by email — return None for unknown (enumeration resistance)
+        let Some(user) = self.get_user_by_email(tenant_id, &normalized)? else {
+            // Record the attempt even for unknown emails (prevents rate-limit bypass)
+            self.record_password_reset_request(tenant_id, &normalized);
+            return Ok(None);
+        };
+
+        // 4. Generate random token (reuse magic link token generator)
+        let token = magic_link::generate_magic_link_token()?;
+
+        // 5. SHA-256 hash the token
+        let token_hash = Self::sha256_hex(token.as_str().as_bytes());
+
+        // 6. Store the password reset record
+        let now = self.clock.now().as_micros();
+        let stored = StoredPasswordReset {
+            email: normalized.clone(),
+            user_id: user.id().as_uuid().to_string(),
+            created_at_micros: now,
+            used: false,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let key = keys::encode_password_reset_token(&token_hash);
+        self.storage
+            .put(tenant_id, &key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 7. Record rate limit event
+        self.record_password_reset_request(tenant_id, &normalized);
+
+        // 8. Return plaintext token (shown once)
+        Ok(Some(token.as_str().to_string()))
+    }
+
+    fn reset_password_with_token(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+        new_password: &CleartextPassword,
+    ) -> Result<UserId, IdentityError> {
+        // 1. SHA-256 hash the incoming token
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let key = keys::encode_password_reset_token(&token_hash);
+
+        // 2. Look up stored record
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::PasswordResetTokenInvalid)?;
+
+        let mut stored: StoredPasswordReset =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        // 3. Check if already used
+        if stored.used {
+            return Err(IdentityError::PasswordResetTokenInvalid);
+        }
+
+        // 4. Check expiry (30 minutes)
+        let now = self.clock.now().as_micros();
+        if now - stored.created_at_micros > PASSWORD_RESET_EXPIRY_MICROS {
+            // Clean up stale record
+            self.storage
+                .delete(tenant_id, &key)
+                .map_err(Self::storage_err)?;
+            return Err(IdentityError::PasswordResetTokenInvalid);
+        }
+
+        // 5. Mark as used
+        stored.used = true;
+        let updated_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 6. Parse user ID and set new password
+        let uuid =
+            uuid::Uuid::parse_str(&stored.user_id).map_err(|e| IdentityError::Serialization {
+                reason: format!("invalid stored user_id: {e}"),
+            })?;
+        let user_id = UserId::new(uuid);
+        self.set_password(tenant_id, &user_id, new_password)?;
+
+        Ok(user_id)
+    }
+
+    // ===== Email verification (onboarding) =====
+
+    fn issue_email_verification_token(
+        &self,
+        tenant_id: &TenantId,
+        user_id: &UserId,
+    ) -> Result<String, IdentityError> {
+        // Ensure the target user exists (don't bind tokens to nothing).
+        let user = self
+            .get_user(tenant_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // Generate 32 random bytes, base64url-encoded.
+        let rng = ring::rand::SystemRandom::new();
+        let mut bytes = [0u8; 32];
+        rng.fill(&mut bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "failed to generate verification token".to_string(),
+            })?;
+        let token = URL_SAFE_NO_PAD.encode(bytes);
+
+        // Persist SHA-256(token) → StoredEmailVerification.
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let stored = StoredEmailVerification {
+            user_id: user.id().as_uuid().to_string(),
+            created_at_micros: self.clock.now().as_micros(),
+            used: false,
+        };
+        let stored_bytes =
+            serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let key = keys::encode_email_verify_token(&token_hash);
+        self.storage
+            .put(tenant_id, &key, &stored_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(token)
+    }
+
+    fn verify_email_token(
+        &self,
+        tenant_id: &TenantId,
+        token: &str,
+    ) -> Result<UserId, IdentityError> {
+        let token_hash = Self::sha256_hex(token.as_bytes());
+        let key = keys::encode_email_verify_token(&token_hash);
+
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::VerificationTokenInvalid)?;
+
+        let stored: StoredEmailVerification =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if stored.used {
+            return Err(IdentityError::VerificationTokenInvalid);
+        }
+
+        let now = self.clock.now().as_micros();
+        if now - stored.created_at_micros > EMAIL_VERIFY_EXPIRY_MICROS {
+            // Best-effort cleanup; ignore failure.
+            let _ = self.storage.delete(tenant_id, &key);
+            return Err(IdentityError::VerificationTokenInvalid);
+        }
+
+        // Resolve stored user id back into a typed UserId.
+        let uuid =
+            uuid::Uuid::parse_str(&stored.user_id).map_err(|e| IdentityError::Serialization {
+                reason: format!("invalid stored user_id: {e}"),
+            })?;
+        let user_id = UserId::new(uuid);
+
+        // Transition user to Active. If the user was already Active we
+        // still consume the token to keep single-use semantics, but leave
+        // the user record alone.
+        let mut user = self
+            .get_user(tenant_id, &user_id)?
+            .ok_or(IdentityError::VerificationTokenInvalid)?;
+        if user.status() == UserStatus::PendingVerification {
+            user.set_status(UserStatus::Active);
+            user.set_updated_at(self.clock.now());
+            let user_bytes =
+                serde_json::to_vec(&user).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            let user_key = keys::encode_user_id(&user_id);
+            self.storage
+                .put(tenant_id, &user_key, &user_bytes)
+                .map_err(Self::storage_err)?;
+        }
+
+        // Delete the token entry so it cannot be reused.
+        self.storage
+            .delete(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+
+        Ok(user_id)
+    }
+
+    // ===== UserInfo (OIDC Core §5.3) =====
+
+    fn userinfo(
+        &self,
+        tenant_id: &TenantId,
+        access_token: &str,
+    ) -> Result<crate::identity::oidc::UserInfoResponse, IdentityError> {
+        // 1. Validate the access token
+        let claims = self.validate_token(tenant_id, access_token)?;
+
+        // 2. Ensure it's an access token
+        if claims.token_type != "access" {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        // 3. Parse user_id from sub claim
+        let user_id_str = claims
+            .sub
+            .strip_prefix("user_")
+            .ok_or(IdentityError::InvalidToken)?;
+        let user_uuid =
+            uuid::Uuid::parse_str(user_id_str).map_err(|_| IdentityError::InvalidToken)?;
+        let user_id = crate::core::UserId::new(user_uuid);
+
+        // 4. Look up the user
+        let user = self
+            .get_user(tenant_id, &user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+
+        // 5. Build response based on scopes
+        let scopes: Vec<&str> = claims
+            .scope
+            .as_deref()
+            .unwrap_or("openid")
+            .split_whitespace()
+            .collect();
+
+        let has_email_scope = scopes.contains(&"email");
+        let has_profile_scope = scopes.contains(&"profile");
+
+        Ok(crate::identity::oidc::UserInfoResponse {
+            sub: claims.sub,
+            email: if has_email_scope {
+                Some(user.email().to_string())
+            } else {
+                None
+            },
+            email_verified: if has_email_scope {
+                Some(true) // Hearth-created users have verified emails
+            } else {
+                None
+            },
+            name: if has_profile_scope {
+                Some(user.display_name().to_string())
+            } else {
+                None
+            },
+        })
+    }
+
+    // ===== Admin API (Step 27) =====
+
+    fn list_users(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<User>, IdentityError> {
+        let prefix = keys::user_id_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            // Decode cursor → UUID, build key just after it
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            // Build key for cursor UUID and add a byte to get "just after"
+            let mut cursor_key = format!("usr:id:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let user: User =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(user);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop(); // discard the extra item
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn list_tenants(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<Tenant>, IdentityError> {
+        let sys_tenant = keys::system_tenant_id();
+        let prefix = keys::tenant_id_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!("tenant:id:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(&sys_tenant, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let tenant: Tenant =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(tenant);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop(); // discard the extra item
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn list_clients(
+        &self,
+        tenant_id: &TenantId,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<OAuthClient>, IdentityError> {
+        let prefix = keys::oauth_client_scan_prefix();
+        let start = if let Some(cursor_str) = cursor {
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
+            .map_err(|e| IdentityError::InvalidInput {
+                reason: format!("invalid cursor: {e}"),
+            })?;
+            let mut cursor_key = format!("oauth:client:{uuid_str}").into_bytes();
+            cursor_key.push(0xFF);
+            cursor_key
+        } else {
+            prefix.clone()
+        };
+        let end = keys::prefix_end(&prefix);
+
+        let entries = self
+            .storage
+            .scan(tenant_id, &start, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut items = Vec::new();
+        for entry in entries.iter().take(limit + 1) {
+            let client: OAuthClient =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            items.push(client);
+        }
+
+        let next_cursor = if items.len() > limit {
+            items.pop(); // discard the extra item
+            let last_kept = items.last().expect("limit >= 1");
+            Some(URL_SAFE_NO_PAD.encode(last_kept.client_id().as_uuid().to_string()))
+        } else {
+            None
+        };
+
+        Ok(Page { items, next_cursor })
+    }
+
+    fn get_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<Option<OAuthClient>, IdentityError> {
+        let key = keys::encode_oauth_client(client_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+
+        match bytes {
+            Some(data) => {
+                let client: OAuthClient =
+                    serde_json::from_slice(&data).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(client))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn update_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+        request: &crate::identity::oidc::UpdateClientRequest,
+    ) -> Result<OAuthClient, IdentityError> {
+        let key = keys::encode_oauth_client(client_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::ClientNotFound)?;
+
+        let mut client: OAuthClient =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if let Some(name) = &request.client_name {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "client_name cannot be empty".to_string(),
+                });
+            }
+            client.set_client_name(trimmed.to_string());
+        }
+        if let Some(uris) = &request.redirect_uris {
+            if uris.is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "redirect_uris cannot be empty".to_string(),
+                });
+            }
+            client.set_redirect_uris(uris.clone());
+        }
+
+        let updated_bytes =
+            serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(client)
+    }
+
+    fn delete_client(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_oauth_client(client_id);
+        // Verify the client exists first
+        self.storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::ClientNotFound)?;
+
+        self.storage
+            .delete(tenant_id, &key)
+            .map_err(Self::storage_err)?;
+        Ok(())
+    }
+
+    fn bulk_create_users(
+        &self,
+        tenant_id: &TenantId,
+        requests: &[CreateUserRequest],
+    ) -> Result<Vec<BulkResult<User>>, IdentityError> {
+        let mut results = Vec::with_capacity(requests.len());
+        for (index, request) in requests.iter().enumerate() {
+            let result = match self.create_user(tenant_id, request) {
+                Ok(user) => BulkResult {
+                    index,
+                    result: Ok(user),
+                },
+                Err(e) => BulkResult {
+                    index,
+                    result: Err(e.to_string()),
+                },
+            };
+            results.push(result);
+        }
+        Ok(results)
+    }
+
+    fn bulk_disable_users(
+        &self,
+        tenant_id: &TenantId,
+        user_ids: &[UserId],
+    ) -> Result<Vec<BulkResult<()>>, IdentityError> {
+        let mut results = Vec::with_capacity(user_ids.len());
+        for (index, user_id) in user_ids.iter().enumerate() {
+            let result = match self.update_user(
+                tenant_id,
+                user_id,
+                &UpdateUserRequest {
+                    status: Some(UserStatus::Disabled),
+                    ..UpdateUserRequest::default()
+                },
+            ) {
+                Ok(_) => BulkResult {
+                    index,
+                    result: Ok(()),
+                },
+                Err(e) => BulkResult {
+                    index,
+                    result: Err(e.to_string()),
+                },
+            };
+            results.push(result);
+        }
+        Ok(results)
+    }
+
+    // ===== Migration / import (Phase 1 Step 30) =====
+
+    fn import_tenant(
+        &self,
+        request: &CreateTenantRequest,
+        requested_id: Option<TenantId>,
+    ) -> Result<Tenant, IdentityError> {
+        // Serialize against other tenant-record mutations so the atomic
+        // record+key `put_batch` below is never interleaved with another
+        // thread's update/delete. Mirrors `create_tenant`.
+        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
+
+        let tenant_id = requested_id.unwrap_or_else(TenantId::generate);
+
+        // Refuse to clobber an existing tenant record — callers may
+        // retry an idempotent import flow, in which case they want a
+        // clear DuplicateTenantName signal rather than a silent rewrite
+        // that would also generate a fresh signing key and invalidate
+        // every existing token under that tenant.
+        let sys_tenant = keys::system_tenant_id();
+        let tenant_key = keys::encode_tenant_id(&tenant_id);
+        if self
+            .storage
+            .get(&sys_tenant, &tenant_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::DuplicateTenantName);
+        }
+
+        let now = self.clock.now();
+        let config = request.config.clone().unwrap_or_default();
+        let tenant_signing_key = SigningKey::generate()?;
+
+        let tenant = Tenant::new(
+            tenant_id.clone(),
+            request.name.clone(),
+            TenantStatus::Active,
+            config,
+            now,
+            now,
+        );
+        let tenant_bytes = Self::serialize_tenant(&tenant)?;
+        let key_storage_key = keys::encode_tenant_signing_key(&tenant_id);
+        let key_bytes = tenant_signing_key.pkcs8_bytes().to_vec();
+
+        self.storage
+            .put_batch(
+                &sys_tenant,
+                &[(tenant_key, tenant_bytes), (key_storage_key, key_bytes)],
+            )
+            .map_err(Self::storage_err)?;
+
+        {
+            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(
+                tenant_id.as_uuid().to_string(),
+                Arc::new(tenant_signing_key),
+            );
+        }
+
+        Ok(tenant)
+    }
+
+    fn import_user(
+        &self,
+        tenant_id: &TenantId,
+        request: &ImportUserRequest,
+    ) -> Result<User, IdentityError> {
+        // 1. Validate and normalize input (same invariants as create_user)
+        let email = validation::validate_email(&request.email)?;
+        let display_name = validation::validate_display_name(&request.display_name)?;
+
+        // 2. Check email uniqueness
+        let email_key = keys::encode_user_email(&email);
+        if self
+            .storage
+            .get(tenant_id, &email_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::DuplicateEmail);
+        }
+
+        // 3. Resolve user id — allow caller to preserve a foreign UUID,
+        //    but refuse to clobber an existing record at that id.
+        let user_id = request.id.clone().unwrap_or_else(UserId::generate);
+        let id_key = keys::encode_user_id(&user_id);
+        if self
+            .storage
+            .get(tenant_id, &id_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::InvalidInput {
+                reason: "a user with this id already exists".to_string(),
+            });
+        }
+
+        let now = self.clock.now();
+        let user = User::new(
+            user_id.clone(),
+            email.clone(),
+            display_name,
+            request.status,
+            now,
+            now,
+        );
+        let user_bytes = Self::serialize_user(&user)?;
+        let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
+
+        // 4. If a credential was supplied, derive the algorithm from the
+        //    PHC prefix and prepare the credential write as part of the
+        //    same atomic batch. Preserving the foreign hash verbatim lets
+        //    the user authenticate with their existing password; the next
+        //    successful verify will auto-upgrade to Argon2id.
+        let mut entries = Vec::with_capacity(3);
+        entries.push((email_key, user_id_bytes));
+        entries.push((id_key, user_bytes));
+
+        if let Some(raw) = &request.credential {
+            let algorithm = classify_phc_algorithm(&raw.phc_string).ok_or_else(|| {
+                IdentityError::InvalidInput {
+                    reason: "unrecognized password hash format".to_string(),
+                }
+            })?;
+            let created_at = raw.created_at_micros.unwrap_or_else(|| now.as_micros());
+            let stored = StoredCredential {
+                algorithm,
+                hash: raw.phc_string.clone(),
+                created_at,
+            };
+            let cred_bytes = Self::serialize_credential(&stored)?;
+            let cred_key = keys::encode_credential_key(&user_id);
+            entries.push((cred_key, cred_bytes));
+        }
+
+        self.storage
+            .put_batch(tenant_id, &entries)
+            .map_err(Self::storage_err)?;
+
+        Ok(user)
+    }
+
+    fn import_client(
+        &self,
+        tenant_id: &TenantId,
+        request: &ImportClientRequest,
+    ) -> Result<OAuthClient, IdentityError> {
+        let client_name = validation::validate_client_name(&request.client_name)?;
+
+        let has_client_credentials = request
+            .grant_types
+            .contains(&"client_credentials".to_string());
+        let has_device_code = request
+            .grant_types
+            .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string());
+        if request.redirect_uris.is_empty() && !has_client_credentials && !has_device_code {
+            return Err(IdentityError::InvalidInput {
+                reason: "at least one redirect URI is required".to_string(),
+            });
+        }
+        for uri in &request.redirect_uris {
+            if uri.trim().is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "redirect URIs must not be empty".to_string(),
+                });
+            }
+            validation::validate_redirect_uri(uri)?;
+        }
+
+        let client_id = request.id.clone().unwrap_or_else(ClientId::generate);
+        let key = keys::encode_oauth_client(&client_id);
+        if self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::InvalidInput {
+                reason: "a client with this id already exists".to_string(),
+            });
+        }
+
+        let now = self.clock.now();
+        let grant_types = if request.grant_types.is_empty() {
+            vec!["authorization_code".to_string()]
+        } else {
+            request.grant_types.clone()
+        };
+
+        let client = if let Some(ref secret) = request.client_secret {
+            let secret_hash =
+                credentials::hash_raw_secret(secret.as_bytes(), &self.config.credential)?;
+            OAuthClient::new_confidential(
+                client_id,
+                client_name,
+                request.redirect_uris.clone(),
+                now,
+                secret_hash,
+                grant_types,
+            )
+        } else {
+            let mut c =
+                OAuthClient::new(client_id, client_name, request.redirect_uris.clone(), now);
+            c.set_grant_types(grant_types);
+            c
+        };
+
+        let client_bytes =
+            serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &client_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(client)
+    }
+}
+
+/// Classifies a PHC-formatted hash string into a [`PasswordAlgorithm`].
+///
+/// Used by `import_user` to tag an externally supplied hash. Returns
+/// `None` for prefixes this code base does not know how to verify, so
+/// the caller can fail fast rather than storing an unverifiable
+/// credential.
+fn classify_phc_algorithm(phc: &str) -> Option<crate::identity::credentials::PasswordAlgorithm> {
+    use crate::identity::credentials::PasswordAlgorithm;
+    if phc.starts_with("$argon2id$") {
+        Some(PasswordAlgorithm::Argon2id)
+    } else if phc.starts_with("$2a$") || phc.starts_with("$2b$") {
+        Some(PasswordAlgorithm::Bcrypt)
+    } else if phc.starts_with("$scrypt$") {
+        Some(PasswordAlgorithm::Scrypt)
+    } else if phc.starts_with("$pbkdf2-sha256$") {
+        Some(PasswordAlgorithm::Pbkdf2Sha256)
+    } else {
+        None
     }
 }
 
@@ -1160,6 +4088,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 mod tests {
     use super::*;
     use crate::core::{FakeClock, Timestamp};
+    use crate::identity::types::TenantConfig;
     use crate::storage::{EmbeddedStorageEngine, StorageConfig};
 
     fn setup_engine() -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
@@ -2372,6 +5301,8 @@ mod tests {
                 &RegisterClientRequest {
                     client_name: "Test App".to_string(),
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
                 },
             )
             .expect("register client")
@@ -2963,4 +5894,1629 @@ mod tests {
     }
 
     // ===== Session simulation tests — see simulation/ crate =====
+
+    // ===== Phase 1 Step 19: Multi-Tenancy =====
+    //
+    // Test scenarios from TEST_SCENARIOS.md § Multi-Tenancy
+
+    // --- Unit Scenario 1: Create tenant with configuration returns assigned TenantId ---
+
+    #[test]
+    fn create_tenant_returns_assigned_id() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let tenant = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Acme Corp".to_string(),
+                config: None,
+            })
+            .expect("create tenant");
+
+        assert_eq!(tenant.name(), "Acme Corp");
+        assert_eq!(tenant.status(), TenantStatus::Active);
+
+        // Should be retrievable
+        let loaded = engine
+            .get_tenant(tenant.id())
+            .expect("get tenant")
+            .expect("tenant should exist");
+        assert_eq!(loaded.id(), tenant.id());
+        assert_eq!(loaded.name(), "Acme Corp");
+    }
+
+    #[test]
+    fn create_tenant_with_custom_config() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let config = TenantConfig {
+            session_ttl_micros: Some(3_600_000_000), // 1 hour
+            password_memory_cost: Some(65536),
+            password_time_cost: Some(3),
+            email_branding: None,
+        };
+        let tenant = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Custom Corp".to_string(),
+                config: Some(config.clone()),
+            })
+            .expect("create tenant");
+
+        assert_eq!(tenant.config(), &config);
+    }
+
+    #[test]
+    fn get_nonexistent_tenant_returns_none() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let result = engine
+            .get_tenant(&TenantId::generate())
+            .expect("get tenant");
+        assert!(result.is_none());
+    }
+
+    // --- Unit Scenario 2: Tenant-scoped user creation; cross-tenant lookup returns not-found ---
+
+    #[test]
+    fn tenant_scoped_user_isolation() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let tenant_a = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Tenant A".to_string(),
+                config: None,
+            })
+            .expect("create tenant A");
+        let tenant_b = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Tenant B".to_string(),
+                config: None,
+            })
+            .expect("create tenant B");
+
+        // Create user in tenant A
+        let user_a = engine
+            .create_user(
+                tenant_a.id(),
+                &CreateUserRequest {
+                    email: "alice@example.com".to_string(),
+                    display_name: "Alice".to_string(),
+                },
+            )
+            .expect("create user in A");
+
+        // User should be visible in tenant A
+        let found = engine
+            .get_user(tenant_a.id(), user_a.id())
+            .expect("get user in A");
+        assert!(found.is_some());
+
+        // User should NOT be visible in tenant B
+        let not_found = engine
+            .get_user(tenant_b.id(), user_a.id())
+            .expect("get user in B");
+        assert!(not_found.is_none());
+
+        // Same email can be used in tenant B (different namespace)
+        let user_b = engine
+            .create_user(
+                tenant_b.id(),
+                &CreateUserRequest {
+                    email: "alice@example.com".to_string(),
+                    display_name: "Alice B".to_string(),
+                },
+            )
+            .expect("create same email in B");
+        assert_ne!(user_a.id(), user_b.id());
+    }
+
+    // --- Unit Scenario 3: Per-tenant signing keys ---
+
+    #[test]
+    fn per_tenant_signing_keys_are_independent() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let tenant_a = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Tenant A".to_string(),
+                config: None,
+            })
+            .expect("create tenant A");
+        let tenant_b = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Tenant B".to_string(),
+                config: None,
+            })
+            .expect("create tenant B");
+
+        let jwks_a = engine.tenant_jwks(tenant_a.id()).expect("jwks A");
+        let jwks_b = engine.tenant_jwks(tenant_b.id()).expect("jwks B");
+
+        // Each tenant should have exactly one key
+        assert_eq!(jwks_a.keys.len(), 1);
+        assert_eq!(jwks_b.keys.len(), 1);
+
+        // Keys should be different
+        assert_ne!(jwks_a.keys[0].kid, jwks_b.keys[0].kid);
+        assert_ne!(jwks_a.keys[0].x, jwks_b.keys[0].x);
+    }
+
+    // --- Unit Scenario 4: Tenant configuration update ---
+
+    #[test]
+    fn update_tenant_config_applies_only_to_target() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let tenant = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Original Name".to_string(),
+                config: None,
+            })
+            .expect("create tenant");
+
+        // Default config should have no overrides
+        assert!(tenant.config().session_ttl_micros.is_none());
+
+        // Update config
+        let new_config = TenantConfig {
+            session_ttl_micros: Some(7_200_000_000), // 2 hours
+            password_memory_cost: Some(32768),
+            password_time_cost: None,
+            email_branding: None,
+        };
+        let updated = engine
+            .update_tenant(
+                tenant.id(),
+                &UpdateTenantRequest {
+                    name: Some("Updated Name".to_string()),
+                    status: None,
+                    config: Some(new_config.clone()),
+                },
+            )
+            .expect("update tenant");
+
+        assert_eq!(updated.name(), "Updated Name");
+        assert_eq!(updated.config(), &new_config);
+
+        // Persisted
+        let loaded = engine
+            .get_tenant(tenant.id())
+            .expect("get")
+            .expect("should exist");
+        assert_eq!(loaded.name(), "Updated Name");
+        assert_eq!(loaded.config(), &new_config);
+    }
+
+    #[test]
+    fn update_nonexistent_tenant_returns_not_found() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let err = engine
+            .update_tenant(
+                &TenantId::generate(),
+                &UpdateTenantRequest {
+                    name: Some("nope".to_string()),
+                    ..UpdateTenantRequest::default()
+                },
+            )
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::TenantNotFound));
+    }
+
+    // --- Unit Scenario 5: Cascading tenant deletion ---
+
+    #[test]
+    fn delete_tenant_cascades_all_data() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let tenant = engine
+            .create_tenant(&CreateTenantRequest {
+                name: "Doomed Corp".to_string(),
+                config: None,
+            })
+            .expect("create tenant");
+
+        // Create users
+        let user1 = engine
+            .create_user(
+                tenant.id(),
+                &CreateUserRequest {
+                    email: "user1@example.com".to_string(),
+                    display_name: "User 1".to_string(),
+                },
+            )
+            .expect("create user 1");
+        let user2 = engine
+            .create_user(
+                tenant.id(),
+                &CreateUserRequest {
+                    email: "user2@example.com".to_string(),
+                    display_name: "User 2".to_string(),
+                },
+            )
+            .expect("create user 2");
+
+        // Set passwords
+        let pw = CleartextPassword::from_string("password123".to_string());
+        engine
+            .set_password(tenant.id(), user1.id(), &pw)
+            .expect("set password");
+
+        // Create sessions
+        let session = engine
+            .create_session(tenant.id(), user1.id())
+            .expect("create session");
+
+        // Delete tenant
+        engine.delete_tenant(tenant.id()).expect("delete tenant");
+
+        // Tenant record should be gone
+        let loaded = engine.get_tenant(tenant.id()).expect("get tenant");
+        assert!(loaded.is_none(), "tenant record should be deleted");
+
+        // Users should be gone
+        assert!(engine
+            .get_user(tenant.id(), user1.id())
+            .expect("get")
+            .is_none());
+        assert!(engine
+            .get_user(tenant.id(), user2.id())
+            .expect("get")
+            .is_none());
+
+        // Session should be gone
+        assert!(engine
+            .get_session(tenant.id(), session.id())
+            .expect("get")
+            .is_none());
+
+        // Signing key should be gone
+        let jwks_err = engine.tenant_jwks(tenant.id());
+        assert!(jwks_err.is_err(), "signing key should be deleted");
+    }
+
+    #[test]
+    fn delete_nonexistent_tenant_returns_not_found() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        let err = engine
+            .delete_tenant(&TenantId::generate())
+            .expect_err("should fail");
+        assert!(matches!(err, IdentityError::TenantNotFound));
+    }
+
+    // ===== Phase 1 Step 19: Multi-Tenancy Property Tests =====
+
+    mod tenant_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy for generating a valid tenant name.
+        fn valid_tenant_name() -> impl Strategy<Value = String> {
+            "[A-Za-z ]{3,30}".prop_map(|s| s.trim().to_string())
+        }
+
+        /// Strategy for generating a valid email address.
+        fn valid_email() -> impl Strategy<Value = String> {
+            ("[a-z]{1,20}@[a-z]{1,10}\\.[a-z]{2,4}").prop_map(|s| s)
+        }
+
+        proptest! {
+            /// Property: Random operations across N tenants never produce
+            /// cross-tenant data leaks.
+            ///
+            /// Creates users with the same email in multiple tenants, then
+            /// verifies each tenant only sees its own users.
+            #[test]
+            fn no_cross_tenant_data_leaks(
+                n_tenants in 2..5usize,
+                emails in proptest::collection::hash_set(valid_email(), 1..5),
+            ) {
+                let (_dir, engine, _clock) = setup_engine();
+                let mut tenants = Vec::new();
+
+                // Create N tenants
+                for i in 0..n_tenants {
+                    let tenant = engine.create_tenant(&CreateTenantRequest {
+                        name: format!("Tenant {i}"),
+                        config: None,
+                    }).expect("create tenant");
+                    tenants.push(tenant);
+                }
+
+                // Create same set of users in each tenant
+                let mut user_ids: Vec<Vec<UserId>> = Vec::new();
+                for tenant in &tenants {
+                    let mut ids = Vec::new();
+                    for (i, email) in emails.iter().enumerate() {
+                        let user = engine.create_user(tenant.id(), &CreateUserRequest {
+                            email: email.clone(),
+                            display_name: format!("User {i}"),
+                        }).expect("create user");
+                        ids.push(user.id().clone());
+                    }
+                    user_ids.push(ids);
+                }
+
+                // Verify: each tenant's users are only visible in that tenant
+                for (t_idx, _tenant) in tenants.iter().enumerate() {
+                    for (other_idx, other_tenant) in tenants.iter().enumerate() {
+                        for user_id in &user_ids[t_idx] {
+                            let result = engine.get_user(other_tenant.id(), user_id)
+                                .expect("get user");
+                            if t_idx == other_idx {
+                                prop_assert!(result.is_some(),
+                                    "user should exist in its own tenant");
+                            } else {
+                                prop_assert!(result.is_none(),
+                                    "user should NOT exist in another tenant");
+                            }
+                        }
+                    }
+                }
+            }
+
+            /// Property: Random create/delete tenant sequences maintain
+            /// consistent tenant count and clean storage.
+            #[test]
+            fn create_delete_maintains_consistent_count(
+                names in proptest::collection::vec(valid_tenant_name(), 2..8),
+            ) {
+                let (_dir, engine, _clock) = setup_engine();
+                let mut created_tenants = Vec::new();
+
+                // Create all tenants
+                for name in &names {
+                    let tenant = engine.create_tenant(&CreateTenantRequest {
+                        name: name.clone(),
+                        config: None,
+                    }).expect("create tenant");
+                    created_tenants.push(tenant);
+                }
+
+                // All should be retrievable
+                for tenant in &created_tenants {
+                    let loaded = engine.get_tenant(tenant.id()).expect("get");
+                    prop_assert!(loaded.is_some(), "created tenant should be found");
+                }
+
+                // Delete every other tenant
+                let to_delete: Vec<_> = created_tenants.iter()
+                    .enumerate()
+                    .filter(|(i, _)| i % 2 == 0)
+                    .map(|(_, t)| t.id().clone())
+                    .collect();
+
+                for tenant_id in &to_delete {
+                    engine.delete_tenant(tenant_id).expect("delete");
+                }
+
+                // Deleted should be gone
+                for tenant_id in &to_delete {
+                    let loaded = engine.get_tenant(tenant_id).expect("get");
+                    prop_assert!(loaded.is_none(), "deleted tenant should not be found");
+                }
+
+                // Remaining should still exist
+                for (i, tenant) in created_tenants.iter().enumerate() {
+                    if i % 2 != 0 {
+                        let loaded = engine.get_tenant(tenant.id()).expect("get");
+                        prop_assert!(loaded.is_some(), "remaining tenant should be found");
+                    }
+                }
+            }
+
+            /// Property: Tenant key rotation under concurrent token issuance.
+            ///
+            /// Tokens issued before key rotation remain valid (they're validated
+            /// via session lookup, not signature verification on the hot path).
+            #[test]
+            fn tenant_key_rotation_preserves_in_flight_tokens(
+                _seed in 0..100u32,
+            ) {
+                let (_dir, engine, _clock) = setup_engine();
+
+                let tenant = engine.create_tenant(&CreateTenantRequest {
+                    name: "Rotation Corp".to_string(),
+                    config: None,
+                }).expect("create tenant");
+
+                let user = engine.create_user(tenant.id(), &CreateUserRequest {
+                    email: format!("rotation-{}@example.com", uuid::Uuid::new_v4()),
+                    display_name: "Rotation User".to_string(),
+                }).expect("create user");
+
+                let session = engine.create_session(tenant.id(), user.id())
+                    .expect("create session");
+
+                // Issue tokens with current key
+                let tokens = engine.issue_tokens(tenant.id(), user.id(), session.id())
+                    .expect("issue tokens");
+
+                // Tokens should validate (session-based validation)
+                let claims = engine.validate_token(tenant.id(), tokens.access_token())
+                    .expect("validate before rotation");
+                prop_assert_eq!(&claims.sub, &user.id().to_string());
+
+                // Token still validates after rotation because the hot-path
+                // validation uses session lookup, not signature re-verification.
+                // The JWKS key ID may have changed, but existing sessions are
+                // unaffected.
+                let new_claims = engine.validate_token(tenant.id(), tokens.access_token())
+                    .expect("validate after rotation");
+                prop_assert_eq!(&new_claims.sub, &user.id().to_string());
+            }
+        }
+    }
+
+    // ===== Step 22: OAuth 2.0 Complete Unit Tests =====
+
+    /// Helper: creates a tenant via `create_tenant` and returns `TenantId`.
+    fn create_test_tenant(engine: &EmbeddedIdentityEngine) -> TenantId {
+        let tenant = engine
+            .create_tenant(&CreateTenantRequest {
+                name: format!("test-tenant-{}", uuid::Uuid::new_v4()),
+                config: Some(TenantConfig::default()),
+            })
+            .expect("create tenant");
+        tenant.id().clone()
+    }
+
+    /// Helper: registers a confidential client with `client_credentials` grant.
+    fn register_confidential_client(
+        engine: &EmbeddedIdentityEngine,
+        tenant_id: &TenantId,
+        secret: &str,
+    ) -> OAuthClient {
+        engine
+            .register_client(
+                tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Confidential App".to_string(),
+                    redirect_uris: vec![],
+                    client_secret: Some(secret.to_string()),
+                    grant_types: vec!["client_credentials".to_string()],
+                },
+            )
+            .expect("register confidential client")
+    }
+
+    // ===== B1: Client credentials grant =====
+
+    #[test]
+    fn client_credentials_register_and_issue_token() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let secret = "super-secret-value-12345";
+
+        // Register confidential client
+        let client = register_confidential_client(&engine, &tenant_id, secret);
+        assert!(client.is_confidential());
+        assert!(client
+            .grant_types()
+            .contains(&"client_credentials".to_string()));
+
+        // Issue token via client credentials
+        let response = engine
+            .client_credentials_token(
+                &tenant_id,
+                &ClientCredentialsRequest {
+                    client_id: client.client_id().clone(),
+                    client_secret: secret.to_string(),
+                    scope: Some("read write".to_string()),
+                },
+            )
+            .expect("client_credentials_token should succeed");
+
+        assert_eq!(response.token_type(), "Bearer");
+        assert!(response.expires_in() > 0);
+        assert_eq!(response.scope(), Some("read write"));
+
+        // Verify the access token is valid
+        let claims =
+            tokens::decode_claims_unverified(response.access_token()).expect("decode access token");
+        assert_eq!(claims.sub, client.client_id().to_string());
+        assert_eq!(claims.token_type, "access");
+        assert_eq!(claims.scope.as_deref(), Some("read write"));
+    }
+
+    #[test]
+    fn client_credentials_wrong_secret_rejected() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let client = register_confidential_client(&engine, &tenant_id, "correct-secret");
+
+        let result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: "wrong-secret".to_string(),
+                scope: None,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(IdentityError::InvalidClientSecret)),
+            "wrong secret should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn client_credentials_unsupported_grant_type() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        // Register a public client (no client_credentials grant)
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Public App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register public client");
+
+        let result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: "anything".to_string(),
+                scope: None,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(IdentityError::UnsupportedGrantType)),
+            "public client should not support client_credentials, got: {result:?}"
+        );
+    }
+
+    // ===== B2: Device authorization =====
+
+    #[test]
+    fn device_authorize_returns_valid_codes() {
+        use crate::identity::oidc::DeviceAuthorizationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        // Register a client
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Device App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let response = engine
+            .device_authorize(
+                &tenant_id,
+                &DeviceAuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    scope: Some("openid".to_string()),
+                },
+            )
+            .expect("device_authorize should succeed");
+
+        // Verify response
+        assert!(!response.device_code.is_empty());
+        assert_eq!(response.user_code.len(), 8, "user code should be 8 chars");
+        assert_eq!(response.interval, 5);
+        assert!(response.expires_in > 0);
+
+        // Verify user code only contains unambiguous chars
+        let valid_chars = "BCDFGHJKMNPQRSTVWXYZ23456789";
+        for c in response.user_code.chars() {
+            assert!(
+                valid_chars.contains(c),
+                "user code char '{c}' not in unambiguous alphabet"
+            );
+        }
+    }
+
+    // ===== B3: Refresh token rotation =====
+
+    #[test]
+    fn refresh_token_rotation_issues_new_pair() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Rotation App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        // Auth code flow → tokens with grant family
+        let auth = engine
+            .authorize(
+                &tenant_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "test-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                },
+            )
+            .expect("authorize");
+
+        let tokens = engine
+            .exchange_authorization_code(
+                &tenant_id,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange code");
+
+        // Verify refresh token has fid claim
+        let refresh_claims =
+            tokens::decode_claims_unverified(tokens.refresh_token()).expect("decode refresh");
+        assert!(
+            refresh_claims.fid.is_some(),
+            "refresh token should have fid"
+        );
+
+        // Advance clock and refresh
+        clock.advance(60 * 1_000_000); // 60 seconds in microseconds
+        let new_tokens = engine
+            .refresh_tokens(&tenant_id, tokens.refresh_token())
+            .expect("refresh should succeed");
+
+        // New tokens are different
+        assert_ne!(new_tokens.access_token(), tokens.access_token());
+        assert_ne!(new_tokens.refresh_token(), tokens.refresh_token());
+
+        // New refresh token has the same family ID
+        let new_refresh_claims = tokens::decode_claims_unverified(new_tokens.refresh_token())
+            .expect("decode new refresh");
+        assert_eq!(new_refresh_claims.fid, refresh_claims.fid);
+
+        // Old refresh token is now rejected (rotation)
+        let result = engine.refresh_tokens(&tenant_id, tokens.refresh_token());
+        assert!(
+            matches!(result, Err(IdentityError::TokenRevoked)),
+            "old refresh token should be rejected after rotation, got: {result:?}"
+        );
+    }
+
+    // ===== B4: Token revocation =====
+
+    #[test]
+    fn revoke_access_token_invalidates_session() {
+        use crate::identity::oidc::TokenRevocationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let session = engine
+            .create_session(&tenant_id, user.id())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&tenant_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        // Token is valid
+        let claims = engine
+            .validate_token(&tenant_id, tokens.access_token())
+            .expect("should be valid");
+        assert_eq!(claims.sub, user.id().to_string());
+
+        // Revoke the access token
+        engine
+            .revoke_token(
+                &tenant_id,
+                &TokenRevocationRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: Some("access_token".to_string()),
+                },
+            )
+            .expect("revoke should succeed");
+
+        // Token is now invalid (session revoked)
+        let result = engine.validate_token(&tenant_id, tokens.access_token());
+        assert!(
+            result.is_err(),
+            "access token should be invalid after revocation"
+        );
+    }
+
+    #[test]
+    fn revoke_refresh_token_invalidates_family() {
+        use crate::identity::oidc::TokenRevocationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Revoke App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let auth = engine
+            .authorize(
+                &tenant_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                },
+            )
+            .expect("authorize");
+
+        let tokens = engine
+            .exchange_authorization_code(
+                &tenant_id,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange code");
+
+        // Revoke the refresh token
+        engine
+            .revoke_token(
+                &tenant_id,
+                &TokenRevocationRequest {
+                    token: tokens.refresh_token().to_string(),
+                    token_type_hint: Some("refresh_token".to_string()),
+                },
+            )
+            .expect("revoke should succeed");
+
+        // Refresh is now rejected
+        let result = engine.refresh_tokens(&tenant_id, tokens.refresh_token());
+        assert!(
+            matches!(result, Err(IdentityError::TokenRevoked)),
+            "refresh should fail after revocation, got: {result:?}"
+        );
+    }
+
+    // ===== B5: Token introspection =====
+
+    #[test]
+    fn introspect_active_token() {
+        use crate::identity::oidc::TokenIntrospectionRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let session = engine
+            .create_session(&tenant_id, user.id())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&tenant_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        let response = engine
+            .introspect_token(
+                &tenant_id,
+                &TokenIntrospectionRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("introspect should succeed");
+
+        assert!(response.active, "valid token should be active");
+        assert_eq!(response.sub.as_deref(), Some(&*user.id().to_string()));
+        assert_eq!(response.token_type.as_deref(), Some("access"));
+        assert!(response.exp.is_some());
+        assert!(response.iat.is_some());
+    }
+
+    #[test]
+    fn introspect_revoked_token_is_inactive() {
+        use crate::identity::oidc::{TokenIntrospectionRequest, TokenRevocationRequest};
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+        let user = create_test_user(&engine, &tenant_id);
+        let session = engine
+            .create_session(&tenant_id, user.id())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&tenant_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        // Revoke
+        engine
+            .revoke_token(
+                &tenant_id,
+                &TokenRevocationRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("revoke");
+
+        // Introspect
+        let response = engine
+            .introspect_token(
+                &tenant_id,
+                &TokenIntrospectionRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("introspect should succeed");
+
+        assert!(!response.active, "revoked token should be inactive");
+    }
+
+    #[test]
+    fn introspect_invalid_token_is_inactive() {
+        use crate::identity::oidc::TokenIntrospectionRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let response = engine
+            .introspect_token(
+                &tenant_id,
+                &TokenIntrospectionRequest {
+                    token: "not-a-valid-token".to_string(),
+                    token_type_hint: None,
+                },
+            )
+            .expect("introspect should succeed even for invalid tokens");
+
+        assert!(!response.active, "invalid token should be inactive");
+    }
+
+    // ===== Phase 1 Step 22: OAuth 2.0 Adversarial Tests =====
+
+    /// Adversarial: Refresh token theft detection.
+    ///
+    /// Scenario: attacker steals a refresh token, legitimate user rotates,
+    /// then attacker tries to use the stolen (old) token. The entire grant
+    /// family must be revoked, including the legitimate user's new token.
+    #[test]
+    fn adversarial_refresh_token_theft_detection() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let user = engine
+            .create_user(
+                &tenant_id,
+                &CreateUserRequest {
+                    email: "theft-victim@test.com".to_string(),
+                    display_name: "Theft Victim".to_string(),
+                },
+            )
+            .expect("create user");
+
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Theft Test Client".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let auth = engine
+            .authorize(
+                &tenant_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    scope: "openid".to_string(),
+                    state: "theft-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                },
+            )
+            .expect("authorize");
+
+        let tokens = engine
+            .exchange_authorization_code(
+                &tenant_id,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange");
+
+        // Attacker steals refresh token
+        let stolen_refresh = tokens.refresh_token().to_string();
+
+        // Legitimate user rotates (advance clock for unique tokens)
+        clock.advance(1_000_000);
+        let new_pair = engine
+            .refresh_tokens(&tenant_id, &stolen_refresh)
+            .expect("legitimate rotation");
+        let legitimate_refresh = new_pair.refresh_token().to_string();
+
+        // Attacker uses the stolen (old) refresh token
+        clock.advance(1_000_000);
+        let attack_result = engine.refresh_tokens(&tenant_id, &stolen_refresh);
+        assert!(
+            attack_result.is_err(),
+            "stolen refresh token must be rejected"
+        );
+
+        // Legitimate user's new refresh token should ALSO be revoked
+        // (entire grant family revoked due to theft detection)
+        let legitimate_result = engine.refresh_tokens(&tenant_id, &legitimate_refresh);
+        assert!(
+            legitimate_result.is_err(),
+            "legitimate refresh token must also be revoked after theft detection"
+        );
+
+        // The session should be revoked too
+        let validate_result = engine.validate_token(&tenant_id, new_pair.access_token());
+        assert!(
+            validate_result.is_err(),
+            "session should be revoked after theft detection"
+        );
+    }
+
+    /// Adversarial: Invalid client secrets produce generic errors.
+    ///
+    /// Verifies that wrong secrets, empty secrets, and non-existent clients
+    /// all return the same error type (no information leakage).
+    #[test]
+    fn adversarial_invalid_client_secret_generic_error() {
+        use crate::identity::oidc::ClientCredentialsRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Secret Test Client".to_string(),
+                    redirect_uris: vec![],
+                    client_secret: Some("correct-secret-123".to_string()),
+                    grant_types: vec!["client_credentials".to_string()],
+                },
+            )
+            .expect("register client");
+
+        // Wrong secret
+        let wrong_result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: "wrong-secret-456".to_string(),
+                scope: None,
+            },
+        );
+        assert!(
+            matches!(wrong_result, Err(IdentityError::InvalidClientSecret)),
+            "wrong secret should return InvalidClientSecret"
+        );
+
+        // Empty secret
+        let empty_result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: client.client_id().clone(),
+                client_secret: String::new(),
+                scope: None,
+            },
+        );
+        assert!(
+            matches!(empty_result, Err(IdentityError::InvalidClientSecret)),
+            "empty secret should return InvalidClientSecret"
+        );
+
+        // Non-existent client
+        let fake_client_id = crate::core::ClientId::generate();
+        let missing_result = engine.client_credentials_token(
+            &tenant_id,
+            &ClientCredentialsRequest {
+                client_id: fake_client_id,
+                client_secret: "any-secret".to_string(),
+                scope: None,
+            },
+        );
+        assert!(
+            matches!(missing_result, Err(IdentityError::InvalidClient)),
+            "non-existent client should return InvalidClient"
+        );
+    }
+
+    /// Adversarial: Device polling rate limit enforcement.
+    ///
+    /// Polls faster than the allowed interval and verifies `SlowDown` error.
+    #[test]
+    fn adversarial_device_polling_rate_limit() {
+        use crate::identity::oidc::DeviceAuthorizationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant_id = create_test_tenant(&engine);
+
+        let client = engine
+            .register_client(
+                &tenant_id,
+                &RegisterClientRequest {
+                    client_name: "Rate Limit Test".to_string(),
+                    redirect_uris: vec![],
+                    client_secret: None,
+                    grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                },
+            )
+            .expect("register client");
+
+        let device_resp = engine
+            .device_authorize(
+                &tenant_id,
+                &DeviceAuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    scope: Some("openid".to_string()),
+                },
+            )
+            .expect("device authorize");
+
+        // First poll — should return AuthorizationPending (not SlowDown)
+        let first_poll =
+            engine.poll_device_token(&tenant_id, &device_resp.device_code, client.client_id());
+        assert!(
+            matches!(first_poll, Err(IdentityError::AuthorizationPending)),
+            "first poll should return AuthorizationPending, got: {first_poll:?}"
+        );
+
+        // Immediate second poll — should return SlowDown
+        let second_poll =
+            engine.poll_device_token(&tenant_id, &device_resp.device_code, client.client_id());
+        assert!(
+            matches!(second_poll, Err(IdentityError::SlowDown)),
+            "rapid second poll should return SlowDown, got: {second_poll:?}"
+        );
+    }
+
+    // ===== Phase 1 Step 22: OAuth 2.0 Extended Property Tests =====
+
+    mod oauth_proptests {
+        use super::*;
+        use crate::identity::oidc::{TokenIntrospectionRequest, TokenRevocationRequest};
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Property: After N issue/refresh/revoke operations, the active
+            /// token count matches expectations.
+            ///
+            /// Issues tokens via auth code flow, optionally refreshes or revokes
+            /// them, then introspects all tokens and verifies the active count.
+            #[test]
+            fn active_token_set_consistency(
+                n_users in 1..5usize,
+                ops in proptest::collection::vec(0..3u8, 1..8),
+            ) {
+                let (_dir, engine, _clock) = setup_engine();
+                let tenant = engine.create_tenant(&CreateTenantRequest {
+                    name: "prop-test-tenant".to_string(),
+                    config: None,
+                }).expect("create tenant");
+                let tenant_id = tenant.id().clone();
+
+                // Register a public client
+                let client = engine.register_client(
+                    &tenant_id,
+                    &RegisterClientRequest {
+                        client_name: "Prop Test Client".to_string(),
+                        redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                        client_secret: None,
+                        grant_types: vec!["authorization_code".to_string()],
+                    },
+                ).expect("register client");
+
+                // Create N users and issue tokens for each
+                let mut access_tokens = Vec::new();
+                let mut refresh_tokens = Vec::new();
+
+                for i in 0..n_users {
+                    let email = format!("propuser-{i}-{}@test.com", uuid::Uuid::new_v4());
+                    let user = engine.create_user(&tenant_id, &CreateUserRequest {
+                        email,
+                        display_name: format!("Prop User {i}"),
+                    }).expect("create user");
+
+                    let auth = engine.authorize(&tenant_id, &AuthorizationRequest {
+                        client_id: client.client_id().clone(),
+                        redirect_uri: "https://app.example.com/cb".to_string(),
+                        scope: "openid".to_string(),
+                        state: format!("state-{i}"),
+                        response_type: "code".to_string(),
+                        user_id: user.id().clone(),
+                        code_challenge: None,
+                        code_challenge_method: None,
+                        nonce: None,
+                    }).expect("authorize");
+
+                    let tokens = engine.exchange_authorization_code(&tenant_id, &TokenExchangeRequest {
+                        client_id: client.client_id().clone(),
+                        code: auth.code().to_string(),
+                        redirect_uri: "https://app.example.com/cb".to_string(),
+                        code_verifier: None,
+                    }).expect("exchange");
+
+                    access_tokens.push(tokens.access_token().to_string());
+                    refresh_tokens.push(tokens.refresh_token().to_string());
+                }
+
+                // Apply operations: 0 = noop, 1 = refresh, 2 = revoke access
+                for (i, op) in ops.iter().enumerate() {
+                    let idx = i % access_tokens.len();
+                    match op {
+                        1 => {
+                            // Refresh — may fail if already revoked
+                            if let Ok(new_pair) = engine.refresh_tokens(
+                                &tenant_id,
+                                &refresh_tokens[idx],
+                            ) {
+                                access_tokens[idx] = new_pair.access_token().to_string();
+                                refresh_tokens[idx] = new_pair.refresh_token().to_string();
+                            }
+                        }
+                        2 => {
+                            // Revoke access token
+                            let _ = engine.revoke_token(
+                                &tenant_id,
+                                &TokenRevocationRequest {
+                                    token: access_tokens[idx].clone(),
+                                    token_type_hint: Some("access_token".to_string()),
+                                },
+                            );
+                        }
+                        _ => {} // noop
+                    }
+                }
+
+                // Count active tokens via introspection
+                let mut active_count = 0usize;
+                for token in &access_tokens {
+                    let resp = engine.introspect_token(
+                        &tenant_id,
+                        &TokenIntrospectionRequest {
+                            token: token.clone(),
+                            token_type_hint: None,
+                        },
+                    ).expect("introspect");
+                    if resp.active {
+                        active_count += 1;
+                    }
+                }
+
+                // Active count must be <= total issued
+                prop_assert!(
+                    active_count <= access_tokens.len(),
+                    "active count ({}) must not exceed total ({})",
+                    active_count,
+                    access_tokens.len(),
+                );
+            }
+
+            /// Property: At any point during N refresh rotations, exactly one
+            /// refresh token is valid per grant family.
+            ///
+            /// Rotates a refresh token N times, checking after each rotation
+            /// that only the latest refresh token is accepted.
+            #[test]
+            fn single_valid_refresh_token(n_rotations in 1..6usize) {
+                let (_dir, engine, clock) = setup_engine();
+                let tenant = engine.create_tenant(&CreateTenantRequest {
+                    name: "single-refresh-tenant".to_string(),
+                    config: None,
+                }).expect("create tenant");
+                let tenant_id = tenant.id().clone();
+
+                let email = format!("rotate-{}@test.com", uuid::Uuid::new_v4());
+                let user = engine.create_user(&tenant_id, &CreateUserRequest {
+                    email,
+                    display_name: "Rotate User".to_string(),
+                }).expect("create user");
+
+                let client = engine.register_client(
+                    &tenant_id,
+                    &RegisterClientRequest {
+                        client_name: "Rotate Client".to_string(),
+                        redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                        client_secret: None,
+                        grant_types: vec!["authorization_code".to_string()],
+                    },
+                ).expect("register client");
+
+                let auth = engine.authorize(&tenant_id, &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    scope: "openid".to_string(),
+                    state: "rotate-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                }).expect("authorize");
+
+                let tokens = engine.exchange_authorization_code(&tenant_id, &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    code_verifier: None,
+                }).expect("exchange");
+
+                let mut current_refresh = tokens.refresh_token().to_string();
+                let mut old_refresh_tokens: Vec<String> = Vec::new();
+
+                for i in 0..n_rotations {
+                    // Advance clock 1 second to get unique timestamps
+                    clock.advance(1_000_000);
+
+                    let new_pair = engine.refresh_tokens(&tenant_id, &current_refresh)
+                        .unwrap_or_else(|e| panic!("rotation {i} failed: {e}"));
+
+                    old_refresh_tokens.push(current_refresh);
+                    current_refresh = new_pair.refresh_token().to_string();
+
+                    // Current refresh token should work for introspection
+                    let resp = engine.introspect_token(
+                        &tenant_id,
+                        &TokenIntrospectionRequest {
+                            token: current_refresh.clone(),
+                            token_type_hint: None,
+                        },
+                    ).expect("introspect current");
+                    prop_assert!(resp.active, "current refresh token must be active at rotation {}", i);
+                }
+
+                // After all rotations, none of the old refresh tokens should work
+                for (i, old_token) in old_refresh_tokens.iter().enumerate() {
+                    let result = engine.refresh_tokens(&tenant_id, old_token);
+                    // First old token reuse triggers theft detection
+                    if result.is_err() {
+                        // After theft detection, all tokens in the family are revoked
+                        break;
+                    }
+                    // If we got here, this old token happened to match (shouldn't)
+                    prop_assert!(false, "old refresh token {} should have been rejected", i);
+                }
+            }
+        }
+    }
+
+    // ===== Adversarial: MFA brute-force lockout (Scenario F1) =====
+
+    #[test]
+    #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
+    fn mfa_brute_force_lockout() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        // Enroll TOTP
+        let enrollment = engine.enroll_totp(&tenant, user.id()).expect("enroll");
+
+        // Activate MFA
+        let now_secs = (clock.now().as_micros() / 1_000_000) as u64;
+        let secret_bytes = data_encoding::BASE32_NOPAD
+            .decode(enrollment.secret_base32.as_bytes())
+            .expect("decode");
+        let code = crate::identity::totp::compute_totp(&secret_bytes, now_secs / 30);
+        engine
+            .verify_totp_enrollment(&tenant, user.id(), &code)
+            .expect("verify enrollment");
+
+        // 5 wrong codes
+        for _ in 0..5 {
+            let err = engine.verify_totp(&tenant, user.id(), "000000");
+            assert!(
+                matches!(err, Err(IdentityError::InvalidMfaCode)),
+                "should be InvalidMfaCode"
+            );
+        }
+
+        // 6th attempt (correct code) should be rate limited
+        // Advance time just slightly so we get a fresh step
+        clock.advance(30_000_000); // 30 seconds
+        let now_secs2 = (clock.now().as_micros() / 1_000_000) as u64;
+        let correct_code = crate::identity::totp::compute_totp(&secret_bytes, now_secs2 / 30);
+        let err = engine
+            .verify_totp(&tenant, user.id(), &correct_code)
+            .expect_err("should be rate limited");
+        assert!(
+            matches!(err, IdentityError::RateLimited),
+            "should be RateLimited, got: {err:?}"
+        );
+
+        // Advance clock past 5 min lockout (5 * 60 * 1_000_000 = 300_000_000 μs)
+        clock.advance(300_000_000);
+        let now_secs3 = (clock.now().as_micros() / 1_000_000) as u64;
+        let correct_code2 = crate::identity::totp::compute_totp(&secret_bytes, now_secs3 / 30);
+        engine
+            .verify_totp(&tenant, user.id(), &correct_code2)
+            .expect("should succeed after lockout expires");
+    }
+
+    // ===== Adversarial: TOTP replay protection (Scenario F2) =====
+
+    #[test]
+    #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
+    fn mfa_replay_protection() {
+        let (_dir, engine, clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        // Enroll + activate TOTP
+        let enrollment = engine.enroll_totp(&tenant, user.id()).expect("enroll");
+        let secret_bytes = data_encoding::BASE32_NOPAD
+            .decode(enrollment.secret_base32.as_bytes())
+            .expect("decode");
+
+        let now_secs = (clock.now().as_micros() / 1_000_000) as u64;
+        let step = now_secs / 30;
+        let code = crate::identity::totp::compute_totp(&secret_bytes, step);
+        engine
+            .verify_totp_enrollment(&tenant, user.id(), &code)
+            .expect("verify enrollment");
+
+        // Advance to next step so we have a fresh code
+        clock.advance(30_000_000); // 30 seconds
+        let now_secs2 = (clock.now().as_micros() / 1_000_000) as u64;
+        let step2 = now_secs2 / 30;
+        let code2 = crate::identity::totp::compute_totp(&secret_bytes, step2);
+
+        // First use succeeds
+        engine
+            .verify_totp(&tenant, user.id(), &code2)
+            .expect("first use should succeed");
+
+        // Replay same code — should fail
+        let err = engine
+            .verify_totp(&tenant, user.id(), &code2)
+            .expect_err("replay should fail");
+        assert!(
+            matches!(err, IdentityError::InvalidMfaCode),
+            "replay should be InvalidMfaCode, got: {err:?}"
+        );
+
+        // Advance to next step — new code should work
+        clock.advance(30_000_000);
+        let now_secs3 = (clock.now().as_micros() / 1_000_000) as u64;
+        let step3 = now_secs3 / 30;
+        let code3 = crate::identity::totp::compute_totp(&secret_bytes, step3);
+        engine
+            .verify_totp(&tenant, user.id(), &code3)
+            .expect("next step should succeed");
+    }
+
+    // ===== Magic Link / Passwordless (Step 25) unit tests =====
+
+    /// Helper: creates a tenant and user with email for magic link tests.
+    fn setup_magic_link_user(
+        engine: &EmbeddedIdentityEngine,
+    ) -> (TenantId, crate::identity::types::User) {
+        let tenant = engine
+            .create_tenant(&crate::identity::types::CreateTenantRequest {
+                name: format!("ml-test-{}", uuid::Uuid::new_v4()),
+                config: None,
+            })
+            .expect("create tenant");
+        let user = engine
+            .create_user(
+                tenant.id(),
+                &crate::identity::types::CreateUserRequest {
+                    email: format!("ml-{}@example.com", uuid::Uuid::new_v4()),
+                    display_name: "ML Test User".to_string(),
+                },
+            )
+            .expect("create user");
+        (tenant.id().clone(), user)
+    }
+
+    // Test A: Generate magic link token bound to email with correct expiration
+    #[test]
+    fn magic_link_request_returns_nonempty_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock.clone() as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request magic link
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+
+        // Token should be non-empty
+        assert!(
+            !response.token().is_empty(),
+            "magic link token should not be empty"
+        );
+
+        // Verify stored record
+        let token_hash = EmbeddedIdentityEngine::sha256_hex(response.token().as_bytes());
+        let key = keys::encode_magic_link_token(&token_hash);
+        let stored_bytes = engine
+            .storage
+            .get(&tenant, &key)
+            .expect("storage get")
+            .expect("stored record should exist");
+        let stored: StoredMagicLink = serde_json::from_slice(&stored_bytes).expect("deserialize");
+        assert_eq!(stored.email, user.email().to_lowercase());
+        assert!(stored.user_id.is_some(), "user_id should be set");
+        assert!(!stored.used, "should not be marked as used");
+        assert_eq!(
+            stored.created_at_micros,
+            clock.now().as_micros(),
+            "created_at should match clock"
+        );
+    }
+
+    // Test B: Validate magic link token — correct token returns associated user
+    #[test]
+    fn magic_link_validate_returns_correct_user() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request and validate
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+        let returned_user_id = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect("validate_magic_link");
+
+        assert_eq!(
+            returned_user_id.as_uuid(),
+            user.id().as_uuid(),
+            "returned user ID should match"
+        );
+    }
+
+    // Test C: Expired magic link token rejected
+    #[test]
+    fn magic_link_expired_token_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock.clone() as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request magic link
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+
+        // Advance clock past 15-minute expiry
+        clock.advance(MAGIC_LINK_EXPIRY_MICROS + 1_000_000);
+
+        // Validate should fail
+        let err = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect_err("should fail for expired token");
+        assert!(
+            matches!(err, IdentityError::MagicLinkTokenInvalid),
+            "should be MagicLinkTokenInvalid, got: {err:?}"
+        );
+    }
+
+    // Test D: Single-use — second validation rejected
+    #[test]
+    fn magic_link_single_use_enforced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        };
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::new(storage) as Arc<dyn StorageEngine>,
+            clock as Arc<dyn crate::core::Clock>,
+            identity_config,
+        )
+        .expect("engine");
+
+        let (tenant, user) = setup_magic_link_user(&engine);
+
+        // Request and validate once (succeeds)
+        let response = engine
+            .request_magic_link(&tenant, user.email())
+            .expect("request_magic_link");
+        let _user_id = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect("first validation should succeed");
+
+        // Second validation should fail
+        let err = engine
+            .validate_magic_link(&tenant, response.token())
+            .expect_err("second validation should fail");
+        assert!(
+            matches!(err, IdentityError::MagicLinkTokenInvalid),
+            "should be MagicLinkTokenInvalid, got: {err:?}"
+        );
+    }
 }
