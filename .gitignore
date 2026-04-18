@@ -48,3 +48,6 @@ hearth
 *.log
 
 .playwright-mcp/
+
+hearth.yaml
+hearth.yml
