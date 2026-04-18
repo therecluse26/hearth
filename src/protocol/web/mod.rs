@@ -32,7 +32,7 @@
 use std::sync::{Arc, RwLock};
 
 use axum::body::Body;
-use axum::extract::Path as AxumPath;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{Redirect, Response};
 use axum::Router;
@@ -378,8 +378,9 @@ pub fn router(state: WebState) -> Router {
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
 /// Tailwind-generated CSS for the admin UI.
 const APP_CSS: &[u8] = include_bytes!("assets/app.css");
-/// Hearth wide logo (SVG).
-const HEARTH_WIDE_SVG: &[u8] = include_bytes!("assets/hearth-wide-web.svg");
+/// Hearth wide logo (SVG). Public so `main.rs` can pass the SVG content
+/// to the email service for inline rendering.
+pub const HEARTH_WIDE_SVG: &[u8] = include_bytes!("assets/hearth-wide-web.svg");
 /// Hearth icon (SVG).
 const HEARTH_ICON_SVG: &[u8] = include_bytes!("assets/hearth-icon.svg");
 

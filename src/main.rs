@@ -269,7 +269,7 @@ async fn run_serve(
 
     // Email sender + service (default: log transport — stderr at WARN level).
     let email_sender: SharedEmailSender = build_email_sender(&config)?;
-    let email_service = Arc::new(build_email_service(email_sender, &config, &base_url)?);
+    let email_service = Arc::new(build_email_service(email_sender, &config)?);
 
     // Ensure a first-run setup token exists BEFORE tenant reconciliation.
     // Reconciliation may auto-create tenants from YAML config, which would
@@ -482,30 +482,33 @@ fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std:
 
 /// Builds the email service (orchestration layer) wrapping a sender.
 ///
-/// The logo URL for email templates follows a 3-tier fallback:
+/// The logo URL for email templates follows a 2-tier fallback:
 /// 1. `email.branding.logo_url` (explicit email-specific override)
 /// 2. `branding.logo_url` (global branding — must be an absolute URL)
-/// 3. `{base_url}/ui/static/img/hearth-wide-web.svg` (derived from onboarding base URL)
+///
+/// When no logo URL is configured, the built-in Hearth SVG is inlined
+/// directly in the email HTML (no remote fetch needed).
 fn build_email_service(
     sender: SharedEmailSender,
     config: &Config,
-    base_url: &str,
 ) -> Result<EmailService, Box<dyn std::error::Error>> {
     let mut branding = config.email.branding.clone().unwrap_or_default();
-    // Fall back to global branding logo, then to default SVG
+    // Fall back to global branding logo (remote URLs only)
     if branding.logo_url.is_none() {
-        branding.logo_url = config
-            .branding
-            .logo_url
-            .clone()
-            .or_else(|| Some(format!("{base_url}/ui/static/img/hearth-wide-web.svg")));
+        branding.logo_url.clone_from(&config.branding.logo_url);
     }
+    let default_logo_svg = String::from_utf8_lossy(web::HEARTH_WIDE_SVG).into_owned();
     let templates_dir = config
         .email
         .templates_dir
         .as_ref()
         .map(std::path::Path::new);
-    Ok(EmailService::new(sender, branding, templates_dir)?)
+    Ok(EmailService::new(
+        sender,
+        branding,
+        default_logo_svg,
+        templates_dir,
+    )?)
 }
 
 /// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert reload.

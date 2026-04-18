@@ -24,7 +24,11 @@ body { margin: 0; padding: 0; background-color: #f4f4f5; font-family: -apple-sys
 <div class="container">
   <div class="card">
     <div class="header">
-      {% if logo_url.is_some() %}<img src="{{ logo_url.as_deref().unwrap_or_default() }}" alt="{{ product_name }}">{% endif %}
+      {% if logo_svg_inline.is_some() %}
+      <div style="margin-bottom:16px;text-align:center">{{ logo_svg_inline.as_deref().unwrap_or_default()|safe }}</div>
+      {% else if logo_url.is_some() %}
+      <img src="{{ logo_url.as_deref().unwrap_or_default() }}" alt="{{ product_name }}">
+      {% endif %}
       <h1>{{ product_name }}</h1>
     </div>
     <div class="content">

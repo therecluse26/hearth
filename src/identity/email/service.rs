@@ -23,17 +23,24 @@ pub struct EmailService {
     sender: SharedEmailSender,
     default_branding: EmailBranding,
     custom_templates: Option<tera::Tera>,
+    /// Built-in SVG markup for the default Hearth logo. Inlined directly
+    /// in emails when no custom logo URL is configured, avoiding broken
+    /// images from `localhost` or firewalled servers.
+    default_logo_svg: String,
 }
 
 impl EmailService {
     /// Creates a new email service.
     ///
     /// `default_branding` provides global defaults that can be overridden
-    /// per-tenant. If `templates_dir` is set, Tera templates are loaded
-    /// from disk; missing templates fall back to the compiled defaults.
+    /// per-tenant. `default_logo_svg` is the raw SVG markup for the
+    /// built-in logo, inlined when no custom logo URL is set. If
+    /// `templates_dir` is set, Tera templates are loaded from disk;
+    /// missing templates fall back to the compiled defaults.
     pub fn new(
         sender: SharedEmailSender,
         default_branding: EmailBranding,
+        default_logo_svg: String,
         templates_dir: Option<&Path>,
     ) -> Result<Self, EmailError> {
         let custom_templates = templates_dir
@@ -48,6 +55,7 @@ impl EmailService {
             sender,
             default_branding,
             custom_templates,
+            default_logo_svg,
         })
     }
 
@@ -120,12 +128,40 @@ impl EmailService {
     }
 
     /// Resolves branding by merging global defaults with tenant overrides.
+    ///
+    /// Computes `logo_svg_inline` based on the resolved `logo_url`:
+    /// - No logo URL → inline the built-in Hearth SVG.
+    /// - Remote URL (`http://` or `https://`) → use `<img src>` (keep `logo_url`).
+    /// - Local `.svg` path → read and inline from disk.
+    /// - Local non-SVG path → skip (can't inline raster images).
     fn resolve_branding(&self, tenant: Option<&EmailBranding>) -> ResolvedBranding {
         let merged = match tenant {
             Some(t) => EmailBranding::merge(&self.default_branding, t),
             None => self.default_branding.clone(),
         };
-        ResolvedBranding::from_branding(&merged)
+        let mut resolved = ResolvedBranding::from_branding(&merged);
+
+        let logo_svg_inline = match &resolved.logo_url {
+            None => Some(self.default_logo_svg.clone()),
+            Some(url) if url.starts_with("http://") || url.starts_with("https://") => None,
+            Some(path)
+                if std::path::Path::new(path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) =>
+            {
+                std::fs::read_to_string(path).ok()
+            }
+            _ => None,
+        }
+        .map(|svg| prepare_svg_for_email(&svg));
+
+        if logo_svg_inline.is_some() {
+            // Template should use one or the other, not both.
+            resolved.logo_url = None;
+        }
+        resolved.logo_svg_inline = logo_svg_inline;
+
+        resolved
     }
 
     /// Returns a reference to the underlying sender (for setup token flows
@@ -133,6 +169,84 @@ impl EmailService {
     pub fn sender(&self) -> &SharedEmailSender {
         &self.sender
     }
+}
+
+/// Prepares raw SVG markup for inline rendering in email HTML.
+///
+/// SVGs authored in Inkscape or similar tools typically use absolute units
+/// (`width="500mm"`) which render at full physical size in email clients,
+/// ignoring any CSS constraints on wrapper elements.  This function:
+///
+/// 1. Strips the XML processing instruction (`<?xml ... ?>`) — unnecessary
+///    when the SVG is inlined inside an HTML document.
+/// 2. Removes `width` and `height` attributes from the root `<svg>` element
+///    (they may specify mm/cm/in/pt/px values that resist CSS overrides).
+/// 3. Injects `height="48"` (pixels) so the logo fits a standard email
+///    header. The `viewBox` preserves the aspect ratio.
+fn prepare_svg_for_email(svg: &str) -> String {
+    let mut s = svg.to_string();
+
+    // 1. Strip XML processing instruction
+    if let Some(pi_end) = s.find("?>") {
+        s = s[pi_end + 2..].trim_start().to_string();
+    }
+
+    // 2. Strip HTML/XML comments (e.g. Inkscape "Created with" comment)
+    while let Some(start) = s.find("<!--") {
+        if let Some(end) = s[start..].find("-->") {
+            let before = &s[..start];
+            let after = s[start + end + 3..].trim_start();
+            s = format!("{before}{after}");
+        } else {
+            break;
+        }
+    }
+
+    // 3. Remove width="..." and height="..." from the opening <svg> tag
+    let Some(svg_tag_end) = s.find('>') else {
+        return s;
+    };
+    let tag = s[..svg_tag_end].to_string();
+    let rest = &s[svg_tag_end..];
+
+    let cleaned = remove_svg_attr(&remove_svg_attr(&tag, "width"), "height");
+
+    // 4. Inject constrained pixel height (viewBox provides aspect ratio)
+    let new_tag = cleaned.replacen(
+        "<svg",
+        r#"<svg height="48" style="display:block;margin:0 auto""#,
+        1,
+    );
+
+    format!("{new_tag}{rest}")
+}
+
+/// Removes a named attribute from an SVG tag string.
+///
+/// Handles both `attr="val"` on the same line as `<svg` and on separate
+/// lines with leading whitespace (common in Inkscape exports).
+fn remove_svg_attr(tag: &str, attr_name: &str) -> String {
+    let needle = format!("{attr_name}=\"");
+    let Some(needle_pos) = tag.find(&needle) else {
+        return tag.to_string();
+    };
+
+    // Find the closing quote after the value
+    let value_start = needle_pos + needle.len();
+    let Some(close_offset) = tag[value_start..].find('"') else {
+        return tag.to_string();
+    };
+    let attr_end = value_start + close_offset + 1;
+
+    // Eat preceding whitespace (handles multi-line SVG tags)
+    let mut attr_start = needle_pos;
+    while attr_start > 0 && tag.as_bytes()[attr_start - 1].is_ascii_whitespace() {
+        attr_start -= 1;
+    }
+
+    let mut result = tag[..attr_start].to_string();
+    result.push_str(&tag[attr_end..]);
+    result
 }
 
 impl std::fmt::Debug for EmailService {
@@ -154,9 +268,12 @@ mod tests {
     use super::*;
     use crate::identity::email::LoggingEmailSender;
 
+    const TEST_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg"><text>Hearth</text></svg>"#;
+
     fn log_service() -> EmailService {
         let sender: SharedEmailSender = Arc::new(LoggingEmailSender::new());
-        EmailService::new(sender, EmailBranding::default(), None).expect("service")
+        EmailService::new(sender, EmailBranding::default(), TEST_SVG.to_string(), None)
+            .expect("service")
     }
 
     fn branded_service() -> EmailService {
@@ -166,7 +283,7 @@ mod tests {
             accent_color: Some("#123456".to_string()),
             ..Default::default()
         };
-        EmailService::new(sender, branding, None).expect("service")
+        EmailService::new(sender, branding, TEST_SVG.to_string(), None).expect("service")
     }
 
     #[test]
@@ -264,5 +381,55 @@ mod tests {
         let service = log_service();
         let debug = format!("{service:?}");
         assert!(debug.contains("EmailService"), "debug: {debug}");
+    }
+
+    #[test]
+    fn prepare_svg_strips_xml_pi_and_comments() {
+        let svg = r#"<?xml version="1.0"?>
+<!-- Created with Inkscape -->
+<svg viewBox="0 0 100 100"><rect/></svg>"#;
+        let result = prepare_svg_for_email(svg);
+        assert!(!result.contains("<?xml"), "XML PI should be stripped");
+        assert!(!result.contains("<!--"), "comments should be stripped");
+        assert!(result.contains("<rect/>"), "body should be preserved");
+    }
+
+    #[test]
+    fn prepare_svg_removes_mm_dimensions_and_injects_height() {
+        let svg = r#"<svg
+   width="500mm"
+   height="200mm"
+   viewBox="0 0 500 200"
+   xmlns="http://www.w3.org/2000/svg">
+  <rect/>
+</svg>"#;
+        let result = prepare_svg_for_email(svg);
+        assert!(
+            !result.contains("500mm"),
+            "width in mm should be removed: {result}"
+        );
+        assert!(
+            !result.contains("200mm"),
+            "height in mm should be removed: {result}"
+        );
+        assert!(
+            result.contains(r#"height="48""#),
+            "should have height=48: {result}"
+        );
+        assert!(
+            result.contains("viewBox"),
+            "viewBox should be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn prepare_svg_simple_tag_gets_height() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><text>Hi</text></svg>"#;
+        let result = prepare_svg_for_email(svg);
+        assert!(
+            result.contains(r#"height="48""#),
+            "height injected: {result}"
+        );
+        assert!(result.contains("<text>Hi</text>"), "body preserved");
     }
 }

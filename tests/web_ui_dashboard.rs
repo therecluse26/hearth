@@ -40,6 +40,7 @@ fn null_email_service() -> Arc<EmailService> {
         EmailService::new(
             Arc::new(LoggingEmailSender::new()),
             EmailBranding::default(),
+            String::new(),
             None,
         )
         .expect("email service"),

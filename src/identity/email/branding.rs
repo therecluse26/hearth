@@ -72,8 +72,11 @@ const DEFAULT_ACCENT_COLOR: &str = "#E85D04";
 pub(crate) struct ResolvedBranding {
     /// Product name (always set).
     pub product_name: String,
-    /// Optional logo URL.
+    /// Optional logo URL (used with `<img src>`).
     pub logo_url: Option<String>,
+    /// Raw SVG markup to inline directly in the email HTML.
+    /// When set, `logo_url` should be `None` — templates use one or the other.
+    pub logo_svg_inline: Option<String>,
     /// Accent color hex (always set).
     pub accent_color: String,
     /// Optional support email.
@@ -89,6 +92,7 @@ impl ResolvedBranding {
         Self {
             product_name: branding.product_name_or_default().to_string(),
             logo_url: branding.logo_url.clone(),
+            logo_svg_inline: None,
             accent_color: branding.accent_color_or_default().to_string(),
             support_email: branding.support_email.clone(),
             custom_footer_text: branding.custom_footer_text.clone(),
@@ -180,6 +184,7 @@ mod tests {
         assert_eq!(resolved.product_name, "Hearth");
         assert_eq!(resolved.accent_color, "#E85D04");
         assert!(resolved.logo_url.is_none());
+        assert!(resolved.logo_svg_inline.is_none());
         assert!(resolved.support_email.is_none());
     }
 

@@ -23,6 +23,7 @@ struct VerificationHtml<'a> {
     verification_url: &'a str,
     product_name: &'a str,
     logo_url: &'a Option<String>,
+    logo_svg_inline: &'a Option<String>,
     accent_color: &'a str,
     support_email: &'a Option<String>,
     custom_footer_text: &'a Option<String>,
@@ -43,6 +44,7 @@ struct SetupHtml<'a> {
     setup_url: &'a str,
     product_name: &'a str,
     logo_url: &'a Option<String>,
+    logo_svg_inline: &'a Option<String>,
     accent_color: &'a str,
     support_email: &'a Option<String>,
     custom_footer_text: &'a Option<String>,
@@ -63,6 +65,7 @@ struct PasswordResetHtml<'a> {
     reset_url: &'a str,
     product_name: &'a str,
     logo_url: &'a Option<String>,
+    logo_svg_inline: &'a Option<String>,
     accent_color: &'a str,
     support_email: &'a Option<String>,
     custom_footer_text: &'a Option<String>,
@@ -82,6 +85,7 @@ struct PasswordResetText<'a> {
 struct TestHtml<'a> {
     product_name: &'a str,
     logo_url: &'a Option<String>,
+    logo_svg_inline: &'a Option<String>,
     accent_color: &'a str,
     support_email: &'a Option<String>,
     custom_footer_text: &'a Option<String>,
@@ -129,6 +133,7 @@ pub(crate) fn render_verification(
             verification_url: url,
             product_name: &branding.product_name,
             logo_url: &branding.logo_url,
+            logo_svg_inline: &branding.logo_svg_inline,
             accent_color: &branding.accent_color,
             support_email: &branding.support_email,
             custom_footer_text: &branding.custom_footer_text,
@@ -171,6 +176,7 @@ pub(crate) fn render_setup(
             setup_url: url,
             product_name: &branding.product_name,
             logo_url: &branding.logo_url,
+            logo_svg_inline: &branding.logo_svg_inline,
             accent_color: &branding.accent_color,
             support_email: &branding.support_email,
             custom_footer_text: &branding.custom_footer_text,
@@ -213,6 +219,7 @@ pub(crate) fn render_password_reset(
             reset_url: url,
             product_name: &branding.product_name,
             logo_url: &branding.logo_url,
+            logo_svg_inline: &branding.logo_svg_inline,
             accent_color: &branding.accent_color,
             support_email: &branding.support_email,
             custom_footer_text: &branding.custom_footer_text,
@@ -254,6 +261,7 @@ pub(crate) fn render_test(
         let html = TestHtml {
             product_name: &branding.product_name,
             logo_url: &branding.logo_url,
+            logo_svg_inline: &branding.logo_svg_inline,
             accent_color: &branding.accent_color,
             support_email: &branding.support_email,
             custom_footer_text: &branding.custom_footer_text,
@@ -295,6 +303,7 @@ fn render_tera_pair(
     ctx.insert("product_name", &branding.product_name);
     ctx.insert("accent_color", &branding.accent_color);
     ctx.insert("logo_url", &branding.logo_url);
+    ctx.insert("logo_svg_inline", &branding.logo_svg_inline);
     ctx.insert("support_email", &branding.support_email);
     ctx.insert("custom_footer_text", &branding.custom_footer_text);
 
@@ -335,6 +344,7 @@ mod tests {
         ResolvedBranding {
             product_name: "TestCorp".to_string(),
             logo_url: Some("https://example.com/logo.png".to_string()),
+            logo_svg_inline: None,
             accent_color: "#FF5500".to_string(),
             support_email: Some("help@example.com".to_string()),
             custom_footer_text: Some("Custom footer".to_string()),
@@ -345,6 +355,9 @@ mod tests {
         ResolvedBranding {
             product_name: "Hearth".to_string(),
             logo_url: None,
+            logo_svg_inline: Some(
+                r#"<svg xmlns="http://www.w3.org/2000/svg"><text>Hearth</text></svg>"#.to_string(),
+            ),
             accent_color: "#E85D04".to_string(),
             support_email: None,
             custom_footer_text: None,
@@ -492,6 +505,46 @@ mod tests {
         assert!(
             msg.text_body.contains("configured correctly"),
             "missing confirmation text"
+        );
+    }
+
+    #[test]
+    fn renders_inline_svg_when_set() {
+        let branding = default_branding();
+        let msg = render_verification("https://auth.example.com/verify?t=abc", &branding, None)
+            .expect("render");
+
+        // The inline SVG should appear as raw markup (not HTML-escaped)
+        assert!(
+            msg.html_body.contains("<svg"),
+            "inline SVG not found in HTML body"
+        );
+        // No <img> tag should be present when using inline SVG
+        assert!(
+            !msg.html_body.contains("<img"),
+            "unexpected <img> tag when inline SVG is set"
+        );
+    }
+
+    #[test]
+    fn renders_img_tag_for_remote_logo() {
+        let branding = test_branding();
+        let msg = render_verification("https://auth.example.com/verify?t=abc", &branding, None)
+            .expect("render");
+
+        // Remote URL should use <img src>
+        assert!(
+            msg.html_body.contains("<img"),
+            "<img> tag not found for remote logo URL"
+        );
+        assert!(
+            msg.html_body.contains("https://example.com/logo.png"),
+            "logo URL not found"
+        );
+        // No inline SVG should be present
+        assert!(
+            !msg.html_body.contains("<svg"),
+            "unexpected inline SVG when remote URL is set"
         );
     }
 
