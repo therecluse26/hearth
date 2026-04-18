@@ -57,6 +57,7 @@ struct AccountIndexTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -67,6 +68,7 @@ impl AccountIndexTemplate {
         flash: Option<Flash>,
         password_error: Option<String>,
         is_admin: bool,
+        product_name: String,
         logo_url: String,
     ) -> Self {
         Self {
@@ -79,6 +81,7 @@ impl AccountIndexTemplate {
             flash,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name,
             logo_url,
         }
     }
@@ -97,6 +100,7 @@ pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSessio
         None,
         None,
         admin,
+        state.product_name.clone(),
         state.logo_url.clone(),
     ))
 }
@@ -197,6 +201,7 @@ fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &
         None,
         Some(msg.to_string()),
         admin,
+        state.product_name.clone(),
         state.logo_url.clone(),
     ))
 }
@@ -214,6 +219,7 @@ fn render_with_flash(state: &Arc<WebState>, session: &UiSession, flash: Flash) -
         Some(flash),
         None,
         admin,
+        state.product_name.clone(),
         state.logo_url.clone(),
     ))
 }
@@ -297,6 +303,7 @@ struct TotpEnrollTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -311,6 +318,7 @@ impl TotpEnrollTemplate {
         recovery_codes: Vec<String>,
         activation_error: Option<String>,
         is_admin: bool,
+        product_name: String,
         logo_url: String,
     ) -> Self {
         Self {
@@ -327,6 +335,7 @@ impl TotpEnrollTemplate {
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name,
             logo_url,
         }
     }
@@ -356,6 +365,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             Vec::new(),
             None,
             admin,
+            state.product_name.clone(),
             state.logo_url.clone(),
         ));
     }
@@ -375,6 +385,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 enrollment.recovery_codes.as_slice().to_vec(),
                 None,
                 admin,
+                state.product_name.clone(),
                 state.logo_url.clone(),
             ))
         }
@@ -387,6 +398,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             Vec::new(),
             None,
             admin,
+            state.product_name.clone(),
             state.logo_url.clone(),
         )),
         Err(e) => {
@@ -400,6 +412,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 Vec::new(),
                 Some("Unable to start MFA enrolment right now.".to_string()),
                 admin,
+                state.product_name.clone(),
                 state.logo_url.clone(),
             ))
         }
@@ -512,6 +525,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
             Vec::new(),
             None,
             admin,
+            state.product_name.clone(),
             state.logo_url.clone(),
         ));
     }
@@ -528,6 +542,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
         Vec::new(),
         Some(msg.to_string()),
         admin,
+        state.product_name.clone(),
         state.logo_url.clone(),
     ))
 }

@@ -69,11 +69,12 @@ struct SetupTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl SetupTemplate {
-    fn new(token: String, error: Option<String>) -> Self {
+    fn new(token: String, error: Option<String>, product_name: String, logo_url: String) -> Self {
         Self {
             token,
             error,
@@ -84,7 +85,8 @@ impl SetupTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -104,11 +106,12 @@ struct SetupSentTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl SetupSentTemplate {
-    fn new(show_log_fallback: bool) -> Self {
+    fn new(show_log_fallback: bool, product_name: String, logo_url: String) -> Self {
         Self {
             show_log_fallback,
             chrome: false,
@@ -118,7 +121,8 @@ impl SetupSentTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -136,11 +140,17 @@ struct LoginTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl LoginTemplate {
-    fn new(error: Option<String>, return_to: Option<String>, logo_url: String) -> Self {
+    fn new(
+        error: Option<String>,
+        return_to: Option<String>,
+        product_name: String,
+        logo_url: String,
+    ) -> Self {
         Self {
             error,
             return_to,
@@ -151,6 +161,7 @@ impl LoginTemplate {
             flash: None,
             csrf: None,
             narrow: true,
+            product_name,
             logo_url,
         }
     }
@@ -167,11 +178,12 @@ struct VerifyOkTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl VerifyOkTemplate {
-    fn new() -> Self {
+    fn new(product_name: String, logo_url: String) -> Self {
         Self {
             chrome: false,
             active: "",
@@ -180,7 +192,8 @@ impl VerifyOkTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -197,6 +210,7 @@ struct DashboardTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
     config_warnings: Vec<crate::config::EnvVarWarning>,
 }
@@ -214,11 +228,17 @@ struct VerifyInvalidTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl VerifyInvalidTemplate {
-    fn new(heading: &'static str, message: &'static str) -> Self {
+    fn new(
+        heading: &'static str,
+        message: &'static str,
+        product_name: String,
+        logo_url: String,
+    ) -> Self {
         Self {
             heading,
             message,
@@ -229,7 +249,8 @@ impl VerifyInvalidTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -247,11 +268,12 @@ struct MfaChallengeTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl MfaChallengeTemplate {
-    fn new(error: Option<String>) -> Self {
+    fn new(error: Option<String>, product_name: String, logo_url: String) -> Self {
         Self {
             error,
             chrome: false,
@@ -261,7 +283,8 @@ impl MfaChallengeTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -305,7 +328,12 @@ pub async fn setup_form(
         }
     }
 
-    render(&SetupTemplate::new(token.to_string(), None))
+    render(&SetupTemplate::new(
+        token.to_string(),
+        None,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    ))
 }
 
 /// Form body submitted by the setup page.
@@ -343,11 +371,17 @@ pub async fn setup_submit(
         }
     }
 
+    let product_name = state.product_name.clone();
+    let logo_url = state.logo_url.clone();
+    let setup_err = |token: String, msg: String, status: StatusCode| {
+        render_status(
+            &SetupTemplate::new(token, Some(msg), product_name.clone(), logo_url.clone()),
+            status,
+        )
+    };
+
     if let Err(msg) = validate_setup_form(&form) {
-        return render_status(
-            &SetupTemplate::new(form.token.clone(), Some(msg)),
-            StatusCode::BAD_REQUEST,
-        );
+        return setup_err(form.token.clone(), msg, StatusCode::BAD_REQUEST);
     }
 
     let password = CleartextPassword::from_string(form.admin_password.clone());
@@ -369,36 +403,31 @@ pub async fn setup_submit(
         Err(OnboardingError::AlreadyConfigured) => {
             not_found_response("Setup page is not available.")
         }
-        Err(OnboardingError::Identity(IdentityError::DuplicateEmail)) => {
-            let msg = "An account with that email already exists in this system.".to_string();
-            render_status(
-                &SetupTemplate::new(form.token.clone(), Some(msg)),
-                StatusCode::CONFLICT,
-            )
-        }
-        Err(OnboardingError::Identity(IdentityError::TenantNotFound)) => {
-            let msg =
-                "No tenant is configured. Add a tenant to hearth.yaml and restart.".to_string();
-            render_status(
-                &SetupTemplate::new(form.token.clone(), Some(msg)),
-                StatusCode::CONFLICT,
-            )
-        }
+        Err(OnboardingError::Identity(IdentityError::DuplicateEmail)) => setup_err(
+            form.token.clone(),
+            "An account with that email already exists in this system.".to_string(),
+            StatusCode::CONFLICT,
+        ),
+        Err(OnboardingError::Identity(IdentityError::TenantNotFound)) => setup_err(
+            form.token.clone(),
+            "No tenant is configured. Add a tenant to hearth.yaml and restart.".to_string(),
+            StatusCode::CONFLICT,
+        ),
         Err(OnboardingError::Identity(IdentityError::InvalidInput { reason })) => {
-            let msg = format!("Invalid input: {reason}");
-            render_status(
-                &SetupTemplate::new(form.token.clone(), Some(msg)),
+            setup_err(
+                form.token.clone(),
+                format!("Invalid input: {reason}"),
                 StatusCode::BAD_REQUEST,
             )
         }
         Err(OnboardingError::Email(e)) => {
             tracing::error!(error = %e, "setup: failed to send verification email");
-            let msg = "The account was created but the verification email could not be sent. \
+            setup_err(
+                form.token.clone(),
+                "The account was created but the verification email could not be sent. \
                 Check the server logs for the verification link, or retry after fixing the email \
                 transport."
-                .to_string();
-            render_status(
-                &SetupTemplate::new(form.token.clone(), Some(msg)),
+                    .to_string(),
                 StatusCode::BAD_GATEWAY,
             )
         }
@@ -414,7 +443,11 @@ pub async fn setup_submit(
 /// Shows a "check your server logs" callout only when the email
 /// transport is `Log` (i.e. no real email delivery).
 pub async fn setup_sent(State(state): State<Arc<WebState>>) -> Response {
-    render(&SetupSentTemplate::new(state.email_is_log_transport))
+    render(&SetupSentTemplate::new(
+        state.email_is_log_transport,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    ))
 }
 
 // ============================================================================
@@ -434,11 +467,16 @@ pub async fn verify_email(
     State(state): State<Arc<WebState>>,
     Query(query): Query<VerifyQuery>,
 ) -> Response {
+    let product_name = state.product_name.clone();
+    let logo_url = state.logo_url.clone();
+
     let Some(token) = query.token.as_deref() else {
         return render_status(
             &VerifyInvalidTemplate::new(
                 "Invalid link",
                 "This verification link is missing or malformed.",
+                product_name,
+                logo_url,
             ),
             StatusCode::BAD_REQUEST,
         );
@@ -458,7 +496,9 @@ pub async fn verify_email(
 
     for tenant in &tenants {
         match state.identity.verify_email_token(tenant.id(), token) {
-            Ok(_) => return render(&VerifyOkTemplate::new()),
+            Ok(_) => {
+                return render(&VerifyOkTemplate::new(product_name, logo_url));
+            }
             Err(IdentityError::VerificationTokenInvalid) => {}
             Err(e) => {
                 tracing::error!(error = %e, "verify-email: unexpected failure");
@@ -472,6 +512,8 @@ pub async fn verify_email(
             "Link expired or already used",
             "This verification link is no longer valid. Request a new verification email from \
             the sign-in page once it becomes available.",
+            product_name,
+            logo_url,
         ),
         StatusCode::GONE,
     )
@@ -494,7 +536,12 @@ pub async fn login_form(
     Query(query): Query<LoginQuery>,
 ) -> Response {
     let return_to = query.return_to.as_deref().and_then(sanitize_return_to);
-    render(&LoginTemplate::new(None, return_to, state.logo_url.clone()))
+    render(&LoginTemplate::new(
+        None,
+        return_to,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    ))
 }
 
 /// Credentials submitted by the login form.
@@ -525,12 +572,14 @@ pub async fn login_submit(
     let email = form.email.trim();
     let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
 
+    let product_name = state.product_name.clone();
     let logo_url = state.logo_url.clone();
     let generic_error = || {
         render_status(
             &LoginTemplate::new(
                 Some("Sign-in failed. Check your credentials and try again.".to_string()),
                 return_to.clone(),
+                product_name.clone(),
                 logo_url.clone(),
             ),
             StatusCode::UNAUTHORIZED,
@@ -611,6 +660,7 @@ pub async fn login_submit(
                                 .to_string(),
                         ),
                         return_to.clone(),
+                        state.product_name.clone(),
                         state.logo_url.clone(),
                     ),
                     StatusCode::FORBIDDEN,
@@ -652,7 +702,11 @@ pub async fn mfa_challenge_form(
         return Redirect::to("/ui/login").into_response();
     }
 
-    render(&MfaChallengeTemplate::new(None))
+    render(&MfaChallengeTemplate::new(
+        None,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    ))
 }
 
 /// Handles MFA challenge submission.
@@ -667,10 +721,10 @@ pub async fn mfa_challenge_submit(
     Form(form): Form<MfaChallengeForm>,
 ) -> Response {
     let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
-        return mfa_expired_response();
+        return mfa_expired_response(state.product_name.clone(), state.logo_url.clone());
     };
     let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
-        return mfa_expired_response();
+        return mfa_expired_response(state.product_name.clone(), state.logo_url.clone());
     };
 
     let code = form.code.trim();
@@ -687,27 +741,33 @@ pub async fn mfa_challenge_submit(
             .verify_recovery_code(&pending.tenant_id, &pending.user_id, code)
     };
 
+    let product_name = state.product_name.clone();
+    let logo_url = state.logo_url.clone();
+    let mfa_err = |msg: String, status: StatusCode| {
+        render_status(
+            &MfaChallengeTemplate::new(Some(msg), product_name.clone(), logo_url.clone()),
+            status,
+        )
+    };
+
     match verify_result {
         Ok(()) => {}
         Err(IdentityError::RateLimited) => {
-            return render_status(
-                &MfaChallengeTemplate::new(Some(
-                    "Too many failed attempts. Please wait a few minutes and try again."
-                        .to_string(),
-                )),
+            return mfa_err(
+                "Too many failed attempts. Please wait a few minutes and try again.".to_string(),
                 StatusCode::TOO_MANY_REQUESTS,
             );
         }
         Err(IdentityError::InvalidMfaCode | IdentityError::MfaNotEnabled) => {
-            return render_status(
-                &MfaChallengeTemplate::new(Some("Invalid code. Please try again.".to_string())),
+            return mfa_err(
+                "Invalid code. Please try again.".to_string(),
                 StatusCode::UNAUTHORIZED,
             );
         }
         Err(e) => {
             tracing::warn!(error = %e, "mfa-challenge: verification failed");
-            return render_status(
-                &MfaChallengeTemplate::new(Some("Invalid code. Please try again.".to_string())),
+            return mfa_err(
+                "Invalid code. Please try again.".to_string(),
                 StatusCode::UNAUTHORIZED,
             );
         }
@@ -740,11 +800,13 @@ pub async fn mfa_challenge_submit(
 
 /// Returns a 401 response when the MFA pending cookie is expired or
 /// missing.
-fn mfa_expired_response() -> Response {
+fn mfa_expired_response(product_name: String, logo_url: String) -> Response {
     render_status(
-        &MfaChallengeTemplate::new(Some(
-            "Your session has expired. Please sign in again.".to_string(),
-        )),
+        &MfaChallengeTemplate::new(
+            Some("Your session has expired. Please sign in again.".to_string()),
+            product_name,
+            logo_url,
+        ),
         StatusCode::UNAUTHORIZED,
     )
 }
@@ -775,6 +837,7 @@ pub async fn dashboard(
         flash: None,
         csrf: session.csrf.clone(),
         narrow: false,
+        product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         config_warnings,
     })
@@ -903,11 +966,12 @@ struct ForgotPasswordTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl ForgotPasswordTemplate {
-    fn new(error: Option<String>) -> Self {
+    fn new(error: Option<String>, product_name: String, logo_url: String) -> Self {
         Self {
             error,
             chrome: false,
@@ -917,7 +981,8 @@ impl ForgotPasswordTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -933,11 +998,12 @@ struct ForgotPasswordSentTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl ForgotPasswordSentTemplate {
-    fn new() -> Self {
+    fn new(product_name: String, logo_url: String) -> Self {
         Self {
             chrome: false,
             active: "",
@@ -946,7 +1012,8 @@ impl ForgotPasswordSentTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -964,11 +1031,12 @@ struct ResetPasswordTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl ResetPasswordTemplate {
-    fn new(token: String, error: Option<String>) -> Self {
+    fn new(token: String, error: Option<String>, product_name: String, logo_url: String) -> Self {
         Self {
             token,
             error,
@@ -979,7 +1047,8 @@ impl ResetPasswordTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
@@ -995,11 +1064,12 @@ struct ResetPasswordOkTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
 impl ResetPasswordOkTemplate {
-    fn new() -> Self {
+    fn new(product_name: String, logo_url: String) -> Self {
         Self {
             chrome: false,
             active: "",
@@ -1008,14 +1078,19 @@ impl ResetPasswordOkTemplate {
             flash: None,
             csrf: None,
             narrow: true,
-            logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            product_name,
+            logo_url,
         }
     }
 }
 
 /// Renders the forgot-password form.
-pub async fn forgot_password_form() -> Response {
-    render(&ForgotPasswordTemplate::new(None))
+pub async fn forgot_password_form(State(state): State<Arc<WebState>>) -> Response {
+    render(&ForgotPasswordTemplate::new(
+        None,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    ))
 }
 
 /// Form data for forgot-password submission.
@@ -1094,8 +1169,11 @@ pub async fn forgot_password_submit(
 }
 
 /// Renders the "check your email" confirmation page.
-pub async fn forgot_password_sent() -> Response {
-    render(&ForgotPasswordSentTemplate::new())
+pub async fn forgot_password_sent(State(state): State<Arc<WebState>>) -> Response {
+    render(&ForgotPasswordSentTemplate::new(
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    ))
 }
 
 /// Query parameters for the reset-password page.
@@ -1106,13 +1184,20 @@ pub struct ResetPasswordQuery {
 }
 
 /// Renders the reset-password form (token passed via URL query parameter).
-pub async fn reset_password_form(Query(query): Query<ResetPasswordQuery>) -> Response {
+pub async fn reset_password_form(
+    State(state): State<Arc<WebState>>,
+    Query(query): Query<ResetPasswordQuery>,
+) -> Response {
+    let product_name = state.product_name.clone();
+    let logo_url = state.logo_url.clone();
     match query.token {
-        Some(token) => render(&ResetPasswordTemplate::new(token, None)),
+        Some(token) => render(&ResetPasswordTemplate::new(token, None, product_name, logo_url)),
         None => render_status(
             &ResetPasswordTemplate::new(
                 String::new(),
                 Some("Missing or invalid reset link.".to_string()),
+                product_name,
+                logo_url,
             ),
             StatusCode::BAD_REQUEST,
         ),
@@ -1138,20 +1223,28 @@ pub async fn reset_password_submit(
     State(state): State<Arc<WebState>>,
     Form(form): Form<ResetPasswordFormData>,
 ) -> Response {
+    let product_name = state.product_name.clone();
+    let logo_url = state.logo_url.clone();
+    let reset_err = |token: String, msg: String| {
+        render(&ResetPasswordTemplate::new(
+            token,
+            Some(msg),
+            product_name.clone(),
+            logo_url.clone(),
+        ))
+    };
+
     // 1. Check passwords match
     if form.password != form.password_confirm {
-        return render(&ResetPasswordTemplate::new(
-            form.token,
-            Some("Passwords do not match.".to_string()),
-        ));
+        return reset_err(form.token, "Passwords do not match.".to_string());
     }
 
     // 2. Validate password minimum requirements
     if form.password.len() < 8 {
-        return render(&ResetPasswordTemplate::new(
+        return reset_err(
             form.token,
-            Some("Password must be at least 8 characters.".to_string()),
-        ));
+            "Password must be at least 8 characters.".to_string(),
+        );
     }
 
     let password = CleartextPassword::from_string(form.password);
@@ -1171,26 +1264,26 @@ pub async fn reset_password_submit(
             .reset_password_with_token(tenant.id(), &form.token, &password)
         {
             Ok(_user_id) => {
-                return render(&ResetPasswordOkTemplate::new());
+                return render(&ResetPasswordOkTemplate::new(product_name, logo_url));
             }
             Err(IdentityError::PasswordResetTokenInvalid) => {
                 // Try next tenant
             }
             Err(e) => {
                 tracing::warn!(error = %e, "reset_password: error resetting password");
-                return render(&ResetPasswordTemplate::new(
+                return reset_err(
                     form.token,
-                    Some("Failed to reset password. Please try again.".to_string()),
-                ));
+                    "Failed to reset password. Please try again.".to_string(),
+                );
             }
         }
     }
 
     // Token not valid in any tenant
-    render(&ResetPasswordTemplate::new(
+    reset_err(
         String::new(),
-        Some("This reset link is invalid or has expired. Please request a new one.".to_string()),
-    ))
+        "This reset link is invalid or has expired. Please request a new one.".to_string(),
+    )
 }
 
 /// Internal — shared 404 renderer used by the setup gate.

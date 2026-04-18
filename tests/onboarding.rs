@@ -102,6 +102,8 @@ impl TestEnv {
         let email_service = Arc::new(
             EmailService::new(
                 Arc::clone(&email) as hearth::identity::SharedEmailSender,
+                "Hearth".to_string(),
+                None,
                 EmailBranding::default(),
                 String::new(),
                 None,
@@ -583,6 +585,8 @@ fn complete_setup_surfaces_email_delivery_failure() {
     let email_service = Arc::new(
         EmailService::new(
             Arc::new(FailingEmailSender) as hearth::identity::SharedEmailSender,
+            "Hearth".to_string(),
+            None,
             EmailBranding::default(),
             String::new(),
             None,
@@ -633,6 +637,8 @@ fn ensure_setup_token_sends_notification_email_when_configured() {
     let recording_sender = Arc::new(RecordingEmailSender::default());
     let email_service = EmailService::new(
         Arc::clone(&recording_sender) as hearth::identity::SharedEmailSender,
+        "Hearth".to_string(),
+        None,
         EmailBranding::default(),
         String::new(),
         None,
@@ -685,6 +691,8 @@ fn ensure_setup_token_failing_email_is_non_fatal() {
     let env = TestEnv::new();
     let email_service = EmailService::new(
         Arc::new(FailingEmailSender) as hearth::identity::SharedEmailSender,
+        "Hearth".to_string(),
+        None,
         EmailBranding::default(),
         String::new(),
         None,

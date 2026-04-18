@@ -39,6 +39,8 @@ fn null_email_service() -> Arc<EmailService> {
     Arc::new(
         EmailService::new(
             Arc::new(LoggingEmailSender::new()),
+            "Hearth".to_string(),
+            None,
             EmailBranding::default(),
             String::new(),
             None,

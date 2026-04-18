@@ -370,6 +370,7 @@ async fn run_serve(
     )
     .with_config_warnings(config.config_warnings.clone())
     .with_email_log_transport(config.email.transport == EmailTransport::Log)
+    .with_product_name(config.branding.product_name_or_default().to_string())
     .with_logo_url(web_logo_url);
 
     if let Some((bytes, content_type)) = custom_logo {
@@ -487,9 +488,9 @@ fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std:
 
 /// Builds the email service (orchestration layer) wrapping a sender.
 ///
-/// The logo URL for email templates follows a 2-tier fallback:
-/// 1. `email.branding.logo_url` (explicit email-specific override)
-/// 2. `branding.logo_url` (global branding — must be an absolute URL)
+/// `product_name` and `logo_url` come from the global `branding:`
+/// section. Email-specific settings (accent color, support email,
+/// footer text) come from `email.branding:`.
 ///
 /// When no logo URL is configured, the built-in Hearth SVG is inlined
 /// directly in the email HTML (no remote fetch needed).
@@ -497,11 +498,9 @@ fn build_email_service(
     sender: SharedEmailSender,
     config: &Config,
 ) -> Result<EmailService, Box<dyn std::error::Error>> {
-    let mut branding = config.email.branding.clone().unwrap_or_default();
-    // Fall back to global branding logo (remote URLs only)
-    if branding.logo_url.is_none() {
-        branding.logo_url.clone_from(&config.branding.logo_url);
-    }
+    let product_name = config.branding.product_name_or_default().to_string();
+    let logo_url = config.branding.logo_url.clone();
+    let branding = config.email.branding.clone().unwrap_or_default();
     let default_logo_svg = String::from_utf8_lossy(web::HEARTH_WIDE_SVG).into_owned();
     let templates_dir = config
         .email
@@ -510,6 +509,8 @@ fn build_email_service(
         .map(std::path::Path::new);
     Ok(EmailService::new(
         sender,
+        product_name,
+        logo_url,
         branding,
         default_logo_svg,
         templates_dir,

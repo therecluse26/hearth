@@ -78,6 +78,7 @@ struct UserListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -101,6 +102,7 @@ pub async fn admin_users_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
@@ -129,6 +131,7 @@ struct UserNewTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -148,6 +151,7 @@ pub async fn admin_user_create_form(
         flash: None,
         csrf: session.csrf.clone(),
         narrow: true,
+        product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
     })
 }
@@ -217,6 +221,7 @@ pub async fn admin_user_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(IdentityError::InvalidInput { reason }) => render(&UserNewTemplate {
@@ -230,6 +235,7 @@ pub async fn admin_user_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
@@ -245,6 +251,7 @@ pub async fn admin_user_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
             })
         }
@@ -268,6 +275,7 @@ struct UserDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -292,6 +300,7 @@ pub async fn admin_user_detail(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("User not found"),
@@ -323,6 +332,7 @@ struct UserEditTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -351,6 +361,7 @@ pub async fn admin_user_edit_form(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("User not found"),
@@ -509,6 +520,7 @@ fn render_edit_error(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         None => super::handlers_common::not_found("User not found"),
@@ -565,6 +577,7 @@ struct TenantListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -585,6 +598,7 @@ pub async fn admin_tenants_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
@@ -609,6 +623,7 @@ struct TenantDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -633,6 +648,7 @@ pub async fn admin_tenant_detail(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Tenant not found"),
@@ -743,6 +759,7 @@ struct AppListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -766,6 +783,7 @@ pub async fn admin_apps_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
@@ -794,6 +812,7 @@ struct AppNewTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -814,6 +833,7 @@ pub async fn admin_app_create_form(
         flash: None,
         csrf: session.csrf.clone(),
         narrow: true,
+        product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
     })
 }
@@ -877,6 +897,7 @@ pub async fn admin_app_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
             })
         }
@@ -892,6 +913,7 @@ pub async fn admin_app_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
@@ -908,6 +930,7 @@ pub async fn admin_app_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
             })
         }
@@ -930,6 +953,7 @@ struct AppDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -955,6 +979,7 @@ pub async fn admin_app_detail(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Application not found"),
@@ -983,6 +1008,7 @@ struct AppEditTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1010,6 +1036,7 @@ pub async fn admin_app_edit_form(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Application not found"),
@@ -1166,6 +1193,7 @@ struct SessionListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1251,6 +1279,7 @@ pub async fn admin_sessions_list(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: false,
+                product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
             })
         }
@@ -1364,6 +1393,7 @@ struct AuditListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1373,6 +1403,7 @@ struct AuditListTemplate {
 #[allow(dead_code)]
 struct AuditRowsTemplate {
     events: Vec<AuditRow>,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1410,6 +1441,7 @@ pub async fn admin_audit_list(
             if htmx.0 {
                 render(&AuditRowsTemplate {
                     events: rows,
+                    product_name: String::new(),
                     logo_url: String::new(),
                 })
             } else {
@@ -1425,6 +1457,7 @@ pub async fn admin_audit_list(
                     flash: None,
                     csrf: session.csrf.clone(),
                     narrow: false,
+                    product_name: state.product_name.clone(),
                     logo_url: state.logo_url.clone(),
                 })
             }
@@ -1512,6 +1545,7 @@ struct OrgListTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1535,6 +1569,7 @@ pub async fn admin_orgs_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
@@ -1563,6 +1598,7 @@ struct OrgNewTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1583,6 +1619,7 @@ pub async fn admin_org_create_form(
         flash: None,
         csrf: session.csrf.clone(),
         narrow: true,
+        product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
     })
 }
@@ -1641,6 +1678,7 @@ pub async fn admin_org_create_submit(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Err(e) => {
@@ -1657,6 +1695,7 @@ pub async fn admin_org_create_submit(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: true,
+                product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
             })
         }
@@ -1691,6 +1730,7 @@ struct OrgDetailTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1779,6 +1819,7 @@ pub async fn admin_org_detail(
         flash,
         csrf: session.csrf.clone(),
         narrow: false,
+        product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
     })
 }
@@ -1803,6 +1844,7 @@ struct OrgEditTemplate {
     flash: Option<Flash>,
     csrf: Option<String>,
     narrow: bool,
+    product_name: String,
     logo_url: String,
 }
 
@@ -1831,6 +1873,7 @@ pub async fn admin_org_edit_form(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: true,
+            product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
         }),
         Ok(None) => super::handlers_common::not_found("Organization not found"),
@@ -2198,6 +2241,7 @@ pub struct UserSearchParams {
 struct UserSearchResultsTemplate {
     users: Vec<User>,
     query: String,
+    product_name: String,
     logo_url: String,
 }
 
@@ -2220,6 +2264,7 @@ pub async fn admin_api_user_search(
     render(&UserSearchResultsTemplate {
         users,
         query,
+        product_name: String::new(),
         logo_url: String::new(),
     })
 }

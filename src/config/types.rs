@@ -364,9 +364,14 @@ pub struct EmailConfig {
 /// Global branding configuration.
 ///
 /// Applies across the admin UI and email templates. When `logo_url` is
-/// `None`, the built-in Hearth SVG logo is used everywhere.
+/// `None`, the built-in Hearth SVG logo is used everywhere. When
+/// `product_name` is `None`, "Hearth" is used.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BrandingConfig {
+    /// Product name shown in the UI (logo alt text) and email subjects.
+    /// Defaults to `"Hearth"` when `None`.
+    #[serde(default)]
+    pub product_name: Option<String>,
     /// URL for the logo image. Applies to both the admin UI and email
     /// templates. When `None`, the built-in Hearth logo is used.
     ///
@@ -375,6 +380,13 @@ pub struct BrandingConfig {
     /// logo is used, the server constructs `{base_url}/ui/static/img/hearth-wide-web.svg`.
     #[serde(default)]
     pub logo_url: Option<String>,
+}
+
+impl BrandingConfig {
+    /// Returns the product name, falling back to `"Hearth"`.
+    pub fn product_name_or_default(&self) -> &str {
+        self.product_name.as_deref().unwrap_or("Hearth")
+    }
 }
 
 /// First-run onboarding configuration.

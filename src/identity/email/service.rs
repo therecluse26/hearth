@@ -21,6 +21,10 @@ use super::{EmailError, SharedEmailSender};
 /// rather than the raw transport.
 pub struct EmailService {
     sender: SharedEmailSender,
+    /// Global product name (from [`BrandingConfig`](crate::config::BrandingConfig)).
+    product_name: String,
+    /// Global logo URL (from [`BrandingConfig`](crate::config::BrandingConfig)).
+    logo_url: Option<String>,
     default_branding: EmailBranding,
     custom_templates: Option<tera::Tera>,
     /// Built-in SVG markup for the default Hearth logo. Inlined directly
@@ -32,13 +36,18 @@ pub struct EmailService {
 impl EmailService {
     /// Creates a new email service.
     ///
-    /// `default_branding` provides global defaults that can be overridden
-    /// per-tenant. `default_logo_svg` is the raw SVG markup for the
-    /// built-in logo, inlined when no custom logo URL is set. If
-    /// `templates_dir` is set, Tera templates are loaded from disk;
+    /// `product_name` and `logo_url` come from the global
+    /// [`BrandingConfig`](crate::config::BrandingConfig) and apply to
+    /// all outbound emails. `default_branding` provides email-specific
+    /// defaults (accent color, support email, footer) that can be
+    /// overridden per-tenant. `default_logo_svg` is the raw SVG markup
+    /// for the built-in logo, inlined when no custom logo URL is set.
+    /// If `templates_dir` is set, Tera templates are loaded from disk;
     /// missing templates fall back to the compiled defaults.
     pub fn new(
         sender: SharedEmailSender,
+        product_name: String,
+        logo_url: Option<String>,
         default_branding: EmailBranding,
         default_logo_svg: String,
         templates_dir: Option<&Path>,
@@ -53,6 +62,8 @@ impl EmailService {
 
         Ok(Self {
             sender,
+            product_name,
+            logo_url,
             default_branding,
             custom_templates,
             default_logo_svg,
@@ -142,7 +153,11 @@ impl EmailService {
             Some(t) => EmailBranding::merge(&self.default_branding, t),
             None => self.default_branding.clone(),
         };
-        let mut resolved = ResolvedBranding::from_branding(&merged);
+        let mut resolved = ResolvedBranding::from_branding(
+            &merged,
+            &self.product_name,
+            self.logo_url.as_deref(),
+        );
 
         let is_local_path = resolved
             .logo_url
@@ -285,18 +300,32 @@ mod tests {
 
     fn log_service() -> EmailService {
         let sender: SharedEmailSender = Arc::new(LoggingEmailSender::new());
-        EmailService::new(sender, EmailBranding::default(), TEST_SVG.to_string(), None)
-            .expect("service")
+        EmailService::new(
+            sender,
+            "Hearth".to_string(),
+            None,
+            EmailBranding::default(),
+            TEST_SVG.to_string(),
+            None,
+        )
+        .expect("service")
     }
 
     fn branded_service() -> EmailService {
         let sender: SharedEmailSender = Arc::new(LoggingEmailSender::new());
         let branding = EmailBranding {
-            product_name: Some("Global Corp".to_string()),
             accent_color: Some("#123456".to_string()),
             ..Default::default()
         };
-        EmailService::new(sender, branding, TEST_SVG.to_string(), None).expect("service")
+        EmailService::new(
+            sender,
+            "Global Corp".to_string(),
+            None,
+            branding,
+            TEST_SVG.to_string(),
+            None,
+        )
+        .expect("service")
     }
 
     #[test]
@@ -314,7 +343,7 @@ mod tests {
     fn send_verification_with_tenant_branding() {
         let service = branded_service();
         let tenant = EmailBranding {
-            product_name: Some("Tenant Portal".to_string()),
+            accent_color: Some("#ABCDEF".to_string()),
             ..Default::default()
         };
         let result = service.send_verification_email(
@@ -347,13 +376,14 @@ mod tests {
     fn branding_resolution_tenant_overrides() {
         let service = branded_service();
         let tenant = EmailBranding {
-            product_name: Some("Tenant".to_string()),
+            accent_color: Some("#AABBCC".to_string()),
             ..Default::default()
         };
         let resolved = service.resolve_branding(Some(&tenant));
-        assert_eq!(resolved.product_name, "Tenant");
-        // accent_color falls through to global
-        assert_eq!(resolved.accent_color, "#123456");
+        // product_name comes from global BrandingConfig, not tenant EmailBranding
+        assert_eq!(resolved.product_name, "Global Corp");
+        // accent_color overridden by tenant
+        assert_eq!(resolved.accent_color, "#AABBCC");
     }
 
     #[test]
@@ -371,7 +401,7 @@ mod tests {
     fn send_password_reset_with_tenant_branding() {
         let service = branded_service();
         let tenant = EmailBranding {
-            product_name: Some("Tenant Portal".to_string()),
+            accent_color: Some("#ABCDEF".to_string()),
             ..Default::default()
         };
         let result = service.send_password_reset_email(

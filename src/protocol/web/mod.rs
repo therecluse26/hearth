@@ -92,6 +92,9 @@ pub struct WebState {
     /// Used by the setup-sent page to show a "check your server logs"
     /// callout only when emails are not actually being sent.
     pub email_is_log_transport: bool,
+    /// Product name injected into templates (logo alt text, page titles).
+    /// Defaults to `"Hearth"` when no `branding.product_name` is configured.
+    pub product_name: String,
     /// Logo URL injected into every template. Defaults to the built-in
     /// Hearth SVG when no `branding.logo_url` is configured.
     pub logo_url: String,
@@ -134,6 +137,7 @@ impl WebState {
             current_tenant: Arc::new(RwLock::new(None)),
             config_warnings: Vec::new(),
             email_is_log_transport: false,
+            product_name: "Hearth".to_string(),
             logo_url: DEFAULT_LOGO_URL.to_string(),
             custom_logo: None,
         }
@@ -150,6 +154,13 @@ impl WebState {
     #[must_use]
     pub fn with_email_log_transport(mut self, val: bool) -> Self {
         self.email_is_log_transport = val;
+        self
+    }
+
+    /// Sets the product name (overriding the default `"Hearth"`).
+    #[must_use]
+    pub fn with_product_name(mut self, name: String) -> Self {
+        self.product_name = name;
         self
     }
 

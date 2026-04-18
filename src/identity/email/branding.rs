@@ -1,22 +1,25 @@
 //! Per-tenant email branding configuration.
 //!
-//! Each tenant can override the default product name, logo, accent color,
-//! support email, and footer text. The [`EmailBranding::merge`] function
-//! produces a resolved branding by overlaying tenant overrides on global
-//! defaults.
+//! Each tenant can override the accent color, support email, and footer
+//! text. The [`EmailBranding::merge`] function produces a resolved
+//! branding by overlaying tenant overrides on global defaults.
+//!
+//! `product_name` and `logo_url` are **global** branding concerns
+//! (shared by the web UI and emails) and live in
+//! [`BrandingConfig`](crate::config::BrandingConfig).
 
 use serde::{Deserialize, Serialize};
 
 /// Per-tenant email branding configuration.
 ///
 /// All fields are optional. When `None`, [`ResolvedBranding`] uses
-/// built-in defaults (product name "Hearth", default accent color, etc.).
+/// built-in defaults (accent color `#E85D04`, etc.).
+///
+/// `product_name` and `logo_url` are sourced from the global
+/// [`BrandingConfig`](crate::config::BrandingConfig) and injected by
+/// [`EmailService`](super::service::EmailService).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmailBranding {
-    /// Product name shown in email subject and body. Defaults to "Hearth".
-    pub product_name: Option<String>,
-    /// URL to a logo image shown in the email header.
-    pub logo_url: Option<String>,
     /// Hex color code for accent elements. Defaults to `#E85D04`.
     pub accent_color: Option<String>,
     /// Support email address shown in the email footer.
@@ -32,11 +35,6 @@ impl EmailBranding {
     /// Returns a new `EmailBranding` with all overrides applied.
     pub fn merge(global: &Self, tenant: &Self) -> Self {
         Self {
-            product_name: tenant
-                .product_name
-                .clone()
-                .or_else(|| global.product_name.clone()),
-            logo_url: tenant.logo_url.clone().or_else(|| global.logo_url.clone()),
             accent_color: tenant
                 .accent_color
                 .clone()
@@ -50,11 +48,6 @@ impl EmailBranding {
                 .clone()
                 .or_else(|| global.custom_footer_text.clone()),
         }
-    }
-
-    /// Returns the product name, falling back to "Hearth".
-    pub fn product_name_or_default(&self) -> &str {
-        self.product_name.as_deref().unwrap_or("Hearth")
     }
 
     /// Returns the accent color, falling back to the default brand color.
@@ -88,13 +81,21 @@ pub(crate) struct ResolvedBranding {
 impl ResolvedBranding {
     /// Converts raw [`EmailBranding`] into resolved fields with defaults.
     ///
+    /// `product_name` and `logo_url` are supplied by the caller (sourced
+    /// from global [`BrandingConfig`](crate::config::BrandingConfig))
+    /// rather than from `EmailBranding`.
+    ///
     /// This does **not** handle logo inlining or local-path cleanup —
     /// callers outside this module must use [`EmailService::resolve_branding`]
     /// instead to get a fully resolved result.
-    pub(super) fn from_branding(branding: &EmailBranding) -> Self {
+    pub(super) fn from_branding(
+        branding: &EmailBranding,
+        product_name: &str,
+        logo_url: Option<&str>,
+    ) -> Self {
         Self {
-            product_name: branding.product_name_or_default().to_string(),
-            logo_url: branding.logo_url.clone(),
+            product_name: product_name.to_string(),
+            logo_url: logo_url.map(str::to_string),
             logo_svg_inline: None,
             accent_color: branding.accent_color_or_default().to_string(),
             support_email: branding.support_email.clone(),
@@ -110,51 +111,28 @@ mod tests {
     #[test]
     fn merge_global_only() {
         let global = EmailBranding {
-            product_name: Some("Global Corp".to_string()),
             accent_color: Some("#FF0000".to_string()),
             ..Default::default()
         };
         let tenant = EmailBranding::default();
 
         let merged = EmailBranding::merge(&global, &tenant);
-        assert_eq!(merged.product_name.as_deref(), Some("Global Corp"));
         assert_eq!(merged.accent_color.as_deref(), Some("#FF0000"));
-        assert!(merged.logo_url.is_none());
-    }
-
-    #[test]
-    fn merge_tenant_only() {
-        let global = EmailBranding::default();
-        let tenant = EmailBranding {
-            product_name: Some("Tenant Portal".to_string()),
-            logo_url: Some("https://tenant.com/logo.png".to_string()),
-            ..Default::default()
-        };
-
-        let merged = EmailBranding::merge(&global, &tenant);
-        assert_eq!(merged.product_name.as_deref(), Some("Tenant Portal"));
-        assert_eq!(
-            merged.logo_url.as_deref(),
-            Some("https://tenant.com/logo.png")
-        );
     }
 
     #[test]
     fn merge_tenant_overrides_global() {
         let global = EmailBranding {
-            product_name: Some("Global".to_string()),
             accent_color: Some("#111111".to_string()),
             support_email: Some("global@example.com".to_string()),
             ..Default::default()
         };
         let tenant = EmailBranding {
-            product_name: Some("Tenant".to_string()),
             accent_color: Some("#222222".to_string()),
             ..Default::default()
         };
 
         let merged = EmailBranding::merge(&global, &tenant);
-        assert_eq!(merged.product_name.as_deref(), Some("Tenant"));
         assert_eq!(merged.accent_color.as_deref(), Some("#222222"));
         // support_email falls through to global
         assert_eq!(merged.support_email.as_deref(), Some("global@example.com"));
@@ -163,15 +141,7 @@ mod tests {
     #[test]
     fn merge_both_none_uses_defaults() {
         let merged = EmailBranding::merge(&EmailBranding::default(), &EmailBranding::default());
-        assert!(merged.product_name.is_none());
-        assert_eq!(merged.product_name_or_default(), "Hearth");
         assert_eq!(merged.accent_color_or_default(), "#E85D04");
-    }
-
-    #[test]
-    fn product_name_or_default_returns_hearth() {
-        let b = EmailBranding::default();
-        assert_eq!(b.product_name_or_default(), "Hearth");
     }
 
     #[test]
@@ -183,7 +153,7 @@ mod tests {
     #[test]
     fn resolved_branding_from_defaults() {
         let b = EmailBranding::default();
-        let resolved = ResolvedBranding::from_branding(&b);
+        let resolved = ResolvedBranding::from_branding(&b, "Hearth", None);
         assert_eq!(resolved.product_name, "Hearth");
         assert_eq!(resolved.accent_color, "#E85D04");
         assert!(resolved.logo_url.is_none());
@@ -192,10 +162,26 @@ mod tests {
     }
 
     #[test]
+    fn resolved_branding_with_custom_values() {
+        let b = EmailBranding {
+            accent_color: Some("#ABC123".to_string()),
+            support_email: Some("help@example.com".to_string()),
+            custom_footer_text: Some("Custom footer".to_string()),
+        };
+        let resolved =
+            ResolvedBranding::from_branding(&b, "Acme", Some("https://acme.com/logo.png"));
+        assert_eq!(resolved.product_name, "Acme");
+        assert_eq!(
+            resolved.logo_url.as_deref(),
+            Some("https://acme.com/logo.png")
+        );
+        assert_eq!(resolved.accent_color, "#ABC123");
+        assert_eq!(resolved.support_email.as_deref(), Some("help@example.com"));
+    }
+
+    #[test]
     fn branding_serde_round_trip() {
         let b = EmailBranding {
-            product_name: Some("Test".to_string()),
-            logo_url: Some("https://example.com/logo.png".to_string()),
             accent_color: Some("#ABC123".to_string()),
             support_email: Some("help@example.com".to_string()),
             custom_footer_text: Some("Custom footer".to_string()),

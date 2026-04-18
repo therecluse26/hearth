@@ -48,10 +48,12 @@ operational:
   queue_depth: 4096
 
 # --- Branding (global) ------------------------------------------------------
-# Controls the logo shown in the admin UI and email templates.
-# When omitted, the built-in Hearth logo is used everywhere.
+# Controls the product name and logo shown across the UI and email templates.
+# When omitted, "Hearth" and the built-in Hearth logo are used everywhere.
 
 # branding:
+#   product_name: "Acme Corp"     # default: "Hearth" — shown in logo alt text and emails
+#
 #   # Remote URL — used directly in <img src="..."> for both UI and emails.
 #   logo_url: "https://example.com/logo.png"
 #
@@ -92,20 +94,14 @@ email:
   #   api_key: "${MAILTRAP_API_KEY}"
 
   # --- Branding (applied to all outbound emails) ----------------------------
-  # Overrides for email-specific branding. Falls back to global `branding`
-  # settings above when omitted. Per-tenant overrides are stored in
+  # Email-specific overrides. product_name and logo_url come from the
+  # global `branding:` section above. Per-tenant overrides are stored in
   # TenantConfig.email_branding.
 
   # branding:
-  #   product_name: "Acme Corp"            # default: "Hearth"
   #   accent_color: "#4F46E5"              # default: "#E85D04"
   #   support_email: "support@example.com"
   #   custom_footer_text: "© 2026 Acme Corp. All rights reserved."
-  #   # Email logo — overrides global branding.logo_url for emails only.
-  #   # Accepts a remote URL or a local file path (SVGs are inlined;
-  #   # raster formats are skipped). Falls back to global branding.logo_url.
-  #   # logo_url: "https://example.com/email-logo.png"
-  #   # logo_url: "/opt/hearth/branding/logo.svg"
 
   # --- Custom templates -----------------------------------------------------
   # Directory containing Tera templates that override the compiled defaults.
@@ -146,17 +142,11 @@ email:
 #     session_ttl: "12h"                # overrides global auth.session_ttl
 #     email:
 #       branding:
-#         product_name: "Customer Portal"
 #         accent_color: "#2563EB"
-#         logo_url: "https://customer-portal.example.com/logo.png"
 #
 #   internal-tools:
 #     session_ttl: "8h"
 #     password_memory_cost: 131072      # stricter for internal use
-#     email:
-#       branding:
-#         product_name: "Internal Tools"
-#         logo_url: "/opt/hearth/branding/internal-logo.svg"
 
 onboarding:
   # enabled: true  # set to false to permanently disable the /ui/setup flow
