@@ -26,8 +26,8 @@ use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef
 use crate::core::{ClientId, TenantId, UserId};
 use crate::identity::IdentityEngine;
 use crate::protocol::convert::identity::{
-    proto_tenant_status_to_domain, proto_user_status_to_domain, tenant_page_to_proto,
-    user_bulk_result_to_proto, user_page_to_proto, void_bulk_result_to_proto,
+    proto_user_status_to_domain, tenant_page_to_proto, user_bulk_result_to_proto,
+    user_page_to_proto, void_bulk_result_to_proto,
 };
 use crate::protocol::convert::oauth::{
     client_page_to_proto, proto_authorize_to_domain, proto_client_creds_to_domain,
@@ -715,9 +715,7 @@ fn identity_error_to_response(
         IdentityError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
         IdentityError::OrganizationNotFound => (StatusCode::NOT_FOUND, "organization not found"),
         IdentityError::DuplicateOrgSlug => (StatusCode::CONFLICT, "duplicate organization slug"),
-        IdentityError::OrganizationSuspended => {
-            (StatusCode::FORBIDDEN, "organization suspended")
-        }
+        IdentityError::OrganizationSuspended => (StatusCode::FORBIDDEN, "organization suspended"),
         IdentityError::AlreadyMember => (StatusCode::CONFLICT, "already a member"),
         IdentityError::NotAMember => (StatusCode::NOT_FOUND, "not a member"),
         IdentityError::LastOwner => (StatusCode::CONFLICT, "cannot remove last owner"),
@@ -1484,37 +1482,15 @@ async fn admin_list_tenants(
     }
 }
 
-/// Admin: create tenant.
-async fn admin_create_tenant(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<pb::CreateTenantRequest>,
-) -> impl IntoResponse {
-    let auth = match extract_admin_auth(&headers, &state) {
-        Ok(a) => a,
-        Err(e) => return e.into_response(),
-    };
-
-    let request = crate::identity::CreateTenantRequest::from(body);
-
-    match state.identity.create_tenant(&request) {
-        Ok(tenant) => {
-            let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
-                actor: auth.user_id.as_uuid().to_string(),
-                action: crate::audit::AuditAction::TenantCreated,
-                resource_type: "tenant".to_string(),
-                resource_id: tenant.id().as_uuid().to_string(),
-                metadata: Some(serde_json::json!({"via": "admin_api"})),
-            });
-            (
-                StatusCode::CREATED,
-                Json(proto_to_rest_json(&pb::Tenant::from(&tenant))),
-            )
-                .into_response()
-        }
-        Err(e) => identity_error_to_response(&e).into_response(),
-    }
+/// Admin: create tenant — disabled; tenants are managed via `hearth.yaml`.
+async fn admin_create_tenant() -> impl IntoResponse {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(serde_json::json!({
+            "error": "method_not_allowed",
+            "message": "Tenants are managed via hearth.yaml. Remove this endpoint from your client."
+        })),
+    )
 }
 
 /// Admin: get tenant by ID.
@@ -1554,64 +1530,22 @@ async fn admin_get_tenant(
     }
 }
 
-/// Admin: update tenant by ID.
-async fn admin_update_tenant(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(body): Json<pb::UpdateTenantRequest>,
-) -> impl IntoResponse {
-    let auth = match extract_admin_auth(&headers, &state) {
-        Ok(a) => a,
-        Err(e) => return e.into_response(),
-    };
-
-    let tenant_uuid: uuid::Uuid = match id.parse() {
-        Ok(u) => u,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid tenant ID"})),
-            )
-                .into_response()
-        }
-    };
-
-    // Validate status if provided
-    if let Some(status_val) = body.status {
-        if proto_tenant_status_to_domain(status_val).is_none() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid status"})),
-            )
-                .into_response();
-        }
-    }
-
-    let tid = TenantId::new(tenant_uuid);
-    let request = crate::identity::UpdateTenantRequest::from(body);
-
-    match state.identity.update_tenant(&tid, &request) {
-        Ok(tenant) => {
-            let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
-                actor: auth.user_id.as_uuid().to_string(),
-                action: crate::audit::AuditAction::TenantUpdated,
-                resource_type: "tenant".to_string(),
-                resource_id: tenant_uuid.to_string(),
-                metadata: Some(serde_json::json!({"via": "admin_api"})),
-            });
-            (
-                StatusCode::OK,
-                Json(proto_to_rest_json(&pb::Tenant::from(&tenant))),
-            )
-                .into_response()
-        }
-        Err(e) => identity_error_to_response(&e).into_response(),
-    }
+/// Admin: update tenant — disabled; tenants are managed via `hearth.yaml`.
+async fn admin_update_tenant(Path(_id): Path<String>) -> impl IntoResponse {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(serde_json::json!({
+            "error": "method_not_allowed",
+            "message": "Tenants are managed via hearth.yaml. Remove this endpoint from your client."
+        })),
+    )
 }
 
 /// Admin: delete tenant by ID.
+///
+/// Only allows permanent deletion of tenants with `Archived` status.
+/// Active or Suspended tenants must first be removed from `hearth.yaml`
+/// and the server restarted (which archives them via reconciliation).
 async fn admin_delete_tenant(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1633,18 +1567,41 @@ async fn admin_delete_tenant(
         }
     };
 
-    match state.identity.delete_tenant(&TenantId::new(tenant_uuid)) {
-        Ok(()) => {
-            let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
-                actor: auth.user_id.as_uuid().to_string(),
-                action: crate::audit::AuditAction::TenantDeleted,
-                resource_type: "tenant".to_string(),
-                resource_id: tenant_uuid.to_string(),
-                metadata: Some(serde_json::json!({"via": "admin_api"})),
-            });
-            StatusCode::NO_CONTENT.into_response()
+    let tid = TenantId::new(tenant_uuid);
+
+    // Check tenant status — only Archived tenants can be permanently deleted.
+    match state.identity.get_tenant(&tid) {
+        Ok(Some(tenant))
+            if tenant.status() == crate::identity::TenantStatus::Archived =>
+        {
+            match state.identity.delete_tenant(&tid) {
+                Ok(()) => {
+                    let _ = state.audit.append(&CreateAuditEvent {
+                        tenant_id: auth.tenant_id.clone(),
+                        actor: auth.user_id.as_uuid().to_string(),
+                        action: crate::audit::AuditAction::TenantDeleted,
+                        resource_type: "tenant".to_string(),
+                        resource_id: tenant_uuid.to_string(),
+                        metadata: Some(serde_json::json!({"via": "admin_api"})),
+                    });
+                    StatusCode::NO_CONTENT.into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
         }
+        Ok(Some(_)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "conflict",
+                "message": "Only archived tenants can be permanently deleted. Remove the tenant from hearth.yaml and restart to archive it first."
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }

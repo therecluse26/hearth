@@ -9,10 +9,11 @@ mod types;
 
 pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
+pub use types::parse_duration_to_micros;
 pub use types::{
-    EmailConfig, EmailTransport, MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig,
-    OnboardingConfig, OperationalConfig, PostmarkConfig, SendgridConfig, ServerConfig, SmtpConfig,
-    SmtpEncryption, StorageSection,
+    AuthConfig, EmailConfig, EmailTransport, MailgunConfig, MailgunRegion, MailtrapConfig,
+    ObservabilityConfig, OnboardingConfig, OperationalConfig, PostmarkConfig, SendgridConfig,
+    ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TenantEmailYaml, TenantYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -51,6 +52,16 @@ pub struct Config {
     /// First-run onboarding settings.
     #[serde(default)]
     pub onboarding: OnboardingConfig,
+    /// Global authentication defaults (session TTL, password hashing params).
+    #[serde(default)]
+    pub auth: AuthConfig,
+    /// Per-tenant configuration overrides.
+    ///
+    /// When `Some`, tenants are declaratively managed: YAML entries become
+    /// Active tenants, storage-only tenants get Archived. When `None`,
+    /// tenants are managed via API/onboarding (backward compatible).
+    #[serde(default)]
+    pub tenants: Option<std::collections::HashMap<String, TenantYamlConfig>>,
     /// Whether development mode is active. Not serialized — set by [`Config::dev`].
     #[serde(skip)]
     pub dev_mode: bool,
@@ -125,6 +136,8 @@ impl Config {
             operational: OperationalConfig::default(),
             email: EmailConfig::default(),
             onboarding: OnboardingConfig::default(),
+            auth: AuthConfig::default(),
+            tenants: None,
             dev_mode: true,
             config_warnings: Vec::new(),
         }

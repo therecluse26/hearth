@@ -90,7 +90,11 @@ impl SetupTemplate {
 /// Simple "setup submitted" confirmation page.
 #[derive(Template)]
 #[template(path = "ui/setup_sent.html")]
+#[allow(clippy::struct_excessive_bools)]
 struct SetupSentTemplate {
+    /// Whether to show the "Running without SMTP?" callout (true when
+    /// the email transport is `Log`).
+    show_log_fallback: bool,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -101,8 +105,9 @@ struct SetupSentTemplate {
 }
 
 impl SetupSentTemplate {
-    fn new() -> Self {
+    fn new(show_log_fallback: bool) -> Self {
         Self {
+            show_log_fallback,
             chrome: false,
             active: "",
             user_email: None,
@@ -295,8 +300,6 @@ pub async fn setup_form(
 pub struct SetupForm {
     /// Setup token echoed from the hidden input.
     pub token: String,
-    /// Human-readable tenant name.
-    pub tenant_name: String,
     /// Admin email address.
     pub admin_email: String,
     /// Admin display name.
@@ -338,7 +341,6 @@ pub async fn setup_submit(
 
     let base_url = derive_base_url(&headers);
     match state.onboarding.complete_setup(
-        form.tenant_name.trim(),
         form.admin_email.trim(),
         form.admin_display_name.trim(),
         &password,
@@ -361,9 +363,9 @@ pub async fn setup_submit(
                 StatusCode::CONFLICT,
             )
         }
-        Err(OnboardingError::Identity(IdentityError::DuplicateTenantName)) => {
+        Err(OnboardingError::Identity(IdentityError::TenantNotFound)) => {
             let msg =
-                "A tenant with that name already exists. Retry with a different name.".to_string();
+                "No tenant is configured. Add a tenant to hearth.yaml and restart.".to_string();
             render_status(
                 &SetupTemplate::new(form.token.clone(), Some(msg)),
                 StatusCode::CONFLICT,
@@ -395,8 +397,11 @@ pub async fn setup_submit(
 }
 
 /// Renders the "setup submitted" confirmation page.
-pub async fn setup_sent() -> Response {
-    render(&SetupSentTemplate::new())
+///
+/// Shows a "check your server logs" callout only when the email
+/// transport is `Log` (i.e. no real email delivery).
+pub async fn setup_sent(State(state): State<Arc<WebState>>) -> Response {
+    render(&SetupSentTemplate::new(state.email_is_log_transport))
 }
 
 // ============================================================================
@@ -829,9 +834,6 @@ fn append_cookie(response: &mut Response, value: &str) {
 }
 
 fn validate_setup_form(form: &SetupForm) -> Result<(), String> {
-    if form.tenant_name.trim().is_empty() {
-        return Err("Tenant name is required.".to_string());
-    }
     if form.admin_email.trim().is_empty() {
         return Err("Admin email is required.".to_string());
     }
@@ -1210,7 +1212,6 @@ mod tests {
     fn validate_setup_form_requires_email_at_sign() {
         let form = SetupForm {
             token: "t".to_string(),
-            tenant_name: "t".to_string(),
             admin_email: "no-at-sign".to_string(),
             admin_display_name: "d".to_string(),
             admin_password: "longenough1234".to_string(),
@@ -1223,7 +1224,6 @@ mod tests {
     fn validate_setup_form_requires_password_min_length() {
         let form = SetupForm {
             token: "t".to_string(),
-            tenant_name: "t".to_string(),
             admin_email: "a@b.com".to_string(),
             admin_display_name: "d".to_string(),
             admin_password: "short".to_string(),
@@ -1236,7 +1236,6 @@ mod tests {
     fn validate_setup_form_accepts_valid_input() {
         let form = SetupForm {
             token: "t".to_string(),
-            tenant_name: "Acme".to_string(),
             admin_email: "alice@acme.com".to_string(),
             admin_display_name: "Alice".to_string(),
             admin_password: "super-secret-123".to_string(),

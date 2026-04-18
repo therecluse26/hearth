@@ -108,6 +108,14 @@ pub(crate) fn not_found(msg: &str) -> Response {
     )
 }
 
+/// Renders a 400 page with a custom message.
+pub(crate) fn bad_request(msg: &str) -> Response {
+    render_status(
+        &NotFoundTemplate::new(msg.to_string()),
+        StatusCode::BAD_REQUEST,
+    )
+}
+
 /// Renders a generic 500 page.
 pub(crate) fn server_error() -> Response {
     render_status(

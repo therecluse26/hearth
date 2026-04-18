@@ -55,7 +55,14 @@ impl<H: HttpTransport> std::fmt::Debug for MailtrapEmailSender<H> {
         f.debug_struct("MailtrapEmailSender")
             .field("from", &self.from)
             .field("api_key", &self.api_key)
-            .field("mode", &if self.inbox_id.is_some() { "sandbox" } else { "sending" })
+            .field(
+                "mode",
+                &if self.inbox_id.is_some() {
+                    "sandbox"
+                } else {
+                    "sending"
+                },
+            )
             .finish_non_exhaustive()
     }
 }

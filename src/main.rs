@@ -259,24 +259,14 @@ async fn run_serve(
         identity_config,
     )?);
 
-    let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
-        Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    ));
-
-    let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
-        Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        clock,
-    ));
-
     // Email sender + service (default: log transport — stderr at WARN level).
     let email_sender: SharedEmailSender = build_email_sender(&config)?;
     let email_service = Arc::new(build_email_service(email_sender, &config)?);
 
-    // Ensure a first-run setup token exists iff no tenant is configured.
-    // The resolved data-dir differs between dev (tempdir) and prod; for
-    // dev mode we place the token under the OS temp dir so the startup
-    // log URL still works against `cargo run -- serve --dev`.
+    // Ensure a first-run setup token exists BEFORE tenant reconciliation.
+    // Reconciliation may auto-create tenants from YAML config, which would
+    // make is_first_run() return false and prevent the setup URL from being
+    // logged on a truly fresh instance.
     let data_dir: PathBuf = if config.dev_mode {
         std::env::temp_dir().join("hearth-dev-onboarding")
     } else {
@@ -299,6 +289,40 @@ async fn run_serve(
             error!(error = %e, "failed to ensure setup token; onboarding will be unavailable");
         }
     }
+
+    // Reconcile YAML-declared tenants with storage. Runs after setup-token
+    // generation so reconciliation-created tenants don't suppress the
+    // setup URL on a fresh instance.
+    match hearth::identity::reconcile::reconcile_tenants(identity_engine.as_ref(), &config) {
+        Ok(report) => {
+            if !report.created.is_empty()
+                || !report.archived.is_empty()
+                || !report.updated.is_empty()
+                || !report.unarchived.is_empty()
+            {
+                info!(
+                    created = report.created.len(),
+                    updated = report.updated.len(),
+                    archived = report.archived.len(),
+                    unarchived = report.unarchived.len(),
+                    "tenant reconciliation complete"
+                );
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "tenant reconciliation failed");
+        }
+    }
+
+    let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        AuthzConfig::default(),
+    ));
+
+    let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        clock,
+    ));
 
     let onboarding_service = Arc::new(OnboardingService::new(
         Arc::clone(&identity_engine),
@@ -335,7 +359,8 @@ async fn run_serve(
         web::CookieSecret::random(),
         Some(Arc::clone(&email_service)),
     )
-    .with_config_warnings(config.config_warnings.clone());
+    .with_config_warnings(config.config_warnings.clone())
+    .with_email_log_transport(config.email.transport == EmailTransport::Log);
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
     // Check for TLS configuration

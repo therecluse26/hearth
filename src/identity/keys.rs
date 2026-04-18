@@ -37,6 +37,9 @@ const TENANT_ID_PREFIX: &str = "tenant:id:";
 /// Prefix for tenant signing key storage (stored under system tenant).
 const TENANT_KEY_PREFIX: &str = "tenant:key:";
 
+/// Prefix for tenant name index (stored under system tenant).
+const TENANT_NAME_PREFIX: &str = "tenant:name:";
+
 /// Prefix for grant family storage (refresh token rotation).
 const GRANT_FAMILY_PREFIX: &str = "oauth:family:";
 
@@ -226,6 +229,15 @@ pub(crate) fn tenant_id_scan_prefix() -> Vec<u8> {
     TENANT_ID_PREFIX.as_bytes().to_vec()
 }
 
+/// Encodes the name index key for a tenant.
+///
+/// Format: `tenant:name:{name}`
+///
+/// Stored under the system tenant namespace.
+pub(crate) fn encode_tenant_name(name: &str) -> Vec<u8> {
+    format!("{TENANT_NAME_PREFIX}{name}").into_bytes()
+}
+
 /// Encodes the storage key for a tenant's signing key material.
 ///
 /// Format: `tenant:key:{uuid}`
@@ -398,10 +410,7 @@ pub(crate) fn org_slug_scan_prefix() -> Vec<u8> {
 /// Encodes the membership key (org → user direction).
 ///
 /// Format: `orgm:org:{org_uuid}:user:{user_uuid}`
-pub(crate) fn encode_membership_by_org(
-    org_id: &OrganizationId,
-    user_id: &UserId,
-) -> Vec<u8> {
+pub(crate) fn encode_membership_by_org(org_id: &OrganizationId, user_id: &UserId) -> Vec<u8> {
     format!(
         "{ORGM_ORG_PREFIX}{}:user:{}",
         org_id.as_uuid(),
@@ -420,10 +429,7 @@ pub(crate) fn membership_by_org_prefix(org_id: &OrganizationId) -> Vec<u8> {
 /// Encodes the reverse membership key (user → org direction).
 ///
 /// Format: `orgm:user:{user_uuid}:org:{org_uuid}`
-pub(crate) fn encode_membership_by_user(
-    user_id: &UserId,
-    org_id: &OrganizationId,
-) -> Vec<u8> {
+pub(crate) fn encode_membership_by_user(user_id: &UserId, org_id: &OrganizationId) -> Vec<u8> {
     format!(
         "{ORGM_USER_PREFIX}{}:org:{}",
         user_id.as_uuid(),
@@ -490,10 +496,7 @@ pub(crate) fn invitation_token_scan_prefix() -> Vec<u8> {
 /// Encodes the invitation dedup key (prevents duplicate invites per org+email).
 ///
 /// Format: `orgi:org:{org_uuid}:email:{email}`
-pub(crate) fn encode_invitation_org_email(
-    org_id: &OrganizationId,
-    email: &str,
-) -> Vec<u8> {
+pub(crate) fn encode_invitation_org_email(org_id: &OrganizationId, email: &str) -> Vec<u8> {
     format!("{ORGI_ORG_PREFIX}{}:email:{email}", org_id.as_uuid()).into_bytes()
 }
 

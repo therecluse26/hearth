@@ -85,7 +85,10 @@ impl From<&domain::Tenant> for pb::Tenant {
 pub(crate) fn domain_tenant_status_to_proto(s: domain::TenantStatus) -> pb::TenantStatus {
     match s {
         domain::TenantStatus::Active => pb::TenantStatus::Active,
-        domain::TenantStatus::Suspended => pb::TenantStatus::Suspended,
+        // Archived behaves like Suspended on the wire (no proto value yet).
+        domain::TenantStatus::Suspended | domain::TenantStatus::Archived => {
+            pb::TenantStatus::Suspended
+        }
     }
 }
 

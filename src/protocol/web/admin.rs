@@ -38,11 +38,10 @@ use serde::Deserialize;
 
 use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId};
 use crate::identity::{
-    CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
-    CreateUserRequest, IdentityError, OAuthClient, Organization, OrganizationInvitation,
-    OrganizationMembership, OrganizationRole, OrganizationStatus, RegisterClientRequest, Session,
-    Tenant, TenantStatus, UpdateClientRequest, UpdateOrganizationRequest, UpdateTenantRequest,
-    UpdateUserRequest, User, UserStatus,
+    CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
+    IdentityError, OAuthClient, Organization, OrganizationInvitation, OrganizationMembership,
+    OrganizationRole, OrganizationStatus, RegisterClientRequest, Session, Tenant, TenantStatus,
+    UpdateClientRequest, UpdateOrganizationRequest, UpdateUserRequest, User, UserStatus,
 };
 
 use super::auth::{verify_csrf_form_field, RequireAdmin};
@@ -579,93 +578,6 @@ pub async fn admin_tenants_list(
 }
 
 // ---------------------------------------------------------------------------
-// Create tenant
-// ---------------------------------------------------------------------------
-
-#[derive(Template)]
-#[template(path = "ui/admin/tenants/new.html")]
-struct TenantNewTemplate {
-    error: Option<String>,
-    form_name: String,
-    chrome: bool,
-    active: &'static str,
-    user_email: Option<String>,
-    is_admin: bool,
-    flash: Option<Flash>,
-    csrf: Option<String>,
-    narrow: bool,
-}
-
-/// `GET /ui/admin/tenants/new`.
-pub async fn admin_tenant_create_form(RequireAdmin(session): RequireAdmin) -> Response {
-    render(&TenantNewTemplate {
-        error: None,
-        form_name: String::new(),
-        chrome: true,
-        active: "tenants",
-        user_email: Some(session.user_email.clone()),
-        is_admin: true,
-        flash: None,
-        csrf: session.csrf.clone(),
-        narrow: true,
-    })
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateTenantForm {
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "_csrf", default)]
-    pub csrf: String,
-}
-
-/// `POST /ui/admin/tenants/new`.
-pub async fn admin_tenant_create_submit(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    Form(form): Form<CreateTenantForm>,
-) -> Response {
-    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
-        return resp;
-    }
-
-    match state.identity.create_tenant(&CreateTenantRequest {
-        name: form.name.clone(),
-        config: None,
-    }) {
-        Ok(tenant) => {
-            audit_tenant_event(&state, &session, tenant.id(), "create");
-            Redirect::to(&format!("/ui/admin/tenants/{}", tenant.id().as_uuid())).into_response()
-        }
-        Err(IdentityError::DuplicateTenantName) => render(&TenantNewTemplate {
-            error: Some("A tenant with that name already exists.".to_string()),
-            form_name: form.name,
-            chrome: true,
-            active: "tenants",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: true,
-        }),
-        Err(e) => {
-            tracing::warn!(error = %e, "create_tenant failed");
-            render(&TenantNewTemplate {
-                error: Some("Unable to create tenant right now.".to_string()),
-                form_name: form.name,
-                chrome: true,
-                active: "tenants",
-                user_email: Some(session.user_email.clone()),
-                is_admin: true,
-                flash: None,
-                csrf: session.csrf.clone(),
-                narrow: true,
-            })
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tenant detail
 // ---------------------------------------------------------------------------
 
@@ -713,112 +625,7 @@ pub async fn admin_tenant_detail(
 }
 
 // ---------------------------------------------------------------------------
-// Edit tenant
-// ---------------------------------------------------------------------------
-
-#[derive(Template)]
-#[template(path = "ui/admin/tenants/edit.html")]
-struct TenantEditTemplate {
-    tenant: Tenant,
-    error: Option<String>,
-    form_name: String,
-    form_status: String,
-    chrome: bool,
-    active: &'static str,
-    user_email: Option<String>,
-    is_admin: bool,
-    flash: Option<Flash>,
-    csrf: Option<String>,
-    narrow: bool,
-}
-
-/// `GET /ui/admin/tenants/:id/edit`.
-pub async fn admin_tenant_edit_form(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    AxumPath(tid): AxumPath<String>,
-) -> Response {
-    let tenant_id = match tid.parse::<uuid::Uuid>() {
-        Ok(u) => TenantId::new(u),
-        Err(_) => return super::handlers_common::not_found("Tenant not found"),
-    };
-
-    match state.identity.get_tenant(&tenant_id) {
-        Ok(Some(tenant)) => render(&TenantEditTemplate {
-            form_name: tenant.name().to_string(),
-            form_status: format!("{:?}", tenant.status()),
-            tenant,
-            error: None,
-            chrome: true,
-            active: "tenants",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: true,
-        }),
-        Ok(None) => super::handlers_common::not_found("Tenant not found"),
-        Err(e) => {
-            tracing::warn!(error = %e, "get_tenant failed");
-            super::handlers_common::server_error()
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct EditTenantForm {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub status: String,
-    #[serde(rename = "_csrf", default)]
-    pub csrf: String,
-}
-
-/// `POST /ui/admin/tenants/:id/edit`.
-pub async fn admin_tenant_edit_submit(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    AxumPath(tid): AxumPath<String>,
-    Form(form): Form<EditTenantForm>,
-) -> Response {
-    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
-        return resp;
-    }
-
-    let tenant_id = match tid.parse::<uuid::Uuid>() {
-        Ok(u) => TenantId::new(u),
-        Err(_) => return super::handlers_common::not_found("Tenant not found"),
-    };
-
-    let status = match form.status.as_str() {
-        "Active" => Some(TenantStatus::Active),
-        "Suspended" => Some(TenantStatus::Suspended),
-        _ => None,
-    };
-
-    match state.identity.update_tenant(
-        &tenant_id,
-        &UpdateTenantRequest {
-            name: Some(form.name.clone()),
-            status,
-            config: None,
-        },
-    ) {
-        Ok(_) => {
-            audit_tenant_event(&state, &session, &tenant_id, "update");
-            Redirect::to(&format!("/ui/admin/tenants/{}", tenant_id.as_uuid())).into_response()
-        }
-        Err(IdentityError::TenantNotFound) => super::handlers_common::not_found("Tenant not found"),
-        Err(e) => {
-            tracing::warn!(error = %e, "update_tenant failed");
-            super::handlers_common::server_error()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Delete tenant
+// Delete tenant (only Archived tenants)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -843,14 +650,29 @@ pub async fn admin_tenant_delete(
         Err(_) => return super::handlers_common::not_found("Tenant not found"),
     };
 
-    match state.identity.delete_tenant(&tenant_id) {
-        Ok(()) => {
-            audit_tenant_event(&state, &session, &tenant_id, "delete");
-            Redirect::to("/ui/admin/tenants").into_response()
+    // Only allow permanent deletion of Archived tenants.
+    match state.identity.get_tenant(&tenant_id) {
+        Ok(Some(tenant)) if tenant.status() == TenantStatus::Archived => {
+            match state.identity.delete_tenant(&tenant_id) {
+                Ok(()) => {
+                    audit_tenant_event(&state, &session, &tenant_id, "delete");
+                    Redirect::to("/ui/admin/tenants").into_response()
+                }
+                Err(IdentityError::TenantNotFound) => {
+                    super::handlers_common::not_found("Tenant not found")
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "delete_tenant failed");
+                    super::handlers_common::server_error()
+                }
+            }
         }
-        Err(IdentityError::TenantNotFound) => super::handlers_common::not_found("Tenant not found"),
+        Ok(Some(_)) => super::handlers_common::bad_request(
+            "Only archived tenants can be permanently deleted. Remove the tenant from hearth.yaml and restart to archive it first.",
+        ),
+        Ok(None) => super::handlers_common::not_found("Tenant not found"),
         Err(e) => {
-            tracing::warn!(error = %e, "delete_tenant failed");
+            tracing::warn!(error = %e, "get_tenant failed");
             super::handlers_common::server_error()
         }
     }
@@ -1756,11 +1578,7 @@ pub async fn admin_org_create_submit(
     ) {
         Ok(org) => {
             audit_org_event(&state, &session, org.id(), "create");
-            Redirect::to(&format!(
-                "/ui/admin/organizations/{}",
-                org.id().as_uuid()
-            ))
-            .into_response()
+            Redirect::to(&format!("/ui/admin/organizations/{}", org.id().as_uuid())).into_response()
         }
         Err(IdentityError::DuplicateOrgSlug) => render(&OrgNewTemplate {
             error: Some("An organization with that slug already exists.".to_string()),
@@ -1798,12 +1616,22 @@ pub async fn admin_org_create_submit(
 // Organization detail
 // ---------------------------------------------------------------------------
 
+/// A member with resolved user details for display.
+pub struct MemberView {
+    /// The membership record.
+    pub membership: OrganizationMembership,
+    /// User's display name (fallback to email if unavailable).
+    pub user_name: String,
+    /// User's email address.
+    pub user_email: String,
+}
+
 /// Template for `GET /ui/admin/organizations/:id`.
 #[derive(Template)]
 #[template(path = "ui/admin/organizations/detail.html")]
 struct OrgDetailTemplate {
     org: Organization,
-    members: Vec<OrganizationMembership>,
+    members: Vec<MemberView>,
     invitations: Vec<OrganizationInvitation>,
     chrome: bool,
     active: &'static str,
@@ -1814,11 +1642,23 @@ struct OrgDetailTemplate {
     narrow: bool,
 }
 
+/// Query params for org detail page (flash messages via PRG).
+#[derive(Debug, Deserialize)]
+pub struct OrgDetailParams {
+    /// Flash message text (URL-encoded).
+    #[serde(default)]
+    pub flash: Option<String>,
+    /// Flash kind: "success" or "error".
+    #[serde(default)]
+    pub flash_kind: Option<String>,
+}
+
 /// `GET /ui/admin/organizations/:id`.
 pub async fn admin_org_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     AxumPath(oid): AxumPath<String>,
+    Query(params): Query<OrgDetailParams>,
 ) -> Response {
     let org_id = match oid.parse::<uuid::Uuid>() {
         Ok(u) => OrganizationId::new(u),
@@ -1834,17 +1674,47 @@ pub async fn admin_org_detail(
         }
     };
 
-    let members = state
+    let memberships = state
         .identity
         .list_members(&session.tenant_id, &org_id, None, 100)
         .map(|p| p.items)
         .unwrap_or_default();
+
+    // Resolve user details for each membership
+    let members = memberships
+        .into_iter()
+        .map(|m| {
+            let (name, email) = state
+                .identity
+                .get_user(&session.tenant_id, m.user_id())
+                .ok()
+                .flatten()
+                .map_or_else(
+                    || (m.user_id().as_uuid().to_string(), String::from("(unknown)")),
+                    |u| (u.display_name().to_string(), u.email().to_string()),
+                );
+            MemberView {
+                membership: m,
+                user_name: name,
+                user_email: email,
+            }
+        })
+        .collect();
 
     let invitations = state
         .identity
         .list_invitations(&session.tenant_id, &org_id, None, 100)
         .map(|p| p.items)
         .unwrap_or_default();
+
+    let flash = params.flash.map(|msg| {
+        let kind = params.flash_kind.as_deref().unwrap_or("success");
+        if kind == "error" {
+            Flash::error(msg)
+        } else {
+            Flash::success(msg)
+        }
+    });
 
     render(&OrgDetailTemplate {
         org,
@@ -1854,7 +1724,7 @@ pub async fn admin_org_detail(
         active: "organizations",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
-        flash: None,
+        flash,
         csrf: session.csrf.clone(),
         narrow: false,
     })
@@ -1893,10 +1763,7 @@ pub async fn admin_org_edit_form(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
-    match state
-        .identity
-        .get_organization(&session.tenant_id, &org_id)
-    {
+    match state.identity.get_organization(&session.tenant_id, &org_id) {
         Ok(Some(org)) => render(&OrgEditTemplate {
             form_name: org.name().to_string(),
             form_description: org.description().to_string(),
@@ -1972,11 +1839,7 @@ pub async fn admin_org_edit_submit(
     ) {
         Ok(_) => {
             audit_org_event(&state, &session, &org_id, "update");
-            Redirect::to(&format!(
-                "/ui/admin/organizations/{}",
-                org_id.as_uuid()
-            ))
-            .into_response()
+            Redirect::to(&format!("/ui/admin/organizations/{}", org_id.as_uuid())).into_response()
         }
         Err(IdentityError::OrganizationNotFound) => {
             super::handlers_common::not_found("Organization not found")
@@ -2033,8 +1896,9 @@ pub async fn admin_org_delete(
 /// Form data for `POST /ui/admin/organizations/:id/members`.
 #[derive(Debug, Deserialize)]
 pub struct AddMemberForm {
+    /// User UUID selected from search results.
     #[serde(default)]
-    pub user_email: String,
+    pub user_id: String,
     #[serde(default)]
     pub role: String,
     #[serde(rename = "_csrf", default)]
@@ -2057,42 +1921,28 @@ pub async fn admin_org_add_member(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
-    let role = parse_org_role(&form.role);
-
-    // Look up user by email
-    let user = match state
-        .identity
-        .get_user_by_email(&session.tenant_id, form.user_email.trim())
-    {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            return Redirect::to(&format!(
-                "/ui/admin/organizations/{}",
-                org_id.as_uuid()
-            ))
-            .into_response();
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "get_user_by_email failed");
-            return super::handlers_common::server_error();
+    let user_id = match form.user_id.trim().parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => {
+            return org_redirect_flash(&org_id, "Invalid user selection", "error");
         }
     };
 
+    let role = parse_org_role(&form.role);
+
     match state
         .identity
-        .add_member(&session.tenant_id, &org_id, user.id(), role)
+        .add_member(&session.tenant_id, &org_id, &user_id, role)
     {
-        Ok(_) => {}
+        Ok(_) => org_redirect_flash(&org_id, "Member added successfully", "success"),
+        Err(IdentityError::AlreadyMember) => {
+            org_redirect_flash(&org_id, "User is already a member", "error")
+        }
         Err(e) => {
             tracing::warn!(error = %e, "add_member failed");
+            org_redirect_flash(&org_id, "Failed to add member", "error")
         }
     }
-
-    Redirect::to(&format!(
-        "/ui/admin/organizations/{}",
-        org_id.as_uuid()
-    ))
-    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2124,17 +1974,13 @@ pub async fn admin_org_remove_member(
         .identity
         .remove_member(&session.tenant_id, &org_id, &user_id)
     {
-        Ok(()) => {}
+        Ok(()) => org_redirect_flash(&org_id, "Member removed", "success"),
         Err(e) => {
             tracing::warn!(error = %e, "remove_member failed");
+            let msg = format!("{e}");
+            org_redirect_flash(&org_id, &msg, "error")
         }
     }
-
-    Redirect::to(&format!(
-        "/ui/admin/organizations/{}",
-        org_id.as_uuid()
-    ))
-    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2177,17 +2023,13 @@ pub async fn admin_org_update_role(
         .identity
         .update_member_role(&session.tenant_id, &org_id, &user_id, role)
     {
-        Ok(_) => {}
+        Ok(_) => org_redirect_flash(&org_id, "Role updated", "success"),
         Err(e) => {
             tracing::warn!(error = %e, "update_member_role failed");
+            let msg = format!("{e}");
+            org_redirect_flash(&org_id, &msg, "error")
         }
     }
-
-    Redirect::to(&format!(
-        "/ui/admin/organizations/{}",
-        org_id.as_uuid()
-    ))
-    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2234,17 +2076,14 @@ pub async fn admin_org_invite(
     ) {
         Ok((_invitation, _token)) => {
             // TODO: send invitation email with token
+            let msg = format!("Invitation sent to {}", form.email);
+            org_redirect_flash(&org_id, &msg, "success")
         }
         Err(e) => {
             tracing::warn!(error = %e, email = %form.email, "create_invitation failed");
+            org_redirect_flash(&org_id, "Failed to create invitation", "error")
         }
     }
-
-    Redirect::to(&format!(
-        "/ui/admin/organizations/{}",
-        org_id.as_uuid()
-    ))
-    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2282,16 +2121,82 @@ pub async fn admin_org_revoke_invite(
         }
     }
 
-    Redirect::to(&format!(
-        "/ui/admin/organizations/{}",
-        org_id.as_uuid()
-    ))
-    .into_response()
+    Redirect::to(&format!("/ui/admin/organizations/{}", org_id.as_uuid())).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// User search API (HTMX partial)
+// ---------------------------------------------------------------------------
+
+/// Query params for `GET /ui/admin/api/users/search`.
+#[derive(Debug, Deserialize)]
+pub struct UserSearchParams {
+    /// Search query (min 2 chars).
+    #[serde(default)]
+    pub q: String,
+}
+
+/// Template for HTMX user search result partial.
+#[derive(Template)]
+#[template(path = "ui/admin/organizations/_user_search_results.html")]
+struct UserSearchResultsTemplate {
+    users: Vec<User>,
+    query: String,
+}
+
+/// `GET /ui/admin/api/users/search?q=...` — returns HTML fragment for HTMX.
+pub async fn admin_api_user_search(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Query(params): Query<UserSearchParams>,
+) -> Response {
+    let query = params.q.trim().to_string();
+    let users = if query.len() < 2 {
+        Vec::new()
+    } else {
+        state
+            .identity
+            .search_users(&session.tenant_id, &query, 10)
+            .unwrap_or_default()
+    };
+
+    render(&UserSearchResultsTemplate { users, query })
 }
 
 // ---------------------------------------------------------------------------
 // Organization helpers
 // ---------------------------------------------------------------------------
+
+/// Converts a nibble (0..15) to its ASCII hex character.
+const fn nibble_to_hex(n: u8) -> char {
+    if n < 10 {
+        (b'0' + n) as char
+    } else {
+        (b'A' + n - 10) as char
+    }
+}
+
+/// Redirects to an org detail page with a flash message in query params.
+fn org_redirect_flash(org_id: &OrganizationId, message: &str, kind: &str) -> Response {
+    // Percent-encode the message for safe inclusion in query params.
+    let mut encoded = String::with_capacity(message.len());
+    for b in message.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+            encoded.push(b as char);
+        } else if b == b' ' {
+            encoded.push('+');
+        } else {
+            encoded.push('%');
+            encoded.push(nibble_to_hex(b >> 4));
+            encoded.push(nibble_to_hex(b & 0x0F));
+        }
+    }
+    Redirect::to(&format!(
+        "/ui/admin/organizations/{}?flash={encoded}&flash_kind={kind}",
+        org_id.as_uuid()
+    ))
+    .into_response()
+}
 
 /// Parses an organization role string from a form field.
 fn parse_org_role(s: &str) -> OrganizationRole {

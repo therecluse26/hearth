@@ -61,9 +61,9 @@ use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment,
 use crate::identity::types::{
     BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, Organization,
-    OrganizationInvitation, OrganizationMembership, OrganizationRole,
-    OrganizationStatus, Page, Session, Tenant, TenantStatus, UpdateOrganizationRequest,
-    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+    OrganizationInvitation, OrganizationMembership, OrganizationRole, OrganizationStatus, Page,
+    Session, Tenant, TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest,
+    UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
 use crate::identity::webauthn::{
@@ -841,15 +841,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let key_storage_key = keys::encode_tenant_signing_key(&tenant_id);
         let key_bytes = tenant_signing_key.pkcs8_bytes().to_vec();
 
-        // Atomic two-entry write: the tenant record and its signing key
-        // land together or not at all. Without this, a crash or fault
-        // between the two puts would leave an orphaned tenant with no
-        // JWKS. The WAL's `[u32 len][payload][u32 crc]` framing gives the
-        // entire batch single-record atomicity.
+        // Name index: tenant:name:{name} → tenant UUID bytes
+        let name_key = keys::encode_tenant_name(&request.name);
+        let name_value = tenant_id.as_uuid().as_bytes().to_vec();
+
+        // Atomic three-entry write: the tenant record, signing key, and
+        // name index land together or not at all.
         self.storage
             .put_batch(
                 &sys_tenant,
-                &[(tenant_key, tenant_bytes), (key_storage_key, key_bytes)],
+                &[
+                    (tenant_key, tenant_bytes),
+                    (key_storage_key, key_bytes),
+                    (name_key, name_value),
+                ],
             )
             .map_err(Self::storage_err)?;
 
@@ -878,6 +883,30 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
     }
 
+    fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>, IdentityError> {
+        let sys_tenant = keys::system_tenant_id();
+        let name_key = keys::encode_tenant_name(name);
+        let id_bytes = self
+            .storage
+            .get(&sys_tenant, &name_key)
+            .map_err(Self::storage_err)?;
+        match id_bytes {
+            Some(b) => {
+                if b.len() != 16 {
+                    return Err(IdentityError::Serialization {
+                        reason: "tenant name index value has invalid length".to_string(),
+                    });
+                }
+                let uuid =
+                    uuid::Uuid::from_slice(&b).map_err(|e| IdentityError::Serialization {
+                        reason: format!("invalid UUID in tenant name index: {e}"),
+                    })?;
+                self.get_tenant(&TenantId::new(uuid))
+            }
+            None => Ok(None),
+        }
+    }
+
     fn update_tenant(
         &self,
         tenant_id: &TenantId,
@@ -892,6 +921,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .ok_or(IdentityError::TenantNotFound)?;
 
         let now = self.clock.now();
+        let old_name = tenant.name().to_string();
 
         if let Some(ref name) = request.name {
             tenant.set_name(name.clone());
@@ -907,9 +937,25 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let sys_tenant = keys::system_tenant_id();
         let tenant_key = keys::encode_tenant_id(tenant_id);
         let tenant_bytes = Self::serialize_tenant(&tenant)?;
-        self.storage
-            .put(&sys_tenant, &tenant_key, &tenant_bytes)
-            .map_err(Self::storage_err)?;
+
+        // If the name changed, update the name index atomically
+        if tenant.name() == old_name {
+            self.storage
+                .put(&sys_tenant, &tenant_key, &tenant_bytes)
+                .map_err(Self::storage_err)?;
+        } else {
+            let old_name_key = keys::encode_tenant_name(&old_name);
+            let new_name_key = keys::encode_tenant_name(tenant.name());
+            let name_value = tenant_id.as_uuid().as_bytes().to_vec();
+            self.storage
+                .put_batch(
+                    &sys_tenant,
+                    &[(tenant_key, tenant_bytes), (new_name_key, name_value)],
+                )
+                .map_err(Self::storage_err)?;
+            // Best-effort: remove old name index
+            let _ = self.storage.delete(&sys_tenant, &old_name_key);
+        }
 
         Ok(tenant)
     }
@@ -926,7 +972,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // the record but before cleaning all key-spaces. Recovery requires us
         // to scan every cascade prefix regardless. If no cascade work is found
         // AND the record is absent, we return TenantNotFound at the end.
-        let tenant_exists = self.get_tenant(tenant_id)?.is_some();
+        let existing_tenant = self.get_tenant(tenant_id)?;
+        let tenant_exists = existing_tenant.is_some();
         let mut cascade_work_done = false;
 
         // 0. Delete the tenant record FIRST. Ordering matters: if a fault
@@ -941,6 +988,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             self.storage
                 .delete(&sys_tenant, &tenant_key)
                 .map_err(Self::storage_err)?;
+            // Clean up the name index (best-effort)
+            if let Some(ref t) = existing_tenant {
+                let name_key = keys::encode_tenant_name(t.name());
+                let _ = self.storage.delete(&sys_tenant, &name_key);
+            }
         }
 
         // 1. Delete all users in this tenant (cascades to sessions, credentials)
@@ -1433,12 +1485,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
 
         for entry in &org_memberships {
-            if let Ok(membership) =
-                serde_json::from_slice::<OrganizationMembership>(&entry.value)
-            {
+            if let Ok(membership) = serde_json::from_slice::<OrganizationMembership>(&entry.value) {
                 // Delete forward index (org → user)
-                let fwd_key =
-                    keys::encode_membership_by_org(membership.org_id(), user_id);
+                let fwd_key = keys::encode_membership_by_org(membership.org_id(), user_id);
                 self.storage
                     .delete(tenant_id, &fwd_key)
                     .map_err(Self::storage_err)?;
@@ -3659,6 +3708,44 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(Page { items, next_cursor })
     }
 
+    fn search_users(
+        &self,
+        tenant_id: &TenantId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<User>, IdentityError> {
+        let query = query.trim();
+        if query.len() < 2 {
+            return Ok(Vec::new());
+        }
+        let query_lower = query.to_lowercase();
+
+        let prefix = keys::user_id_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(tenant_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+
+        let mut results = Vec::new();
+        for entry in &entries {
+            let user: User =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            let email_lower = user.email().to_lowercase();
+            let name_lower = user.display_name().to_lowercase();
+            if email_lower.contains(&query_lower) || name_lower.contains(&query_lower) {
+                results.push(user);
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     fn list_tenants(
         &self,
         cursor: Option<&str>,
@@ -4155,10 +4242,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Write primary record
         let id_key = keys::encode_org_id(&org_id);
-        let org_bytes =
-            serde_json::to_vec(&org).map_err(|e| IdentityError::Serialization {
-                reason: e.to_string(),
-            })?;
+        let org_bytes = serde_json::to_vec(&org).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
         self.storage
             .put(tenant_id, &id_key, &org_bytes)
             .map_err(Self::storage_err)?;
@@ -4177,10 +4263,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         org_id: &OrganizationId,
     ) -> Result<Option<Organization>, IdentityError> {
         let key = keys::encode_org_id(org_id);
-        match self.storage.get(tenant_id, &key).map_err(Self::storage_err)? {
+        match self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+        {
             Some(bytes) => {
-                let org: Organization = serde_json::from_slice(&bytes)
-                    .map_err(|e| IdentityError::Serialization {
+                let org: Organization =
+                    serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
                         reason: e.to_string(),
                     })?;
                 Ok(Some(org))
@@ -4201,11 +4291,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?
         {
             Some(bytes) => {
-                let uuid = uuid::Uuid::from_slice(&bytes).map_err(|e| {
-                    IdentityError::Serialization {
+                let uuid =
+                    uuid::Uuid::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
                         reason: format!("invalid org UUID in slug index: {e}"),
-                    }
-                })?;
+                    })?;
                 let org_id = OrganizationId::new(uuid);
                 self.get_organization(tenant_id, &org_id)
             }
@@ -4241,10 +4330,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         org.set_updated_at(now);
 
         let id_key = keys::encode_org_id(org_id);
-        let org_bytes =
-            serde_json::to_vec(&org).map_err(|e| IdentityError::Serialization {
-                reason: e.to_string(),
-            })?;
+        let org_bytes = serde_json::to_vec(&org).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
         self.storage
             .put(tenant_id, &id_key, &org_bytes)
             .map_err(Self::storage_err)?;
@@ -4271,12 +4359,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         for entry in &members {
             // Parse membership to get user_id for reverse index
-            if let Ok(membership) =
-                serde_json::from_slice::<OrganizationMembership>(&entry.value)
-            {
+            if let Ok(membership) = serde_json::from_slice::<OrganizationMembership>(&entry.value) {
                 // Delete reverse index
-                let reverse_key =
-                    keys::encode_membership_by_user(membership.user_id(), org_id);
+                let reverse_key = keys::encode_membership_by_user(membership.user_id(), org_id);
                 self.storage
                     .delete(tenant_id, &reverse_key)
                     .map_err(Self::storage_err)?;
@@ -4297,8 +4382,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         for entry in &inv_list_entries {
             // Extract invitation ID from list key to delete related records
-            let key_str = std::str::from_utf8(&entry.key)
-                .map_err(|e| IdentityError::Serialization {
+            let key_str =
+                std::str::from_utf8(&entry.key).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
                 })?;
             if let Some(inv_uuid_str) = key_str.rsplit(':').next() {
@@ -4315,16 +4400,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                             serde_json::from_slice::<OrganizationInvitation>(&inv_bytes)
                         {
                             // Delete token index
-                            let token_key =
-                                keys::encode_invitation_token(invitation.token_hash());
+                            let token_key = keys::encode_invitation_token(invitation.token_hash());
                             self.storage
                                 .delete(tenant_id, &token_key)
                                 .map_err(Self::storage_err)?;
                             // Delete email dedup index
-                            let email_key = keys::encode_invitation_org_email(
-                                org_id,
-                                invitation.email(),
-                            );
+                            let email_key =
+                                keys::encode_invitation_org_email(org_id, invitation.email());
                             self.storage
                                 .delete(tenant_id, &email_key)
                                 .map_err(Self::storage_err)?;
@@ -4364,13 +4446,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     ) -> Result<Page<Organization>, IdentityError> {
         let prefix = keys::org_id_scan_prefix();
         let start = if let Some(cursor_str) = cursor {
-            let uuid_str = String::from_utf8(
-                URL_SAFE_NO_PAD
-                    .decode(cursor_str)
-                    .map_err(|e| IdentityError::InvalidInput {
-                        reason: format!("invalid cursor: {e}"),
-                    })?,
-            )
+            let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
             .map_err(|e| IdentityError::InvalidInput {
                 reason: format!("invalid cursor: {e}"),
             })?;
@@ -4389,8 +4469,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let mut items = Vec::new();
         for entry in entries.iter().take(limit + 1) {
-            let org: Organization = serde_json::from_slice(&entry.value)
-                .map_err(|e| IdentityError::Serialization {
+            let org: Organization =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
                 })?;
             items.push(org);
@@ -4452,16 +4532,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         let now = self.clock.now();
-        let membership = OrganizationMembership::new(
-            org_id.clone(),
-            user_id.clone(),
-            role,
-            now,
-            None,
-        );
+        let membership =
+            OrganizationMembership::new(org_id.clone(), user_id.clone(), role, now, None);
 
-        let membership_bytes = serde_json::to_vec(&membership)
-            .map_err(|e| IdentityError::Serialization {
+        let membership_bytes =
+            serde_json::to_vec(&membership).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
 
@@ -4545,11 +4620,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::NotAMember)?;
 
-        let mut membership: OrganizationMembership =
-            serde_json::from_slice(&membership_bytes)
-                .map_err(|e| IdentityError::Serialization {
-                    reason: e.to_string(),
-                })?;
+        let mut membership: OrganizationMembership = serde_json::from_slice(&membership_bytes)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
 
         // Last-owner protection: if downgrading from Owner, ensure others exist
         if membership.role() == OrganizationRole::Owner && new_role != OrganizationRole::Owner {
@@ -4573,8 +4647,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         membership.set_role(new_role);
 
-        let updated_bytes = serde_json::to_vec(&membership)
-            .map_err(|e| IdentityError::Serialization {
+        let updated_bytes =
+            serde_json::to_vec(&membership).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
 
@@ -4598,10 +4672,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
     ) -> Result<Option<OrganizationMembership>, IdentityError> {
         let key = keys::encode_membership_by_org(org_id, user_id);
-        match self.storage.get(tenant_id, &key).map_err(Self::storage_err)? {
+        match self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+        {
             Some(bytes) => {
-                let membership: OrganizationMembership = serde_json::from_slice(&bytes)
-                    .map_err(|e| IdentityError::Serialization {
+                let membership: OrganizationMembership =
+                    serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
                         reason: e.to_string(),
                     })?;
                 Ok(Some(membership))
@@ -4619,22 +4697,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     ) -> Result<Page<OrganizationMembership>, IdentityError> {
         let prefix = keys::membership_by_org_prefix(org_id);
         let start = if let Some(cursor_str) = cursor {
-            let decoded = String::from_utf8(
-                URL_SAFE_NO_PAD
-                    .decode(cursor_str)
-                    .map_err(|e| IdentityError::InvalidInput {
-                        reason: format!("invalid cursor: {e}"),
-                    })?,
-            )
+            let decoded = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
             .map_err(|e| IdentityError::InvalidInput {
                 reason: format!("invalid cursor: {e}"),
             })?;
-            let mut cursor_key = format!(
-                "orgm:org:{}:user:{}",
-                org_id.as_uuid(),
-                decoded
-            )
-            .into_bytes();
+            let mut cursor_key =
+                format!("orgm:org:{}:user:{}", org_id.as_uuid(), decoded).into_bytes();
             cursor_key.push(0xFF);
             cursor_key
         } else {
@@ -4650,10 +4722,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let mut items = Vec::new();
         for entry in entries.iter().take(limit + 1) {
             let membership: OrganizationMembership =
-                serde_json::from_slice(&entry.value)
-                    .map_err(|e| IdentityError::Serialization {
-                        reason: e.to_string(),
-                    })?;
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
             items.push(membership);
         }
 
@@ -4677,22 +4748,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     ) -> Result<Page<OrganizationMembership>, IdentityError> {
         let prefix = keys::membership_by_user_prefix(user_id);
         let start = if let Some(cursor_str) = cursor {
-            let decoded = String::from_utf8(
-                URL_SAFE_NO_PAD
-                    .decode(cursor_str)
-                    .map_err(|e| IdentityError::InvalidInput {
-                        reason: format!("invalid cursor: {e}"),
-                    })?,
-            )
+            let decoded = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
             .map_err(|e| IdentityError::InvalidInput {
                 reason: format!("invalid cursor: {e}"),
             })?;
-            let mut cursor_key = format!(
-                "orgm:user:{}:org:{}",
-                user_id.as_uuid(),
-                decoded
-            )
-            .into_bytes();
+            let mut cursor_key =
+                format!("orgm:user:{}:org:{}", user_id.as_uuid(), decoded).into_bytes();
             cursor_key.push(0xFF);
             cursor_key
         } else {
@@ -4708,10 +4773,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let mut items = Vec::new();
         for entry in entries.iter().take(limit + 1) {
             let membership: OrganizationMembership =
-                serde_json::from_slice(&entry.value)
-                    .map_err(|e| IdentityError::Serialization {
-                        reason: e.to_string(),
-                    })?;
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
             items.push(membership);
         }
 
@@ -4795,8 +4859,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             now,
         );
 
-        let inv_bytes = serde_json::to_vec(&invitation)
-            .map_err(|e| IdentityError::Serialization {
+        let inv_bytes =
+            serde_json::to_vec(&invitation).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
 
@@ -4860,8 +4924,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvitationInvalid)?;
 
-        let mut invitation: OrganizationInvitation = serde_json::from_slice(&inv_bytes)
-            .map_err(|e| IdentityError::Serialization {
+        let mut invitation: OrganizationInvitation =
+            serde_json::from_slice(&inv_bytes).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
 
@@ -4891,17 +4955,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         };
 
         // Add member
-        let membership = self.add_member(
-            tenant_id,
-            invitation.org_id(),
-            user.id(),
-            invitation.role(),
-        )?;
+        let membership =
+            self.add_member(tenant_id, invitation.org_id(), user.id(), invitation.role())?;
 
         // Mark invitation as accepted
         invitation.set_accepted();
-        let updated_bytes = serde_json::to_vec(&invitation)
-            .map_err(|e| IdentityError::Serialization {
+        let updated_bytes =
+            serde_json::to_vec(&invitation).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
         self.storage
@@ -4909,8 +4969,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
 
         // Remove dedup index so a new invitation can be sent if needed
-        let dedup_key =
-            keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
+        let dedup_key = keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
         self.storage
             .delete(tenant_id, &dedup_key)
             .map_err(Self::storage_err)?;
@@ -4930,8 +4989,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvitationInvalid)?;
 
-        let mut invitation: OrganizationInvitation = serde_json::from_slice(&inv_bytes)
-            .map_err(|e| IdentityError::Serialization {
+        let mut invitation: OrganizationInvitation =
+            serde_json::from_slice(&inv_bytes).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
 
@@ -4940,8 +4999,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         invitation.set_revoked();
-        let updated_bytes = serde_json::to_vec(&invitation)
-            .map_err(|e| IdentityError::Serialization {
+        let updated_bytes =
+            serde_json::to_vec(&invitation).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
         self.storage
@@ -4949,8 +5008,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
 
         // Clean up dedup index
-        let dedup_key =
-            keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
+        let dedup_key = keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
         self.storage
             .delete(tenant_id, &dedup_key)
             .map_err(Self::storage_err)?;
@@ -4967,22 +5025,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     ) -> Result<Page<OrganizationInvitation>, IdentityError> {
         let prefix = keys::invitation_list_prefix(org_id);
         let start = if let Some(cursor_str) = cursor {
-            let decoded = String::from_utf8(
-                URL_SAFE_NO_PAD
-                    .decode(cursor_str)
-                    .map_err(|e| IdentityError::InvalidInput {
-                        reason: format!("invalid cursor: {e}"),
-                    })?,
-            )
+            let decoded = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
+                IdentityError::InvalidInput {
+                    reason: format!("invalid cursor: {e}"),
+                }
+            })?)
             .map_err(|e| IdentityError::InvalidInput {
                 reason: format!("invalid cursor: {e}"),
             })?;
-            let mut cursor_key = format!(
-                "orgi:list:{}:{}",
-                org_id.as_uuid(),
-                decoded
-            )
-            .into_bytes();
+            let mut cursor_key = format!("orgi:list:{}:{}", org_id.as_uuid(), decoded).into_bytes();
             cursor_key.push(0xFF);
             cursor_key
         } else {
@@ -4998,8 +5049,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let mut items = Vec::new();
         for entry in entries.iter().take(limit + 1) {
             // Extract invitation ID from list key
-            let key_str = std::str::from_utf8(&entry.key)
-                .map_err(|e| IdentityError::Serialization {
+            let key_str =
+                std::str::from_utf8(&entry.key).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
                 })?;
             if let Some(inv_uuid_str) = key_str.rsplit(':').next() {
@@ -5011,11 +5062,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                         .get(tenant_id, &inv_key)
                         .map_err(Self::storage_err)?
                     {
-                        let invitation: OrganizationInvitation =
-                            serde_json::from_slice(&inv_bytes)
-                                .map_err(|e| IdentityError::Serialization {
-                                    reason: e.to_string(),
-                                })?;
+                        let invitation: OrganizationInvitation = serde_json::from_slice(&inv_bytes)
+                            .map_err(|e| IdentityError::Serialization {
+                                reason: e.to_string(),
+                            })?;
                         items.push(invitation);
                     }
                 }

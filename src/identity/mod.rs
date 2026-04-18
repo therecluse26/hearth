@@ -13,6 +13,7 @@ pub(crate) mod magic_link;
 pub mod migration;
 pub mod oidc;
 pub mod onboarding;
+pub mod reconcile;
 pub mod tokens;
 pub(crate) mod totp;
 mod types;
@@ -76,6 +77,11 @@ pub trait IdentityEngine: Send + Sync {
 
     /// Retrieves a tenant by ID. Returns `None` if not found.
     fn get_tenant(&self, tenant_id: &TenantId) -> Result<Option<Tenant>, IdentityError>;
+
+    /// Retrieves a tenant by name. Returns `None` if not found.
+    ///
+    /// Uses the `tenant:name:{name}` index for O(1) lookup.
+    fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>, IdentityError>;
 
     /// Updates an existing tenant's fields.
     ///
@@ -624,6 +630,17 @@ pub trait IdentityEngine: Send + Sync {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<User>, IdentityError>;
+
+    /// Searches users by substring match on email or display name.
+    ///
+    /// Case-insensitive substring match. Returns up to `limit` matches.
+    /// Query must be at least 2 characters; shorter queries return empty.
+    fn search_users(
+        &self,
+        tenant_id: &TenantId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<User>, IdentityError>;
 
     /// Lists tenants with cursor-based pagination.
     ///

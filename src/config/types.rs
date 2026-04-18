@@ -402,6 +402,119 @@ impl Default for OnboardingConfig {
     }
 }
 
+// ===== Auth & Tenant YAML config =====
+
+/// Global authentication defaults in the `auth:` section.
+///
+/// These apply to all tenants unless overridden per-tenant in the `tenants:` map.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AuthConfig {
+    /// Default session TTL as a human-readable duration (e.g. "24h", "30m").
+    #[serde(default)]
+    pub session_ttl: Option<String>,
+    /// Argon2id memory cost in KiB.
+    #[serde(default)]
+    pub password_memory_cost: Option<u32>,
+    /// Argon2id time cost (iterations).
+    #[serde(default)]
+    pub password_time_cost: Option<u32>,
+}
+
+/// Per-tenant email branding overrides in YAML.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TenantEmailYaml {
+    /// Email branding overrides.
+    #[serde(default)]
+    pub branding: Option<EmailBranding>,
+}
+
+/// Per-tenant YAML configuration block.
+///
+/// Fields are optional — `None` inherits from global `auth:` defaults.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TenantYamlConfig {
+    /// Session TTL override (e.g. "12h").
+    #[serde(default)]
+    pub session_ttl: Option<String>,
+    /// Argon2id memory cost override.
+    #[serde(default)]
+    pub password_memory_cost: Option<u32>,
+    /// Argon2id time cost override.
+    #[serde(default)]
+    pub password_time_cost: Option<u32>,
+    /// Per-tenant email overrides.
+    #[serde(default)]
+    pub email: Option<TenantEmailYaml>,
+}
+
+/// Parses a human-readable duration string into microseconds.
+///
+/// Supported suffixes: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
+///
+/// # Errors
+///
+/// Returns `Err` if the string is empty, has an unknown suffix, or the
+/// numeric part cannot be parsed.
+pub fn parse_duration_to_micros(s: &str) -> Result<i64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty duration string".to_string());
+    }
+
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix('d') {
+        (n, 86_400_000_000i64)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3_600_000_000i64)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60_000_000i64)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1_000_000i64)
+    } else {
+        return Err(format!(
+            "unknown duration suffix in '{s}', expected s/m/h/d"
+        ));
+    };
+
+    let value: i64 = num_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid duration number '{num_str}': {e}"))?;
+
+    Ok(value * multiplier)
+}
+
+impl TenantYamlConfig {
+    /// Merges this per-tenant config with global auth defaults to produce a
+    /// `TenantConfig` suitable for storage.
+    pub fn to_tenant_config(
+        &self,
+        global: &AuthConfig,
+        global_branding: Option<&EmailBranding>,
+    ) -> crate::identity::TenantConfig {
+        let session_ttl_micros = self
+            .session_ttl
+            .as_deref()
+            .or(global.session_ttl.as_deref())
+            .and_then(|s| parse_duration_to_micros(s).ok());
+
+        let password_memory_cost = self.password_memory_cost.or(global.password_memory_cost);
+        let password_time_cost = self.password_time_cost.or(global.password_time_cost);
+
+        let email_branding = self
+            .email
+            .as_ref()
+            .and_then(|e| e.branding.clone())
+            .or_else(|| global_branding.cloned());
+
+        crate::identity::TenantConfig {
+            session_ttl_micros,
+            password_memory_cost,
+            password_time_cost,
+            email_branding,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,5 +566,64 @@ mod tests {
         let cfg = OnboardingConfig::default();
         assert!(cfg.enabled);
         assert!(cfg.base_url.is_none());
+    }
+
+    #[test]
+    fn parse_duration_seconds() {
+        assert_eq!(parse_duration_to_micros("30s").expect("ok"), 30_000_000);
+    }
+
+    #[test]
+    fn parse_duration_minutes() {
+        assert_eq!(parse_duration_to_micros("5m").expect("ok"), 300_000_000);
+    }
+
+    #[test]
+    fn parse_duration_hours() {
+        assert_eq!(parse_duration_to_micros("24h").expect("ok"), 86_400_000_000);
+    }
+
+    #[test]
+    fn parse_duration_days() {
+        assert_eq!(parse_duration_to_micros("1d").expect("ok"), 86_400_000_000);
+    }
+
+    #[test]
+    fn parse_duration_invalid_suffix() {
+        assert!(parse_duration_to_micros("10x").is_err());
+    }
+
+    #[test]
+    fn parse_duration_empty() {
+        assert!(parse_duration_to_micros("").is_err());
+    }
+
+    #[test]
+    fn auth_config_yaml_parsing() {
+        let yaml = "session_ttl: '24h'\npassword_memory_cost: 65536\n";
+        let cfg: AuthConfig = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(cfg.session_ttl.as_deref(), Some("24h"));
+        assert_eq!(cfg.password_memory_cost, Some(65536));
+    }
+
+    #[test]
+    fn tenant_yaml_config_merge() {
+        let global = AuthConfig {
+            session_ttl: Some("24h".to_string()),
+            password_memory_cost: Some(65536),
+            password_time_cost: Some(3),
+        };
+        let tenant_cfg = TenantYamlConfig {
+            session_ttl: Some("12h".to_string()),
+            password_memory_cost: None,
+            password_time_cost: None,
+            email: None,
+        };
+        let merged = tenant_cfg.to_tenant_config(&global, None);
+        // Per-tenant TTL overrides global
+        assert_eq!(merged.session_ttl_micros, Some(43_200_000_000));
+        // Inherited from global
+        assert_eq!(merged.password_memory_cost, Some(65536));
+        assert_eq!(merged.password_time_cost, Some(3));
     }
 }

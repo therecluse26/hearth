@@ -188,7 +188,8 @@ async fn post_login(
 ) -> axum::response::Response {
     let mut body = format!("email={email}&password={password}");
     if let Some(r) = return_to {
-        body.push_str(&format!("&return_to={r}"));
+        use std::fmt::Write;
+        let _ = write!(body, "&return_to={r}");
     }
     app.oneshot(
         Request::builder()
@@ -633,8 +634,10 @@ async fn mfa_challenge_post_tampered_cookie_rejected() {
     let mut parts: Vec<&str> = pending_value.splitn(5, '.').collect();
     assert_eq!(parts.len(), 5, "cookie should have 5 parts");
     let mac = parts[4].to_string();
-    let tampered_mac = if mac.starts_with('A') {
-        format!("B{}", &mac[1..])
+    let tampered_mac = if let Some(rest) = mac.strip_prefix('A') {
+        format!("B{rest}")
+    } else if let Some(rest) = mac.strip_prefix('B') {
+        format!("A{rest}")
     } else {
         format!("A{}", &mac[1..])
     };

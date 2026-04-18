@@ -231,11 +231,17 @@ pub struct UpdateUserRequest {
 
 /// The lifecycle status of a tenant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TenantStatus {
     /// Tenant is active; all operations proceed normally.
     Active,
     /// Tenant is suspended; authentication and authorization are denied.
     Suspended,
+    /// Tenant was removed from YAML config and soft-deleted.
+    ///
+    /// Behaves like `Suspended` (auth denied) but additionally signals
+    /// that the tenant can be permanently deleted from the admin UI.
+    Archived,
 }
 
 /// Per-tenant configuration overrides.

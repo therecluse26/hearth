@@ -1,17 +1,19 @@
 //! First-run onboarding orchestration.
 //!
-//! Hearth ships without any pre-configured tenant or admin. On a fresh
-//! deploy the very first HTTP request must be able to *create* them —
-//! but accepting an unauthenticated `POST /ui/setup` would let anyone who
+//! Hearth ships without any pre-configured admin user. On a fresh deploy
+//! the very first HTTP request must be able to *create* one — but
+//! accepting an unauthenticated `POST /ui/setup` would let anyone who
 //! reaches the port before the operator does claim adminship. This
 //! module closes that window the same way Jenkins does with
 //! `initialAdminPassword`:
 //!
-//! 1. At startup, if no tenant exists, generate 32 random bytes
+//! 1. At startup, if the setup-token file exists (or no tenants exist
+//!    and setup hasn't been completed), generate 32 random bytes
 //!    (base64url) and write them to `<data_dir>/.setup_token` with
 //!    `0600` perms. Log the full setup URL at WARN level.
 //! 2. `/ui/setup` requires the token. Mismatch returns 404 (no leaks).
-//! 3. `complete_setup` atomically creates the tenant + admin user
+//! 3. `complete_setup` finds the first tenant (created by YAML
+//!    reconciliation or auto-created "default"), creates the admin user
 //!    (`PendingVerification`) + Zanzibar `hearth#admin@user:<uuid>`
 //!    tuple, issues a verification token, and sends the verification
 //!    email. On success the setup-token file is removed.
@@ -31,8 +33,8 @@ use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef
 use crate::core::TenantId;
 use crate::identity::email::{EmailError, EmailService};
 use crate::identity::{
-    CleartextPassword, CreateTenantRequest, CreateUserRequest, IdentityEngine, IdentityError,
-    UpdateUserRequest, UserStatus,
+    CleartextPassword, CreateUserRequest, IdentityEngine, IdentityError, UpdateUserRequest,
+    UserStatus,
 };
 
 /// Filename used for the one-time setup token inside `data_dir`.
@@ -126,18 +128,21 @@ pub fn is_first_run(engine: &dyn IdentityEngine) -> Result<bool, IdentityError> 
     Ok(page.items.is_empty())
 }
 
-/// Ensures a setup-token file exists iff this is a first-run deploy.
+/// Ensures a setup-token file exists when setup hasn't been completed.
 ///
-/// - First-run + file missing: generates 32 random bytes, base64url-encodes,
-///   writes to `<data_dir>/.setup_token` with `0600` perms (Unix), logs
-///   the setup URL at WARN level, returns `Ok(Some(token))`.
-/// - First-run + file present: returns the existing token unchanged so
-///   operators who restart the pod before completing setup don't lose
-///   the invitation.
-/// - Not first-run: best-effort removes the file (stale token from a
-///   prior aborted run), returns `Ok(None)`.
+/// The **token file is the source of truth** for "setup in progress":
 ///
-/// When `email_sender` and `notification_email` are both provided,
+/// - File present: reads the existing token, logs the setup URL at WARN
+///   level, optionally emails it, and returns `Ok(Some(token))`. This
+///   is idempotent across restarts — the token survives even if tenant
+///   reconciliation has already created tenants.
+/// - File absent + no tenants: truly fresh instance. Generates 32 random
+///   bytes (base64url), writes `<data_dir>/.setup_token` with `0600`
+///   perms (Unix), logs the setup URL, returns `Ok(Some(token))`.
+/// - File absent + tenants exist: setup already completed (or was never
+///   required). Returns `Ok(None)`.
+///
+/// When `email_service` and `notification_email` are both provided,
 /// additionally sends the setup URL to that address. Email failure is
 /// non-fatal — the WARN log is always emitted regardless.
 ///
@@ -154,32 +159,35 @@ pub fn ensure_setup_token(
 ) -> Result<Option<String>, OnboardingError> {
     let path = setup_token_path(data_dir);
 
-    if !is_first_run(engine)? {
-        // Clean up any stale token from a prior aborted setup.
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                // Non-fatal: log and continue. Token match is still gated
-                // on `is_first_run()` in `consume_setup_token`.
-                tracing::warn!(
-                    error = %e,
-                    "failed to remove stale setup token file"
-                );
-            }
-        }
-        return Ok(None);
+    // 1. Token file exists → setup is still in progress. Read the
+    //    existing token and re-log the URL (idempotent across restarts,
+    //    survives tenant reconciliation creating tenants).
+    if path.exists() {
+        let token = read_setup_token_file(&path)?;
+        log_and_notify_setup_url(&token, base_url, email_service, notification_email);
+        return Ok(Some(token));
     }
 
-    // First-run: read existing token or generate a new one.
-    let token = if path.exists() {
-        read_setup_token_file(&path)?
-    } else {
+    // 2. Token file absent + no tenants → truly fresh instance.
+    if is_first_run(engine)? {
         let token = generate_setup_token()?;
         write_setup_token_file(&path, &token)?;
-        token
-    };
+        log_and_notify_setup_url(&token, base_url, email_service, notification_email);
+        return Ok(Some(token));
+    }
 
-    // Log the setup URL at WARN so it's visible in INFO-level production
-    // logs. No PII is written — just the token and base URL.
+    // 3. Token file absent + tenants exist → setup already completed.
+    Ok(None)
+}
+
+/// Logs the setup URL at WARN level and optionally sends a notification
+/// email. Email failure is non-fatal.
+fn log_and_notify_setup_url(
+    token: &str,
+    base_url: Option<&str>,
+    email_service: Option<&EmailService>,
+    notification_email: Option<&str>,
+) {
     let url = match base_url {
         Some(base) => format!("{}/ui/setup?token={}", base.trim_end_matches('/'), token),
         None => format!("/ui/setup?token={token}"),
@@ -189,9 +197,6 @@ pub fn ensure_setup_token(
         "first-run setup required: open this URL to create the initial admin account"
     );
 
-    // Optionally send the setup URL via email. Failure here is non-fatal:
-    // the WARN log above is always emitted and the operator can still
-    // complete setup by reading that log line.
     if let (Some(service), Some(to)) = (email_service, notification_email) {
         if let Err(e) = service.send_setup_notification(to, &url) {
             tracing::warn!(
@@ -200,16 +205,14 @@ pub fn ensure_setup_token(
             );
         }
     }
-
-    Ok(Some(token))
 }
 
 /// Compares a caller-supplied token against the on-disk token in constant time.
 ///
-/// Returns `Ok(())` only if the tokens match *and* first-run is still
-/// active. Any mismatch (missing file, byte-level diff, already
-/// configured) collapses into [`OnboardingError::InvalidSetupToken`] so
-/// the handler can return a single `404`.
+/// Returns `Ok(())` only if the token file exists and the tokens match.
+/// Any mismatch (missing file, byte-level diff) collapses into
+/// [`OnboardingError::InvalidSetupToken`] so the handler can return a
+/// single `404`.
 ///
 /// # Errors
 ///
@@ -217,13 +220,10 @@ pub fn ensure_setup_token(
 /// token is not valid, and [`OnboardingError::Io`] if the token file is
 /// unreadable for a reason other than being absent.
 pub fn consume_setup_token(
-    engine: &dyn IdentityEngine,
+    _engine: &dyn IdentityEngine,
     data_dir: &Path,
     supplied: &str,
 ) -> Result<(), OnboardingError> {
-    if !is_first_run(engine)? {
-        return Err(OnboardingError::InvalidSetupToken);
-    }
     let path = setup_token_path(data_dir);
     let on_disk = match read_setup_token_file(&path) {
         Ok(t) => t,
@@ -379,35 +379,39 @@ impl OnboardingService {
     ///
     /// This is *not* a single transaction across layers; each step
     /// commits to its own store. On failure partway through we leave
-    /// behind the tenant and/or user but do *not* delete `.setup_token`,
-    /// so the operator can re-submit after fixing the underlying issue
-    /// (duplicate email, unreachable SMTP). `create_tenant` / `create_user`
-    /// return `DuplicateTenantName` / `DuplicateEmail` on retry which the
-    /// caller renders as a 409.
+    /// behind the user but do *not* delete `.setup_token`, so the
+    /// operator can re-submit after fixing the underlying issue
+    /// (duplicate email, unreachable SMTP). `create_user` returns
+    /// `DuplicateEmail` on retry which the caller renders as a 409.
     ///
     /// # Errors
     ///
-    /// See [`OnboardingError`]. `AlreadyConfigured` is returned if a
-    /// tenant already exists (defence in depth; the token check would
-    /// already have rejected the request).
+    /// See [`OnboardingError`]. `AlreadyConfigured` is returned if the
+    /// setup-token file has already been consumed. `TenantNotFound` is
+    /// returned if no tenant exists (YAML reconciliation must run first).
     pub fn complete_setup(
         &self,
-        tenant_name: &str,
         admin_email: &str,
         admin_display_name: &str,
         admin_password: &CleartextPassword,
         verification_base_url: &str,
     ) -> Result<SetupOutcome, OnboardingError> {
-        // 0. Defence in depth: refuse if someone else already completed setup.
-        if !self.is_first_run()? {
+        // 0. Defence in depth: the token file's existence is the source
+        //    of truth for "setup is in progress". If it's gone, setup
+        //    has already been completed (or was never initiated).
+        if !self.data_dir.join(SETUP_TOKEN_FILENAME).exists() {
             return Err(OnboardingError::AlreadyConfigured);
         }
 
-        // 1. Create tenant.
-        let tenant = self.identity.create_tenant(&CreateTenantRequest {
-            name: tenant_name.to_string(),
-            config: None,
-        })?;
+        // 1. Find the first existing tenant (created by YAML reconciliation
+        //    or the auto-created "default"). Tenants are managed exclusively
+        //    through hearth.yaml — setup only creates the admin user.
+        let page = self.identity.list_tenants(None, 1)?;
+        let tenant = page
+            .items
+            .into_iter()
+            .next()
+            .ok_or_else(|| OnboardingError::Identity(IdentityError::TenantNotFound))?;
         let tenant_id = tenant.id().clone();
 
         // 2. Create admin user.
@@ -461,11 +465,11 @@ impl OnboardingService {
         );
 
         // 7. Send the email. Failure here is fatal for the request
-        //    (the operator will never see the link) but the tenant/user
-        //    are already persisted so retrying the setup form after
-        //    fixing email config will fail with DuplicateTenantName. The
-        //    operator can either delete the partial state or reuse the
-        //    tenant by issuing a new verification via admin tools.
+        //    (the operator will never see the link) but the user is
+        //    already persisted so retrying the setup form after fixing
+        //    email config will fail with DuplicateEmail. The operator
+        //    can either delete the partial state or reuse the user by
+        //    issuing a new verification via admin tools.
         self.email
             .send_verification_email(admin_email, &verification_url, None)?;
 

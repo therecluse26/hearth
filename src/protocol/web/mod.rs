@@ -84,6 +84,10 @@ pub struct WebState {
     /// Configuration warnings (missing/empty env vars) surfaced on the
     /// admin dashboard.
     pub config_warnings: Vec<EnvVarWarning>,
+    /// `true` when the email transport is `Log` (no real delivery).
+    /// Used by the setup-sent page to show a "check your server logs"
+    /// callout only when emails are not actually being sent.
+    pub email_is_log_transport: bool,
 }
 
 impl WebState {
@@ -106,6 +110,7 @@ impl WebState {
             cookie_secret,
             current_tenant: Arc::new(RwLock::new(None)),
             config_warnings: Vec::new(),
+            email_is_log_transport: false,
         }
     }
 
@@ -113,6 +118,13 @@ impl WebState {
     #[must_use]
     pub fn with_config_warnings(mut self, warnings: Vec<EnvVarWarning>) -> Self {
         self.config_warnings = warnings;
+        self
+    }
+
+    /// Marks whether the email transport is `Log` (no real delivery).
+    #[must_use]
+    pub fn with_email_log_transport(mut self, val: bool) -> Self {
+        self.email_is_log_transport = val;
         self
     }
 
@@ -154,11 +166,9 @@ impl WebState {
 /// | `/ui/admin/users/{id}` | GET | User detail |
 /// | `/ui/admin/users/{id}/edit` | GET/POST | Edit user |
 /// | `/ui/admin/users/{id}/delete` | POST | Delete user |
-/// | `/ui/admin/tenants` | GET | Admin tenants list |
-/// | `/ui/admin/tenants/new` | GET/POST | Create tenant |
-/// | `/ui/admin/tenants/{id}` | GET | Tenant detail |
-/// | `/ui/admin/tenants/{id}/edit` | GET/POST | Edit tenant |
-/// | `/ui/admin/tenants/{id}/delete` | POST | Delete tenant |
+/// | `/ui/admin/tenants` | GET | Admin tenants list (read-only) |
+/// | `/ui/admin/tenants/{id}` | GET | Tenant detail (read-only) |
+/// | `/ui/admin/tenants/{id}/delete` | POST | Delete archived tenant |
 /// | `/ui/admin/applications` | GET | Admin applications list |
 /// | `/ui/admin/applications/new` | GET/POST | Register application |
 /// | `/ui/admin/applications/{id}` | GET | Application detail |
@@ -235,23 +245,14 @@ pub fn router(state: WebState) -> Router {
             "/admin/users/{id}/delete",
             axum::routing::post(admin::admin_user_delete),
         )
-        // --- Tenants ---
+        // --- Tenants (read-only; managed via hearth.yaml) ---
         .route(
             "/admin/tenants",
             axum::routing::get(admin::admin_tenants_list),
         )
         .route(
-            "/admin/tenants/new",
-            axum::routing::get(admin::admin_tenant_create_form)
-                .post(admin::admin_tenant_create_submit),
-        )
-        .route(
             "/admin/tenants/{id}",
             axum::routing::get(admin::admin_tenant_detail),
-        )
-        .route(
-            "/admin/tenants/{id}/edit",
-            axum::routing::get(admin::admin_tenant_edit_form).post(admin::admin_tenant_edit_submit),
         )
         .route(
             "/admin/tenants/{id}/delete",
@@ -264,8 +265,7 @@ pub fn router(state: WebState) -> Router {
         )
         .route(
             "/admin/organizations/new",
-            axum::routing::get(admin::admin_org_create_form)
-                .post(admin::admin_org_create_submit),
+            axum::routing::get(admin::admin_org_create_form).post(admin::admin_org_create_submit),
         )
         .route(
             "/admin/organizations/{id}",
@@ -298,6 +298,11 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/organizations/{id}/invitations/{iid}/revoke",
             axum::routing::post(admin::admin_org_revoke_invite),
+        )
+        // --- User search API (HTMX) ---
+        .route(
+            "/admin/api/users/search",
+            axum::routing::get(admin::admin_api_user_search),
         )
         // --- Applications ---
         .route(
@@ -335,7 +340,7 @@ pub fn router(state: WebState) -> Router {
             "/admin/test-email",
             axum::routing::post(admin::admin_test_email),
         )
-        .route("/static/{file}", axum::routing::get(serve_static))
+        .route("/static/{*file}", axum::routing::get(serve_static))
         .with_state(Arc::clone(&shared));
 
     // axum 0.8 nest does NOT match `/ui/` (trailing slash) — only `/ui`
@@ -358,6 +363,10 @@ pub fn router(state: WebState) -> Router {
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
 /// Tailwind-generated CSS for the admin UI.
 const APP_CSS: &[u8] = include_bytes!("assets/app.css");
+/// Hearth wide logo (SVG).
+const HEARTH_WIDE_SVG: &[u8] = include_bytes!("assets/hearth-wide-web.svg");
+/// Hearth icon (SVG).
+const HEARTH_ICON_SVG: &[u8] = include_bytes!("assets/hearth-icon.svg");
 
 /// Serves embedded static assets with long-lived caching headers.
 ///
@@ -368,6 +377,8 @@ async fn serve_static(AxumPath(file): AxumPath<String>) -> Response {
     let (bytes, content_type) = match file.as_str() {
         "htmx.min.js" => (HTMX_JS, "application/javascript; charset=utf-8"),
         "app.css" => (APP_CSS, "text/css; charset=utf-8"),
+        "img/hearth-wide-web.svg" => (HEARTH_WIDE_SVG, "image/svg+xml"),
+        "img/hearth-icon.svg" => (HEARTH_ICON_SVG, "image/svg+xml"),
         _ => {
             return Response::builder()
                 .status(StatusCode::NOT_FOUND)

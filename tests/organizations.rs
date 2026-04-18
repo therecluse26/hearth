@@ -13,9 +13,7 @@ use hearth::identity::{
 };
 
 /// Helper: creates a tenant and returns its ID for org tests.
-fn setup_tenant(
-    identity: &dyn IdentityEngine,
-) -> hearth::core::TenantId {
+fn setup_tenant(identity: &dyn IdentityEngine) -> hearth::core::TenantId {
     identity
         .create_tenant(&CreateTenantRequest {
             name: "Org Test Tenant".to_string(),
@@ -415,12 +413,8 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
     );
 
     // Cannot downgrade last owner
-    let downgrade_result = identity.update_member_role(
-        &tenant_id,
-        org.id(),
-        owner.id(),
-        OrganizationRole::Admin,
-    );
+    let downgrade_result =
+        identity.update_member_role(&tenant_id, org.id(), owner.id(), OrganizationRole::Admin);
     assert!(
         matches!(
             downgrade_result,
@@ -537,12 +531,7 @@ async fn member_limit_enforced() {
         .expect("add first member");
 
     // Second member fails (limit reached)
-    let result = identity.add_member(
-        &tenant_id,
-        org.id(),
-        user2.id(),
-        OrganizationRole::Member,
-    );
+    let result = identity.add_member(&tenant_id, org.id(), user2.id(), OrganizationRole::Member);
     assert!(
         matches!(
             result,
@@ -609,7 +598,11 @@ async fn delete_user_cascades_org_memberships() {
     let members = identity
         .list_members(&tenant_id, org.id(), None, 10)
         .expect("list members");
-    assert_eq!(members.items.len(), 1, "deleted user's membership should be cleaned");
+    assert_eq!(
+        members.items.len(),
+        1,
+        "deleted user's membership should be cleaned"
+    );
     assert_eq!(members.items[0].user_id(), owner.id());
 }
 
@@ -662,10 +655,7 @@ async fn invitation_revocation() {
 
     // Try to accept — should fail
     let result = identity.accept_invitation(&tenant_id, &token);
-    assert!(
-        result.is_err(),
-        "revoked invitation should not be accepted"
-    );
+    assert!(result.is_err(), "revoked invitation should not be accepted");
 }
 
 // ===== Integration Scenario 10: Organization not found =====
@@ -679,12 +669,10 @@ async fn operations_on_nonexistent_org_fail() {
     let fake_org_id = OrganizationId::generate();
 
     // Get returns None
-    assert!(
-        identity
-            .get_organization(&tenant_id, &fake_org_id)
-            .expect("get")
-            .is_none()
-    );
+    assert!(identity
+        .get_organization(&tenant_id, &fake_org_id)
+        .expect("get")
+        .is_none());
 
     // Update returns error
     assert!(matches!(
@@ -713,8 +701,7 @@ mod proptests {
 
     /// Strategy for valid slugs (3-63 chars, lowercase alphanumeric + hyphens).
     fn valid_slug() -> impl Strategy<Value = String> {
-        "[a-z][a-z0-9]{1,10}(-[a-z0-9]{1,10}){0,3}"
-            .prop_filter("slug too short", |s| s.len() >= 3)
+        "[a-z][a-z0-9]{1,10}(-[a-z0-9]{1,10}){0,3}".prop_filter("slug too short", |s| s.len() >= 3)
     }
 
     /// Helper to create a harness synchronously for property tests.
@@ -797,7 +784,7 @@ mod proptests {
             let members = identity
                 .list_members(&tenant_id, org.id(), None, 100)
                 .expect("list members");
-            prop_assert_eq!(members.items.len() as u32, member_count);
+            prop_assert_eq!(members.items.len(), member_count as usize);
 
             // Check reverse: each user's org list contains the org
             for uid in &user_ids {
@@ -840,7 +827,8 @@ mod proptests {
                 org_ids.push(org.id().clone());
             }
 
-            let delete_count = (create_count as f64 * delete_fraction).floor() as u32;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let delete_count = (f64::from(create_count) * delete_fraction).floor() as u32;
             for i in 0..delete_count {
                 identity
                     .delete_organization(&tenant_id, &org_ids[i as usize])
@@ -852,8 +840,8 @@ mod proptests {
                 .expect("list orgs");
             let expected = create_count - delete_count;
             prop_assert_eq!(
-                remaining.items.len() as u32,
-                expected,
+                remaining.items.len(),
+                expected as usize,
                 "expected {} orgs after creating {} and deleting {}",
                 expected,
                 create_count,
@@ -981,8 +969,8 @@ async fn slug_injection_rejected() {
         "-leading-hyphen",
         "trailing-hyphen-",
         "double--hyphen",
-        "ab",  // Too short
-        &"a".repeat(64),  // Too long
+        "ab",            // Too short
+        &"a".repeat(64), // Too long
     ];
 
     for slug in &malicious_slugs {
@@ -990,7 +978,7 @@ async fn slug_injection_rejected() {
             &tenant_id,
             &CreateOrganizationRequest {
                 name: "Injection Test".to_string(),
-                slug: slug.to_string(),
+                slug: (*slug).to_string(),
                 description: None,
                 config: None,
             },

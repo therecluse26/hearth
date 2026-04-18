@@ -417,8 +417,8 @@ mod tests {
 
         load_dotenv(&dotenv).expect("load_dotenv");
 
-        assert_eq!(std::env::var("HEARTH_DENV_LOAD_A").unwrap(), "hello");
-        assert_eq!(std::env::var("HEARTH_DENV_LOAD_B").unwrap(), "world");
+        assert_eq!(std::env::var("HEARTH_DENV_LOAD_A").expect("var A"), "hello");
+        assert_eq!(std::env::var("HEARTH_DENV_LOAD_B").expect("var B"), "world");
         std::env::remove_var("HEARTH_DENV_LOAD_A");
         std::env::remove_var("HEARTH_DENV_LOAD_B");
     }
@@ -433,7 +433,7 @@ mod tests {
         load_dotenv(&dotenv).expect("load_dotenv");
 
         assert_eq!(
-            std::env::var("HEARTH_DENV_NO_OVERRIDE").unwrap(),
+            std::env::var("HEARTH_DENV_NO_OVERRIDE").expect("env var"),
             "from_env",
             "real env var must not be overwritten by .env"
         );
@@ -453,7 +453,10 @@ mod tests {
 
         load_dotenv(&dotenv).expect("load_dotenv");
 
-        assert_eq!(std::env::var("HEARTH_DENV_COMMENT_KEY").unwrap(), "value");
+        assert_eq!(
+            std::env::var("HEARTH_DENV_COMMENT_KEY").expect("env var"),
+            "value"
+        );
         std::env::remove_var("HEARTH_DENV_COMMENT_KEY");
     }
 
@@ -466,7 +469,10 @@ mod tests {
 
         load_dotenv(&dotenv).expect("load_dotenv");
 
-        assert_eq!(std::env::var("HEARTH_DENV_DQ").unwrap(), " hello world ");
+        assert_eq!(
+            std::env::var("HEARTH_DENV_DQ").expect("env var"),
+            " hello world "
+        );
         std::env::remove_var("HEARTH_DENV_DQ");
     }
 
@@ -480,7 +486,7 @@ mod tests {
         load_dotenv(&dotenv).expect("load_dotenv");
 
         assert_eq!(
-            std::env::var("HEARTH_DENV_ESC").unwrap(),
+            std::env::var("HEARTH_DENV_ESC").expect("var ESC"),
             "line1\nline2\ttab"
         );
         std::env::remove_var("HEARTH_DENV_ESC");
@@ -496,7 +502,10 @@ mod tests {
 
         load_dotenv(&dotenv).expect("load_dotenv");
 
-        assert_eq!(std::env::var("HEARTH_DENV_SQ").unwrap(), r"no\escape");
+        assert_eq!(
+            std::env::var("HEARTH_DENV_SQ").expect("env var"),
+            r"no\escape"
+        );
         std::env::remove_var("HEARTH_DENV_SQ");
     }
 
@@ -509,7 +518,10 @@ mod tests {
 
         load_dotenv(&dotenv).expect("load_dotenv");
 
-        assert_eq!(std::env::var("HEARTH_DENV_EXPORT").unwrap(), "exported");
+        assert_eq!(
+            std::env::var("HEARTH_DENV_EXPORT").expect("env var"),
+            "exported"
+        );
         std::env::remove_var("HEARTH_DENV_EXPORT");
     }
 
@@ -523,7 +535,10 @@ mod tests {
 
         load_dotenv(&dotenv).expect("load_dotenv");
 
-        assert_eq!(std::env::var("HEARTH_DENV_INLINE").unwrap(), "myvalue");
+        assert_eq!(
+            std::env::var("HEARTH_DENV_INLINE").expect("env var"),
+            "myvalue"
+        );
         std::env::remove_var("HEARTH_DENV_INLINE");
     }
 

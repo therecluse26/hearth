@@ -588,42 +588,14 @@ async fn admin_tenant_list_renders() {
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
     assert!(body.contains("Acme"), "should list the tenant");
-    assert!(body.contains("Create tenant"));
-}
-
-#[tokio::test]
-async fn admin_create_tenant_succeeds() {
-    let rig = build_rig();
-    let csrf = "csrf-tcreate";
-    let cookie = admin_cookie(&rig, csrf);
-
-    let form = format!("name=NewTenant&_csrf={csrf}");
-    let response = rig
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/ui/admin/tenants/new")
-                .header(header::COOKIE, cookie)
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(form))
-                .expect("build request"),
-        )
-        .await
-        .expect("oneshot");
-
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let location = response
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
     assert!(
-        location.starts_with("/ui/admin/tenants/"),
-        "expected redirect to tenant detail, got: {location}"
+        body.contains("hearth.yaml"),
+        "should show YAML config notice"
     );
 }
+
+// NOTE: admin_create_tenant_succeeds removed — tenants are now managed
+// via hearth.yaml; the /admin/tenants/new route no longer exists.
 
 #[tokio::test]
 async fn admin_tenant_detail_renders() {
@@ -654,50 +626,11 @@ async fn admin_tenant_detail_renders() {
     assert!(body.contains("Active"));
 }
 
-#[tokio::test]
-async fn admin_edit_tenant_succeeds() {
-    let rig = build_rig();
-    let csrf = "csrf-tedit";
-    let cookie = admin_cookie(&rig, csrf);
-
-    // Create a second tenant to edit (don't touch the admin's own tenant).
-    let extra = rig
-        .identity
-        .create_tenant(&CreateTenantRequest {
-            name: "Editable".to_string(),
-            config: None,
-        })
-        .expect("create extra tenant");
-
-    let tid = extra.id().as_uuid();
-    let form = format!("name=Renamed&status=Suspended&_csrf={csrf}");
-    let response = rig
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/ui/admin/tenants/{tid}/edit"))
-                .header(header::COOKIE, cookie)
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(form))
-                .expect("build request"),
-        )
-        .await
-        .expect("oneshot");
-
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-
-    let updated = rig
-        .identity
-        .get_tenant(extra.id())
-        .expect("get_tenant")
-        .expect("tenant exists");
-    assert_eq!(updated.name(), "Renamed");
-}
+// NOTE: admin_edit_tenant_succeeds removed — tenants are now managed
+// via hearth.yaml; the /admin/tenants/{id}/edit route no longer exists.
 
 #[tokio::test]
-async fn admin_delete_tenant_succeeds() {
+async fn admin_delete_tenant_requires_archived_status() {
     let rig = build_rig();
     let csrf = "csrf-tdel";
     let cookie = admin_cookie(&rig, csrf);
@@ -711,6 +644,7 @@ async fn admin_delete_tenant_succeeds() {
         })
         .expect("create doomed tenant");
 
+    // Deleting an Active tenant should be rejected (400).
     let tid = extra.id().as_uuid();
     let form = format!("_csrf={csrf}");
     let response = rig
@@ -720,7 +654,7 @@ async fn admin_delete_tenant_succeeds() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/ui/admin/tenants/{tid}/delete"))
-                .header(header::COOKIE, cookie)
+                .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
                 .expect("build request"),
@@ -728,9 +662,43 @@ async fn admin_delete_tenant_succeeds() {
         .await
         .expect("oneshot");
 
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
-        response
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "should reject deletion of non-archived tenant"
+    );
+
+    // Archive the tenant first (simulating what YAML reconciliation does).
+    rig.identity
+        .update_tenant(
+            extra.id(),
+            &hearth::identity::UpdateTenantRequest {
+                status: Some(hearth::identity::TenantStatus::Archived),
+                ..Default::default()
+            },
+        )
+        .expect("archive tenant");
+
+    // Now deletion should succeed.
+    let form2 = format!("_csrf={csrf}");
+    let response2 = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/ui/admin/tenants/{tid}/delete"))
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(form2))
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response2.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response2
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),

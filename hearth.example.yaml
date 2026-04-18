@@ -92,6 +92,51 @@ email:
   # Directory containing Tera templates that override the compiled defaults.
   # templates_dir: "./templates/email"
 
+# --- Auth defaults (global) -------------------------------------------------
+# These apply to all tenants unless overridden per-tenant below.
+
+# auth:
+#   session_ttl: "24h"              # duration: 30s, 5m, 8h, 1d
+#   password_memory_cost: 65536     # Argon2id memory parameter (KiB)
+#   password_time_cost: 3           # Argon2id time parameter (iterations)
+
+# --- Tenants ----------------------------------------------------------------
+# Tenants are managed declaratively in this file. On startup, Hearth
+# reconciles what's declared here with what's in storage:
+#
+#   - YAML entry not in storage     → created
+#   - YAML entry in storage         → config updated if changed
+#   - Storage tenant not in YAML    → archived (soft-deleted)
+#
+# Archived tenants appear in the Admin UI with an "Archived" badge and
+# can be permanently deleted from there.
+#
+# If the `tenants` key is OMITTED entirely:
+#   - No tenants in storage → a "default" tenant is auto-created
+#   - Tenants already exist → left untouched (backward compatibility)
+#
+# Single-tenant (most deployments): omit `tenants` entirely and let
+# Hearth auto-create "default" using the global `auth` settings above.
+
+# --- Single-tenant example (just omit the tenants key) ---
+# (nothing to add — Hearth creates "default" automatically)
+
+# --- Multi-tenant example ---
+# tenants:
+#   customer-portal:
+#     session_ttl: "12h"                # overrides global auth.session_ttl
+#     email:
+#       branding:
+#         product_name: "Customer Portal"
+#         accent_color: "#2563EB"
+#
+#   internal-tools:
+#     session_ttl: "8h"
+#     password_memory_cost: 131072      # stricter for internal use
+#     email:
+#       branding:
+#         product_name: "Internal Tools"
+
 onboarding:
   # enabled: true  # set to false to permanently disable the /ui/setup flow
   # base_url: "https://auth.example.com"  # used in the setup URL logged at startup

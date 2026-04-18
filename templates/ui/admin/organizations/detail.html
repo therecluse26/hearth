@@ -43,28 +43,109 @@
     <h2 class="text-lg font-semibold text-slate-900 dark:text-white">Members</h2>
   </div>
 
-  {# Add member form #}
-  <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members" class="mb-4 flex items-end gap-3">
-    {% match csrf %}
-      {% when Some with (token) %}
-        <input type="hidden" name="_csrf" value="{{ token }}">
-      {% when None %}
-    {% endmatch %}
-    <div class="flex-1">
-      <label for="user_email" class="block text-xs font-medium text-slate-700 dark:text-slate-300">Add member by email</label>
-      <input type="email" id="user_email" name="user_email" required placeholder="user@example.com"
-             class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+  {# Add member form with user search #}
+  <div x-data="{
+    selectedUser: null,
+    searchQuery: '',
+    showDropdown: false,
+    showInviteModal: false,
+    inviteEmail: '',
+    inviteRole: 'Member'
+  }" class="mb-4">
+    <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members" class="flex items-end gap-3">
+      {% match csrf %}
+        {% when Some with (token) %}
+          <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+      <input type="hidden" name="user_id" :value="selectedUser ? selectedUser.id : ''">
+
+      <div class="relative flex-1">
+        <label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Add member</label>
+
+        {# Selected user chip #}
+        <div x-show="selectedUser" x-cloak class="mt-1 flex items-center gap-2 rounded-lg border border-hearth-300 bg-hearth-50 px-3 py-1.5 text-sm dark:border-hearth-700 dark:bg-hearth-900/20">
+          <div class="flex-1">
+            <span class="font-medium text-slate-900 dark:text-white" x-text="selectedUser?.name"></span>
+            <span class="text-slate-500 dark:text-slate-400" x-text="selectedUser?.email"></span>
+          </div>
+          <button type="button" @click="selectedUser = null; searchQuery = ''" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">&times;</button>
+        </div>
+
+        {# Search input #}
+        <div x-show="!selectedUser">
+          <input type="text"
+                 x-model="searchQuery"
+                 @focus="if (searchQuery.length >= 2) showDropdown = true"
+                 @click.outside="showDropdown = false"
+                 placeholder="Search users by name or email..."
+                 hx-get="/ui/admin/api/users/search"
+                 hx-trigger="input changed delay:300ms"
+                 hx-target="#search-results"
+                 hx-include="[name='q']"
+                 class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+          <input type="hidden" name="q" :value="searchQuery">
+        </div>
+
+        {# Search results dropdown #}
+        <div x-show="showDropdown && !selectedUser" x-cloak
+             id="search-results"
+             hx-on::after-settle="if ($el.children.length > 0) $dispatch('show-dropdown')"
+             @show-dropdown.window="showDropdown = true"
+             class="absolute z-10 mt-1 w-full rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-600 dark:bg-slate-800">
+        </div>
+      </div>
+
+      <div>
+        <select name="role"
+                class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
+          <option value="Member">Member</option>
+          <option value="Admin">Admin</option>
+          <option value="Owner">Owner</option>
+        </select>
+      </div>
+      <button type="submit" :disabled="!selectedUser"
+              :class="selectedUser ? 'bg-hearth-500 hover:bg-hearth-600' : 'bg-slate-300 cursor-not-allowed dark:bg-slate-600'"
+              class="rounded-lg px-3 py-1.5 text-sm font-semibold text-white shadow-sm">
+        Add
+      </button>
+    </form>
+
+    {# Invite modal (shown when no matching user found) #}
+    <div x-show="showInviteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showInviteModal = false">
+      <div class="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl dark:bg-slate-800" @click.outside="showInviteModal = false">
+        <h3 class="text-lg font-semibold text-slate-900 dark:text-white">Send invitation</h3>
+        <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">No existing user found. Send an invitation to <strong x-text="inviteEmail"></strong>?</p>
+        <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/invite" class="mt-4">
+          {% match csrf %}
+            {% when Some with (token) %}
+              <input type="hidden" name="_csrf" value="{{ token }}">
+            {% when None %}
+          {% endmatch %}
+          <input type="hidden" name="email" :value="inviteEmail">
+          <div class="mb-4">
+            <label class="block text-xs font-medium text-slate-700 dark:text-slate-300">Role</label>
+            <select name="role" x-model="inviteRole"
+                    class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+              <option value="Member">Member</option>
+              <option value="Admin">Admin</option>
+              <option value="Owner">Owner</option>
+            </select>
+          </div>
+          <div class="flex justify-end gap-3">
+            <button @click.prevent="showInviteModal = false" type="button"
+                    class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
+              Cancel
+            </button>
+            <button type="submit"
+                    class="rounded-lg bg-hearth-500 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-hearth-600">
+              Send invitation
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
-    <div>
-      <select name="role"
-              class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-hearth-500 focus:outline-none focus:ring-2 focus:ring-hearth-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-hearth-400 dark:focus:ring-hearth-400/20">
-        <option value="Member">Member</option>
-        <option value="Admin">Admin</option>
-        <option value="Owner">Owner</option>
-      </select>
-    </div>
-    <button type="submit" class="rounded-lg bg-hearth-500 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-hearth-600">Add</button>
-  </form>
+  </div>
 
   {# Members table #}
   <table class="w-full">
@@ -78,13 +159,16 @@
     <tbody>
       {% for m in members %}
       <tr class="border-b border-slate-100 dark:border-slate-700/50">
-        <td class="px-3 py-2 text-sm text-slate-700 dark:text-slate-300">
-          <a href="/ui/admin/users/{{ m.user_id().as_uuid() }}" class="text-hearth-600 hover:text-hearth-700 dark:text-hearth-400 dark:hover:text-hearth-300">{{ m.user_id().as_uuid() }}</a>
+        <td class="px-3 py-2">
+          <a href="/ui/admin/users/{{ m.membership.user_id().as_uuid() }}" class="group">
+            <div class="text-sm font-medium text-hearth-600 group-hover:text-hearth-700 dark:text-hearth-400 dark:group-hover:text-hearth-300">{{ m.user_name }}</div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">{{ m.user_email }}</div>
+          </a>
         </td>
         <td class="px-3 py-2">
-          {% if m.role()|fmt("{:?}") == "Owner" %}
+          {% if m.membership.role()|fmt("{:?}") == "Owner" %}
             <span class="inline-flex items-center rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">Owner</span>
-          {% else if m.role()|fmt("{:?}") == "Admin" %}
+          {% else if m.membership.role()|fmt("{:?}") == "Admin" %}
             <span class="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">Admin</span>
           {% else %}
             <span class="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-slate-700 dark:text-slate-300">Member</span>
@@ -92,16 +176,16 @@
         </td>
         <td class="px-3 py-2 text-right">
           <div class="flex items-center justify-end gap-2">
-            <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.user_id().as_uuid() }}/role" class="inline-flex items-center gap-1">
+            <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.membership.user_id().as_uuid() }}/role" class="inline-flex items-center gap-1">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
               <select name="role" class="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                <option value="Member" {% if m.role()|fmt("{:?}") == "Member" %}selected{% endif %}>Member</option>
-                <option value="Admin" {% if m.role()|fmt("{:?}") == "Admin" %}selected{% endif %}>Admin</option>
-                <option value="Owner" {% if m.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
+                <option value="Member" {% if m.membership.role()|fmt("{:?}") == "Member" %}selected{% endif %}>Member</option>
+                <option value="Admin" {% if m.membership.role()|fmt("{:?}") == "Admin" %}selected{% endif %}>Admin</option>
+                <option value="Owner" {% if m.membership.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
               </select>
               <button type="submit" class="text-xs text-hearth-600 hover:text-hearth-700 dark:text-hearth-400 dark:hover:text-hearth-300">Update</button>
             </form>
-            <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.user_id().as_uuid() }}/remove">
+            <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.membership.user_id().as_uuid() }}/remove">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
               <button type="submit" class="text-xs text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">Remove</button>
             </form>

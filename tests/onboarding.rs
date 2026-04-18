@@ -4,8 +4,9 @@
 //! - First-run detection toggles when the first tenant is created.
 //! - Setup-token lifecycle: generated once, consumed on success, removed
 //!   automatically when the deployment becomes configured.
-//! - Full setup flow: tenant + admin (`PendingVerification`) + Zanzibar
-//!   admin tuple + verification token + verification email.
+//! - Full setup flow: admin (`PendingVerification`) + Zanzibar admin
+//!   tuple + verification token + verification email (tenant comes from
+//!   YAML reconciliation, pre-created in tests via `seed_tenant`).
 //! - Session creation is gated on `UserStatus::Active`; a
 //!   `PendingVerification` user cannot create sessions.
 //! - Verification-token reuse, expiry, and enumeration-resistance.
@@ -25,7 +26,7 @@ use hearth::identity::onboarding::{
 };
 use hearth::identity::{
     CleartextPassword, CreateTenantRequest, CredentialConfig, EmbeddedIdentityEngine,
-    IdentityConfig, IdentityEngine, UserStatus,
+    IdentityConfig, IdentityEngine, Tenant, UserStatus,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -129,6 +130,17 @@ impl TestEnv {
     fn setup_token_path(&self) -> std::path::PathBuf {
         self.data_dir().join(SETUP_TOKEN_FILENAME)
     }
+
+    /// Pre-creates a tenant so `complete_setup()` can find it.
+    /// (In production, tenant reconciliation from YAML does this at startup.)
+    fn seed_tenant(&self, name: &str) -> Tenant {
+        self.identity
+            .create_tenant(&CreateTenantRequest {
+                name: name.to_string(),
+                config: None,
+            })
+            .expect("seed tenant")
+    }
 }
 
 // ===== Scenario: first-run lifecycle =====
@@ -178,26 +190,29 @@ fn ensure_setup_token_is_idempotent_on_restart() {
 }
 
 #[test]
-fn ensure_setup_token_removes_stale_token_when_configured() {
+fn ensure_setup_token_preserves_file_when_tenants_exist() {
     let env = TestEnv::new();
-    // Seed as if a previous incarnation left a token behind.
-    std::fs::write(env.setup_token_path(), "stale").expect("seed");
+    // Seed a token as if a previous startup generated it, then
+    // reconciliation created a tenant before setup was completed.
+    std::fs::write(env.setup_token_path(), "existing-token").expect("seed");
 
-    // Now configure the system.
     env.identity
         .create_tenant(&CreateTenantRequest {
-            name: "existing".to_string(),
+            name: "reconciled".to_string(),
             config: None,
         })
         .expect("create");
 
-    let result = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
-        .expect("ensure");
+    // Token file is the source of truth — its presence means setup is
+    // still in progress, regardless of tenant count.
+    let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
+        .expect("ensure")
+        .expect("token preserved when file exists");
 
-    assert!(result.is_none(), "not first-run → None");
+    assert_eq!(token, "existing-token");
     assert!(
-        !env.setup_token_path().exists(),
-        "stale token must be cleaned up"
+        env.setup_token_path().exists(),
+        "token file must not be deleted"
     );
 }
 
@@ -235,39 +250,71 @@ fn consume_setup_token_rejects_when_file_absent() {
 }
 
 #[test]
-fn consume_setup_token_rejects_after_system_is_configured() {
+fn consume_setup_token_accepts_when_tenants_exist_and_file_present() {
     let env = TestEnv::new();
     let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
 
-    // Someone else races and creates a tenant out-of-band.
+    // Simulate reconciliation creating a tenant before setup completes.
+    // The token file is the source of truth, not tenant count.
     env.identity
         .create_tenant(&CreateTenantRequest {
-            name: "first-winner".to_string(),
+            name: "reconciled-default".to_string(),
             config: None,
         })
         .expect("create");
 
-    let err = consume_setup_token(env.identity.as_ref(), env.data_dir(), &token)
-        .expect_err("already configured");
-    assert!(matches!(err, OnboardingError::InvalidSetupToken));
+    consume_setup_token(env.identity.as_ref(), env.data_dir(), &token)
+        .expect("token should still be valid — file exists and matches");
+}
+
+#[test]
+fn setup_token_survives_tenant_reconciliation() {
+    let env = TestEnv::new();
+    // Generate setup token on a fresh instance.
+    let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
+        .expect("ensure")
+        .expect("token on fresh instance");
+
+    // Simulate reconciliation creating a "default" tenant.
+    env.identity
+        .create_tenant(&CreateTenantRequest {
+            name: "default".to_string(),
+            config: None,
+        })
+        .expect("create tenant");
+
+    // Re-run ensure_setup_token (as happens on server restart). The token
+    // file should still be returned — its presence is the source of truth,
+    // not the tenant count.
+    let token2 = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
+        .expect("ensure after reconciliation")
+        .expect("token should survive");
+
+    assert_eq!(token, token2, "token must be the same across restarts");
+
+    // consume_setup_token should still work.
+    consume_setup_token(env.identity.as_ref(), env.data_dir(), &token)
+        .expect("token still valid after reconciliation");
 }
 
 // ===== Scenario: complete_setup happy path =====
 
 #[test]
-fn complete_setup_creates_tenant_admin_and_sends_email() {
+fn complete_setup_creates_admin_and_sends_email() {
     let env = TestEnv::new();
+    // Mirrors real startup: ensure_setup_token runs first (fresh instance),
+    // then tenant reconciliation creates the tenant from YAML.
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
+    let seeded = env.seed_tenant("Hearth Prod");
 
     let pw = CleartextPassword::new(b"correct-horse-battery-staple".to_vec());
     let outcome = env
         .service
         .complete_setup(
-            "Hearth Prod",
             "admin@example.com",
             "Root Admin",
             &pw,
@@ -275,7 +322,8 @@ fn complete_setup_creates_tenant_admin_and_sends_email() {
         )
         .expect("complete_setup");
 
-    // Tenant + admin exist.
+    // Setup used the pre-existing tenant from YAML reconciliation.
+    assert_eq!(outcome.tenant_id, *seeded.id());
     let tenant = env
         .identity
         .get_tenant(&outcome.tenant_id)
@@ -335,11 +383,11 @@ fn complete_setup_creates_tenant_admin_and_sends_email() {
 fn session_creation_blocked_for_pending_verification_user() {
     let env = TestEnv::new();
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
+    env.seed_tenant("TenantX");
     let pw = CleartextPassword::new(b"a-password".to_vec());
     let outcome = env
         .service
         .complete_setup(
-            "TenantX",
             "pending@example.com",
             "Pending User",
             &pw,
@@ -363,11 +411,11 @@ fn session_creation_blocked_for_pending_verification_user() {
 fn verify_email_token_activates_user_and_unblocks_session() {
     let env = TestEnv::new();
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
+    env.seed_tenant("TenantY");
     let pw = CleartextPassword::new(b"another-password".to_vec());
     let outcome = env
         .service
         .complete_setup(
-            "TenantY",
             "verify@example.com",
             "Verify Me",
             &pw,
@@ -409,16 +457,11 @@ fn verify_email_token_activates_user_and_unblocks_session() {
 fn verify_email_token_rejects_reuse() {
     let env = TestEnv::new();
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
+    env.seed_tenant("TenantZ");
     let pw = CleartextPassword::new(b"pw".to_vec());
     let outcome = env
         .service
-        .complete_setup(
-            "TenantZ",
-            "reuse@example.com",
-            "Reuse",
-            &pw,
-            "http://localhost:8420",
-        )
+        .complete_setup("reuse@example.com", "Reuse", &pw, "http://localhost:8420")
         .expect("complete_setup");
 
     let msg = env.email.last().expect("email captured");
@@ -470,29 +513,50 @@ fn verify_email_token_rejects_unknown_token() {
 // ===== Scenario: complete_setup refuses when already configured =====
 
 #[test]
-fn complete_setup_refuses_when_tenant_already_exists() {
+fn complete_setup_refuses_when_setup_token_absent() {
     let env = TestEnv::new();
-    env.identity
-        .create_tenant(&CreateTenantRequest {
-            name: "pre-existing".to_string(),
-            config: None,
-        })
-        .expect("pre-existing tenant");
+    env.seed_tenant("pre-existing");
 
+    // No ensure_setup_token call — the token file does not exist,
+    // simulating a deployment where setup was already completed.
     let pw = CleartextPassword::new(b"pw".to_vec());
     let err = env
         .service
-        .complete_setup(
-            "Dup",
-            "dup@example.com",
-            "Dup",
-            &pw,
-            "http://localhost:8420",
-        )
+        .complete_setup("dup@example.com", "Dup", &pw, "http://localhost:8420")
         .expect_err("should refuse");
     assert!(
         matches!(err, OnboardingError::AlreadyConfigured),
         "got {err:?}"
+    );
+}
+
+// ===== Scenario: complete_setup requires a pre-existing tenant =====
+
+#[test]
+fn complete_setup_fails_when_no_tenant_exists() {
+    let env = TestEnv::new();
+    // Setup token exists but no tenant was created (reconciliation didn't run).
+    let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
+        .expect("ensure")
+        .expect("token");
+
+    let pw = CleartextPassword::new(b"pw".to_vec());
+    let err = env
+        .service
+        .complete_setup("orphan@example.com", "Orphan", &pw, "http://localhost:8420")
+        .expect_err("no tenant");
+    assert!(
+        matches!(
+            err,
+            OnboardingError::Identity(hearth::identity::IdentityError::TenantNotFound)
+        ),
+        "expected TenantNotFound, got {err:?}"
+    );
+
+    // Setup token should still exist so operator can fix config and retry.
+    assert!(
+        env.setup_token_path().exists(),
+        "token must persist for retry"
     );
 }
 
@@ -530,15 +594,23 @@ fn complete_setup_surfaces_email_delivery_failure() {
         temp.path().to_path_buf(),
     );
 
-    // Seed the setup token so the "keep on failure" assertion below is
-    // meaningful — otherwise the file never existed to begin with.
+    // Seed the setup token first (mirrors real startup: ensure_setup_token
+    // runs before tenant reconciliation).
     let _ = ensure_setup_token(identity.as_ref(), temp.path(), None, None, None)
         .expect("ensure")
         .expect("token");
 
+    // Pre-create a tenant (in production, YAML reconciliation does this).
+    identity
+        .create_tenant(&CreateTenantRequest {
+            name: "T".to_string(),
+            config: None,
+        })
+        .expect("seed tenant");
+
     let pw = CleartextPassword::new(b"pw".to_vec());
     let err = service
-        .complete_setup("T", "boom@example.com", "B", &pw, "http://localhost:8420")
+        .complete_setup("boom@example.com", "B", &pw, "http://localhost:8420")
         .expect_err("email failure");
     assert!(
         matches!(err, OnboardingError::Email(_)),
