@@ -95,6 +95,22 @@ pub struct WebState {
     /// Logo URL injected into every template. Defaults to the built-in
     /// Hearth SVG when no `branding.logo_url` is configured.
     pub logo_url: String,
+    /// When `branding.logo_url` is a local file path, the file bytes are
+    /// loaded at startup and served via `/ui/static/custom-logo`. `None`
+    /// when using the built-in logo or a remote URL.
+    pub custom_logo: Option<CustomLogo>,
+}
+
+/// A logo loaded from a local file path at startup.
+///
+/// Served by [`serve_static`] at the `custom-logo` path. The file is
+/// read once and kept in memory for the lifetime of the process.
+#[derive(Clone)]
+pub struct CustomLogo {
+    /// Raw file bytes (SVG, PNG, JPEG).
+    pub bytes: Vec<u8>,
+    /// MIME content type (e.g. `"image/svg+xml"`).
+    pub content_type: &'static str,
 }
 
 impl WebState {
@@ -119,6 +135,7 @@ impl WebState {
             config_warnings: Vec::new(),
             email_is_log_transport: false,
             logo_url: DEFAULT_LOGO_URL.to_string(),
+            custom_logo: None,
         }
     }
 
@@ -140,6 +157,17 @@ impl WebState {
     #[must_use]
     pub fn with_logo_url(mut self, url: String) -> Self {
         self.logo_url = url;
+        self
+    }
+
+    /// Attaches a custom logo loaded from a local file path. When set,
+    /// [`serve_static`] serves it at `/ui/static/custom-logo`.
+    #[must_use]
+    pub fn with_custom_logo(mut self, bytes: Vec<u8>, content_type: &'static str) -> Self {
+        self.custom_logo = Some(CustomLogo {
+            bytes,
+            content_type,
+        });
         self
     }
 
@@ -386,31 +414,55 @@ const HEARTH_ICON_SVG: &[u8] = include_bytes!("assets/hearth-icon.svg");
 
 /// Serves embedded static assets with long-lived caching headers.
 ///
-/// Files are compiled into the binary — there is no filesystem access.
+/// Files are compiled into the binary — there is no filesystem access,
+/// except for `custom-logo` which is loaded from disk at startup when
+/// `branding.logo_url` points to a local file.
+///
 /// The cache headers are safe because the assets are immutable for the
 /// life of a given binary (redeploy to change).
-async fn serve_static(AxumPath(file): AxumPath<String>) -> Response {
-    let (bytes, content_type) = match file.as_str() {
-        "htmx.min.js" => (HTMX_JS, "application/javascript; charset=utf-8"),
-        "app.css" => (APP_CSS, "text/css; charset=utf-8"),
-        "img/hearth-wide-web.svg" => (HEARTH_WIDE_SVG, "image/svg+xml"),
-        "img/hearth-icon.svg" => (HEARTH_ICON_SVG, "image/svg+xml"),
-        _ => {
-            return Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("not found"))
-                .unwrap_or_else(|_| Response::new(Body::empty()));
-        }
+async fn serve_static(
+    State(state): State<Arc<WebState>>,
+    AxumPath(file): AxumPath<String>,
+) -> Response {
+    // Try embedded assets first.
+    let embedded: Option<(&[u8], &str)> = match file.as_str() {
+        "htmx.min.js" => Some((HTMX_JS, "application/javascript; charset=utf-8")),
+        "app.css" => Some((APP_CSS, "text/css; charset=utf-8")),
+        "img/hearth-wide-web.svg" => Some((HEARTH_WIDE_SVG, "image/svg+xml")),
+        "img/hearth-icon.svg" => Some((HEARTH_ICON_SVG, "image/svg+xml")),
+        _ => None,
     };
 
+    if let Some((bytes, content_type)) = embedded {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            )
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| Response::new(Body::empty()));
+    }
+
+    // Runtime-loaded custom logo (from local file path at startup).
+    if file == "custom-logo" {
+        if let Some(logo) = &state.custom_logo {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, logo.content_type)
+                .header(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=3600"),
+                )
+                .body(Body::from(logo.bytes.clone()))
+                .unwrap_or_else(|_| Response::new(Body::empty()));
+        }
+    }
+
     Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type)
-        .header(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        )
-        .body(Body::from(bytes))
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("not found"))
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 

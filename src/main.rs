@@ -353,7 +353,14 @@ async fn run_serve(
         .map_err(|e| format!("invalid bind address: {e}"))?;
 
     // Compose JSON API router + web UI router.
-    let web_state = WebState::new(
+    //
+    // When `branding.logo_url` points to a local file, load it at startup
+    // and serve it via `/ui/static/custom-logo` so the browser can fetch it.
+    // The email service still receives the original file path — its
+    // `resolve_branding()` reads and inlines local SVGs directly.
+    let (web_logo_url, custom_logo) = resolve_web_logo(&config);
+
+    let mut web_state = WebState::new(
         Arc::clone(&identity_engine),
         Arc::clone(&authz_engine),
         Arc::clone(&audit_engine),
@@ -363,13 +370,11 @@ async fn run_serve(
     )
     .with_config_warnings(config.config_warnings.clone())
     .with_email_log_transport(config.email.transport == EmailTransport::Log)
-    .with_logo_url(
-        config
-            .branding
-            .logo_url
-            .clone()
-            .unwrap_or_else(|| web::DEFAULT_LOGO_URL.to_string()),
-    );
+    .with_logo_url(web_logo_url);
+
+    if let Some((bytes, content_type)) = custom_logo {
+        web_state = web_state.with_custom_logo(bytes, content_type);
+    }
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
     // Check for TLS configuration
@@ -731,6 +736,66 @@ fn build_engines(
         AuthzConfig::default(),
     )) as Arc<dyn hearth::authz::AuthorizationEngine>;
     Ok((identity, authz))
+}
+
+/// Resolves the logo URL for the web UI.
+///
+/// When `branding.logo_url` is a local file path (not an HTTP URL and not
+/// already pointing at a `/ui/static/` route), the file is read into memory
+/// and a MIME type is inferred from the extension. The web UI URL is
+/// rewritten to `/ui/static/custom-logo` so the browser can fetch the
+/// bytes from [`web::serve_static`].
+///
+/// Returns `(web_logo_url, Option<(bytes, content_type)>)`.
+fn resolve_web_logo(config: &Config) -> (String, Option<(Vec<u8>, &'static str)>) {
+    let Some(logo_url) = config.branding.logo_url.as_deref() else {
+        return (web::DEFAULT_LOGO_URL.to_string(), None);
+    };
+
+    if !is_local_logo_path(logo_url) {
+        return (logo_url.to_string(), None);
+    }
+
+    let path = std::path::Path::new(logo_url);
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let content_type = mime_for_logo(path);
+            info!(
+                path = %path.display(),
+                content_type,
+                size = bytes.len(),
+                "loaded custom logo from local file"
+            );
+            (
+                "/ui/static/custom-logo".to_string(),
+                Some((bytes, content_type)),
+            )
+        }
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to load custom logo file, falling back to default"
+            );
+            (web::DEFAULT_LOGO_URL.to_string(), None)
+        }
+    }
+}
+
+/// Returns `true` when the logo URL looks like a local filesystem path
+/// rather than a remote URL or the built-in static route.
+fn is_local_logo_path(s: &str) -> bool {
+    !s.starts_with("http://") && !s.starts_with("https://") && !s.starts_with("/ui/static/")
+}
+
+/// Infers a MIME content type from a logo file's extension.
+fn mime_for_logo(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case("svg") => "image/svg+xml",
+        Some(e) if e.eq_ignore_ascii_case("png") => "image/png",
+        Some(e) if e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg") => "image/jpeg",
+        _ => "application/octet-stream",
+    }
 }
 
 /// Prints a `MigrationReport` as a human-readable summary.
