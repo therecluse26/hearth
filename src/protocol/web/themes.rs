@@ -38,78 +38,78 @@ const EMBER: &str = "";
 
 /// Ocean — dark teal/cyan accent.
 const OCEAN: &str = r":root {
-  --ht-content-brand:  13 148 136;
-  --ht-brand-from:     13 148 136;
-  --ht-brand-via:       8 145 178;
-  --ht-brand-deep:     14 116 144;
+  --ht-content-brand:  #0d9488;
+  --ht-brand-from:     #0d9488;
+  --ht-brand-via:      #0891b2;
+  --ht-brand-deep:     #0e7490;
 }";
 
 /// Midnight — dark violet/purple accent.
 const MIDNIGHT: &str = r":root {
-  --ht-content-brand:  124 58 237;
-  --ht-brand-from:     124 58 237;
-  --ht-brand-via:      109 40 217;
-  --ht-brand-deep:      76 29 149;
+  --ht-content-brand:  #7c3aed;
+  --ht-brand-from:     #7c3aed;
+  --ht-brand-via:      #6d28d9;
+  --ht-brand-deep:     #4c1d95;
 }";
 
 /// Forest — dark emerald/green accent.
 const FOREST: &str = r":root {
-  --ht-content-brand:    5 150 105;
-  --ht-brand-from:       5 150 105;
-  --ht-brand-via:        4 120  87;
-  --ht-brand-deep:       6  95  70;
+  --ht-content-brand:  #059669;
+  --ht-brand-from:     #059669;
+  --ht-brand-via:      #047857;
+  --ht-brand-deep:     #065f46;
 }";
 
 /// Cloud — light theme with blue accent.
 const CLOUD: &str = r":root {
-  --ht-surface-base:     232 235 244;
-  --ht-surface-raised:   248 250 255;
-  --ht-surface-elevated: 218 224 238;
-  --ht-surface-input:    248 250 255;
-  --ht-content-primary:   14  14  18;
-  --ht-content-secondary:  68  68  80;
-  --ht-content-muted:     136 136 148;
-  --ht-content-brand:      37  99 235;
-  --ht-content-on-brand:  255 255 255;
-  --ht-divider:             0   0   0;
-  --ht-brand-from:         59 130 246;
-  --ht-brand-via:          37  99 235;
-  --ht-brand-deep:         29  78 216;
+  --ht-surface-base:     #e8ebf4;
+  --ht-surface-raised:   #f8faff;
+  --ht-surface-elevated: #dae0ee;
+  --ht-surface-input:    #f8faff;
+  --ht-content-primary:  #0e0e12;
+  --ht-content-secondary:#444450;
+  --ht-content-muted:    #888894;
+  --ht-content-brand:    #2563eb;
+  --ht-content-on-brand: #ffffff;
+  --ht-divider:          #000000;
+  --ht-brand-from:       #3b82f6;
+  --ht-brand-via:        #2563eb;
+  --ht-brand-deep:       #1d4ed8;
   /* Accent ramp overrides for light background */
-  --ht-teal-bg:   204 251 241;
-  --ht-teal-fg:    13 148 136;
-  --ht-violet-bg: 237 233 254;
-  --ht-violet-fg: 109  40 217;
-  --ht-rose-bg:   255 228 230;
-  --ht-rose-fg:   190  18  60;
-  --ht-steel-bg:  219 234 254;
-  --ht-steel-fg:   29  78 216;
+  --ht-teal-bg:   #ccfbf1;
+  --ht-teal-fg:   #0d9488;
+  --ht-violet-bg: #ede9fe;
+  --ht-violet-fg: #6d28d9;
+  --ht-rose-bg:   #ffe4e6;
+  --ht-rose-fg:   #be123c;
+  --ht-steel-bg:  #dbeafe;
+  --ht-steel-fg:  #1d4ed8;
 }";
 
 /// Slate — light theme with cool blue-gray surfaces and steel-blue brand accent.
 const SLATE: &str = r":root {
-  --ht-surface-base:     228 232 238;
-  --ht-surface-raised:   244 246 249;
-  --ht-surface-elevated: 216 221 230;
-  --ht-surface-input:    244 246 249;
-  --ht-content-primary:   15  25  35;
-  --ht-content-secondary:  58  74  92;
-  --ht-content-muted:     107 125 144;
-  --ht-content-brand:      30  77 140;
-  --ht-content-on-brand:  255 255 255;
-  --ht-divider:             0   0   0;
-  --ht-brand-from:         37  99 235;
-  --ht-brand-via:          29  78 216;
-  --ht-brand-deep:         30  64 175;
+  --ht-surface-base:     #e4e8ee;
+  --ht-surface-raised:   #f4f6f9;
+  --ht-surface-elevated: #d8dde6;
+  --ht-surface-input:    #f4f6f9;
+  --ht-content-primary:  #0f1923;
+  --ht-content-secondary:#3a4a5c;
+  --ht-content-muted:    #6b7d90;
+  --ht-content-brand:    #1e4d8c;
+  --ht-content-on-brand: #ffffff;
+  --ht-divider:          #000000;
+  --ht-brand-from:       #2563eb;
+  --ht-brand-via:        #1d4ed8;
+  --ht-brand-deep:       #1e40af;
   /* Accent ramp overrides for light background */
-  --ht-teal-bg:   204 251 241;
-  --ht-teal-fg:    13 148 136;
-  --ht-violet-bg: 237 233 254;
-  --ht-violet-fg: 109  40 217;
-  --ht-rose-bg:   255 228 230;
-  --ht-rose-fg:   190  18  60;
-  --ht-steel-bg:  219 234 254;
-  --ht-steel-fg:   29  78 216;
+  --ht-teal-bg:   #ccfbf1;
+  --ht-teal-fg:   #0d9488;
+  --ht-violet-bg: #ede9fe;
+  --ht-violet-fg: #6d28d9;
+  --ht-rose-bg:   #ffe4e6;
+  --ht-rose-fg:   #be123c;
+  --ht-steel-bg:  #dbeafe;
+  --ht-steel-fg:  #1d4ed8;
 }";
 
 #[cfg(test)]

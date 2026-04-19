@@ -10,10 +10,10 @@
   </a>
 </div>
 
-<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]">
+<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
   <table class="w-full">
     <thead>
-      <tr class="border-b border-ht-divider/[0.10] bg-ht-surface-elevated">
+      <tr class="border-b border-divider bg-ht-surface-elevated">
         <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Name</th>
         <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Client ID</th>
         <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Type</th>
@@ -30,7 +30,7 @@
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
       <a href="/ui/admin/applications?cursor={{ cursor }}"
-         class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
+         class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
       </a>

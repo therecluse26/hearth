@@ -1,7 +1,7 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Check your email{% endblock %}
 {% block body %}
-<div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-ht-divider/[0.06]">
+<div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-divider-subtle">
   <div class="mb-4 flex justify-center">
     <div class="flex h-12 w-12 items-center justify-center rounded-full bg-success/[0.12]">
       <svg class="h-6 w-6 text-success-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -12,7 +12,7 @@
   <p class="mb-4 text-center text-sm text-ht-content-secondary">We sent a verification link to the email address you entered. Click it to activate your account, then sign in.</p>
 
   {% if show_log_fallback %}
-  <div class="rounded-lg bg-ht-surface-elevated/50 p-4 text-sm text-ht-content-secondary">
+  <div class="rounded-lg bg-elevated-half p-4 text-sm text-ht-content-secondary">
     <p class="font-medium text-ht-content-secondary">Running without SMTP?</p>
     <p class="mt-1">The verification URL was written to the server logs at <code class="rounded bg-ht-surface-elevated px-1 py-0.5 text-xs">WARN</code> level — look for <code class="rounded bg-ht-surface-elevated px-1 py-0.5 text-xs">verification_url</code>.</p>
   </div>

@@ -26,7 +26,7 @@
   <div class="space-y-4">
 
     {# ── Server ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Server</h2>
@@ -37,7 +37,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div>
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Bind Address</dt>
@@ -84,7 +84,7 @@
     </div>
 
     {# ── Storage ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Storage</h2>
@@ -95,7 +95,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div class="sm:col-span-2">
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Data Directory</dt>
@@ -128,7 +128,7 @@
     </div>
 
     {# ── Observability ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Observability</h2>
@@ -139,7 +139,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div>
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Log Level</dt>
@@ -154,7 +154,7 @@
     </div>
 
     {# ── Operational ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Operational</h2>
@@ -165,7 +165,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div>
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Request Timeout</dt>
@@ -188,7 +188,7 @@
     </div>
 
     {# ── Email ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Email</h2>
@@ -199,7 +199,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div>
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Transport</dt>
@@ -331,7 +331,7 @@
     </div>
 
     {# ── Branding ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Branding</h2>
@@ -342,7 +342,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div>
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Product Name</dt>
@@ -365,7 +365,7 @@
     </div>
 
     {# ── Auth Defaults ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Auth Defaults</h2>
@@ -376,7 +376,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div>
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Session TTL</dt>
@@ -410,7 +410,7 @@
     </div>
 
     {# ── Onboarding ── #}
-    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]" x-data="{ open: true }">
+    <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ open: true }">
       <button type="button" @click="open = !open"
               class="flex w-full items-center justify-between px-6 py-4 text-left">
         <h2 class="font-display text-base font-medium text-ht-content-primary">Onboarding</h2>
@@ -421,7 +421,7 @@
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
-      <div x-show="open" x-cloak class="border-t border-ht-divider/[0.06] px-6 pb-6 pt-4">
+      <div x-show="open" x-cloak class="border-t border-divider-subtle px-6 pb-6 pt-4">
         <dl class="grid gap-4 sm:grid-cols-2">
           <div>
             <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Enabled</dt>

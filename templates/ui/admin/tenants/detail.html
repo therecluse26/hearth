@@ -6,7 +6,7 @@
   <span class="text-sm text-ht-content-muted">Configured in hearth.yaml</span>
 </div>
 
-<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-ht-divider/[0.06]">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <dl class="grid gap-4 sm:grid-cols-2">
     <div>
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">ID</dt>
@@ -51,7 +51,7 @@
     {% endmatch %}
     {% match config.email_branding %}
       {% when Some with (branding) %}
-      <div class="col-span-2 mt-2 border-t border-ht-divider/[0.06] pt-4">
+      <div class="col-span-2 mt-2 border-t border-divider-subtle pt-4">
         <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Email Branding</h3>
         <dl class="grid gap-3 sm:grid-cols-2">
           {% match branding.accent_color %}
@@ -84,7 +84,7 @@
         </dl>
       </div>
       {% when None %}
-      <div class="col-span-2 mt-2 border-t border-ht-divider/[0.06] pt-4">
+      <div class="col-span-2 mt-2 border-t border-divider-subtle pt-4">
         <p class="text-xs text-ht-content-muted">Email branding: inherits global defaults</p>
       </div>
     {% endmatch %}
@@ -107,7 +107,7 @@
       <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ tenant.name() }}</strong> and ALL its data. This action cannot be undone.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
         <form method="post" action="/ui/admin/tenants/{{ tenant.id().as_uuid() }}/delete">

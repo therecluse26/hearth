@@ -31,7 +31,7 @@
 
     {# ── Sidebar ── #}
     <aside :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
-           class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-ht-surface-raised border-r border-ht-divider/[0.10] transition-transform duration-200 lg:translate-x-0 lg:static lg:z-auto"
+           class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-ht-surface-raised border-r border-divider transition-transform duration-200 lg:translate-x-0 lg:static lg:z-auto"
            @keydown.escape.window="sidebarOpen = false">
       {# Brand #}
       <div class="flex h-14 items-center gap-2.5 px-5">
@@ -46,13 +46,13 @@
           <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Main</p>
           <ul class="space-y-0.5">
             <li>
-              <a href="/ui" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "dashboard" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "dashboard" %} aria-current="page"{% endif %}>
+              <a href="/ui" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "dashboard" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "dashboard" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                 Dashboard
               </a>
             </li>
             <li>
-              <a href="/ui/account" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "account" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "account" %} aria-current="page"{% endif %}>
+              <a href="/ui/account" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "account" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "account" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                 My Account
               </a>
@@ -65,43 +65,43 @@
           <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Admin</p>
           <ul class="space-y-0.5">
             <li>
-              <a href="/ui/admin/users" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "users" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "users" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/users" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "users" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "users" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 Users
               </a>
             </li>
             <li>
-              <a href="/ui/admin/tenants" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "tenants" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "tenants" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/tenants" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "tenants" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "tenants" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
                 Tenants
               </a>
             </li>
             <li>
-              <a href="/ui/admin/organizations" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "organizations" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "organizations" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/organizations" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "organizations" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "organizations" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
                 Organizations
               </a>
             </li>
             <li>
-              <a href="/ui/admin/applications" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "applications" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "applications" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/applications" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "applications" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "applications" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                 Applications
               </a>
             </li>
             <li>
-              <a href="/ui/admin/sessions" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "sessions" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "sessions" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/sessions" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "sessions" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "sessions" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                 Sessions
               </a>
             </li>
             <li>
-              <a href="/ui/admin/audit" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "audit" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "audit" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/audit" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "audit" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "audit" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
                 Audit Log
               </a>
             </li>
             <li>
-              <a href="/ui/admin/settings" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "settings" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}"{% if active == "settings" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/settings" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "settings" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "settings" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="3"/>
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -117,9 +117,9 @@
       {# User pill #}
       {% match user_email %}
         {% when Some with (email) %}
-        <div class="border-t border-ht-divider/[0.10] px-3 py-3">
+        <div class="border-t border-divider px-3 py-3">
           <div class="flex items-center gap-2.5">
-            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ht-content-brand/20 text-sm font-semibold text-ht-content-brand">
+            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-muted text-sm font-semibold text-ht-content-brand">
               {{ email.chars().next().unwrap_or('?')|upper }}
             </div>
             <div class="min-w-0 flex-1">
@@ -131,7 +131,7 @@
                   <input type="hidden" name="_csrf" value="{{ token }}">
                 {% when None %}
               {% endmatch %}
-              <button type="submit" class="rounded-md p-1 text-ht-content-muted hover:bg-ht-divider/[0.07] hover:text-ht-content-primary" title="Sign out">
+              <button type="submit" class="rounded-md p-1 text-ht-content-muted hover-bg-divider hover:text-ht-content-primary" title="Sign out">
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
               </button>
             </form>
@@ -144,9 +144,9 @@
     {# ── Main content area ── #}
     <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {# Top bar #}
-      <header class="flex h-14 shrink-0 items-center gap-4 border-b border-ht-divider/[0.10] bg-ht-surface-base px-4">
+      <header class="flex h-14 shrink-0 items-center gap-4 border-b border-divider bg-ht-surface-base px-4">
         {# Mobile hamburger #}
-        <button @click="sidebarOpen = !sidebarOpen" class="rounded-md p-1.5 text-ht-content-muted hover:bg-ht-divider/[0.07] lg:hidden" aria-label="Toggle sidebar">
+        <button @click="sidebarOpen = !sidebarOpen" class="rounded-md p-1.5 text-ht-content-muted hover-bg-divider lg:hidden" aria-label="Toggle sidebar">
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
 

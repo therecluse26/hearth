@@ -6,7 +6,7 @@
 </div>
 
 {# Filter form #}
-<div class="mb-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-ht-divider/[0.06]">
+<div class="mb-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
   <form method="get" action="/ui/admin/audit"
         hx-get="/ui/admin/audit" hx-target="#table-body" hx-swap="innerHTML"
         hx-indicator="#audit-spinner"
@@ -32,17 +32,17 @@
         Filter
       </button>
       <div id="audit-spinner" class="htmx-indicator">
-        <div class="h-4 w-4 animate-spinner rounded-full border-2 border-ht-divider/[0.20] border-t-ht-content-brand"></div>
+        <div class="h-4 w-4 animate-spinner rounded-full border-2 border-divider-strong border-t-ht-content-brand"></div>
       </div>
     </div>
   </form>
 </div>
 
-<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]">
+<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
   <div class="overflow-x-auto">
     <table class="w-full">
       <thead>
-        <tr class="border-b border-ht-divider/[0.10] bg-ht-surface-elevated">
+        <tr class="border-b border-divider bg-ht-surface-elevated">
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Time</th>
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Action</th>
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Actor</th>

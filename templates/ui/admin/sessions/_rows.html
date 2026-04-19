@@ -1,5 +1,5 @@
 {% for s in sessions %}
-<tr class="border-b border-ht-divider/[0.06]" id="session-{{ s.session.id().as_uuid() }}">
+<tr class="border-b border-divider-subtle" id="session-{{ s.session.id().as_uuid() }}">
   <td class="px-4 py-3">
     <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ s.session.id().as_uuid() }}</code>
   </td>

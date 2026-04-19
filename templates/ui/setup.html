@@ -1,7 +1,7 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · First-run setup{% endblock %}
 {% block body %}
-<div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-ht-divider/[0.06]">
+<div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-divider-subtle">
   <div class="mb-6 flex items-center justify-center gap-2.5">
     <img src="{{ logo_url }}" alt="{{ product_name }}" class="w-24">
   </div>
@@ -21,19 +21,19 @@
     <div>
       <label for="admin_display_name" class="block text-sm font-medium text-ht-content-secondary">Your display name</label>
       <input type="text" id="admin_display_name" name="admin_display_name" required
-             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <div>
       <label for="admin_email" class="block text-sm font-medium text-ht-content-secondary">Email</label>
       <input type="email" id="admin_email" name="admin_email" required autocomplete="email"
-             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <div>
       <label for="admin_password" class="block text-sm font-medium text-ht-content-secondary">Password <span class="font-normal text-ht-content-muted">(min 12 characters)</span></label>
       <input type="password" id="admin_password" name="admin_password" required minlength="12" autocomplete="new-password"
-             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <button type="submit"

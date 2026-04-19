@@ -4,13 +4,13 @@
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ org.name() }}</h1>
   <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}/edit"
-     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
+     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
     Edit
   </a>
 </div>
 
 {# Organization info card #}
-<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-ht-divider/[0.06]">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <dl class="grid gap-4 sm:grid-cols-2">
     <div>
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">ID</dt>
@@ -38,7 +38,7 @@
 </div>
 
 {# Members section #}
-<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-ht-divider/[0.06]">
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <div class="mb-4 flex items-center justify-between">
     <h2 class="text-lg font-semibold text-ht-content-primary">Members</h2>
   </div>
@@ -64,7 +64,7 @@
         <label class="block text-xs font-medium text-ht-content-secondary">Add member</label>
 
         {# Selected user chip #}
-        <div x-show="selectedUser" x-cloak class="mt-1 flex items-center gap-2 rounded-lg border border-ht-content-brand/30 bg-ht-content-brand/10 px-3 py-1.5 text-sm">
+        <div x-show="selectedUser" x-cloak class="mt-1 flex items-center gap-2 rounded-lg border border-brand-accent bg-brand-subtle px-3 py-1.5 text-sm">
           <div class="flex-1">
             <span class="font-medium text-ht-content-primary" x-text="selectedUser?.name"></span>
             <span class="text-ht-content-muted" x-text="selectedUser?.email"></span>
@@ -83,7 +83,7 @@
                  hx-trigger="input changed delay:300ms"
                  hx-target="#search-results"
                  hx-include="[name='q']"
-                 class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+                 class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
           <input type="hidden" name="q" :value="searchQuery">
         </div>
 
@@ -92,13 +92,13 @@
              id="search-results"
              hx-on::after-settle="if ($el.children.length > 0) $dispatch('show-dropdown')"
              @show-dropdown.window="showDropdown = true"
-             class="absolute z-10 mt-1 w-full rounded-lg border border-ht-divider/[0.10] bg-ht-surface-elevated shadow-md">
+             class="absolute z-10 mt-1 w-full rounded-lg border border-divider bg-ht-surface-elevated shadow-md">
         </div>
       </div>
 
       <div>
         <select name="role"
-                class="rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+                class="rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
           <option value="Member">Member</option>
           <option value="Admin">Admin</option>
           <option value="Owner">Owner</option>
@@ -126,7 +126,7 @@
           <div class="mb-4">
             <label class="block text-xs font-medium text-ht-content-secondary">Role</label>
             <select name="role" x-model="inviteRole"
-                    class="mt-1 w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary">
+                    class="mt-1 w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary">
               <option value="Member">Member</option>
               <option value="Admin">Admin</option>
               <option value="Owner">Owner</option>
@@ -134,7 +134,7 @@
           </div>
           <div class="flex justify-end gap-3">
             <button @click.prevent="showInviteModal = false" type="button"
-                    class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
+                    class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
               Cancel
             </button>
             <button type="submit"
@@ -150,7 +150,7 @@
   {# Members table #}
   <table class="w-full">
     <thead>
-      <tr class="border-b border-ht-divider/[0.06]">
+      <tr class="border-b border-divider-subtle">
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">User</th>
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
         <th class="px-3 py-2"></th>
@@ -158,7 +158,7 @@
     </thead>
     <tbody>
       {% for m in members %}
-      <tr class="border-b border-ht-divider/[0.04]">
+      <tr class="border-b border-divider-faint">
         <td class="px-3 py-2">
           <a href="/ui/admin/users/{{ m.membership.user_id().as_uuid() }}" class="group">
             <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.user_name }}</div>
@@ -178,7 +178,7 @@
           <div class="flex items-center justify-end gap-2">
             <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.membership.user_id().as_uuid() }}/role" class="inline-flex items-center gap-1">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-              <select name="role" class="rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-2 py-0.5 text-xs text-ht-content-primary">
+              <select name="role" class="rounded-sm border border-divider bg-ht-surface-elevated px-2 py-0.5 text-xs text-ht-content-primary">
                 <option value="Member" {% if m.membership.role()|fmt("{:?}") == "Member" %}selected{% endif %}>Member</option>
                 <option value="Admin" {% if m.membership.role()|fmt("{:?}") == "Admin" %}selected{% endif %}>Admin</option>
                 <option value="Owner" {% if m.membership.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
@@ -201,7 +201,7 @@
 </div>
 
 {# Invitations section #}
-<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-ht-divider/[0.06]">
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <div class="mb-4 flex items-center justify-between">
     <h2 class="text-lg font-semibold text-ht-content-primary">Invitations</h2>
   </div>
@@ -216,11 +216,11 @@
     <div class="flex-1">
       <label for="invite_email" class="block text-xs font-medium text-ht-content-secondary">Invite by email</label>
       <input type="email" id="invite_email" name="email" required placeholder="newuser@example.com"
-             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
     <div>
       <select name="role"
-              class="rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+              class="rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
         <option value="Member">Member</option>
         <option value="Admin">Admin</option>
         <option value="Owner">Owner</option>
@@ -232,7 +232,7 @@
   {# Invitations table #}
   <table class="w-full">
     <thead>
-      <tr class="border-b border-ht-divider/[0.06]">
+      <tr class="border-b border-divider-subtle">
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Email</th>
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
@@ -241,7 +241,7 @@
     </thead>
     <tbody>
       {% for inv in invitations %}
-      <tr class="border-b border-ht-divider/[0.04]">
+      <tr class="border-b border-divider-faint">
         <td class="px-3 py-2 text-sm text-ht-content-secondary">{{ inv.email() }}</td>
         <td class="px-3 py-2">
           {% if inv.role()|fmt("{:?}") == "Owner" %}
@@ -295,7 +295,7 @@
       <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ org.name() }}</strong> and ALL its members and invitations. This action cannot be undone.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
         <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/delete">

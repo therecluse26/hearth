@@ -1,5 +1,5 @@
 {% for user in users %}
-<tr class="border-b border-ht-divider/[0.06]">
+<tr class="border-b border-divider-subtle">
   <td class="px-4 py-3">
     <a href="/ui/admin/users/{{ user.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ user.email() }}</a>
   </td>

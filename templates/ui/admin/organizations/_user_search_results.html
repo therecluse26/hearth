@@ -14,7 +14,7 @@
   {% for u in users %}
   <button type="button"
           @click="selectedUser = { id: '{{ u.id().as_uuid() }}', name: '{{ u.display_name() }}', email: '{{ u.email() }}' }; showDropdown = false"
-          class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-ht-divider/[0.07]">
+          class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover-bg-divider">
     <div class="min-w-0 flex-1">
       <div class="truncate font-medium text-ht-content-primary">{{ u.display_name() }}</div>
       <div class="truncate text-xs text-ht-content-muted">{{ u.email() }}</div>

@@ -7,13 +7,13 @@
     <p class="mt-1 text-sm text-ht-content-muted">{{ user.email() }}</p>
   </div>
   <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
-     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
+     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
     Edit
   </a>
 </div>
 
 {# Info card #}
-<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-ht-divider/[0.06]">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <dl class="grid gap-4 sm:grid-cols-3">
     <div>
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">ID</dt>
@@ -54,7 +54,7 @@
       <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ user.display_name() }}</strong>. This action cannot be undone.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
         <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/delete">

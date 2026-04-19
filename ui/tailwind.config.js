@@ -18,8 +18,8 @@ module.exports = {
       sm: "0 1px 2px rgba(0, 0, 0, 0.3)",
       DEFAULT: "0 4px 16px rgba(0, 0, 0, 0.4)",
       md: "0 4px 16px rgba(0, 0, 0, 0.4)",
-      focus: "0 0 0 3px rgb(var(--ht-brand-from) / 0.30)",
-      "cta-hover": "0 8px 24px -4px rgb(var(--ht-brand-via) / 0.35)",
+      focus: "0 0 0 3px color-mix(in srgb, var(--ht-brand-from) 30%, transparent)",
+      "cta-hover": "0 8px 24px -4px color-mix(in srgb, var(--ht-brand-via) 35%, transparent)",
     },
     extend: {
       // ── Color tokens (THEME.md § Colors) ─────────────────────
@@ -28,25 +28,26 @@ module.exports = {
         // Each token maps to a CSS custom property defined in :root in
         // input.css. Named themes override only the vars they need.
         'ht-surface': {
-          base:     'rgb(var(--ht-surface-base)     / <alpha-value>)',
-          raised:   'rgb(var(--ht-surface-raised)   / <alpha-value>)',
-          elevated: 'rgb(var(--ht-surface-elevated) / <alpha-value>)',
-          input:    'rgb(var(--ht-surface-input)    / <alpha-value>)',
+          base:     'var(--ht-surface-base)',
+          raised:   'var(--ht-surface-raised)',
+          elevated: 'var(--ht-surface-elevated)',
+          input:    'var(--ht-surface-input)',
         },
         'ht-content': {
-          primary:    'rgb(var(--ht-content-primary)    / <alpha-value>)',
-          secondary:  'rgb(var(--ht-content-secondary)  / <alpha-value>)',
-          muted:      'rgb(var(--ht-content-muted)      / <alpha-value>)',
-          brand:      'rgb(var(--ht-content-brand)      / <alpha-value>)',
-          'on-brand': 'rgb(var(--ht-content-on-brand)   / <alpha-value>)',
+          primary:    'var(--ht-content-primary)',
+          secondary:  'var(--ht-content-secondary)',
+          muted:      'var(--ht-content-muted)',
+          brand:      'var(--ht-content-brand)',
+          'on-brand': 'var(--ht-content-on-brand)',
         },
-        // Single divider token — used with opacity modifier for borders AND
-        // subtle backgrounds (bg-ht-divider/10 replaces bg-white/10 in nav).
-        'ht-divider': 'rgb(var(--ht-divider) / <alpha-value>)',
+        // Single divider token — base color for borders + low-opacity backgrounds.
+        // Alpha patterns use semantic component classes (border-divider, etc.)
+        // defined in input.css via color-mix().
+        'ht-divider': 'var(--ht-divider)',
         'ht-brand': {
-          from: 'rgb(var(--ht-brand-from) / <alpha-value>)',
-          via:  'rgb(var(--ht-brand-via)  / <alpha-value>)',
-          deep: 'rgb(var(--ht-brand-deep) / <alpha-value>)',
+          from: 'var(--ht-brand-from)',
+          via:  'var(--ht-brand-via)',
+          deep: 'var(--ht-brand-deep)',
         },
         // Foundation — cool graphite
         graphite: {
@@ -72,24 +73,24 @@ module.exports = {
         },
         // Accent ramps — bg/fg are CSS-variable-backed for theme adaptability
         teal: {
-          bg:      'rgb(var(--ht-teal-bg)    / <alpha-value>)',
+          bg:      'var(--ht-teal-bg)',
           DEFAULT: "#2b8073",
-          fg:      'rgb(var(--ht-teal-fg)    / <alpha-value>)',
+          fg:      'var(--ht-teal-fg)',
         },
         violet: {
-          bg:      'rgb(var(--ht-violet-bg)  / <alpha-value>)',
+          bg:      'var(--ht-violet-bg)',
           DEFAULT: "#6b5b95",
-          fg:      'rgb(var(--ht-violet-fg)  / <alpha-value>)',
+          fg:      'var(--ht-violet-fg)',
         },
         rose: {
-          bg:      'rgb(var(--ht-rose-bg)    / <alpha-value>)',
+          bg:      'var(--ht-rose-bg)',
           DEFAULT: "#b86671",
-          fg:      'rgb(var(--ht-rose-fg)    / <alpha-value>)',
+          fg:      'var(--ht-rose-fg)',
         },
         steel: {
-          bg:      'rgb(var(--ht-steel-bg)   / <alpha-value>)',
+          bg:      'var(--ht-steel-bg)',
           DEFAULT: "#3d5a80",
-          fg:      'rgb(var(--ht-steel-fg)   / <alpha-value>)',
+          fg:      'var(--ht-steel-fg)',
         },
         // Semantic states
         success: {
@@ -117,8 +118,8 @@ module.exports = {
       },
       // ── Border tokens (THEME.md § Borders) ───────────────────
       borderColor: {
-        subtle: "rgb(var(--ht-divider) / 0.06)",
-        strong: "rgb(var(--ht-divider) / 0.18)",
+        subtle: "color-mix(in srgb, var(--ht-divider) 6%, transparent)",
+        strong: "color-mix(in srgb, var(--ht-divider) 18%, transparent)",
       },
       // ── Motion tokens (THEME.md § Motion) ────────────────────
       keyframes: {
