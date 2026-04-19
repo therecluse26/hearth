@@ -285,7 +285,7 @@ Six themes ship built in. Configure via `branding.theme` in `hearth.yaml`.
 | `midnight` | dark | Violet/purple brand on deep graphite |
 | `forest` | dark | Emerald/green brand on deep graphite |
 | `cloud` | light | Blue brand on near-white surfaces |
-| `parchment` | light | Warm amber brand on warm cream surfaces |
+| `slate` | light | Steel-blue brand on cool blue-gray surfaces |
 
 ### Custom CSS
 

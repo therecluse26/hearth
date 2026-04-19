@@ -18,7 +18,7 @@ module.exports = {
       sm: "0 1px 2px rgba(0, 0, 0, 0.3)",
       DEFAULT: "0 4px 16px rgba(0, 0, 0, 0.4)",
       md: "0 4px 16px rgba(0, 0, 0, 0.4)",
-      focus: "0 0 0 3px rgb(var(--ht-brand-from) / 0.15)",
+      focus: "0 0 0 3px rgb(var(--ht-brand-from) / 0.30)",
       "cta-hover": "0 8px 24px -4px rgb(var(--ht-brand-via) / 0.35)",
     },
     extend: {
@@ -70,26 +70,26 @@ module.exports = {
           orange: "#e8743b", // gradient mid-stop, hover state for ember elements
           deep: "#a8321f",   // gradient deep-stop, decorative only
         },
-        // Accent ramps
+        // Accent ramps — bg/fg are CSS-variable-backed for theme adaptability
         teal: {
-          bg: "#0f2825",
+          bg:      'rgb(var(--ht-teal-bg)    / <alpha-value>)',
           DEFAULT: "#2b8073",
-          fg: "#7ac4b8",
+          fg:      'rgb(var(--ht-teal-fg)    / <alpha-value>)',
         },
         violet: {
-          bg: "#1d1a2e",
+          bg:      'rgb(var(--ht-violet-bg)  / <alpha-value>)',
           DEFAULT: "#6b5b95",
-          fg: "#b0a5d4",
+          fg:      'rgb(var(--ht-violet-fg)  / <alpha-value>)',
         },
         rose: {
-          bg: "#2a1920",
+          bg:      'rgb(var(--ht-rose-bg)    / <alpha-value>)',
           DEFAULT: "#b86671",
-          fg: "#e5a3aa",
+          fg:      'rgb(var(--ht-rose-fg)    / <alpha-value>)',
         },
         steel: {
-          bg: "#1a2332",
+          bg:      'rgb(var(--ht-steel-bg)   / <alpha-value>)',
           DEFAULT: "#3d5a80",
-          fg: "#8fa8c9",
+          fg:      'rgb(var(--ht-steel-fg)   / <alpha-value>)',
         },
         // Semantic states
         success: {

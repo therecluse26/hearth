@@ -6,7 +6,7 @@
 </div>
 
 {# Filter form #}
-<div class="mb-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-white/6">
+<div class="mb-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-ht-divider/[0.06]">
   <form method="get" action="/ui/admin/audit"
         hx-get="/ui/admin/audit" hx-target="#table-body" hx-swap="innerHTML"
         hx-indicator="#audit-spinner"
@@ -14,17 +14,17 @@
     <div class="min-w-0 flex-1">
       <label for="actor" class="block text-xs font-medium text-ht-content-muted">Actor</label>
       <input type="text" id="actor" name="actor" value="{{ form_actor }}" placeholder="user UUID or 'system'"
-             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:ring-2 focus:ring-ht-brand-from/20">
+             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
     <div class="min-w-0 flex-1">
       <label for="action" class="block text-xs font-medium text-ht-content-muted">Action</label>
       <input type="text" id="action" name="action" value="{{ form_action }}" placeholder="e.g. user_created"
-             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:ring-2 focus:ring-ht-brand-from/20">
+             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
     <div class="w-24">
       <label for="limit" class="block text-xs font-medium text-ht-content-muted">Limit</label>
       <input type="number" id="limit" name="limit" value="{{ form_limit }}" min="1" max="200"
-             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:ring-2 focus:ring-ht-brand-from/20">
+             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
     <div class="flex items-center gap-2">
       <button type="submit"
@@ -38,7 +38,7 @@
   </form>
 </div>
 
-<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-white/6">
+<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-ht-divider/[0.06]">
   <div class="overflow-x-auto">
     <table class="w-full">
       <thead>

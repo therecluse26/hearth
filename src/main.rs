@@ -138,7 +138,9 @@ async fn main() {
             bind,
         } => {
             if let Err(e) = run_serve(dev, config_path, port, bind).await {
-                error!("{e}");
+                // Use eprintln! here — tracing may not be initialized yet if
+                // the error occurred during config loading.
+                eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }

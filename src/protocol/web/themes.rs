@@ -9,7 +9,7 @@
 //! `:root` inside `input.css`, so it returns an empty string here.
 
 /// All valid theme names accepted by `branding.theme` in `hearth.yaml`.
-pub const VALID_THEMES: &[&str] = &["ember", "ocean", "midnight", "forest", "cloud", "parchment"];
+pub const VALID_THEMES: &[&str] = &["ember", "ocean", "midnight", "forest", "cloud", "slate"];
 
 /// Returns the CSS override block for the given theme name.
 ///
@@ -24,7 +24,7 @@ pub fn theme_css(name: &str) -> &'static str {
         "midnight" => MIDNIGHT,
         "forest" => FOREST,
         "cloud" => CLOUD,
-        "parchment" => PARCHMENT,
+        "slate" => SLATE,
         _ => "",
     }
 }
@@ -75,23 +75,41 @@ const CLOUD: &str = r":root {
   --ht-brand-from:         59 130 246;
   --ht-brand-via:          37  99 235;
   --ht-brand-deep:         29  78 216;
+  /* Accent ramp overrides for light background */
+  --ht-teal-bg:   204 251 241;
+  --ht-teal-fg:    13 148 136;
+  --ht-violet-bg: 237 233 254;
+  --ht-violet-fg: 109  40 217;
+  --ht-rose-bg:   255 228 230;
+  --ht-rose-fg:   190  18  60;
+  --ht-steel-bg:  219 234 254;
+  --ht-steel-fg:   29  78 216;
 }";
 
-/// Parchment — light theme with warm amber accent.
-const PARCHMENT: &str = r":root {
-  --ht-surface-base:     234 226 208;
-  --ht-surface-raised:   250 244 228;
-  --ht-surface-elevated: 220 210 188;
-  --ht-surface-input:    250 244 228;
-  --ht-content-primary:   28  20   8;
-  --ht-content-secondary:  90  74  48;
-  --ht-content-muted:     140 120  88;
-  --ht-content-brand:     217 119   6;
-  --ht-content-on-brand:  255 252 244;
+/// Slate — light theme with cool blue-gray surfaces and steel-blue brand accent.
+const SLATE: &str = r":root {
+  --ht-surface-base:     228 232 238;
+  --ht-surface-raised:   244 246 249;
+  --ht-surface-elevated: 216 221 230;
+  --ht-surface-input:    244 246 249;
+  --ht-content-primary:   15  25  35;
+  --ht-content-secondary:  58  74  92;
+  --ht-content-muted:     107 125 144;
+  --ht-content-brand:      30  77 140;
+  --ht-content-on-brand:  255 255 255;
   --ht-divider:             0   0   0;
-  --ht-brand-from:        217 119   6;
-  --ht-brand-via:         180  83   9;
-  --ht-brand-deep:        146  64  14;
+  --ht-brand-from:         37  99 235;
+  --ht-brand-via:          29  78 216;
+  --ht-brand-deep:         30  64 175;
+  /* Accent ramp overrides for light background */
+  --ht-teal-bg:   204 251 241;
+  --ht-teal-fg:    13 148 136;
+  --ht-violet-bg: 237 233 254;
+  --ht-violet-fg: 109  40 217;
+  --ht-rose-bg:   255 228 230;
+  --ht-rose-fg:   190  18  60;
+  --ht-steel-bg:  219 234 254;
+  --ht-steel-fg:   29  78 216;
 }";
 
 #[cfg(test)]
@@ -134,7 +152,7 @@ mod tests {
         assert!(VALID_THEMES.contains(&"midnight"));
         assert!(VALID_THEMES.contains(&"forest"));
         assert!(VALID_THEMES.contains(&"cloud"));
-        assert!(VALID_THEMES.contains(&"parchment"));
+        assert!(VALID_THEMES.contains(&"slate"));
         assert_eq!(VALID_THEMES.len(), 6);
     }
 }

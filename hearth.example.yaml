@@ -62,8 +62,8 @@ operational:
 #   # Supported formats: .svg, .png, .jpg/.jpeg
 #   # logo_url: "/opt/hearth/branding/logo.svg"
 #
-#   # Named UI theme. Choices: ember (default dark) | ocean | midnight | forest | cloud | parchment
-#   # cloud and parchment are light themes; the rest are dark themes.
+#   # Named UI theme. Choices: ember (default dark) | ocean | midnight | forest | cloud | slate
+#   # cloud and slate are light themes; the rest are dark themes.
 #   # theme: ocean
 #
 #   # Optional path to a CSS file appended after the named theme. Use this to

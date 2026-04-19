@@ -192,6 +192,78 @@ Copy [`hearth.example.yaml`](hearth.example.yaml) to `hearth.yaml` and edit. Eve
 
 ---
 
+## Theming the Admin UI
+
+Hearth's admin UI is fully themeable via CSS custom properties. Six named themes ship built in; operators can also supply arbitrary CSS to override any token.
+
+### Named themes
+
+Configure with `branding.theme` in `hearth.yaml`:
+
+| Name | Mode | Description |
+|---|---|---|
+| `ember` | dark | Default — amber/orange brand on cool graphite |
+| `ocean` | dark | Teal/cyan brand on deep graphite |
+| `midnight` | dark | Violet/purple brand on deep graphite |
+| `forest` | dark | Emerald/green brand on deep graphite |
+| `cloud` | light | Blue brand on near-white surfaces |
+| `slate` | light | Steel-blue brand on cool blue-gray surfaces |
+
+```yaml
+branding:
+  theme: slate
+```
+
+An unknown theme name is a config error at startup.
+
+### Custom CSS
+
+Append a CSS file after the named theme to override any `--ht-*` variable or add custom rules. The file is read once at startup:
+
+```yaml
+branding:
+  theme: ember
+  custom_css: /etc/hearth/brand.css
+```
+
+### Per-tenant themes
+
+Each tenant can override the global theme independently:
+
+```yaml
+tenants:
+  acme:
+    web:
+      theme: cloud
+      custom_css: /etc/hearth/tenants/acme.css
+```
+
+The per-tenant theme CSS is served from `GET /ui/static/tenant-theme/{tenant_id}` and is cached with `ETag` support.
+
+### CSS custom property API
+
+All theme tokens are `--ht-*` CSS custom properties. A custom CSS file need only override the variables it changes; unset variables fall back to the `ember` defaults. Key variables:
+
+```css
+:root {
+  --ht-surface-base:      /* page background (RGB triple, no alpha) */
+  --ht-surface-raised:    /* sidebar / panel background */
+  --ht-surface-elevated:  /* card / modal background */
+  --ht-content-primary:   /* primary text */
+  --ht-content-secondary: /* secondary text */
+  --ht-content-muted:     /* muted / placeholder text */
+  --ht-content-brand:     /* brand-colored text and icons */
+  --ht-content-on-brand:  /* text on top of brand gradient buttons */
+  --ht-brand-from:        /* gradient start color */
+  --ht-brand-via:         /* gradient midpoint */
+  --ht-brand-deep:        /* gradient end / hover state */
+}
+```
+
+For the full token list and design rationale see [`docs/specs/THEME.md`](docs/specs/THEME.md).
+
+---
+
 ## Running with Docker Compose
 
 A two-service compose stack (Hearth + [Mailpit](https://mailpit.axllent.org/) as a dev SMTP sink) lives at the repo root:

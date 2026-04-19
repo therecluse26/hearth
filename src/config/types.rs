@@ -381,7 +381,7 @@ pub struct BrandingConfig {
     #[serde(default)]
     pub logo_url: Option<String>,
     /// Named UI theme. One of: `ember` (default dark), `ocean`, `midnight`,
-    /// `forest`, `cloud` (light), `parchment` (light). Case-insensitive.
+    /// `forest`, `cloud` (light), `slate` (light). Case-insensitive.
     /// Validated at startup — an unknown name is a config error.
     #[serde(default)]
     pub theme: Option<String>,

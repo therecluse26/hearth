@@ -28,12 +28,23 @@
   --ht-brand-from: 245 181 68;          /* ember-gold */
   --ht-brand-via:  232 116 59;          /* ember-orange */
   --ht-brand-deep: 168 50 31;           /* ember-deep */
+
+  /* Accent ramp bg/fg — dark defaults; light themes override in themes.rs */
+  --ht-teal-bg:    15  40  37;
+  --ht-teal-fg:   122 196 184;
+  --ht-violet-bg:  29  26  46;
+  --ht-violet-fg: 176 165 212;
+  --ht-rose-bg:    42  25  32;
+  --ht-rose-fg:   229 163 170;
+  --ht-steel-bg:   26  35  50;
+  --ht-steel-fg:  143 168 201;
 }
 
 @layer base {
   body {
     background-color: rgb(var(--ht-surface-base));
     color: rgb(var(--ht-content-primary));
+    font-family: Manrope, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }

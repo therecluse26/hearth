@@ -30,7 +30,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// Valid UI theme names — must match `protocol::web::themes::VALID_THEMES`.
-const VALID_UI_THEMES: &[&str] = &["ember", "ocean", "midnight", "forest", "cloud", "parchment"];
+const VALID_UI_THEMES: &[&str] = &["ember", "ocean", "midnight", "forest", "cloud", "slate"];
 
 /// Top-level Hearth configuration.
 ///
