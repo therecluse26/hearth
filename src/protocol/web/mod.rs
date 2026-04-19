@@ -229,10 +229,7 @@ impl WebState {
     /// Also computes and caches per-entry `ETags`.
     #[must_use]
     pub fn with_tenant_themes(mut self, map: HashMap<String, String>) -> Self {
-        self.tenant_theme_etags = map
-            .iter()
-            .map(|(k, v)| (k.clone(), etag_for(v)))
-            .collect();
+        self.tenant_theme_etags = map.iter().map(|(k, v)| (k.clone(), etag_for(v))).collect();
         self.tenant_themes = map;
         self
     }
@@ -252,18 +249,16 @@ impl WebState {
         self.current_tenant.read().ok().and_then(|g| g.clone())
     }
 
-    /// Returns the per-tenant theme URL for the currently-pinned tenant,
+    /// Returns the per-tenant theme CSS for the currently-pinned tenant,
     /// or `None` if no per-tenant theme is configured.
     ///
-    /// Used by all authenticated handlers to populate `tenant_theme_url`
-    /// in template structs, enabling per-tenant CSS overrides.
+    /// Used by all authenticated handlers to populate `tenant_theme_css`
+    /// in template structs, enabling inline per-tenant CSS overrides.
     #[must_use]
-    pub fn tenant_theme_url(&self) -> Option<String> {
+    pub fn tenant_theme_css(&self) -> Option<String> {
         let tenant_id = self.current_tenant()?;
         let id = tenant_id.as_uuid().to_string();
-        self.tenant_themes
-            .contains_key(&id)
-            .then(|| format!("/ui/static/tenant-theme/{id}"))
+        self.tenant_themes.get(&id).cloned()
     }
 }
 
@@ -300,7 +295,7 @@ impl WebState {
 /// | `/ui/admin/sessions` | GET | Admin sessions list |
 /// | `/ui/admin/sessions/{id}/revoke` | POST | Revoke session |
 /// | `/ui/admin/audit` | GET | Audit log viewer |
-/// | `/ui/static/{file}` | GET | Embedded static assets (htmx, css) |
+/// | `/ui/static/{file}` | GET | Static assets (CSS, theme, htmx, logo) |
 #[allow(clippy::too_many_lines)]
 pub fn router(state: WebState) -> Router {
     let shared = Arc::new(state);
@@ -468,14 +463,6 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_test_email),
         )
         .route("/static/{*file}", axum::routing::get(serve_static))
-        .route(
-            "/static/theme.css",
-            axum::routing::get(serve_theme_css),
-        )
-        .route(
-            "/static/tenant-theme/{id}",
-            axum::routing::get(serve_tenant_theme),
-        )
         .with_state(Arc::clone(&shared));
 
     // axum 0.8 nest does NOT match `/ui/` (trailing slash) — only `/ui`
@@ -553,7 +540,11 @@ pub const HEARTH_WIDE_SVG: &[u8] = include_bytes!("assets/hearth-wide-web.svg");
 /// Hearth icon (SVG).
 const HEARTH_ICON_SVG: &[u8] = include_bytes!("assets/hearth-icon.svg");
 
-/// Serves embedded static assets with appropriate caching headers.
+/// Serves all `/ui/static/*` assets — embedded files, operator theme
+/// CSS, per-tenant theme CSS, and runtime-loaded custom logos.
+///
+/// Handles `theme.css` and `tenant-theme/{id}` inline to avoid
+/// catch-all vs specific-route ambiguity in the axum router.
 ///
 /// Files are compiled into the binary — there is no filesystem access,
 /// except for `custom-logo` which is loaded from disk at startup when
@@ -568,6 +559,55 @@ async fn serve_static(
     State(state): State<Arc<WebState>>,
     AxumPath(file): AxumPath<String>,
 ) -> Response {
+    // Global theme CSS (named theme + optional operator custom CSS).
+    if file == "theme.css" {
+        let etag = state.theme_css_etag.as_str();
+        if is_not_modified(&headers, etag) {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(header::ETAG, etag)
+                .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+                .body(Body::empty())
+                .unwrap_or_else(|_| Response::new(Body::empty()));
+        }
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+            .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+            .header(header::ETAG, etag)
+            .body(Body::from(state.theme_css.clone()))
+            .unwrap_or_else(|_| Response::new(Body::empty()));
+    }
+
+    // Per-tenant theme CSS.
+    if let Some(id) = file.strip_prefix("tenant-theme/") {
+        if let Some(css) = state.tenant_themes.get(id) {
+            // INVARIANT: etag is inserted for every key in tenant_themes
+            // by with_tenant_themes().
+            #[allow(clippy::unwrap_used)]
+            let etag = state.tenant_theme_etags.get(id).unwrap().as_str();
+            if is_not_modified(&headers, etag) {
+                return Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header(header::ETAG, etag)
+                    .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| Response::new(Body::empty()));
+            }
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+                .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+                .header(header::ETAG, etag)
+                .body(Body::from(css.clone()))
+                .unwrap_or_else(|_| Response::new(Body::empty()));
+        }
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("not found"))
+            .unwrap_or_else(|_| Response::new(Body::empty()));
+    }
+
     // `app.css` uses `ETag`-based conditional caching.
     if file == "app.css" {
         let etag = app_css_etag();
@@ -623,75 +663,6 @@ async fn serve_static(
         }
     }
 
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("not found"))
-        .unwrap_or_else(|_| Response::new(Body::empty()))
-}
-
-/// Serves the global theme CSS at `/ui/static/theme.css`.
-///
-/// Contains the named theme overrides and any operator custom CSS. Empty
-/// when the default ember theme is active and no custom CSS is set.
-/// Supports conditional requests via `ETag` / `If-None-Match`.
-async fn serve_theme_css(headers: HeaderMap, State(state): State<Arc<WebState>>) -> Response {
-    let etag = state.theme_css_etag.as_str();
-    if is_not_modified(&headers, etag) {
-        return Response::builder()
-            .status(StatusCode::NOT_MODIFIED)
-            .header(header::ETAG, etag)
-            .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
-            .body(Body::empty())
-            .unwrap_or_else(|_| Response::new(Body::empty()));
-    }
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
-        .header(
-            header::CACHE_CONTROL,
-            // Revalidate on each request — operators can change themes.
-            HeaderValue::from_static("no-cache"),
-        )
-        .header(header::ETAG, etag)
-        .body(Body::from(state.theme_css.clone()))
-        .unwrap_or_else(|_| Response::new(Body::empty()))
-}
-
-/// Serves a per-tenant theme CSS at `/ui/static/tenant-theme/{id}`.
-///
-/// Returns `404 Not Found` when no per-tenant theme is configured for
-/// the given tenant id. Supports conditional requests via `ETag` /
-/// `If-None-Match`.
-async fn serve_tenant_theme(
-    headers: HeaderMap,
-    State(state): State<Arc<WebState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    if let Some(css) = state.tenant_themes.get(&id) {
-        // SAFETY: tenant_theme_etags is built in lock-step with tenant_themes
-        // by with_tenant_themes(), so the key is always present.
-        #[allow(clippy::unwrap_used)]
-        // INVARIANT: etag is inserted for every key in tenant_themes.
-        let etag = state.tenant_theme_etags.get(&id).unwrap().as_str();
-        if is_not_modified(&headers, etag) {
-            return Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
-                .header(header::ETAG, etag)
-                .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
-                .body(Body::empty())
-                .unwrap_or_else(|_| Response::new(Body::empty()));
-        }
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
-            .header(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("no-cache"),
-            )
-            .header(header::ETAG, etag)
-            .body(Body::from(css.clone()))
-            .unwrap_or_else(|_| Response::new(Body::empty()));
-    }
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::from("not found"))

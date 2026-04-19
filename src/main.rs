@@ -394,6 +394,13 @@ async fn run_serve(
             })
         })
         .unwrap_or_default();
+    if !global_custom_css.is_empty() {
+        info!(
+            path = %config.branding.custom_css.as_deref().unwrap_or(""),
+            bytes = global_custom_css.len(),
+            "loaded branding.custom_css"
+        );
+    }
     let global_theme_css = format!("{theme_base_css}\n{global_custom_css}");
 
     // Build per-tenant theme CSS map (keyed by tenant UUID string).
@@ -415,10 +422,7 @@ async fn run_serve(
                 continue;
             }
         };
-        let base = web_cfg
-            .theme
-            .as_deref()
-            .map_or("", web::themes::theme_css);
+        let base = web_cfg.theme.as_deref().map_or("", web::themes::theme_css);
         let custom = web_cfg
             .custom_css
             .as_deref()
@@ -429,6 +433,14 @@ async fn run_serve(
                 })
             })
             .unwrap_or_default();
+        if !custom.is_empty() {
+            info!(
+                tenant = %tenant_name,
+                path = %web_cfg.custom_css.as_deref().unwrap_or(""),
+                bytes = custom.len(),
+                "loaded tenant custom CSS"
+            );
+        }
         let combined = format!("{base}\n{custom}");
         if !combined.trim().is_empty() {
             tenant_themes.insert(tenant.id().as_uuid().to_string(), combined);

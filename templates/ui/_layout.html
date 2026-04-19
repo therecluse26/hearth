@@ -8,10 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,400&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/ui/static/app.css">
-  <link rel="stylesheet" href="/ui/static/theme.css">
-  {% if let Some(url) = tenant_theme_url %}
-  <link rel="stylesheet" href="{{ url }}">
-  {% endif %}
+  {% if !theme_css.is_empty() %}<style>{{ theme_css|safe }}</style>{% endif %}
+  {% if let Some(css) = tenant_theme_css %}<style>{{ css|safe }}</style>{% endif %}
   {% match csrf %}
     {% when Some with (token) %}
       <meta name="csrf" content="{{ token }}">

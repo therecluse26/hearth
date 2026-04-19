@@ -59,7 +59,8 @@ struct AccountIndexTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
-    tenant_theme_url: Option<String>,
+    theme_css: String,
+    tenant_theme_css: Option<String>,
 }
 
 impl AccountIndexTemplate {
@@ -84,7 +85,8 @@ impl AccountIndexTemplate {
             narrow: true,
             product_name,
             logo_url,
-            tenant_theme_url: None,
+            theme_css: String::new(),
+            tenant_theme_css: None,
         }
     }
 }
@@ -105,7 +107,8 @@ pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSessio
         state.product_name.clone(),
         state.logo_url.clone(),
     );
-    tmpl.tenant_theme_url = state.tenant_theme_url();
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.tenant_theme_css = state.tenant_theme_css();
     render(&tmpl)
 }
 
@@ -199,7 +202,7 @@ fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &
         .mfa_enabled(&session.tenant_id, &session.user_id)
         .unwrap_or(false);
     let admin = super::handlers::is_admin(state, session);
-    render(&AccountIndexTemplate::new(
+    let mut tmpl = AccountIndexTemplate::new(
         session,
         mfa_enabled,
         None,
@@ -207,7 +210,10 @@ fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &
         admin,
         state.product_name.clone(),
         state.logo_url.clone(),
-    ))
+    );
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.tenant_theme_css = state.tenant_theme_css();
+    render(&tmpl)
 }
 
 /// Renders the account index with a flash banner (used on success).
@@ -217,7 +223,7 @@ fn render_with_flash(state: &Arc<WebState>, session: &UiSession, flash: Flash) -
         .mfa_enabled(&session.tenant_id, &session.user_id)
         .unwrap_or(false);
     let admin = super::handlers::is_admin(state, session);
-    render(&AccountIndexTemplate::new(
+    let mut tmpl = AccountIndexTemplate::new(
         session,
         mfa_enabled,
         Some(flash),
@@ -225,7 +231,10 @@ fn render_with_flash(state: &Arc<WebState>, session: &UiSession, flash: Flash) -
         admin,
         state.product_name.clone(),
         state.logo_url.clone(),
-    ))
+    );
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.tenant_theme_css = state.tenant_theme_css();
+    render(&tmpl)
 }
 
 /// Appends a `credential.changed` event to the audit log. The event
@@ -309,7 +318,8 @@ struct TotpEnrollTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
-    tenant_theme_url: Option<String>,
+    theme_css: String,
+    tenant_theme_css: Option<String>,
 }
 
 impl TotpEnrollTemplate {
@@ -342,7 +352,8 @@ impl TotpEnrollTemplate {
             narrow: true,
             product_name,
             logo_url,
-            tenant_theme_url: None,
+            theme_css: String::new(),
+            tenant_theme_css: None,
         }
     }
 }
@@ -362,7 +373,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
         .unwrap_or(false);
 
     if enabled {
-        return render(&TotpEnrollTemplate::new(
+        let mut tmpl = TotpEnrollTemplate::new(
             &session,
             true,
             String::new(),
@@ -373,7 +384,10 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             admin,
             state.product_name.clone(),
             state.logo_url.clone(),
-        ));
+        );
+        tmpl.theme_css.clone_from(&state.theme_css);
+        tmpl.tenant_theme_css = state.tenant_theme_css();
+        return render(&tmpl);
     }
 
     match state
@@ -382,7 +396,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
     {
         Ok(enrollment) => {
             let qr_svg = generate_qr_svg(&enrollment.provisioning_uri);
-            render(&TotpEnrollTemplate::new(
+            let mut tmpl = TotpEnrollTemplate::new(
                 &session,
                 false,
                 enrollment.secret_base32,
@@ -393,23 +407,31 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 admin,
                 state.product_name.clone(),
                 state.logo_url.clone(),
-            ))
+            );
+            tmpl.theme_css.clone_from(&state.theme_css);
+            tmpl.tenant_theme_css = state.tenant_theme_css();
+            render(&tmpl)
         }
-        Err(IdentityError::MfaAlreadyEnabled) => render(&TotpEnrollTemplate::new(
-            &session,
-            true,
-            String::new(),
-            String::new(),
-            String::new(),
-            Vec::new(),
-            None,
-            admin,
-            state.product_name.clone(),
-            state.logo_url.clone(),
-        )),
+        Err(IdentityError::MfaAlreadyEnabled) => {
+            let mut tmpl = TotpEnrollTemplate::new(
+                &session,
+                true,
+                String::new(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+                None,
+                admin,
+                state.product_name.clone(),
+                state.logo_url.clone(),
+            );
+            tmpl.theme_css.clone_from(&state.theme_css);
+            tmpl.tenant_theme_css = state.tenant_theme_css();
+            render(&tmpl)
+        }
         Err(e) => {
             tracing::warn!(error = %e, "enroll_totp failed");
-            render(&TotpEnrollTemplate::new(
+            let mut tmpl = TotpEnrollTemplate::new(
                 &session,
                 false,
                 String::new(),
@@ -420,7 +442,10 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 admin,
                 state.product_name.clone(),
                 state.logo_url.clone(),
-            ))
+            );
+            tmpl.theme_css.clone_from(&state.theme_css);
+            tmpl.tenant_theme_css = state.tenant_theme_css();
+            render(&tmpl)
         }
     }
 }
@@ -522,7 +547,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
     // case there's no meaningful surface for an inline error, so we
     // fall through to rendering the disable form cleanly.
     if enabled {
-        return render(&TotpEnrollTemplate::new(
+        let mut tmpl = TotpEnrollTemplate::new(
             session,
             true,
             String::new(),
@@ -533,13 +558,16 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
             admin,
             state.product_name.clone(),
             state.logo_url.clone(),
-        ));
+        );
+        tmpl.theme_css.clone_from(&state.theme_css);
+        tmpl.tenant_theme_css = state.tenant_theme_css();
+        return render(&tmpl);
     }
 
     // Render with empty secret/codes because regenerating would
     // invalidate the user's just-scanned QR. They can refresh to
     // restart if they need new recovery codes.
-    render(&TotpEnrollTemplate::new(
+    let mut tmpl = TotpEnrollTemplate::new(
         session,
         false,
         String::new(),
@@ -550,7 +578,10 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
         admin,
         state.product_name.clone(),
         state.logo_url.clone(),
-    ))
+    );
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.tenant_theme_css = state.tenant_theme_css();
+    render(&tmpl)
 }
 
 /// Appends a `credential.changed` event with an `op` metadata field
