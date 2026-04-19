@@ -100,6 +100,13 @@ pub(crate) struct StoredMfaState {
     pub last_used_step: Option<u64>,
     /// When MFA was enabled (Unix microseconds), if enabled.
     pub enabled_at: Option<i64>,
+    /// Plaintext recovery codes held during the pending enrollment window.
+    ///
+    /// Present only while `enabled == false`. Hashed and moved to
+    /// `recovery_code_hashes` when the user confirms enrollment via
+    /// `verify_totp_enrollment()`, then cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_recovery_codes: Option<Vec<String>>,
 }
 
 /// Plaintext recovery codes returned once at enrollment.
@@ -276,20 +283,36 @@ pub(crate) fn generate_recovery_codes() -> Result<Vec<String>, IdentityError> {
     Ok(codes)
 }
 
-/// Hashes recovery codes using Argon2id.
+/// Hashes recovery codes using Argon2id in parallel.
 ///
-/// Returns a vector of hash strings, one per code.
+/// Spawns one thread per code inside `std::thread::scope` so all hashes
+/// run concurrently. Because each Argon2id invocation is memory-bound
+/// (~19 MiB), parallel instances don't contend on CPU cores, reducing
+/// wall-clock time from N × ~1s to ~1s regardless of code count.
+///
+/// # Panics
+///
+/// Propagates any panic from a spawned hashing thread.
 pub(crate) fn hash_recovery_codes(
     codes: &[String],
     config: &CredentialConfig,
 ) -> Result<Vec<Option<String>>, IdentityError> {
-    codes
-        .iter()
-        .map(|code| {
-            let hash = credentials::hash_raw_secret(code.as_bytes(), config)?;
-            Ok(Some(hash))
-        })
-        .collect()
+    std::thread::scope(|s| {
+        let handles: Vec<_> = codes
+            .iter()
+            .map(|code| {
+                s.spawn(|| {
+                    let hash = credentials::hash_raw_secret(code.as_bytes(), config)?;
+                    Ok(Some(hash))
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("recovery code hash thread panicked"))
+            .collect()
+    })
 }
 
 /// Verifies a recovery code against stored hashes, returning the index if found.

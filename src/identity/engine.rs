@@ -2820,21 +2820,23 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
         }
 
-        // Generate secret + recovery codes
+        // Generate secret + recovery codes (no hashing here — deferred to
+        // verify_totp_enrollment() so the enrollment page loads instantly).
         let secret = TotpSecret::generate()?;
         let secret_base32 = secret.to_base32();
         let provisioning_uri =
             totp::generate_provisioning_uri(&secret_base32, user.email(), "Hearth");
         let recovery_codes = totp::generate_recovery_codes()?;
-        let recovery_hashes = totp::hash_recovery_codes(&recovery_codes, &self.config.credential)?;
 
-        // Store disabled state
+        // Store disabled state with plaintext recovery codes. Hashing is
+        // deferred to confirmation so this page load stays fast (~0ms vs ~3s).
         let state = StoredMfaState {
             secret_base32: secret_base32.clone(),
             enabled: false,
-            recovery_code_hashes: recovery_hashes,
+            recovery_code_hashes: Vec::new(),
             last_used_step: None,
             enabled_at: None,
+            pending_recovery_codes: Some(recovery_codes.clone()),
         };
         self.save_mfa_state(tenant_id, user_id, &state)?;
 
@@ -2866,9 +2868,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let matched_step = totp::validate_totp(secret.as_bytes(), code, now_secs, None);
 
         if let Some(step) = matched_step {
+            // Hash the pending plaintext recovery codes now (deferred from
+            // enroll_totp to keep page load fast).
+            let recovery_hashes = if let Some(ref codes) = state.pending_recovery_codes {
+                totp::hash_recovery_codes(codes, &self.config.credential)?
+            } else {
+                // Legacy path: codes were already hashed at enrollment time.
+                state.recovery_code_hashes.clone()
+            };
+
             state.enabled = true;
             state.last_used_step = Some(step);
             state.enabled_at = Some(self.clock.now().as_micros());
+            state.recovery_code_hashes = recovery_hashes;
+            state.pending_recovery_codes = None;
             self.save_mfa_state(tenant_id, user_id, &state)?;
             Ok(())
         } else {

@@ -150,6 +150,9 @@
   }
 }
 
+/* Alpine x-cloak: hide elements until Alpine initialises */
+[x-cloak] { display: none !important; }
+
 /* HTMX indicator: show spinner while request is in flight */
 .htmx-indicator {
   opacity: 0;

@@ -390,10 +390,23 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
         return render(&tmpl);
     }
 
-    match state
-        .identity
-        .enroll_totp(&session.tenant_id, &session.user_id)
-    {
+    let tenant_id = session.tenant_id.clone();
+    let user_id = session.user_id.clone();
+    let identity = state.identity.clone();
+    let enroll_result = tokio::task::spawn_blocking(move || {
+        identity.enroll_totp(&tenant_id, &user_id)
+    })
+    .await;
+
+    let enroll_result = match enroll_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "enroll_totp spawn_blocking panicked");
+            Err(IdentityError::Storage(Box::new(e)))
+        }
+    };
+
+    match enroll_result {
         Ok(enrollment) => {
             let qr_svg = generate_qr_svg(&enrollment.provisioning_uri);
             let mut tmpl = TotpEnrollTemplate::new(
@@ -471,11 +484,24 @@ pub async fn totp_activate(
         return resp;
     }
 
-    match state.identity.verify_totp_enrollment(
-        &session.tenant_id,
-        &session.user_id,
-        form.code.trim(),
-    ) {
+    let tenant_id = session.tenant_id.clone();
+    let user_id = session.user_id.clone();
+    let code = form.code.trim().to_string();
+    let identity = state.identity.clone();
+    let verify_result = tokio::task::spawn_blocking(move || {
+        identity.verify_totp_enrollment(&tenant_id, &user_id, &code)
+    })
+    .await;
+
+    let verify_result = match verify_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "verify_totp_enrollment spawn_blocking panicked");
+            Err(IdentityError::Storage(Box::new(e)))
+        }
+    };
+
+    match verify_result {
         Ok(()) => {
             if let Err(e) = audit_mfa_event(&state, &session, "mfa_enable") {
                 tracing::warn!(error = %e, "totp enable audit append failed");

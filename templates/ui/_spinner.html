@@ -1,0 +1,6 @@
+{# Reusable loading state — use inside an x-show="submitting" block.
+   Expects `loadingMessage` in Alpine scope (provided by withLoading()). #}
+<div class="flex flex-col items-center justify-center gap-4 rounded-md bg-ht-surface-elevated p-12 ring-1 ring-divider-subtle">
+  <div class="h-8 w-8 animate-spinner rounded-full border-[3px] border-divider-strong border-t-ht-content-brand"></div>
+  <p class="text-sm font-medium text-ht-content-muted" x-text="loadingMessage"></p>
+</div>
