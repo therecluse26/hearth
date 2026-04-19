@@ -26,7 +26,8 @@ impl EmailSender for LoggingEmailSender {
         reject_crlf("recipient", &message.to)?;
         tracing::warn!(
             recipient = %message.to,
-            subject = %message.subject,
+            subject  = %message.subject,
+            body     = %message.text_body,
             "email.send (log transport): message logged instead of delivered"
         );
         Ok(())

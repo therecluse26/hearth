@@ -464,16 +464,21 @@ impl OnboardingService {
             token
         );
 
-        // 7. Send the email. Failure here is fatal for the request
-        //    (the operator will never see the link) but the user is
-        //    already persisted so retrying the setup form after fixing
-        //    email config will fail with DuplicateEmail. The operator
-        //    can either delete the partial state or reuse the user by
-        //    issuing a new verification via admin tools.
+        // 7. Log the link unconditionally so the operator can always recover
+        //    it, even if email delivery fails or the log transport is in use.
+        tracing::warn!(
+            verification_url = %verification_url,
+            "onboarding: verification link (check logs if email delivery fails)"
+        );
+
+        // 8a. Send the email. Failure here is fatal for the request but the
+        //     user is already persisted; retrying the setup form will fail with
+        //     DuplicateEmail. The operator can recover using the link above or
+        //     by issuing a new verification token via the admin tools.
         self.email
             .send_verification_email(admin_email, &verification_url, None)?;
 
-        // 8. Retire the setup token.
+        // 8b. Retire the setup token.
         remove_setup_token(&self.data_dir);
 
         Ok(SetupOutcome {
