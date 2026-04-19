@@ -1,0 +1,452 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · System Info{% endblock %}
+{% block breadcrumb %}
+  <span class="text-graphite-500">Admin</span>
+  <span class="mx-1 text-graphite-600">/</span>
+  <span class="text-graphite-300">System Info</span>
+{% endblock %}
+{% block body %}
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+  <h1 class="font-display text-2xl font-medium text-graphite-50">System Info</h1>
+  <span class="text-sm text-graphite-400">Read-only — edit hearth.yaml to change settings</span>
+</div>
+
+{% match config %}
+  {% when None %}
+  <p class="text-sm text-graphite-400">Configuration details are not available in this deployment context.</p>
+  {% when Some with (cfg) %}
+
+  {% if cfg.dev_mode %}
+  <div class="mb-6 inline-flex items-center gap-2 rounded-full bg-warning/[0.15] px-3 py-1 text-xs font-semibold text-warning-fg">
+    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    Dev Mode active — in-memory storage, relaxed security, debug logging
+  </div>
+  {% endif %}
+
+  <div class="space-y-4">
+
+    {# ── Server ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Server</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Bind Address</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.server.bind_address }}</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Port</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.server.port }}</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">TLS</dt>
+            <dd class="mt-1 text-sm text-graphite-300">
+              {% if cfg.server.tls_cert_path.is_some() %}
+                <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Enabled</span>
+              {% else %}
+                <span class="inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-xs font-medium text-steel-fg">Disabled</span>
+              {% endif %}
+            </dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">mTLS Required</dt>
+            <dd class="mt-1 text-sm text-graphite-300">
+              {% if cfg.server.tls_require_client_cert %}Yes{% else %}No{% endif %}
+            </dd>
+          </div>
+          {% match cfg.server.tls_cert_path %}
+            {% when Some with (path) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">TLS Cert Path</dt>
+              <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ path.to_string_lossy() }}</code></dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.server.tls_client_ca_path %}
+            {% when Some with (path) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Client CA Path</dt>
+              <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ path.to_string_lossy() }}</code></dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+        </dl>
+      </div>
+    </div>
+
+    {# ── Storage ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Storage</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div class="sm:col-span-2">
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Data Directory</dt>
+            <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ cfg.storage.data_dir }}</code></dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">WAL Max Size</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.storage.wal_max_size_bytes / 1048576 }} MiB</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Memtable Flush</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.storage.memtable_flush_bytes / 1048576 }} MiB</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Hot Tier Capacity</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.storage.hot_tier_capacity }} entries</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">fsync Writes</dt>
+            <dd class="mt-1 text-sm text-graphite-300">
+              {% if cfg.storage.fsync %}
+                <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Enabled</span>
+              {% else %}
+                <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Disabled</span>
+              {% endif %}
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+
+    {# ── Observability ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Observability</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Log Level</dt>
+            <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ cfg.observability.log_level }}</code></dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Log Format</dt>
+            <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ cfg.observability.log_format }}</code></dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+
+    {# ── Operational ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Operational</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Request Timeout</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.operational.request_timeout_secs }}s</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Shutdown Timeout</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.operational.shutdown_timeout_secs }}s</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Max Connections</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.operational.max_connections }}</dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Queue Depth</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.operational.queue_depth }}</dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+
+    {# ── Email ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Email</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Transport</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.email.transport|fmt("{:?}") }}</dd>
+          </div>
+          {% match cfg.email.from %}
+            {% when Some with (addr) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">From Address</dt>
+              <dd class="mt-1 text-sm text-graphite-300">{{ addr }}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.email.smtp %}
+            {% when Some with (smtp) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">SMTP Host</dt>
+              <dd class="mt-1 text-sm text-graphite-300">{{ smtp.host }}:{{ smtp.port }}</dd>
+            </div>
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">SMTP Encryption</dt>
+              <dd class="mt-1 text-sm text-graphite-300">{{ smtp.encryption|fmt("{:?}") }}</dd>
+            </div>
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">SMTP Username</dt>
+              <dd class="mt-1 text-sm">
+                {% match smtp.username %}
+                  {% when Some with (_) %}<span class="text-xs text-success-fg">[configured]</span>
+                  {% when None %}<span class="text-xs text-graphite-500">—</span>
+                {% endmatch %}
+              </dd>
+            </div>
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">SMTP Password</dt>
+              <dd class="mt-1 text-sm">
+                {% match smtp.password %}
+                  {% when Some with (_) %}<span class="text-xs text-success-fg">[configured]</span>
+                  {% when None %}<span class="text-xs text-graphite-500">—</span>
+                {% endmatch %}
+              </dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.email.sendgrid %}
+            {% when Some with (_) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">SendGrid API Key</dt>
+              <dd class="mt-1 text-sm"><span class="text-xs text-success-fg">[configured]</span></dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.email.postmark %}
+            {% when Some with (_) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Postmark Server Token</dt>
+              <dd class="mt-1 text-sm"><span class="text-xs text-success-fg">[configured]</span></dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.email.mailgun %}
+            {% when Some with (mg) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Mailgun Domain</dt>
+              <dd class="mt-1 text-sm text-graphite-300">{{ mg.domain }} ({{ mg.region|fmt("{:?}") }})</dd>
+            </div>
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Mailgun API Key</dt>
+              <dd class="mt-1 text-sm"><span class="text-xs text-success-fg">[configured]</span></dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.email.mailtrap %}
+            {% when Some with (mt) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Mailtrap Inbox ID</dt>
+              <dd class="mt-1 text-sm text-graphite-300">
+                {% match mt.inbox_id %}
+                  {% when Some with (id) %}{{ id }}{% when None %}<span class="text-graphite-500">—</span>
+                {% endmatch %}
+              </dd>
+            </div>
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Mailtrap API Key</dt>
+              <dd class="mt-1 text-sm"><span class="text-xs text-success-fg">[configured]</span></dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.email.branding %}
+            {% when Some with (branding) %}
+            {% match branding.accent_color %}
+              {% when Some with (color) %}
+              <div>
+                <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Email Accent Color</dt>
+                <dd class="mt-1 flex items-center gap-1.5">
+                  <span class="inline-block h-3 w-3 rounded-full shrink-0" style="background: {{ color }}"></span>
+                  <code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ color }}</code>
+                </dd>
+              </div>
+              {% when None %}
+            {% endmatch %}
+            {% match branding.support_email %}
+              {% when Some with (email) %}
+              <div>
+                <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Support Email</dt>
+                <dd class="mt-1 text-sm text-graphite-300">{{ email }}</dd>
+              </div>
+              {% when None %}
+            {% endmatch %}
+            {% match branding.custom_footer_text %}
+              {% when Some with (text) %}
+              <div class="sm:col-span-2">
+                <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Custom Footer Text</dt>
+                <dd class="mt-1 text-sm text-graphite-300">{{ text }}</dd>
+              </div>
+              {% when None %}
+            {% endmatch %}
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.email.templates_dir %}
+            {% when Some with (dir) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Templates Directory</dt>
+              <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ dir }}</code></dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+        </dl>
+      </div>
+    </div>
+
+    {# ── Branding ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Branding</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Product Name</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{{ cfg.branding.product_name_or_default() }}</dd>
+          </div>
+          {% match cfg.branding.logo_url %}
+            {% when Some with (url) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Logo URL</dt>
+              <dd class="mt-1 text-sm text-graphite-300 break-all">{{ url }}</dd>
+            </div>
+            {% when None %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Logo URL</dt>
+              <dd class="mt-1 text-sm text-graphite-500">Default (built-in Hearth logo)</dd>
+            </div>
+          {% endmatch %}
+        </dl>
+      </div>
+    </div>
+
+    {# ── Auth Defaults ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Auth Defaults</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Session TTL</dt>
+            <dd class="mt-1 text-sm text-graphite-300">
+              {% match cfg.auth.session_ttl %}
+                {% when Some with (ttl) %}{{ ttl }}
+                {% when None %}<span class="text-graphite-500">Default (24h)</span>
+              {% endmatch %}
+            </dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Password Memory Cost</dt>
+            <dd class="mt-1 text-sm text-graphite-300">
+              {% match cfg.auth.password_memory_cost %}
+                {% when Some with (cost) %}{{ cost }} KiB
+                {% when None %}<span class="text-graphite-500">Default</span>
+              {% endmatch %}
+            </dd>
+          </div>
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Password Time Cost</dt>
+            <dd class="mt-1 text-sm text-graphite-300">
+              {% match cfg.auth.password_time_cost %}
+                {% when Some with (cost) %}{{ cost }} iterations
+                {% when None %}<span class="text-graphite-500">Default</span>
+              {% endmatch %}
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+
+    {# ── Onboarding ── #}
+    <div class="rounded-md bg-graphite-800 ring-1 ring-white/6" x-data="{ open: true }">
+      <button type="button" @click="open = !open"
+              class="flex w-full items-center justify-between px-6 py-4 text-left">
+        <h2 class="font-display text-base font-medium text-graphite-100">Onboarding</h2>
+        <svg class="h-4 w-4 shrink-0 text-graphite-400 transition-transform duration-150"
+             :class="open ? 'rotate-180' : ''"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div x-show="open" x-cloak class="border-t border-white/6 px-6 pb-6 pt-4">
+        <dl class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Enabled</dt>
+            <dd class="mt-1 text-sm text-graphite-300">{% if cfg.onboarding.enabled %}Yes{% else %}No{% endif %}</dd>
+          </div>
+          {% match cfg.onboarding.base_url %}
+            {% when Some with (url) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Base URL</dt>
+              <dd class="mt-1 text-sm text-graphite-300 break-all">{{ url }}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match cfg.onboarding.notification_email %}
+            {% when Some with (email) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Notification Email</dt>
+              <dd class="mt-1 text-sm text-graphite-300">{{ email }}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+        </dl>
+      </div>
+    </div>
+
+  </div>{# end space-y-4 #}
+{% endmatch %}
+{% endblock %}

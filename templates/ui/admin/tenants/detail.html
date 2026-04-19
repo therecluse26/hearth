@@ -49,6 +49,45 @@
       </div>
       {% when None %}
     {% endmatch %}
+    {% match config.email_branding %}
+      {% when Some with (branding) %}
+      <div class="col-span-2 mt-2 border-t border-white/6 pt-4">
+        <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Email Branding</h3>
+        <dl class="grid gap-3 sm:grid-cols-2">
+          {% match branding.accent_color %}
+            {% when Some with (color) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Accent Color</dt>
+              <dd class="mt-1 flex items-center gap-1.5">
+                <span class="inline-block h-3 w-3 shrink-0 rounded-full" style="background: {{ color }}"></span>
+                <code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ color }}</code>
+              </dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match branding.support_email %}
+            {% when Some with (email) %}
+            <div>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Support Email</dt>
+              <dd class="mt-1 text-sm text-graphite-300">{{ email }}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match branding.custom_footer_text %}
+            {% when Some with (text) %}
+            <div class="sm:col-span-2">
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Custom Footer Text</dt>
+              <dd class="mt-1 text-sm text-graphite-300">{{ text }}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+        </dl>
+      </div>
+      {% when None %}
+      <div class="col-span-2 mt-2 border-t border-white/6 pt-4">
+        <p class="text-xs text-graphite-500">Email branding: inherits global defaults</p>
+      </div>
+    {% endmatch %}
   </dl>
 </div>
 

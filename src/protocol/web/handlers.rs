@@ -413,13 +413,11 @@ pub async fn setup_submit(
             "No tenant is configured. Add a tenant to hearth.yaml and restart.".to_string(),
             StatusCode::CONFLICT,
         ),
-        Err(OnboardingError::Identity(IdentityError::InvalidInput { reason })) => {
-            setup_err(
-                form.token.clone(),
-                format!("Invalid input: {reason}"),
-                StatusCode::BAD_REQUEST,
-            )
-        }
+        Err(OnboardingError::Identity(IdentityError::InvalidInput { reason })) => setup_err(
+            form.token.clone(),
+            format!("Invalid input: {reason}"),
+            StatusCode::BAD_REQUEST,
+        ),
         Err(OnboardingError::Email(e)) => {
             tracing::error!(error = %e, "setup: failed to send verification email");
             setup_err(
@@ -1191,7 +1189,12 @@ pub async fn reset_password_form(
     let product_name = state.product_name.clone();
     let logo_url = state.logo_url.clone();
     match query.token {
-        Some(token) => render(&ResetPasswordTemplate::new(token, None, product_name, logo_url)),
+        Some(token) => render(&ResetPasswordTemplate::new(
+            token,
+            None,
+            product_name,
+            logo_url,
+        )),
         None => render_status(
             &ResetPasswordTemplate::new(
                 String::new(),

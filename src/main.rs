@@ -371,7 +371,8 @@ async fn run_serve(
     .with_config_warnings(config.config_warnings.clone())
     .with_email_log_transport(config.email.transport == EmailTransport::Log)
     .with_product_name(config.branding.product_name_or_default().to_string())
-    .with_logo_url(web_logo_url);
+    .with_logo_url(web_logo_url)
+    .with_config(Arc::new(config.clone()));
 
     if let Some((bytes, content_type)) = custom_logo {
         web_state = web_state.with_custom_logo(bytes, content_type);

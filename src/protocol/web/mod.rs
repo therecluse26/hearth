@@ -39,7 +39,7 @@ use axum::Router;
 
 use crate::audit::AuditEngine;
 use crate::authz::AuthorizationEngine;
-use crate::config::EnvVarWarning;
+use crate::config::{Config, EnvVarWarning};
 use crate::core::TenantId;
 use crate::identity::onboarding::OnboardingService;
 use crate::identity::{EmailService, IdentityEngine};
@@ -102,6 +102,9 @@ pub struct WebState {
     /// loaded at startup and served via `/ui/static/custom-logo`. `None`
     /// when using the built-in logo or a remote URL.
     pub custom_logo: Option<CustomLogo>,
+    /// Full server configuration, made available for the System Info page.
+    /// `None` in test contexts where no config file is loaded.
+    pub config: Option<Arc<Config>>,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -140,6 +143,7 @@ impl WebState {
             product_name: "Hearth".to_string(),
             logo_url: DEFAULT_LOGO_URL.to_string(),
             custom_logo: None,
+            config: None,
         }
     }
 
@@ -168,6 +172,14 @@ impl WebState {
     #[must_use]
     pub fn with_logo_url(mut self, url: String) -> Self {
         self.logo_url = url;
+        self
+    }
+
+    /// Attaches the full server configuration for display on the System Info
+    /// page. When absent (the default), the page shows a brief notice.
+    #[must_use]
+    pub fn with_config(mut self, config: Arc<Config>) -> Self {
+        self.config = Some(config);
         self
     }
 
@@ -390,6 +402,10 @@ pub fn router(state: WebState) -> Router {
         )
         // --- Audit ---
         .route("/admin/audit", axum::routing::get(admin::admin_audit_list))
+        .route(
+            "/admin/settings",
+            axum::routing::get(admin::admin_system_info),
+        )
         .route(
             "/admin/test-email",
             axum::routing::post(admin::admin_test_email),

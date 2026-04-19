@@ -153,11 +153,8 @@ impl EmailService {
             Some(t) => EmailBranding::merge(&self.default_branding, t),
             None => self.default_branding.clone(),
         };
-        let mut resolved = ResolvedBranding::from_branding(
-            &merged,
-            &self.product_name,
-            self.logo_url.as_deref(),
-        );
+        let mut resolved =
+            ResolvedBranding::from_branding(&merged, &self.product_name, self.logo_url.as_deref());
 
         let is_local_path = resolved
             .logo_url

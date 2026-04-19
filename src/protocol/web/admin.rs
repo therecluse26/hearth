@@ -36,6 +36,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
 
+use crate::config::Config;
 use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId};
 use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
@@ -2337,4 +2338,45 @@ fn audit_org_event(
     }) {
         tracing::warn!(error = %e, "org admin audit append failed");
     }
+}
+
+// =========================================================================
+// System Info
+// =========================================================================
+
+/// Template for `GET /ui/admin/settings`.
+#[derive(Template)]
+#[template(path = "ui/admin/settings/system.html")]
+struct SystemInfoTemplate {
+    /// Full server configuration. `None` when running without a config file
+    /// (e.g. in embedded tests).
+    config: Option<Arc<Config>>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+}
+
+/// `GET /ui/admin/settings` — read-only system information page.
+pub async fn admin_system_info(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+) -> Response {
+    render(&SystemInfoTemplate {
+        config: state.config.clone(),
+        chrome: true,
+        active: "settings",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+    })
 }
