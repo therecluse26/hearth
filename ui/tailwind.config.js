@@ -18,8 +18,8 @@ module.exports = {
       sm: "0 1px 2px rgba(0, 0, 0, 0.3)",
       DEFAULT: "0 4px 16px rgba(0, 0, 0, 0.4)",
       md: "0 4px 16px rgba(0, 0, 0, 0.4)",
-      focus: "0 0 0 3px rgba(245, 181, 68, 0.15)",
-      "cta-hover": "0 8px 24px -4px rgba(232, 116, 59, 0.35)",
+      focus: "0 0 0 3px rgb(var(--ht-brand-from) / 0.15)",
+      "cta-hover": "0 8px 24px -4px rgb(var(--ht-brand-via) / 0.35)",
     },
     extend: {
       // ── Color tokens (THEME.md § Colors) ─────────────────────
@@ -117,8 +117,8 @@ module.exports = {
       },
       // ── Border tokens (THEME.md § Borders) ───────────────────
       borderColor: {
-        subtle: "rgba(255, 255, 255, 0.06)",
-        strong: "rgba(255, 255, 255, 0.18)",
+        subtle: "rgb(var(--ht-divider) / 0.06)",
+        strong: "rgb(var(--ht-divider) / 0.18)",
       },
       // ── Motion tokens (THEME.md § Motion) ────────────────────
       keyframes: {

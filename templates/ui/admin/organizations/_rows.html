@@ -1,7 +1,7 @@
 {% for o in organizations %}
 <tr class="border-b border-ht-divider/[0.06]">
   <td class="px-4 py-3">
-    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ember-orange">{{ o.name() }}</a>
+    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ o.name() }}</a>
   </td>
   <td class="px-4 py-3">
     <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ o.slug() }}</code>

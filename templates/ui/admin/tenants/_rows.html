@@ -1,7 +1,7 @@
 {% for t in tenants %}
 <tr class="border-b border-ht-divider/[0.06]">
   <td class="px-4 py-3">
-    <a href="/ui/admin/tenants/{{ t.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ember-orange">{{ t.name() }}</a>
+    <a href="/ui/admin/tenants/{{ t.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ t.name() }}</a>
   </td>
   <td class="px-4 py-3">
     {% if t.status()|fmt("{:?}") == "Active" %}

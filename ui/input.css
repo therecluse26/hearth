@@ -51,11 +51,11 @@
   }
   .btn-ember:hover {
     transform: translateY(-1px);
-    box-shadow: 0 8px 24px -4px rgba(232, 116, 59, 0.35);
+    box-shadow: 0 8px 24px -4px rgb(var(--ht-brand-via) / 0.35);
   }
   .btn-ember:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.15);
+    box-shadow: 0 0 0 3px rgb(var(--ht-brand-from) / 0.15);
   }
 
   /* Danger button — muted coral */

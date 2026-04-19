@@ -33,7 +33,7 @@
 
     {# ── Sidebar ── #}
     <aside :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
-           class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-ht-surface-raised transition-transform duration-200 lg:translate-x-0 lg:static lg:z-auto"
+           class="fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-ht-surface-raised border-r border-ht-divider/[0.10] transition-transform duration-200 lg:translate-x-0 lg:static lg:z-auto"
            @keydown.escape.window="sidebarOpen = false">
       {# Brand #}
       <div class="flex h-14 items-center gap-2.5 px-5">

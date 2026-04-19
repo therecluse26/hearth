@@ -105,8 +105,8 @@
         </select>
       </div>
       <button type="submit" :disabled="!selectedUser"
-              :class="selectedUser ? 'btn-ember' : 'bg-graphite-600 cursor-not-allowed'"
-              class="rounded px-3 py-1.5 text-sm font-semibold text-white">
+              :class="selectedUser ? 'btn-ember' : 'bg-ht-surface-elevated text-ht-content-muted cursor-not-allowed opacity-60'"
+              class="rounded px-3 py-1.5 text-sm font-semibold">
         Add
       </button>
     </form>
@@ -161,7 +161,7 @@
       <tr class="border-b border-ht-divider/[0.04]">
         <td class="px-3 py-2">
           <a href="/ui/admin/users/{{ m.membership.user_id().as_uuid() }}" class="group">
-            <div class="text-sm font-medium text-ht-content-brand group-hover:text-ember-orange">{{ m.user_name }}</div>
+            <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.user_name }}</div>
             <div class="text-xs text-ht-content-muted">{{ m.user_email }}</div>
           </a>
         </td>
@@ -183,7 +183,7 @@
                 <option value="Admin" {% if m.membership.role()|fmt("{:?}") == "Admin" %}selected{% endif %}>Admin</option>
                 <option value="Owner" {% if m.membership.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
               </select>
-              <button type="submit" class="text-xs text-ht-content-brand hover:text-ember-orange">Update</button>
+              <button type="submit" class="text-xs text-ht-content-brand hover:text-ht-brand-deep">Update</button>
             </form>
             <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.membership.user_id().as_uuid() }}/remove">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}

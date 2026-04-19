@@ -62,10 +62,10 @@ const FOREST: &str = r":root {
 
 /// Cloud — light theme with blue accent.
 const CLOUD: &str = r":root {
-  --ht-surface-base:     248 248 251;
-  --ht-surface-raised:   255 255 255;
-  --ht-surface-elevated: 238 238 245;
-  --ht-surface-input:    255 255 255;
+  --ht-surface-base:     232 235 244;
+  --ht-surface-raised:   248 250 255;
+  --ht-surface-elevated: 218 224 238;
+  --ht-surface-input:    248 250 255;
   --ht-content-primary:   14  14  18;
   --ht-content-secondary:  68  68  80;
   --ht-content-muted:     136 136 148;
@@ -79,10 +79,10 @@ const CLOUD: &str = r":root {
 
 /// Parchment — light theme with warm amber accent.
 const PARCHMENT: &str = r":root {
-  --ht-surface-base:     250 246 237;
-  --ht-surface-raised:   255 252 244;
-  --ht-surface-elevated: 242 235 220;
-  --ht-surface-input:    255 252 244;
+  --ht-surface-base:     234 226 208;
+  --ht-surface-raised:   250 244 228;
+  --ht-surface-elevated: 220 210 188;
+  --ht-surface-input:    250 244 228;
   --ht-content-primary:   28  20   8;
   --ht-content-secondary:  90  74  48;
   --ht-content-muted:     140 120  88;
