@@ -22,6 +22,7 @@ pub(crate) struct NotFoundTemplate {
     pub(crate) narrow: bool,
     pub(crate) product_name: String,
     pub(crate) logo_url: String,
+    pub(crate) tenant_theme_url: Option<String>,
 }
 
 impl NotFoundTemplate {
@@ -37,6 +38,7 @@ impl NotFoundTemplate {
             narrow: true,
             product_name: "Hearth".to_string(),
             logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            tenant_theme_url: None,
         }
     }
 }
@@ -54,6 +56,7 @@ pub(crate) struct ForbiddenTemplate {
     pub(crate) narrow: bool,
     pub(crate) product_name: String,
     pub(crate) logo_url: String,
+    pub(crate) tenant_theme_url: Option<String>,
 }
 
 impl ForbiddenTemplate {
@@ -68,6 +71,7 @@ impl ForbiddenTemplate {
             narrow: true,
             product_name: "Hearth".to_string(),
             logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            tenant_theme_url: None,
         }
     }
 }
@@ -85,6 +89,7 @@ pub(crate) struct ServerErrorTemplate {
     pub(crate) narrow: bool,
     pub(crate) product_name: String,
     pub(crate) logo_url: String,
+    pub(crate) tenant_theme_url: Option<String>,
 }
 
 impl ServerErrorTemplate {
@@ -99,6 +104,7 @@ impl ServerErrorTemplate {
             narrow: true,
             product_name: "Hearth".to_string(),
             logo_url: super::DEFAULT_LOGO_URL.to_string(),
+            tenant_theme_url: None,
         }
     }
 }

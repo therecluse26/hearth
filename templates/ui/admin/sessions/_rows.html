@@ -1,11 +1,11 @@
 {% for s in sessions %}
-<tr class="border-b border-white/6" id="session-{{ s.session.id().as_uuid() }}">
+<tr class="border-b border-ht-divider/[0.06]" id="session-{{ s.session.id().as_uuid() }}">
   <td class="px-4 py-3">
-    <code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ s.session.id().as_uuid() }}</code>
+    <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ s.session.id().as_uuid() }}</code>
   </td>
-  <td class="px-4 py-3 text-sm text-graphite-300">{{ s.user_email }}</td>
-  <td class="px-4 py-3 text-sm text-graphite-400">{{ s.created_at_display }}</td>
-  <td class="px-4 py-3 text-sm text-graphite-400">{{ s.expires_at_display }}</td>
+  <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ s.user_email }}</td>
+  <td class="px-4 py-3 text-sm text-ht-content-muted">{{ s.created_at_display }}</td>
+  <td class="px-4 py-3 text-sm text-ht-content-muted">{{ s.expires_at_display }}</td>
   <td class="px-4 py-3 text-right">
     <form method="post" action="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke"
           hx-post="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke"
@@ -26,5 +26,5 @@
 </tr>
 {% endfor %}
 {% if sessions.is_empty() %}
-<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-graphite-500">No active sessions.</td></tr>
+<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
 {% endif %}

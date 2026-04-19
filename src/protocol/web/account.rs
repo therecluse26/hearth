@@ -59,6 +59,7 @@ struct AccountIndexTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl AccountIndexTemplate {
@@ -83,6 +84,7 @@ impl AccountIndexTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -94,7 +96,7 @@ pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSessio
         .mfa_enabled(&session.tenant_id, &session.user_id)
         .unwrap_or(false);
     let admin = super::handlers::is_admin(&state, &session);
-    render(&AccountIndexTemplate::new(
+    let mut tmpl = AccountIndexTemplate::new(
         &session,
         mfa_enabled,
         None,
@@ -102,7 +104,9 @@ pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSessio
         admin,
         state.product_name.clone(),
         state.logo_url.clone(),
-    ))
+    );
+    tmpl.tenant_theme_url = state.tenant_theme_url();
+    render(&tmpl)
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +309,7 @@ struct TotpEnrollTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl TotpEnrollTemplate {
@@ -337,6 +342,7 @@ impl TotpEnrollTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }

@@ -1,23 +1,23 @@
 {% for app in applications %}
-<tr class="border-b border-white/6">
+<tr class="border-b border-ht-divider/[0.06]">
   <td class="px-4 py-3">
-    <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}" class="text-sm font-medium text-ember-gold hover:text-ember-orange">{{ app.client_name() }}</a>
+    <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ember-orange">{{ app.client_name() }}</a>
   </td>
   <td class="px-4 py-3">
-    <code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ app.client_id().as_uuid() }}</code>
+    <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ app.client_id().as_uuid() }}</code>
   </td>
   <td class="px-4 py-3">
     {% if app.is_confidential() %}
       <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Confidential</span>
     {% else %}
-      <span class="inline-flex items-center rounded-full bg-graphite-700 px-2 py-0.5 text-xs font-medium text-graphite-400">Public</span>
+      <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-muted">Public</span>
     {% endif %}
   </td>
   <td class="px-4 py-3 text-right">
-    <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}/edit" class="text-sm text-graphite-400 hover:text-graphite-300">Edit</a>
+    <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}/edit" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
   </td>
 </tr>
 {% endfor %}
 {% if applications.is_empty() %}
-<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-graphite-500">No applications registered.</td></tr>
+<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-ht-content-muted">No applications registered.</td></tr>
 {% endif %}

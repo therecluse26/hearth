@@ -6954,6 +6954,7 @@ mod tests {
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
             email_branding: None,
+            web_theme_css: None,
         };
         let tenant = engine
             .create_tenant(&CreateTenantRequest {
@@ -7083,6 +7084,7 @@ mod tests {
             password_memory_cost: Some(32768),
             password_time_cost: None,
             email_branding: None,
+            web_theme_css: None,
         };
         let updated = engine
             .update_tenant(

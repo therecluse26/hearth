@@ -2,9 +2,9 @@
 {% block title %}Hearth · {{ app.client_name() }}{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="font-display text-2xl font-medium text-graphite-50">{{ app.client_name() }}</h1>
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ app.client_name() }}</h1>
   <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}/edit"
-     class="inline-flex items-center gap-1.5 rounded border border-strong bg-graphite-800 px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
+     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
     Edit
   </a>
 </div>
@@ -19,53 +19,53 @@
   {% when None %}
 {% endmatch %}
 
-<div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
   <dl class="space-y-4">
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Client ID</dt>
-      <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ app.client_id().as_uuid() }}</code></dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Client ID</dt>
+      <dd class="mt-1"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ app.client_id().as_uuid() }}</code></dd>
     </div>
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Type</dt>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Type</dt>
       <dd class="mt-1">
         {% if app.is_confidential() %}
           <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Confidential</span>
         {% else %}
-          <span class="inline-flex items-center rounded-full bg-graphite-700 px-2 py-0.5 text-xs font-medium text-graphite-400">Public</span>
+          <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-muted">Public</span>
         {% endif %}
       </dd>
     </div>
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Redirect URIs</dt>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Redirect URIs</dt>
       <dd class="mt-1 space-y-1">
         {% for uri in app.redirect_uris() %}
-          <code class="block rounded-sm bg-graphite-700 px-2 py-1 font-mono text-xs text-graphite-300">{{ uri }}</code>
+          <code class="block rounded-sm bg-ht-surface-elevated px-2 py-1 font-mono text-xs text-ht-content-secondary">{{ uri }}</code>
         {% endfor %}
       </dd>
     </div>
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Grant types</dt>
-      <dd class="mt-1 text-sm text-graphite-300">{{ app.grant_types().join(", ") }}</dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Grant types</dt>
+      <dd class="mt-1 text-sm text-ht-content-secondary">{{ app.grant_types().join(", ") }}</dd>
     </div>
   </dl>
 </div>
 
 {# Danger zone #}
-<div class="mt-6 rounded-md border border-danger/30 bg-graphite-800 p-6" x-data="{ showDialog: false }">
+<div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">
   <h2 class="text-base font-semibold text-danger-fg">Danger zone</h2>
-  <p class="mt-1 text-sm text-graphite-300">Deleting this application invalidates all existing tokens.</p>
+  <p class="mt-1 text-sm text-ht-content-secondary">Deleting this application invalidates all existing tokens.</p>
   <button @click="showDialog = true" type="button"
           class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
     Delete application
   </button>
 
   <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
-    <div class="w-full max-w-sm rounded-md bg-graphite-800 p-6 shadow-md" @click.outside="showDialog = false">
-      <h3 class="text-lg font-semibold text-graphite-50">Delete application?</h3>
-      <p class="mt-2 text-sm text-graphite-400">This will permanently delete <strong>{{ app.client_name() }}</strong> and invalidate all tokens.</p>
+    <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
+      <h3 class="text-lg font-semibold text-ht-content-primary">Delete application?</h3>
+      <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ app.client_name() }}</strong> and invalidate all tokens.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
           Cancel
         </button>
         <form method="post" action="/ui/admin/applications/{{ app.client_id().as_uuid() }}/delete">

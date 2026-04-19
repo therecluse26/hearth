@@ -14,7 +14,7 @@ pub use types::{
     AuthConfig, BrandingConfig, EmailConfig, EmailTransport, MailgunConfig, MailgunRegion,
     MailtrapConfig, ObservabilityConfig, OnboardingConfig, OperationalConfig, PostmarkConfig,
     SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TenantEmailYaml,
-    TenantYamlConfig,
+    TenantWebYaml, TenantYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -28,6 +28,9 @@ fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
 
 use serde::Deserialize;
 use std::path::Path;
+
+/// Valid UI theme names — must match `protocol::web::themes::VALID_THEMES`.
+const VALID_UI_THEMES: &[&str] = &["ember", "ocean", "midnight", "forest", "cloud", "parchment"];
 
 /// Top-level Hearth configuration.
 ///
@@ -249,6 +252,8 @@ impl Config {
         }
 
         validate_email(&self.email)?;
+        validate_branding(&self.branding)?;
+        validate_tenant_web_configs(self.tenants.as_ref())?;
 
         // notification_email: if set, must be a valid RFC 5322 mailbox
         if let Some(addr) = &self.onboarding.notification_email {
@@ -262,6 +267,72 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Validates the `branding` section.
+fn validate_branding(branding: &BrandingConfig) -> Result<(), ConfigError> {
+    if let Some(theme) = &branding.theme {
+        let lower = theme.to_ascii_lowercase();
+        if !VALID_UI_THEMES.contains(&lower.as_str()) {
+            return Err(invalid(
+                "branding.theme",
+                format!(
+                    "unknown theme '{}'; valid themes are: {}",
+                    theme,
+                    VALID_UI_THEMES.join(", ")
+                ),
+            ));
+        }
+    }
+    if let Some(path) = &branding.custom_css {
+        if !std::fs::metadata(path)
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
+            return Err(invalid(
+                "branding.custom_css",
+                format!("file not found or not readable: {path}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validates per-tenant `web:` branding blocks.
+fn validate_tenant_web_configs(
+    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+) -> Result<(), ConfigError> {
+    let Some(tenants) = tenants else {
+        return Ok(());
+    };
+    for (name, cfg) in tenants {
+        let Some(web) = &cfg.web else { continue };
+        if let Some(theme) = &web.theme {
+            let lower = theme.to_ascii_lowercase();
+            if !VALID_UI_THEMES.contains(&lower.as_str()) {
+                return Err(invalid(
+                    &format!("tenants.{name}.web.theme"),
+                    format!(
+                        "unknown theme '{}'; valid themes are: {}",
+                        theme,
+                        VALID_UI_THEMES.join(", ")
+                    ),
+                ));
+            }
+        }
+        if let Some(path) = &web.custom_css {
+            if !std::fs::metadata(path)
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+            {
+                return Err(invalid(
+                    &format!("tenants.{name}.web.custom_css"),
+                    format!("file not found or not readable: {path}"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validates the `email` section.

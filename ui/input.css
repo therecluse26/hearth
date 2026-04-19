@@ -2,10 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Semantic CSS custom properties (theme contract) ──────────────────────
+   Default values match the "ember" dark theme. Named themes shipped in
+   src/protocol/web/themes.rs override only the vars they need.
+   ──────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --ht-surface-base:     20 20 24;      /* graphite-900 */
+  --ht-surface-raised:   14 14 18;      /* graphite-950 */
+  --ht-surface-elevated: 31 31 39;      /* graphite-800 */
+  --ht-surface-input:    31 31 39;
+
+  /* Content */
+  --ht-content-primary:   245 241 232;  /* graphite-50 */
+  --ht-content-secondary: 168 163 154;  /* graphite-300 */
+  --ht-content-muted:     122 122 133;  /* graphite-400 */
+  --ht-content-brand:     245 181 68;   /* ember-gold */
+  --ht-content-on-brand:  14 14 18;     /* graphite-950 */
+
+  /* Divider — base color for borders + low-opacity backgrounds.
+     White in dark themes → black in light themes (via theme override). */
+  --ht-divider: 255 255 255;
+
+  /* Brand gradient */
+  --ht-brand-from: 245 181 68;          /* ember-gold */
+  --ht-brand-via:  232 116 59;          /* ember-orange */
+  --ht-brand-deep: 168 50 31;           /* ember-deep */
+}
+
 @layer base {
   body {
-    background-color: #141418; /* graphite-900 */
-    color: #f5f1e8; /* graphite-050 */
+    background-color: rgb(var(--ht-surface-base));
+    color: rgb(var(--ht-content-primary));
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -14,8 +42,11 @@
 @layer components {
   /* Primary CTA — ember gradient (THEME.md § Colors/Brand) */
   .btn-ember {
-    background: linear-gradient(135deg, #f5b544 0%, #e8743b 55%, #a8321f 100%);
-    color: #0e0e12; /* graphite-950: text on gradient must be darkest, never white */
+    background: linear-gradient(135deg,
+      rgb(var(--ht-brand-from)) 0%,
+      rgb(var(--ht-brand-via))  55%,
+      rgb(var(--ht-brand-deep)) 100%);
+    color: rgb(var(--ht-content-on-brand));
     transition: transform 180ms ease, box-shadow 180ms ease;
   }
   .btn-ember:hover {

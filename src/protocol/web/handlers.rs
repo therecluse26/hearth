@@ -71,6 +71,7 @@ struct SetupTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl SetupTemplate {
@@ -87,6 +88,7 @@ impl SetupTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -108,6 +110,7 @@ struct SetupSentTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl SetupSentTemplate {
@@ -123,6 +126,7 @@ impl SetupSentTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -142,6 +146,7 @@ struct LoginTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl LoginTemplate {
@@ -163,6 +168,7 @@ impl LoginTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -180,6 +186,7 @@ struct VerifyOkTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl VerifyOkTemplate {
@@ -194,6 +201,7 @@ impl VerifyOkTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -212,6 +220,7 @@ struct DashboardTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
     config_warnings: Vec<crate::config::EnvVarWarning>,
 }
 
@@ -230,6 +239,7 @@ struct VerifyInvalidTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl VerifyInvalidTemplate {
@@ -251,6 +261,7 @@ impl VerifyInvalidTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -270,6 +281,7 @@ struct MfaChallengeTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl MfaChallengeTemplate {
@@ -285,6 +297,7 @@ impl MfaChallengeTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -837,6 +850,7 @@ pub async fn dashboard(
         narrow: false,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
+        tenant_theme_url: state.tenant_theme_url(),
         config_warnings,
     })
 }
@@ -966,6 +980,7 @@ struct ForgotPasswordTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl ForgotPasswordTemplate {
@@ -981,6 +996,7 @@ impl ForgotPasswordTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -998,6 +1014,7 @@ struct ForgotPasswordSentTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl ForgotPasswordSentTemplate {
@@ -1012,6 +1029,7 @@ impl ForgotPasswordSentTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -1031,6 +1049,7 @@ struct ResetPasswordTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl ResetPasswordTemplate {
@@ -1047,6 +1066,7 @@ impl ResetPasswordTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }
@@ -1064,6 +1084,7 @@ struct ResetPasswordOkTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 impl ResetPasswordOkTemplate {
@@ -1078,6 +1099,7 @@ impl ResetPasswordOkTemplate {
             narrow: true,
             product_name,
             logo_url,
+            tenant_theme_url: None,
         }
     }
 }

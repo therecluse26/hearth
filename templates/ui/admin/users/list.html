@@ -2,7 +2,7 @@
 {% block title %}Hearth · Users{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="text-2xl font-semibold text-graphite-50">Users</h1>
+  <h1 class="text-2xl font-semibold text-ht-content-primary">Users</h1>
   <a href="/ui/admin/users/new"
      class="btn-ember inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -10,13 +10,13 @@
   </a>
 </div>
 
-<div class="overflow-hidden rounded-md bg-graphite-800 ring-1 ring-white/6">
+<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-white/6">
   <table class="w-full">
     <thead>
-      <tr class="border-b border-white/10 bg-graphite-850">
-        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Email</th>
-        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Name</th>
-        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Status</th>
+      <tr class="border-b border-ht-divider/[0.10] bg-graphite-850">
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Email</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Name</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
         <th class="px-4 py-3"></th>
       </tr>
     </thead>
@@ -30,7 +30,7 @@
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
       <a href="/ui/admin/users?cursor={{ cursor }}"
-         class="inline-flex items-center gap-1 rounded border border-strong bg-graphite-800 px-3 py-1.5 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
+         class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
       </a>

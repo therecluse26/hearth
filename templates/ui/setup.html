@@ -1,13 +1,13 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · First-run setup{% endblock %}
 {% block body %}
-<div class="rounded-md bg-graphite-800 p-8 ring-1 ring-white/6">
+<div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-white/6">
   <div class="mb-6 flex items-center justify-center gap-2.5">
     <img src="{{ logo_url }}" alt="{{ product_name }}" class="w-24">
   </div>
 
-  <h1 class="mb-2 text-center text-lg font-semibold text-graphite-50">Welcome to Hearth</h1>
-  <p class="mb-6 text-center text-sm text-graphite-400">Create your first admin account to get started.</p>
+  <h1 class="mb-2 text-center text-lg font-semibold text-ht-content-primary">Welcome to Hearth</h1>
+  <p class="mb-6 text-center text-sm text-ht-content-muted">Create your first admin account to get started.</p>
 
   {% match error %}
     {% when Some with (msg) %}
@@ -19,21 +19,21 @@
     <input type="hidden" name="token" value="{{ token }}">
 
     <div>
-      <label for="admin_display_name" class="block text-sm font-medium text-graphite-300">Your display name</label>
+      <label for="admin_display_name" class="block text-sm font-medium text-ht-content-secondary">Your display name</label>
       <input type="text" id="admin_display_name" name="admin_display_name" required
-             class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 placeholder:text-graphite-500 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <div>
-      <label for="admin_email" class="block text-sm font-medium text-graphite-300">Email</label>
+      <label for="admin_email" class="block text-sm font-medium text-ht-content-secondary">Email</label>
       <input type="email" id="admin_email" name="admin_email" required autocomplete="email"
-             class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 placeholder:text-graphite-500 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <div>
-      <label for="admin_password" class="block text-sm font-medium text-graphite-300">Password <span class="font-normal text-graphite-400">(min 12 characters)</span></label>
+      <label for="admin_password" class="block text-sm font-medium text-ht-content-secondary">Password <span class="font-normal text-ht-content-muted">(min 12 characters)</span></label>
       <input type="password" id="admin_password" name="admin_password" required minlength="12" autocomplete="new-password"
-             class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 placeholder:text-graphite-500 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <button type="submit"

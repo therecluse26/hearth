@@ -1,9 +1,9 @@
 {% for user in users %}
-<tr class="border-b border-white/6">
+<tr class="border-b border-ht-divider/[0.06]">
   <td class="px-4 py-3">
-    <a href="/ui/admin/users/{{ user.id().as_uuid() }}" class="text-sm font-medium text-ember-gold hover:text-ember-orange">{{ user.email() }}</a>
+    <a href="/ui/admin/users/{{ user.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ember-orange">{{ user.email() }}</a>
   </td>
-  <td class="px-4 py-3 text-sm text-graphite-300">{{ user.display_name() }}</td>
+  <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ user.display_name() }}</td>
   <td class="px-4 py-3">
     {% if user.status()|fmt("{:?}") == "Active" %}
       <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
@@ -14,10 +14,10 @@
     {% endif %}
   </td>
   <td class="px-4 py-3 text-right">
-    <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit" class="text-sm text-graphite-400 hover:text-graphite-300">Edit</a>
+    <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
   </td>
 </tr>
 {% endfor %}
 {% if users.is_empty() %}
-<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-graphite-500">No users found.</td></tr>
+<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-ht-content-muted">No users found.</td></tr>
 {% endif %}

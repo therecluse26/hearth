@@ -380,6 +380,16 @@ pub struct BrandingConfig {
     /// logo is used, the server constructs `{base_url}/ui/static/img/hearth-wide-web.svg`.
     #[serde(default)]
     pub logo_url: Option<String>,
+    /// Named UI theme. One of: `ember` (default dark), `ocean`, `midnight`,
+    /// `forest`, `cloud` (light), `parchment` (light). Case-insensitive.
+    /// Validated at startup — an unknown name is a config error.
+    #[serde(default)]
+    pub theme: Option<String>,
+    /// Path to a custom CSS file appended after the named theme. The file is
+    /// read once at startup. It may override any `--ht-*` CSS variable or
+    /// add arbitrary rules. `None` means no custom CSS.
+    #[serde(default)]
+    pub custom_css: Option<String>,
 }
 
 impl BrandingConfig {
@@ -387,6 +397,17 @@ impl BrandingConfig {
     pub fn product_name_or_default(&self) -> &str {
         self.product_name.as_deref().unwrap_or("Hearth")
     }
+}
+
+/// Per-tenant web branding block in YAML.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TenantWebYaml {
+    /// Named theme override for this tenant's UI sessions.
+    #[serde(default)]
+    pub theme: Option<String>,
+    /// Path to a custom CSS file for this tenant's UI sessions.
+    #[serde(default)]
+    pub custom_css: Option<String>,
 }
 
 /// First-run onboarding configuration.
@@ -473,6 +494,9 @@ pub struct TenantYamlConfig {
     /// Per-tenant email overrides.
     #[serde(default)]
     pub email: Option<TenantEmailYaml>,
+    /// Per-tenant web / UI branding overrides.
+    #[serde(default)]
+    pub web: Option<TenantWebYaml>,
 }
 
 /// Parses a human-readable duration string into microseconds.
@@ -514,6 +538,9 @@ pub fn parse_duration_to_micros(s: &str) -> Result<i64, String> {
 impl TenantYamlConfig {
     /// Merges this per-tenant config with global auth defaults to produce a
     /// `TenantConfig` suitable for storage.
+    ///
+    /// `web_theme_css` is populated by the caller (main.rs) after reading
+    /// the optional CSS file from disk; it is `None` here.
     pub fn to_tenant_config(
         &self,
         global: &AuthConfig,
@@ -539,6 +566,8 @@ impl TenantYamlConfig {
             password_memory_cost,
             password_time_cost,
             email_branding,
+            // Populated by main.rs after reading the CSS file from disk.
+            web_theme_css: None,
         }
     }
 }
@@ -646,6 +675,7 @@ mod tests {
             password_memory_cost: None,
             password_time_cost: None,
             email: None,
+            web: None,
         };
         let merged = tenant_cfg.to_tenant_config(&global, None);
         // Per-tenant TTL overrides global

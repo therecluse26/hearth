@@ -2,26 +2,26 @@
 {% block title %}Hearth · {{ org.name() }}{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="font-display text-2xl font-medium text-graphite-50">{{ org.name() }}</h1>
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ org.name() }}</h1>
   <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}/edit"
-     class="inline-flex items-center gap-1.5 rounded border border-strong bg-graphite-800 px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
+     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
     Edit
   </a>
 </div>
 
 {# Organization info card #}
-<div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
   <dl class="grid gap-4 sm:grid-cols-2">
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">ID</dt>
-      <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ org.id().as_uuid() }}</code></dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">ID</dt>
+      <dd class="mt-1"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ org.id().as_uuid() }}</code></dd>
     </div>
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Slug</dt>
-      <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ org.slug() }}</code></dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Slug</dt>
+      <dd class="mt-1"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ org.slug() }}</code></dd>
     </div>
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Status</dt>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Status</dt>
       <dd class="mt-1">
         {% if org.status()|fmt("{:?}") == "Active" %}
           <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
@@ -31,16 +31,16 @@
       </dd>
     </div>
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Description</dt>
-      <dd class="mt-1 text-sm text-graphite-300">{% if org.description().is_empty() %}<span class="text-graphite-500">—</span>{% else %}{{ org.description() }}{% endif %}</dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Description</dt>
+      <dd class="mt-1 text-sm text-ht-content-secondary">{% if org.description().is_empty() %}<span class="text-ht-content-muted">—</span>{% else %}{{ org.description() }}{% endif %}</dd>
     </div>
   </dl>
 </div>
 
 {# Members section #}
-<div class="mt-6 rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
   <div class="mb-4 flex items-center justify-between">
-    <h2 class="text-lg font-semibold text-graphite-50">Members</h2>
+    <h2 class="text-lg font-semibold text-ht-content-primary">Members</h2>
   </div>
 
   {# Add member form with user search #}
@@ -61,15 +61,15 @@
       <input type="hidden" name="user_id" :value="selectedUser ? selectedUser.id : ''">
 
       <div class="relative flex-1">
-        <label class="block text-xs font-medium text-graphite-300">Add member</label>
+        <label class="block text-xs font-medium text-ht-content-secondary">Add member</label>
 
         {# Selected user chip #}
-        <div x-show="selectedUser" x-cloak class="mt-1 flex items-center gap-2 rounded-lg border border-ember-gold/30 bg-ember-gold/10 px-3 py-1.5 text-sm">
+        <div x-show="selectedUser" x-cloak class="mt-1 flex items-center gap-2 rounded-lg border border-ht-content-brand/30 bg-ht-content-brand/10 px-3 py-1.5 text-sm">
           <div class="flex-1">
-            <span class="font-medium text-graphite-50" x-text="selectedUser?.name"></span>
-            <span class="text-graphite-400" x-text="selectedUser?.email"></span>
+            <span class="font-medium text-ht-content-primary" x-text="selectedUser?.name"></span>
+            <span class="text-ht-content-muted" x-text="selectedUser?.email"></span>
           </div>
-          <button type="button" @click="selectedUser = null; searchQuery = ''" class="text-graphite-400 hover:text-graphite-300">&times;</button>
+          <button type="button" @click="selectedUser = null; searchQuery = ''" class="text-ht-content-muted hover:text-ht-content-secondary">&times;</button>
         </div>
 
         {# Search input #}
@@ -83,7 +83,7 @@
                  hx-trigger="input changed delay:300ms"
                  hx-target="#search-results"
                  hx-include="[name='q']"
-                 class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-1.5 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+                 class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
           <input type="hidden" name="q" :value="searchQuery">
         </div>
 
@@ -92,13 +92,13 @@
              id="search-results"
              hx-on::after-settle="if ($el.children.length > 0) $dispatch('show-dropdown')"
              @show-dropdown.window="showDropdown = true"
-             class="absolute z-10 mt-1 w-full rounded-lg border border-white/10 bg-graphite-800 shadow-md">
+             class="absolute z-10 mt-1 w-full rounded-lg border border-ht-divider/[0.10] bg-ht-surface-elevated shadow-md">
         </div>
       </div>
 
       <div>
         <select name="role"
-                class="rounded-sm border border-white/10 bg-graphite-800 px-3 py-1.5 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+                class="rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
           <option value="Member">Member</option>
           <option value="Admin">Admin</option>
           <option value="Owner">Owner</option>
@@ -113,9 +113,9 @@
 
     {# Invite modal (shown when no matching user found) #}
     <div x-show="showInviteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showInviteModal = false">
-      <div class="w-full max-w-sm rounded-md bg-graphite-800 p-6 shadow-md" @click.outside="showInviteModal = false">
-        <h3 class="text-lg font-semibold text-graphite-50">Send invitation</h3>
-        <p class="mt-2 text-sm text-graphite-400">No existing user found. Send an invitation to <strong x-text="inviteEmail"></strong>?</p>
+      <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showInviteModal = false">
+        <h3 class="text-lg font-semibold text-ht-content-primary">Send invitation</h3>
+        <p class="mt-2 text-sm text-ht-content-muted">No existing user found. Send an invitation to <strong x-text="inviteEmail"></strong>?</p>
         <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/invite" class="mt-4">
           {% match csrf %}
             {% when Some with (token) %}
@@ -124,9 +124,9 @@
           {% endmatch %}
           <input type="hidden" name="email" :value="inviteEmail">
           <div class="mb-4">
-            <label class="block text-xs font-medium text-graphite-300">Role</label>
+            <label class="block text-xs font-medium text-ht-content-secondary">Role</label>
             <select name="role" x-model="inviteRole"
-                    class="mt-1 w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-1.5 text-sm text-graphite-50">
+                    class="mt-1 w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary">
               <option value="Member">Member</option>
               <option value="Admin">Admin</option>
               <option value="Owner">Owner</option>
@@ -134,7 +134,7 @@
           </div>
           <div class="flex justify-end gap-3">
             <button @click.prevent="showInviteModal = false" type="button"
-                    class="rounded border border-strong px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
+                    class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
               Cancel
             </button>
             <button type="submit"
@@ -150,19 +150,19 @@
   {# Members table #}
   <table class="w-full">
     <thead>
-      <tr class="border-b border-white/6">
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-graphite-400">User</th>
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-graphite-400">Role</th>
+      <tr class="border-b border-ht-divider/[0.06]">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">User</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
         <th class="px-3 py-2"></th>
       </tr>
     </thead>
     <tbody>
       {% for m in members %}
-      <tr class="border-b border-white/[0.04]">
+      <tr class="border-b border-ht-divider/[0.04]">
         <td class="px-3 py-2">
           <a href="/ui/admin/users/{{ m.membership.user_id().as_uuid() }}" class="group">
-            <div class="text-sm font-medium text-ember-gold group-hover:text-ember-orange">{{ m.user_name }}</div>
-            <div class="text-xs text-graphite-400">{{ m.user_email }}</div>
+            <div class="text-sm font-medium text-ht-content-brand group-hover:text-ember-orange">{{ m.user_name }}</div>
+            <div class="text-xs text-ht-content-muted">{{ m.user_email }}</div>
           </a>
         </td>
         <td class="px-3 py-2">
@@ -171,19 +171,19 @@
           {% else if m.membership.role()|fmt("{:?}") == "Admin" %}
             <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Admin</span>
           {% else %}
-            <span class="inline-flex items-center rounded-full bg-graphite-700 px-2 py-0.5 text-xs font-medium text-graphite-300">Member</span>
+            <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">Member</span>
           {% endif %}
         </td>
         <td class="px-3 py-2 text-right">
           <div class="flex items-center justify-end gap-2">
             <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.membership.user_id().as_uuid() }}/role" class="inline-flex items-center gap-1">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-              <select name="role" class="rounded-sm border border-white/10 bg-graphite-800 px-2 py-0.5 text-xs text-graphite-50">
+              <select name="role" class="rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-2 py-0.5 text-xs text-ht-content-primary">
                 <option value="Member" {% if m.membership.role()|fmt("{:?}") == "Member" %}selected{% endif %}>Member</option>
                 <option value="Admin" {% if m.membership.role()|fmt("{:?}") == "Admin" %}selected{% endif %}>Admin</option>
                 <option value="Owner" {% if m.membership.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
               </select>
-              <button type="submit" class="text-xs text-ember-gold hover:text-ember-orange">Update</button>
+              <button type="submit" class="text-xs text-ht-content-brand hover:text-ember-orange">Update</button>
             </form>
             <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.membership.user_id().as_uuid() }}/remove">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
@@ -194,16 +194,16 @@
       </tr>
       {% endfor %}
       {% if members.is_empty() %}
-      <tr><td colspan="3" class="px-3 py-6 text-center text-sm text-graphite-500">No members yet.</td></tr>
+      <tr><td colspan="3" class="px-3 py-6 text-center text-sm text-ht-content-muted">No members yet.</td></tr>
       {% endif %}
     </tbody>
   </table>
 </div>
 
 {# Invitations section #}
-<div class="mt-6 rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
   <div class="mb-4 flex items-center justify-between">
-    <h2 class="text-lg font-semibold text-graphite-50">Invitations</h2>
+    <h2 class="text-lg font-semibold text-ht-content-primary">Invitations</h2>
   </div>
 
   {# Invite form #}
@@ -214,13 +214,13 @@
       {% when None %}
     {% endmatch %}
     <div class="flex-1">
-      <label for="invite_email" class="block text-xs font-medium text-graphite-300">Invite by email</label>
+      <label for="invite_email" class="block text-xs font-medium text-ht-content-secondary">Invite by email</label>
       <input type="email" id="invite_email" name="email" required placeholder="newuser@example.com"
-             class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-1.5 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+             class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
     <div>
       <select name="role"
-              class="rounded-sm border border-white/10 bg-graphite-800 px-3 py-1.5 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+              class="rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
         <option value="Member">Member</option>
         <option value="Admin">Admin</option>
         <option value="Owner">Owner</option>
@@ -232,24 +232,24 @@
   {# Invitations table #}
   <table class="w-full">
     <thead>
-      <tr class="border-b border-white/6">
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-graphite-400">Email</th>
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-graphite-400">Role</th>
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-graphite-400">Status</th>
+      <tr class="border-b border-ht-divider/[0.06]">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Email</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
         <th class="px-3 py-2"></th>
       </tr>
     </thead>
     <tbody>
       {% for inv in invitations %}
-      <tr class="border-b border-white/[0.04]">
-        <td class="px-3 py-2 text-sm text-graphite-300">{{ inv.email() }}</td>
+      <tr class="border-b border-ht-divider/[0.04]">
+        <td class="px-3 py-2 text-sm text-ht-content-secondary">{{ inv.email() }}</td>
         <td class="px-3 py-2">
           {% if inv.role()|fmt("{:?}") == "Owner" %}
             <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Owner</span>
           {% else if inv.role()|fmt("{:?}") == "Admin" %}
             <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Admin</span>
           {% else %}
-            <span class="inline-flex items-center rounded-full bg-graphite-700 px-2 py-0.5 text-xs font-medium text-graphite-300">Member</span>
+            <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">Member</span>
           {% endif %}
         </td>
         <td class="px-3 py-2">
@@ -260,7 +260,7 @@
           {% else if inv.status()|fmt("{:?}") == "Revoked" %}
             <span class="inline-flex items-center rounded-full bg-danger/[0.12] px-2 py-0.5 text-xs font-medium text-danger-fg">Revoked</span>
           {% else %}
-            <span class="inline-flex items-center rounded-full bg-graphite-700 px-2 py-0.5 text-xs font-medium text-graphite-300">Expired</span>
+            <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">Expired</span>
           {% endif %}
         </td>
         <td class="px-3 py-2 text-right">
@@ -274,28 +274,28 @@
       </tr>
       {% endfor %}
       {% if invitations.is_empty() %}
-      <tr><td colspan="4" class="px-3 py-6 text-center text-sm text-graphite-500">No invitations.</td></tr>
+      <tr><td colspan="4" class="px-3 py-6 text-center text-sm text-ht-content-muted">No invitations.</td></tr>
       {% endif %}
     </tbody>
   </table>
 </div>
 
 {# Danger zone #}
-<div class="mt-6 rounded-md border border-danger/30 bg-graphite-800 p-6" x-data="{ showDialog: false }">
+<div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">
   <h2 class="text-base font-semibold text-danger-fg">Danger zone</h2>
-  <p class="mt-1 text-sm text-graphite-300">Deleting this organization removes ALL its members and invitations permanently.</p>
+  <p class="mt-1 text-sm text-ht-content-secondary">Deleting this organization removes ALL its members and invitations permanently.</p>
   <button @click="showDialog = true" type="button"
           class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
     Delete organization
   </button>
 
   <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
-    <div class="w-full max-w-sm rounded-md bg-graphite-800 p-6 shadow-md" @click.outside="showDialog = false">
-      <h3 class="text-lg font-semibold text-graphite-50">Delete organization?</h3>
-      <p class="mt-2 text-sm text-graphite-400">This will permanently delete <strong>{{ org.name() }}</strong> and ALL its members and invitations. This action cannot be undone.</p>
+    <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
+      <h3 class="text-lg font-semibold text-ht-content-primary">Delete organization?</h3>
+      <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ org.name() }}</strong> and ALL its members and invitations. This action cannot be undone.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
           Cancel
         </button>
         <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/delete">

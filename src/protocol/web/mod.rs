@@ -50,6 +50,7 @@ pub mod auth;
 pub mod handlers;
 pub(crate) mod handlers_common;
 pub(crate) mod templates;
+pub mod themes;
 
 pub use auth::CookieSecret;
 
@@ -105,6 +106,14 @@ pub struct WebState {
     /// Full server configuration, made available for the System Info page.
     /// `None` in test contexts where no config file is loaded.
     pub config: Option<Arc<Config>>,
+    /// Global theme CSS (named theme CSS + optional custom CSS file).
+    /// Served at `GET /ui/static/theme.css`. Empty string when no theme
+    /// is configured (ember dark is the default, expressed only in `:root`).
+    pub theme_css: String,
+    /// Per-tenant CSS blocks keyed by `TenantId` lowercased hex string.
+    /// Served at `GET /ui/static/tenant-theme/{id}`. Empty when no tenants
+    /// have per-tenant themes configured.
+    pub tenant_themes: std::collections::HashMap<String, String>,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -144,6 +153,8 @@ impl WebState {
             logo_url: DEFAULT_LOGO_URL.to_string(),
             custom_logo: None,
             config: None,
+            theme_css: String::new(),
+            tenant_themes: std::collections::HashMap::new(),
         }
     }
 
@@ -194,6 +205,21 @@ impl WebState {
         self
     }
 
+    /// Sets the global theme CSS (named theme + optional custom CSS).
+    /// Served at `GET /ui/static/theme.css`.
+    #[must_use]
+    pub fn with_theme_css(mut self, css: String) -> Self {
+        self.theme_css = css;
+        self
+    }
+
+    /// Sets the per-tenant theme map (tenant hex id → composed CSS).
+    #[must_use]
+    pub fn with_tenant_themes(mut self, map: std::collections::HashMap<String, String>) -> Self {
+        self.tenant_themes = map;
+        self
+    }
+
     /// Pins a tenant as the "current" one for this process. Called by
     /// onboarding and the login handler so subsequent requests skip
     /// the `list_tenants` walk.
@@ -207,6 +233,20 @@ impl WebState {
     #[must_use]
     pub fn current_tenant(&self) -> Option<TenantId> {
         self.current_tenant.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Returns the per-tenant theme URL for the currently-pinned tenant,
+    /// or `None` if no per-tenant theme is configured.
+    ///
+    /// Used by all authenticated handlers to populate `tenant_theme_url`
+    /// in template structs, enabling per-tenant CSS overrides.
+    #[must_use]
+    pub fn tenant_theme_url(&self) -> Option<String> {
+        let tenant_id = self.current_tenant()?;
+        let id = tenant_id.as_uuid().to_string();
+        self.tenant_themes
+            .contains_key(&id)
+            .then(|| format!("/ui/static/tenant-theme/{id}"))
     }
 }
 
@@ -411,6 +451,14 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_test_email),
         )
         .route("/static/{*file}", axum::routing::get(serve_static))
+        .route(
+            "/static/theme.css",
+            axum::routing::get(serve_theme_css),
+        )
+        .route(
+            "/static/tenant-theme/{id}",
+            axum::routing::get(serve_tenant_theme),
+        )
         .with_state(Arc::clone(&shared));
 
     // axum 0.8 nest does NOT match `/ui/` (trailing slash) — only `/ui`
@@ -487,6 +535,48 @@ async fn serve_static(
         }
     }
 
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("not found"))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+/// Serves the global theme CSS at `/ui/static/theme.css`.
+///
+/// Contains the named theme overrides and any operator custom CSS. Empty
+/// when the default ember theme is active and no custom CSS is set.
+async fn serve_theme_css(State(state): State<Arc<WebState>>) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+        .header(
+            header::CACHE_CONTROL,
+            // Revalidate on each request — operators can change themes.
+            HeaderValue::from_static("no-cache"),
+        )
+        .body(Body::from(state.theme_css.clone()))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+/// Serves a per-tenant theme CSS at `/ui/static/tenant-theme/{id}`.
+///
+/// Returns `404 Not Found` when no per-tenant theme is configured for
+/// the given tenant id.
+async fn serve_tenant_theme(
+    State(state): State<Arc<WebState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Some(css) = state.tenant_themes.get(&id) {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+            .header(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-cache"),
+            )
+            .body(Body::from(css.clone()))
+            .unwrap_or_else(|_| Response::new(Body::empty()));
+    }
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::from("not found"))

@@ -2,22 +2,22 @@
 {% block title %}Hearth · Multi-factor authentication{% endblock %}
 {% block body %}
 <div class="mb-8">
-  <h1 class="font-display text-2xl font-medium text-graphite-50">Multi-factor authentication</h1>
-  <p class="mt-1 text-sm text-graphite-400">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Multi-factor authentication</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">
     Protect this account with a time-based one-time password (TOTP) from any authenticator app.
   </p>
 </div>
 
 {% if mfa_enabled %}
-<div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
   <div class="flex items-center gap-3 mb-4">
     <div class="flex h-8 w-8 items-center justify-center rounded-full bg-success/[0.12]">
       <svg class="h-4 w-4 text-success-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
     </div>
-    <h2 class="text-base font-semibold text-graphite-50">MFA is enabled</h2>
+    <h2 class="text-base font-semibold text-ht-content-primary">MFA is enabled</h2>
   </div>
 
-  <p class="mb-4 text-sm text-graphite-300">Disabling MFA will allow password-only login. Reconsider before proceeding.</p>
+  <p class="mb-4 text-sm text-ht-content-secondary">Disabling MFA will allow password-only login. Reconsider before proceeding.</p>
 
   <form method="post" action="/ui/account/totp/disable" autocomplete="off">
     {% match csrf %}
@@ -30,13 +30,13 @@
               class="btn-danger rounded px-4 py-2 text-sm font-semibold">
         Disable MFA
       </button>
-      <a href="/ui/account" class="text-sm font-medium text-graphite-400 hover:text-graphite-300">Cancel</a>
+      <a href="/ui/account" class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
     </div>
   </form>
 </div>
 {% else %}
-<div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
-  <h2 class="mb-4 text-base font-semibold text-graphite-50">Register a new authenticator</h2>
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
+  <h2 class="mb-4 text-base font-semibold text-ht-content-primary">Register a new authenticator</h2>
 
   {% match activation_error %}
     {% when Some with (msg) %}
@@ -47,31 +47,31 @@
   <div class="space-y-6">
     {# Step 1: Scan QR #}
     <div class="flex gap-4">
-      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ember-gold/20 text-xs font-bold text-ember-gold">1</div>
+      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ht-content-brand/20 text-xs font-bold text-ht-content-brand">1</div>
       <div class="min-w-0 flex-1">
-        <p class="text-sm font-medium text-graphite-50">Scan this QR code in your authenticator app</p>
+        <p class="text-sm font-medium text-ht-content-primary">Scan this QR code in your authenticator app</p>
         {% if qr_svg != "" %}
         <div class="mt-3 inline-block rounded-lg bg-white p-3">
           {{ qr_svg|safe }}
         </div>
         {% endif %}
-        <p class="mt-2 text-sm text-graphite-400">Or enter the secret manually:</p>
-        <code class="mt-1 block rounded-lg bg-graphite-700/50 p-3 font-mono text-sm text-graphite-300 break-all hearth-secret">{{ secret_base32 }}</code>
+        <p class="mt-2 text-sm text-ht-content-muted">Or enter the secret manually:</p>
+        <code class="mt-1 block rounded-lg bg-ht-surface-elevated/50 p-3 font-mono text-sm text-ht-content-secondary break-all hearth-secret">{{ secret_base32 }}</code>
         {% if provisioning_uri != "" %}
-        <p class="mt-2"><a href="{{ provisioning_uri }}" class="text-sm font-medium text-ember-gold hover:text-ember-orange">Open in authenticator app</a></p>
+        <p class="mt-2"><a href="{{ provisioning_uri }}" class="text-sm font-medium text-ht-content-brand hover:text-ember-orange">Open in authenticator app</a></p>
         {% endif %}
       </div>
     </div>
 
     {# Step 2: Recovery codes #}
     <div class="flex gap-4">
-      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ember-gold/20 text-xs font-bold text-ember-gold">2</div>
+      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ht-content-brand/20 text-xs font-bold text-ht-content-brand">2</div>
       <div class="min-w-0 flex-1">
-        <p class="text-sm font-medium text-graphite-50">Save these recovery codes</p>
-        <p class="mt-1 text-sm text-graphite-400">Each code can be used once if you lose your authenticator.</p>
+        <p class="text-sm font-medium text-ht-content-primary">Save these recovery codes</p>
+        <p class="mt-1 text-sm text-ht-content-muted">Each code can be used once if you lose your authenticator.</p>
         <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {% for code in recovery_codes %}
-          <code class="rounded-md bg-graphite-700/50 px-3 py-1.5 text-center font-mono text-sm text-graphite-300">{{ code }}</code>
+          <code class="rounded-md bg-ht-surface-elevated/50 px-3 py-1.5 text-center font-mono text-sm text-ht-content-secondary">{{ code }}</code>
           {% endfor %}
         </div>
       </div>
@@ -79,9 +79,9 @@
 
     {# Step 3: Activate #}
     <div class="flex gap-4">
-      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ember-gold/20 text-xs font-bold text-ember-gold">3</div>
+      <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ht-content-brand/20 text-xs font-bold text-ht-content-brand">3</div>
       <div class="min-w-0 flex-1">
-        <p class="text-sm font-medium text-graphite-50">Enter the current 6-digit code</p>
+        <p class="text-sm font-medium text-ht-content-primary">Enter the current 6-digit code</p>
         <form method="post" action="/ui/account/totp/activate" autocomplete="off" class="mt-3">
           {% match csrf %}
             {% when Some with (token) %}
@@ -90,9 +90,9 @@
           {% endmatch %}
           <div class="flex items-end gap-3">
             <div class="flex-1">
-              <label for="code" class="block text-sm font-medium text-graphite-300">Authentication code</label>
+              <label for="code" class="block text-sm font-medium text-ht-content-secondary">Authentication code</label>
               <input type="text" id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="8" required autocomplete="one-time-code"
-                     class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+                     class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
             </div>
             <button type="submit"
                     class="btn-ember rounded px-4 py-2 text-sm font-semibold">
@@ -100,7 +100,7 @@
             </button>
           </div>
         </form>
-        <p class="mt-3"><a href="/ui/account" class="text-sm text-graphite-400 hover:text-graphite-300">Cancel</a></p>
+        <p class="mt-3"><a href="/ui/account" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Cancel</a></p>
       </div>
     </div>
   </div>

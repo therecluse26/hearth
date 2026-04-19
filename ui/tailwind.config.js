@@ -24,6 +24,30 @@ module.exports = {
     extend: {
       // ── Color tokens (THEME.md § Colors) ─────────────────────
       colors: {
+        // ── Semantic tokens — theme-overridable via CSS vars ──────────
+        // Each token maps to a CSS custom property defined in :root in
+        // input.css. Named themes override only the vars they need.
+        'ht-surface': {
+          base:     'rgb(var(--ht-surface-base)     / <alpha-value>)',
+          raised:   'rgb(var(--ht-surface-raised)   / <alpha-value>)',
+          elevated: 'rgb(var(--ht-surface-elevated) / <alpha-value>)',
+          input:    'rgb(var(--ht-surface-input)    / <alpha-value>)',
+        },
+        'ht-content': {
+          primary:    'rgb(var(--ht-content-primary)    / <alpha-value>)',
+          secondary:  'rgb(var(--ht-content-secondary)  / <alpha-value>)',
+          muted:      'rgb(var(--ht-content-muted)      / <alpha-value>)',
+          brand:      'rgb(var(--ht-content-brand)      / <alpha-value>)',
+          'on-brand': 'rgb(var(--ht-content-on-brand)   / <alpha-value>)',
+        },
+        // Single divider token — used with opacity modifier for borders AND
+        // subtle backgrounds (bg-ht-divider/10 replaces bg-white/10 in nav).
+        'ht-divider': 'rgb(var(--ht-divider) / <alpha-value>)',
+        'ht-brand': {
+          from: 'rgb(var(--ht-brand-from) / <alpha-value>)',
+          via:  'rgb(var(--ht-brand-via)  / <alpha-value>)',
+          deep: 'rgb(var(--ht-brand-deep) / <alpha-value>)',
+        },
         // Foundation — cool graphite
         graphite: {
           950: "#0e0e12",  // deepest base — headers, modals, overlays

@@ -1,6 +1,6 @@
 # Hearth theme
 
-A design theme for Hearth. Cool graphite foundation with a warm ember accent, pulled from the Hearth logo. Modern, restrained, high-contrast. Dark mode only.
+A design theme for Hearth. Cool graphite foundation with a warm ember accent, pulled from the Hearth logo. Modern, restrained, high-contrast. The default (`ember`) is a dark theme; light themes are available via the built-in named themes or operator-supplied CSS.
 
 This document specifies colors, typography, and shape tokens along with the rules for using them. It does not prescribe implementation patterns — apply these values to whatever component architecture the project uses.
 
@@ -223,3 +223,75 @@ Transitions are subtle and fast. The theme does not use elaborate motion.
 - **Not playful.** No rounded cartoon aesthetics, no bright secondary colors, no gradient backgrounds on cards, no emoji in UI chrome.
 - **Not dense.** Use generous whitespace. Sections breathe. The theme is premium, and premium means space.
 - **Not skeuomorphic.** Flat surfaces, crisp borders, no textures, no inset shadows, no glass morphism, no blurred backgrounds as decoration.
+
+---
+
+## Theming System
+
+### Semantic Token Classes (`ht-*`)
+
+Templates MUST use the semantic `ht-*` Tailwind token classes for all surface, text, and border colors. These classes resolve to CSS custom properties (`--ht-*`) that named themes and operator CSS override at runtime. Raw `graphite-*`, `white/N`, or hex utilities are FORBIDDEN in templates except for status badges and other non-themeable decorative elements.
+
+| Token class | Role |
+|---|---|
+| `bg-ht-surface-base` | Page background |
+| `bg-ht-surface-raised` | Sidebar, raised panels |
+| `bg-ht-surface-elevated` | Cards, inputs, code chips |
+| `bg-ht-surface-input` | Input field backgrounds |
+| `text-ht-content-primary` | Primary text |
+| `text-ht-content-secondary` | Secondary / body text |
+| `text-ht-content-muted` | Tertiary, hints, microcopy |
+| `text-ht-content-brand` | Brand accent text |
+| `text-ht-content-on-brand` | Text placed on brand-colored backgrounds |
+| `border-ht-divider/[0.06]` | Subtle border |
+| `border-ht-divider/[0.10]` | Default interactive border |
+| `border-ht-divider/[0.18]` | Strong hover/focus border |
+| `bg-ht-divider/[0.10]` | Active nav item background |
+| `hover:bg-ht-divider/[0.07]` | Hover state on nav items |
+
+Gradient utilities: `from-ht-brand-from`, `via-ht-brand-via`, `to-ht-brand-deep`.
+
+### CSS Custom Property Contract
+
+The following CSS variables are the stable theming API. A custom theme need only override the variables it changes; unset variables fall back to `ember` (dark) defaults.
+
+```
+--ht-surface-base        Page background (R G B, space-separated)
+--ht-surface-raised      Sidebar / raised panels
+--ht-surface-elevated    Cards, inputs
+--ht-surface-input       Input field fill
+
+--ht-content-primary     Primary text
+--ht-content-secondary   Body / secondary text
+--ht-content-muted       Tertiary, hints
+--ht-content-brand       Brand accent color
+--ht-content-on-brand    Text on brand backgrounds
+
+--ht-divider             Border base color (255 255 255 in dark → 0 0 0 in light)
+
+--ht-brand-from          Gradient start
+--ht-brand-via           Gradient mid
+--ht-brand-deep          Gradient end
+```
+
+### Named Themes
+
+Six themes ship built in. Configure via `branding.theme` in `hearth.yaml`.
+
+| Name | Mode | Description |
+|---|---|---|
+| `ember` | dark | Default — amber/orange brand on cool graphite |
+| `ocean` | dark | Teal/cyan brand on deep graphite |
+| `midnight` | dark | Violet/purple brand on deep graphite |
+| `forest` | dark | Emerald/green brand on deep graphite |
+| `cloud` | light | Blue brand on near-white surfaces |
+| `parchment` | light | Warm amber brand on warm cream surfaces |
+
+### Custom CSS
+
+Operators may append arbitrary CSS via `branding.custom_css: /path/to/brand.css`. The file is read once at startup and served after the named theme, so it can override any `--ht-*` variable or add custom rules. Per-tenant overrides are supported via `tenants.<name>.web.custom_css`.
+
+**Rebuild Tailwind after any template or `input.css` change:**
+```sh
+cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify
+```

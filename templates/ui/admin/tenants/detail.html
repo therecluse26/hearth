@@ -2,18 +2,18 @@
 {% block title %}Hearth · {{ tenant.name() }}{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="font-display text-2xl font-medium text-graphite-50">{{ tenant.name() }}</h1>
-  <span class="text-sm text-graphite-400">Configured in hearth.yaml</span>
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ tenant.name() }}</h1>
+  <span class="text-sm text-ht-content-muted">Configured in hearth.yaml</span>
 </div>
 
-<div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
   <dl class="grid gap-4 sm:grid-cols-2">
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">ID</dt>
-      <dd class="mt-1"><code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ tenant.id().as_uuid() }}</code></dd>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">ID</dt>
+      <dd class="mt-1"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ tenant.id().as_uuid() }}</code></dd>
     </div>
     <div>
-      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Status</dt>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Status</dt>
       <dd class="mt-1">
         {% if tenant.status()|fmt("{:?}") == "Active" %}
           <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
@@ -28,39 +28,39 @@
     {% match config.session_ttl_micros %}
       {% when Some with (ttl) %}
       <div>
-        <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Session TTL</dt>
-        <dd class="mt-1 text-sm text-graphite-300">{{ ttl / 1_000_000 }}s</dd>
+        <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Session TTL</dt>
+        <dd class="mt-1 text-sm text-ht-content-secondary">{{ ttl / 1_000_000 }}s</dd>
       </div>
       {% when None %}
     {% endmatch %}
     {% match config.password_memory_cost %}
       {% when Some with (cost) %}
       <div>
-        <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Password Memory Cost</dt>
-        <dd class="mt-1 text-sm text-graphite-300">{{ cost }} KiB</dd>
+        <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Password Memory Cost</dt>
+        <dd class="mt-1 text-sm text-ht-content-secondary">{{ cost }} KiB</dd>
       </div>
       {% when None %}
     {% endmatch %}
     {% match config.password_time_cost %}
       {% when Some with (cost) %}
       <div>
-        <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Password Time Cost</dt>
-        <dd class="mt-1 text-sm text-graphite-300">{{ cost }} iterations</dd>
+        <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Password Time Cost</dt>
+        <dd class="mt-1 text-sm text-ht-content-secondary">{{ cost }} iterations</dd>
       </div>
       {% when None %}
     {% endmatch %}
     {% match config.email_branding %}
       {% when Some with (branding) %}
-      <div class="col-span-2 mt-2 border-t border-white/6 pt-4">
-        <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Email Branding</h3>
+      <div class="col-span-2 mt-2 border-t border-ht-divider/[0.06] pt-4">
+        <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Email Branding</h3>
         <dl class="grid gap-3 sm:grid-cols-2">
           {% match branding.accent_color %}
             {% when Some with (color) %}
             <div>
-              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Accent Color</dt>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Accent Color</dt>
               <dd class="mt-1 flex items-center gap-1.5">
                 <span class="inline-block h-3 w-3 shrink-0 rounded-full" style="background: {{ color }}"></span>
-                <code class="rounded-sm bg-graphite-700 px-1.5 py-0.5 font-mono text-xs text-graphite-300">{{ color }}</code>
+                <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ color }}</code>
               </dd>
             </div>
             {% when None %}
@@ -68,24 +68,24 @@
           {% match branding.support_email %}
             {% when Some with (email) %}
             <div>
-              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Support Email</dt>
-              <dd class="mt-1 text-sm text-graphite-300">{{ email }}</dd>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Support Email</dt>
+              <dd class="mt-1 text-sm text-ht-content-secondary">{{ email }}</dd>
             </div>
             {% when None %}
           {% endmatch %}
           {% match branding.custom_footer_text %}
             {% when Some with (text) %}
             <div class="sm:col-span-2">
-              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-graphite-400">Custom Footer Text</dt>
-              <dd class="mt-1 text-sm text-graphite-300">{{ text }}</dd>
+              <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Custom Footer Text</dt>
+              <dd class="mt-1 text-sm text-ht-content-secondary">{{ text }}</dd>
             </div>
             {% when None %}
           {% endmatch %}
         </dl>
       </div>
       {% when None %}
-      <div class="col-span-2 mt-2 border-t border-white/6 pt-4">
-        <p class="text-xs text-graphite-500">Email branding: inherits global defaults</p>
+      <div class="col-span-2 mt-2 border-t border-ht-divider/[0.06] pt-4">
+        <p class="text-xs text-ht-content-muted">Email branding: inherits global defaults</p>
       </div>
     {% endmatch %}
   </dl>
@@ -93,21 +93,21 @@
 
 {# Danger zone — only shown for Archived tenants #}
 {% if tenant.status()|fmt("{:?}") == "Archived" %}
-<div class="mt-6 rounded-md border border-danger/30 bg-graphite-800 p-6" x-data="{ showDialog: false }">
+<div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">
   <h2 class="text-base font-semibold text-danger-fg">Permanently delete</h2>
-  <p class="mt-1 text-sm text-graphite-300">This tenant was removed from hearth.yaml. You can permanently delete all its data.</p>
+  <p class="mt-1 text-sm text-ht-content-secondary">This tenant was removed from hearth.yaml. You can permanently delete all its data.</p>
   <button @click="showDialog = true" type="button"
           class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
     Permanently delete
   </button>
 
   <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
-    <div class="w-full max-w-sm rounded-md bg-graphite-800 p-6 shadow-md" @click.outside="showDialog = false">
-      <h3 class="text-lg font-semibold text-graphite-50">Delete tenant?</h3>
-      <p class="mt-2 text-sm text-graphite-400">This will permanently delete <strong>{{ tenant.name() }}</strong> and ALL its data. This action cannot be undone.</p>
+    <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
+      <h3 class="text-lg font-semibold text-ht-content-primary">Delete tenant?</h3>
+      <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ tenant.name() }}</strong> and ALL its data. This action cannot be undone.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-graphite-300 hover:bg-graphite-750">
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover:bg-ht-divider/[0.07]">
           Cancel
         </button>
         <form method="post" action="/ui/admin/tenants/{{ tenant.id().as_uuid() }}/delete">

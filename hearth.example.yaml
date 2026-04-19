@@ -61,6 +61,14 @@ operational:
 #   # in the web UI; SVGs are inlined directly in emails.
 #   # Supported formats: .svg, .png, .jpg/.jpeg
 #   # logo_url: "/opt/hearth/branding/logo.svg"
+#
+#   # Named UI theme. Choices: ember (default dark) | ocean | midnight | forest | cloud | parchment
+#   # cloud and parchment are light themes; the rest are dark themes.
+#   # theme: ocean
+#
+#   # Optional path to a CSS file appended after the named theme. Use this to
+#   # override --ht-* CSS variables or add custom rules without forking a theme.
+#   # custom_css: /etc/hearth/brand.css
 
 email:
   # Outbound mail transport for verification and transactional mail.
@@ -143,10 +151,15 @@ email:
 #     email:
 #       branding:
 #         accent_color: "#2563EB"
+#     web:
+#       theme: cloud                    # light theme for this tenant
+#       custom_css: /etc/hearth/customer-portal.css   # optional tenant CSS
 #
 #   internal-tools:
 #     session_ttl: "8h"
 #     password_memory_cost: 131072      # stricter for internal use
+#     web:
+#       theme: midnight                 # violet/purple dark theme
 
 onboarding:
   # enabled: true  # set to false to permanently disable the /ui/setup flow

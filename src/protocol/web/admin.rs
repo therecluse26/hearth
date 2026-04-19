@@ -81,6 +81,7 @@ struct UserListTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/users`.
@@ -105,6 +106,7 @@ pub async fn admin_users_list(
             narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_users failed");
@@ -134,6 +136,7 @@ struct UserNewTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/users/new`.
@@ -154,6 +157,7 @@ pub async fn admin_user_create_form(
         narrow: true,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
+        tenant_theme_url: state.tenant_theme_url(),
     })
 }
 
@@ -224,6 +228,7 @@ pub async fn admin_user_create_submit(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(IdentityError::InvalidInput { reason }) => render(&UserNewTemplate {
             error: Some(reason),
@@ -238,6 +243,7 @@ pub async fn admin_user_create_submit(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "create_user failed");
@@ -254,6 +260,7 @@ pub async fn admin_user_create_submit(
                 narrow: true,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
+                tenant_theme_url: state.tenant_theme_url(),
             })
         }
     }
@@ -278,6 +285,7 @@ struct UserDetailTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/users/:id`.
@@ -303,6 +311,7 @@ pub async fn admin_user_detail(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Ok(None) => super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -335,6 +344,7 @@ struct UserEditTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/users/:id/edit`.
@@ -364,6 +374,7 @@ pub async fn admin_user_edit_form(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Ok(None) => super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -523,6 +534,7 @@ fn render_edit_error(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         None => super::handlers_common::not_found("User not found"),
     }
@@ -580,6 +592,7 @@ struct TenantListTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/tenants`.
@@ -601,6 +614,7 @@ pub async fn admin_tenants_list(
             narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_tenants failed");
@@ -626,6 +640,7 @@ struct TenantDetailTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/tenants/:id`.
@@ -651,6 +666,7 @@ pub async fn admin_tenant_detail(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Ok(None) => super::handlers_common::not_found("Tenant not found"),
         Err(e) => {
@@ -762,6 +778,7 @@ struct AppListTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/applications`.
@@ -786,6 +803,7 @@ pub async fn admin_apps_list(
             narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_clients failed");
@@ -815,6 +833,7 @@ struct AppNewTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/applications/new`.
@@ -836,6 +855,7 @@ pub async fn admin_app_create_form(
         narrow: true,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
+        tenant_theme_url: state.tenant_theme_url(),
     })
 }
 
@@ -900,6 +920,7 @@ pub async fn admin_app_create_submit(
                 narrow: true,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
+                tenant_theme_url: state.tenant_theme_url(),
             })
         }
         Err(IdentityError::InvalidInput { reason }) => render(&AppNewTemplate {
@@ -916,6 +937,7 @@ pub async fn admin_app_create_submit(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "register_client failed");
@@ -933,6 +955,7 @@ pub async fn admin_app_create_submit(
                 narrow: true,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
+                tenant_theme_url: state.tenant_theme_url(),
             })
         }
     }
@@ -956,6 +979,7 @@ struct AppDetailTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/applications/:id`.
@@ -982,6 +1006,7 @@ pub async fn admin_app_detail(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Ok(None) => super::handlers_common::not_found("Application not found"),
         Err(e) => {
@@ -1011,6 +1036,7 @@ struct AppEditTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/applications/:id/edit`.
@@ -1039,6 +1065,7 @@ pub async fn admin_app_edit_form(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Ok(None) => super::handlers_common::not_found("Application not found"),
         Err(e) => {
@@ -1196,6 +1223,7 @@ struct SessionListTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
@@ -1282,6 +1310,7 @@ pub async fn admin_sessions_list(
                 narrow: false,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
+                tenant_theme_url: state.tenant_theme_url(),
             })
         }
         Err(e) => {
@@ -1396,6 +1425,7 @@ struct AuditListTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// Rows-only partial returned when the audit filter is triggered via HTMX.
@@ -1406,6 +1436,7 @@ struct AuditRowsTemplate {
     events: Vec<AuditRow>,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/audit`.
@@ -1444,6 +1475,7 @@ pub async fn admin_audit_list(
                     events: rows,
                     product_name: String::new(),
                     logo_url: String::new(),
+                    tenant_theme_url: None,
                 })
             } else {
                 render(&AuditListTemplate {
@@ -1460,6 +1492,7 @@ pub async fn admin_audit_list(
                     narrow: false,
                     product_name: state.product_name.clone(),
                     logo_url: state.logo_url.clone(),
+                    tenant_theme_url: state.tenant_theme_url(),
                 })
             }
         }
@@ -1548,6 +1581,7 @@ struct OrgListTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/organizations`.
@@ -1572,6 +1606,7 @@ pub async fn admin_orgs_list(
             narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_organizations failed");
@@ -1601,6 +1636,7 @@ struct OrgNewTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/organizations/new`.
@@ -1622,6 +1658,7 @@ pub async fn admin_org_create_form(
         narrow: true,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
+        tenant_theme_url: state.tenant_theme_url(),
     })
 }
 
@@ -1681,6 +1718,7 @@ pub async fn admin_org_create_submit(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "create_organization failed");
@@ -1698,6 +1736,7 @@ pub async fn admin_org_create_submit(
                 narrow: true,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
+                tenant_theme_url: state.tenant_theme_url(),
             })
         }
     }
@@ -1733,6 +1772,7 @@ struct OrgDetailTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// Query params for org detail page (flash messages via PRG).
@@ -1822,6 +1862,7 @@ pub async fn admin_org_detail(
         narrow: false,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
+        tenant_theme_url: state.tenant_theme_url(),
     })
 }
 
@@ -1847,6 +1888,7 @@ struct OrgEditTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/organizations/:id/edit`.
@@ -1876,6 +1918,7 @@ pub async fn admin_org_edit_form(
             narrow: true,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
+            tenant_theme_url: state.tenant_theme_url(),
         }),
         Ok(None) => super::handlers_common::not_found("Organization not found"),
         Err(e) => {
@@ -2244,6 +2287,7 @@ struct UserSearchResultsTemplate {
     query: String,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/api/users/search?q=...` — returns HTML fragment for HTMX.
@@ -2267,6 +2311,7 @@ pub async fn admin_api_user_search(
         query,
         product_name: String::new(),
         logo_url: String::new(),
+        tenant_theme_url: None,
     })
 }
 
@@ -2360,6 +2405,7 @@ struct SystemInfoTemplate {
     narrow: bool,
     product_name: String,
     logo_url: String,
+    tenant_theme_url: Option<String>,
 }
 
 /// `GET /ui/admin/settings` — read-only system information page.
@@ -2378,5 +2424,6 @@ pub async fn admin_system_info(
         narrow: false,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
+        tenant_theme_url: state.tenant_theme_url(),
     })
 }

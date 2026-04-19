@@ -2,14 +2,14 @@
 {% block title %}Hearth · My Account{% endblock %}
 {% block body %}
 <div class="mb-8">
-  <h1 class="font-display text-2xl font-medium text-graphite-50">My Account</h1>
-  <p class="mt-1 text-sm text-graphite-400">Manage your password and multi-factor authentication.</p>
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">My Account</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">Manage your password and multi-factor authentication.</p>
 </div>
 
 <div class="space-y-6">
   {# ── Change password card ── #}
-  <div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
-    <h2 class="mb-4 text-base font-semibold text-graphite-50">Change password</h2>
+  <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
+    <h2 class="mb-4 text-base font-semibold text-ht-content-primary">Change password</h2>
 
     {% match password_error %}
       {% when Some with (msg) %}
@@ -25,21 +25,21 @@
       {% endmatch %}
 
       <div>
-        <label for="current_password" class="block text-sm font-medium text-graphite-300">Current password</label>
+        <label for="current_password" class="block text-sm font-medium text-ht-content-secondary">Current password</label>
         <input type="password" id="current_password" name="current_password" required autocomplete="current-password"
-               class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+               class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
       </div>
 
       <div>
-        <label for="new_password" class="block text-sm font-medium text-graphite-300">New password</label>
+        <label for="new_password" class="block text-sm font-medium text-ht-content-secondary">New password</label>
         <input type="password" id="new_password" name="new_password" required minlength="12" autocomplete="new-password"
-               class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+               class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
       </div>
 
       <div>
-        <label for="confirm_password" class="block text-sm font-medium text-graphite-300">Confirm new password</label>
+        <label for="confirm_password" class="block text-sm font-medium text-ht-content-secondary">Confirm new password</label>
         <input type="password" id="confirm_password" name="confirm_password" required minlength="12" autocomplete="new-password"
-               class="mt-1 block w-full rounded-sm border border-white/10 bg-graphite-800 px-3 py-2 text-sm text-graphite-50 focus:border-ember-gold focus:outline-none focus:shadow-focus">
+               class="mt-1 block w-full rounded-sm border border-ht-divider/[0.10] bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
       </div>
 
       <div>
@@ -52,8 +52,8 @@
   </div>
 
   {# ── MFA status card ── #}
-  <div class="rounded-md bg-graphite-800 p-6 ring-1 ring-white/6">
-    <h2 class="mb-4 text-base font-semibold text-graphite-50">Multi-factor authentication</h2>
+  <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-white/6">
+    <h2 class="mb-4 text-base font-semibold text-ht-content-primary">Multi-factor authentication</h2>
 
     {% if mfa_enabled %}
     <div class="flex items-center gap-3">
@@ -61,18 +61,18 @@
         <svg class="h-4 w-4 text-success-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
       </div>
       <div>
-        <p class="text-sm font-medium text-graphite-50">MFA is enabled</p>
-        <a href="/ui/account/totp" class="text-sm text-ember-gold hover:text-ember-orange">Manage MFA</a>
+        <p class="text-sm font-medium text-ht-content-primary">MFA is enabled</p>
+        <a href="/ui/account/totp" class="text-sm text-ht-content-brand hover:text-ember-orange">Manage MFA</a>
       </div>
     </div>
     {% else %}
     <div class="flex items-center gap-3">
-      <div class="flex h-8 w-8 items-center justify-center rounded-full bg-graphite-700">
-        <svg class="h-4 w-4 text-graphite-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      <div class="flex h-8 w-8 items-center justify-center rounded-full bg-ht-surface-elevated">
+        <svg class="h-4 w-4 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       </div>
       <div>
-        <p class="text-sm text-graphite-400">MFA is not enabled.</p>
-        <a href="/ui/account/totp" class="text-sm font-medium text-ember-gold hover:text-ember-orange">Enrol an authenticator app</a>
+        <p class="text-sm text-ht-content-muted">MFA is not enabled.</p>
+        <a href="/ui/account/totp" class="text-sm font-medium text-ht-content-brand hover:text-ember-orange">Enrol an authenticator app</a>
       </div>
     </div>
     {% endif %}

@@ -122,6 +122,7 @@ impl From<pb::TenantConfig> for domain::TenantConfig {
             password_memory_cost: c.password_memory_cost,
             password_time_cost: c.password_time_cost,
             email_branding: None,
+            web_theme_css: None,
         }
     }
 }
@@ -275,6 +276,7 @@ mod tests {
                 password_memory_cost: None,
                 password_time_cost: None,
                 email_branding: None,
+                web_theme_css: None,
             },
             Timestamp::from_micros(1_000_000),
             Timestamp::from_micros(2_000_000),
@@ -329,6 +331,7 @@ mod tests {
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
             email_branding: None,
+            web_theme_css: None,
         };
         let proto_cfg = pb::TenantConfig::from(&domain_cfg);
         let back = domain::TenantConfig::from(proto_cfg);

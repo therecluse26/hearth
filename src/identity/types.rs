@@ -257,6 +257,10 @@ pub struct TenantConfig {
     pub password_time_cost: Option<u32>,
     /// Per-tenant email branding overrides.
     pub email_branding: Option<EmailBranding>,
+    /// Composed CSS block (named theme + optional custom file contents) served
+    /// as the tenant-specific theme stylesheet. `None` means no per-tenant
+    /// theme is configured — the global theme applies.
+    pub web_theme_css: Option<String>,
 }
 
 /// A tenant record.
@@ -958,6 +962,7 @@ mod tests {
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
             email_branding: None,
+            web_theme_css: None,
         };
         tenant.set_config(new_config.clone());
         tenant.set_updated_at(Timestamp::from_micros(2_000));

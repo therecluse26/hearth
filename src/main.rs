@@ -377,6 +377,66 @@ async fn run_serve(
     if let Some((bytes, content_type)) = custom_logo {
         web_state = web_state.with_custom_logo(bytes, content_type);
     }
+
+    // Build global theme CSS: named theme base + optional operator custom CSS file.
+    let named_theme = config.branding.theme.as_deref().unwrap_or("ember");
+    let theme_base_css = web::themes::theme_css(named_theme);
+    let global_custom_css = config
+        .branding
+        .custom_css
+        .as_deref()
+        .map(|path| {
+            std::fs::read_to_string(path).unwrap_or_else(|e| {
+                warn!(path = %path, error = %e, "failed to read branding custom CSS file");
+                String::new()
+            })
+        })
+        .unwrap_or_default();
+    let global_theme_css = format!("{theme_base_css}\n{global_custom_css}");
+
+    // Build per-tenant theme CSS map (keyed by tenant UUID string).
+    let mut tenant_themes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (tenant_name, tenant_yaml) in config.tenants.iter().flatten() {
+        let web_cfg = match tenant_yaml.web.as_ref() {
+            Some(w) if w.theme.is_some() || w.custom_css.is_some() => w,
+            _ => continue,
+        };
+        let tenant = match identity_engine.get_tenant_by_name(tenant_name) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                warn!(name = %tenant_name, "tenant not found in storage, skipping per-tenant theme");
+                continue;
+            }
+            Err(e) => {
+                warn!(name = %tenant_name, error = %e, "failed to look up tenant for theme wiring");
+                continue;
+            }
+        };
+        let base = web_cfg
+            .theme
+            .as_deref()
+            .map_or("", web::themes::theme_css);
+        let custom = web_cfg
+            .custom_css
+            .as_deref()
+            .map(|path| {
+                std::fs::read_to_string(path).unwrap_or_else(|e| {
+                    warn!(path = %path, name = %tenant_name, error = %e, "failed to read tenant custom CSS file");
+                    String::new()
+                })
+            })
+            .unwrap_or_default();
+        let combined = format!("{base}\n{custom}");
+        if !combined.trim().is_empty() {
+            tenant_themes.insert(tenant.id().as_uuid().to_string(), combined);
+        }
+    }
+
+    web_state = web_state
+        .with_theme_css(global_theme_css)
+        .with_tenant_themes(tenant_themes);
+
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
     // Check for TLS configuration
