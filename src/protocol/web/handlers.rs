@@ -41,7 +41,9 @@ use axum::Form;
 use serde::Deserialize;
 
 use crate::identity::onboarding::OnboardingError;
-use crate::identity::{CleartextPassword, IdentityError};
+use crate::identity::{
+    AuthenticationOptions, CleartextPassword, CompleteAuthenticationParams, IdentityError,
+};
 
 use super::auth::{
     clear_mfa_pending_cookie, cookie_value_from_headers, issue_auth_cookies,
@@ -708,6 +710,281 @@ pub async fn login_submit(
     }
 
     generic_error()
+}
+
+// ============================================================================
+// Passkey (WebAuthn) login
+// ============================================================================
+
+/// `GET /ui/login/passkey-begin` — starts a discoverable credential
+/// authentication ceremony and returns the challenge as JSON.
+///
+/// This is a pre-auth endpoint: no session is required. The challenge
+/// is created per-tenant (iterating all active tenants) since we don't
+/// know which tenant the user belongs to yet.
+pub async fn passkey_login_begin(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    use base64::Engine as _;
+
+    // Derive RP ID from Host header (strip port if present).
+    let host_str = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let rp_id = host_str
+        .split(':')
+        .next()
+        .unwrap_or("localhost")
+        .to_string();
+
+    let options = AuthenticationOptions {
+        rp_id: rp_id.clone(),
+    };
+
+    // We only need ONE challenge — the challenge store is tenant-agnostic
+    // and `user_id=None` (discoverable flow) skips the per-tenant user
+    // existence check. Use the first tenant just to satisfy the API.
+    let tenants = match state.identity.list_tenants(None, 100) {
+        Ok(page) => page.items,
+        Err(e) => {
+            tracing::error!(error = %e, "passkey-login-begin: failed to list tenants");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Unavailable").into_response();
+        }
+    };
+
+    let Some(first_tenant) = tenants.first() else {
+        return (StatusCode::BAD_REQUEST, "No tenants configured").into_response();
+    };
+
+    let challenge = match state.identity.start_webauthn_authentication(
+        first_tenant.id(),
+        None,
+        &options,
+    ) {
+        Ok(c) => base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&c),
+        Err(e) => {
+            tracing::error!(error = %e, "passkey-login-begin: start_webauthn_authentication failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Unavailable").into_response();
+        }
+    };
+
+    let body = serde_json::json!({
+        "challenge": challenge,
+        "rpId": rp_id,
+        "userVerification": "preferred",
+        "timeout": 300_000,
+    });
+    axum::Json(body).into_response()
+}
+
+/// JSON body from the browser passkey authentication completion.
+#[derive(Debug, Deserialize)]
+pub struct PasskeyLoginCompleteBody {
+    /// Base64url-encoded credential ID from the authenticator.
+    pub credential_id: String,
+    /// Base64url-encoded `clientDataJSON`.
+    pub client_data_json: String,
+    /// Base64url-encoded authenticator data.
+    pub authenticator_data: String,
+    /// Base64url-encoded signature.
+    pub signature: String,
+    /// Base64url-encoded user handle (optional, for discoverable credentials).
+    #[serde(default)]
+    pub user_handle: Option<String>,
+}
+
+/// `POST /ui/login/passkey-complete` — completes the discoverable
+/// credential authentication ceremony and issues a session.
+///
+/// Iterates tenants to find the one that owns the credential. On
+/// success, creates a session and returns the redirect location as
+/// JSON (the browser JS will navigate to it).
+pub async fn passkey_login_complete(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<PasskeyLoginCompleteBody>,
+) -> Response {
+    use base64::Engine as _;
+
+    let b64 = &base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let Ok(credential_id) = b64.decode(&body.credential_id) else {
+        return (StatusCode::BAD_REQUEST, "Invalid credential_id").into_response();
+    };
+    let Ok(client_data_json) = b64.decode(&body.client_data_json) else {
+        return (StatusCode::BAD_REQUEST, "Invalid client_data_json").into_response();
+    };
+    let Ok(authenticator_data) = b64.decode(&body.authenticator_data) else {
+        return (StatusCode::BAD_REQUEST, "Invalid authenticator_data").into_response();
+    };
+    let Ok(signature) = b64.decode(&body.signature) else {
+        return (StatusCode::BAD_REQUEST, "Invalid signature").into_response();
+    };
+    let user_handle_bytes = body.user_handle.as_deref().and_then(|h| b64.decode(h).ok());
+
+    // Derive origin from Host header.
+    let host_str = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = if host_str.starts_with("localhost") || host_str.starts_with("127.0.0.1") {
+        "http"
+    } else {
+        "https"
+    };
+    let origin = format!("{scheme}://{host_str}");
+
+    // For discoverable credentials the authenticator returns the user
+    // handle (the user UUID we set during registration). Use it to
+    // identify the correct tenant BEFORE consuming the one-shot challenge.
+    let Some(ref uh_bytes) = user_handle_bytes else {
+        tracing::warn!("passkey-login-complete: no user_handle in assertion");
+        return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
+    };
+    let Ok(uh_str) = std::str::from_utf8(uh_bytes) else {
+        // user_handle is raw UUID bytes (16 bytes), not a UTF-8 string.
+        // Try parsing as raw UUID bytes.
+        let Ok(uuid) = uuid::Uuid::from_slice(uh_bytes) else {
+            tracing::warn!("passkey-login-complete: invalid user_handle bytes");
+            return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
+        };
+        let user_id = crate::core::UserId::new(uuid);
+        return passkey_complete_for_user(
+            &state,
+            &user_id,
+            &credential_id,
+            &client_data_json,
+            &authenticator_data,
+            &signature,
+            user_handle_bytes.as_ref(),
+            &origin,
+        );
+    };
+    // Try parsing as UUID string representation.
+    let Ok(uuid) = uuid::Uuid::parse_str(uh_str) else {
+        // Fall back to treating it as raw bytes.
+        let Ok(uuid) = uuid::Uuid::from_slice(uh_bytes) else {
+            tracing::warn!("passkey-login-complete: cannot parse user_handle as UUID");
+            return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
+        };
+        let user_id = crate::core::UserId::new(uuid);
+        return passkey_complete_for_user(
+            &state,
+            &user_id,
+            &credential_id,
+            &client_data_json,
+            &authenticator_data,
+            &signature,
+            user_handle_bytes.as_ref(),
+            &origin,
+        );
+    };
+
+    let user_id = crate::core::UserId::new(uuid);
+    passkey_complete_for_user(
+        &state,
+        &user_id,
+        &credential_id,
+        &client_data_json,
+        &authenticator_data,
+        &signature,
+        user_handle_bytes.as_ref(),
+        &origin,
+    )
+}
+
+/// Resolves the tenant that owns `user_id`, then completes the
+/// `WebAuthn` authentication and creates a session.
+///
+/// This is extracted so the UUID-parsing branches in
+/// `passkey_login_complete` can share the same completion logic.
+#[allow(clippy::too_many_arguments)]
+fn passkey_complete_for_user(
+    state: &Arc<WebState>,
+    user_id: &crate::core::UserId,
+    credential_id: &[u8],
+    client_data_json: &[u8],
+    authenticator_data: &[u8],
+    signature: &[u8],
+    user_handle_bytes: Option<&Vec<u8>>,
+    origin: &str,
+) -> Response {
+    // Find which tenant owns this user.
+    let tenants = match state.identity.list_tenants(None, 100) {
+        Ok(page) => page.items,
+        Err(e) => {
+            tracing::error!(error = %e, "passkey-login-complete: failed to list tenants");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Unavailable").into_response();
+        }
+    };
+
+    let tenant = tenants.iter().find(|t| {
+        state
+            .identity
+            .get_user(t.id(), user_id)
+            .ok()
+            .flatten()
+            .is_some()
+    });
+
+    let Some(tenant) = tenant else {
+        tracing::warn!(user_id = %user_id, "passkey-login-complete: user not found in any tenant");
+        return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
+    };
+
+    let params = CompleteAuthenticationParams {
+        credential_id,
+        client_data_json,
+        authenticator_data,
+        signature,
+        user_handle: user_handle_bytes.map(Vec::as_slice),
+        origin,
+    };
+
+    let auth_result = match state
+        .identity
+        .complete_webauthn_authentication(tenant.id(), &params)
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "passkey-login-complete: authentication failed");
+            return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
+        }
+    };
+
+    // Passkey authentication bypasses the TOTP gate — a passkey
+    // is inherently multi-factor (possession + biometric/PIN).
+    match state
+        .identity
+        .create_session(tenant.id(), auth_result.user_id())
+    {
+        Ok(session) => {
+            let IssuedCookies {
+                session_cookie,
+                csrf_cookie,
+            } = issue_auth_cookies(&state.cookie_secret, tenant.id(), session.id());
+
+            state.set_current_tenant(tenant.id().clone());
+
+            let mut response = axum::Json(serde_json::json!({
+                "redirect": "/ui",
+            }))
+            .into_response();
+            append_cookie(&mut response, &session_cookie);
+            append_cookie(&mut response, &csrf_cookie);
+            response
+        }
+        Err(IdentityError::UserNotVerified) => axum::Json(serde_json::json!({
+            "error": "Email not verified. Check your inbox for the verification link."
+        }))
+        .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "passkey-login: create_session failed");
+            (StatusCode::UNAUTHORIZED, "Authentication failed").into_response()
+        }
+    }
 }
 
 // ============================================================================

@@ -622,10 +622,20 @@ fn verify_signature(
 
     match alg {
         COSE_ALG_ES256 => {
-            let public_key =
-                signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, &raw_key);
-            public_key
+            // Real authenticators (CTAP2 §6.5.6) produce DER/ASN.1-encoded
+            // ECDSA signatures. Try ASN.1 first, then fall back to fixed
+            // format for test/synthetic authenticators.
+            let asn1_key =
+                signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_ASN1, &raw_key);
+            asn1_key
                 .verify(signed_data, signature_bytes)
+                .or_else(|_| {
+                    let fixed_key = signature::UnparsedPublicKey::new(
+                        &signature::ECDSA_P256_SHA256_FIXED,
+                        &raw_key,
+                    );
+                    fixed_key.verify(signed_data, signature_bytes)
+                })
                 .map_err(|_| IdentityError::InvalidInput {
                     reason: "ES256 signature verification failed".to_string(),
                 })
@@ -883,15 +893,21 @@ pub(crate) fn complete_authentication(
     let user_id = if let Some(uid) = pending.user_id.as_ref() {
         uid.clone()
     } else if let Some(handle) = user_handle {
-        // Discoverable credential: userHandle contains the user UUID
-        let uuid_str =
-            std::str::from_utf8(handle).map_err(|_| IdentityError::InvalidAssertion {
-                reason: "invalid userHandle encoding".to_string(),
-            })?;
-        let uuid =
+        // Discoverable credential: userHandle contains the user UUID,
+        // either as raw 16 bytes or as a UTF-8 UUID string.
+        let uuid = if handle.len() == 16 {
+            uuid::Uuid::from_slice(handle).map_err(|_| IdentityError::InvalidAssertion {
+                reason: "invalid 16-byte userHandle".to_string(),
+            })?
+        } else {
+            let uuid_str =
+                std::str::from_utf8(handle).map_err(|_| IdentityError::InvalidAssertion {
+                    reason: "invalid userHandle encoding".to_string(),
+                })?;
             uuid::Uuid::parse_str(uuid_str).map_err(|_| IdentityError::InvalidAssertion {
                 reason: "invalid user UUID in userHandle".to_string(),
-            })?;
+            })?
+        };
         UserId::new(uuid)
     } else {
         return Err(IdentityError::InvalidAssertion {

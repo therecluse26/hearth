@@ -311,6 +311,14 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(handlers::login_form).post(handlers::login_submit),
         )
         .route(
+            "/login/passkey-begin",
+            axum::routing::get(handlers::passkey_login_begin),
+        )
+        .route(
+            "/login/passkey-complete",
+            axum::routing::post(handlers::passkey_login_complete),
+        )
+        .route(
             "/mfa-challenge",
             axum::routing::get(handlers::mfa_challenge_form).post(handlers::mfa_challenge_submit),
         )

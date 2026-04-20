@@ -562,7 +562,10 @@ fn validate_oidc(oidc: &OidcYamlConfig) -> Result<(), ConfigError> {
     }
     if let Some(ttl) = &oidc.authorization_code_ttl {
         types::parse_duration_to_micros(ttl).map_err(|e| {
-            invalid("oidc.authorization_code_ttl", format!("invalid duration: {e}"))
+            invalid(
+                "oidc.authorization_code_ttl",
+                format!("invalid duration: {e}"),
+            )
         })?;
     }
     Ok(())

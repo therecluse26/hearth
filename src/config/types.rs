@@ -736,14 +736,14 @@ impl TenantYamlConfig {
         let mfa_methods = auth.and_then(|a| a.mfa_methods.clone());
         let allowed_auth_methods = auth.and_then(|a| a.allowed_auth_methods.clone());
 
-        let password_policy = auth
-            .and_then(|a| a.password_policy.as_ref())
-            .map(|pp| crate::identity::PasswordPolicy {
+        let password_policy = auth.and_then(|a| a.password_policy.as_ref()).map(|pp| {
+            crate::identity::PasswordPolicy {
                 min_length: pp.min_length,
                 require_uppercase: pp.require_uppercase,
                 require_number: pp.require_number,
                 require_special: pp.require_special,
-            });
+            }
+        });
 
         let access_token_ttl_micros = auth
             .and_then(|a| a.token.as_ref())

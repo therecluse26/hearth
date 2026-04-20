@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::config::{ApplicationYamlConfig, AuthConfig, Config, OrganizationYamlConfig, TenantYamlConfig};
+use crate::config::{
+    ApplicationYamlConfig, AuthConfig, Config, OrganizationYamlConfig, TenantYamlConfig,
+};
 use crate::core::{ClientId, TenantId};
 use crate::identity::error::IdentityError;
 use crate::identity::oidc::UpdateClientRequest;
@@ -218,8 +220,7 @@ fn default_tenant_config(auth: &AuthConfig, config: &Config) -> TenantConfig {
 /// This is a stable constant — changing it would break all existing
 /// deterministic client IDs.
 const APP_NAMESPACE: Uuid = Uuid::from_bytes([
-    0x8b, 0x07, 0x4e, 0x8c, 0x3e, 0x6a, 0x5a, 0x8e, 0x96, 0x1d, 0x8f, 0x2b, 0xaa, 0xe7, 0x1b,
-    0xf4,
+    0x8b, 0x07, 0x4e, 0x8c, 0x3e, 0x6a, 0x5a, 0x8e, 0x96, 0x1d, 0x8f, 0x2b, 0xaa, 0xe7, 0x1b, 0xf4,
 ]);
 
 /// Generates a deterministic `ClientId` from tenant name and application key.

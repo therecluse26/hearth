@@ -1,7 +1,7 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · Sign in{% endblock %}
 {% block body %}
-<div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-divider-subtle">
+<div x-data="passkeyLogin()" class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-divider-subtle">
   <div class="mb-6 flex items-center justify-center gap-2.5">
     <a href="/ui" class="flex items-center gap-2.5" aria-label="Home">
       <img src="{{ logo_url }}" alt="{{ product_name }}" class="w-24">
@@ -16,6 +16,11 @@
     {% when None %}
   {% endmatch %}
 
+  <!-- Passkey error (from JS) -->
+  <div x-show="passkeyError" x-cloak
+       class="mb-4 rounded-lg bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert"
+       x-text="passkeyError"></div>
+
   <form method="post" action="/ui/login" class="space-y-4">
     {% match return_to %}
       {% when Some with (r) %}
@@ -25,7 +30,7 @@
 
     <div>
       <label for="email" class="block text-sm font-medium text-ht-content-secondary">Email</label>
-      <input type="email" id="email" name="email" required autocomplete="email"
+      <input type="email" id="email" name="email" required autocomplete="email webauthn"
              class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
@@ -41,8 +46,159 @@
     </button>
   </form>
 
+  <!-- Passkey sign-in button -->
+  <template x-if="passkeyAvailable">
+    <div class="mt-4">
+      <div class="relative my-4">
+        <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-divider-subtle"></div></div>
+        <div class="relative flex justify-center text-xs"><span class="bg-ht-surface-elevated px-2 text-ht-content-muted">or</span></div>
+      </div>
+      <button @click="authenticatePasskey()" :disabled="authenticating"
+              class="w-full rounded border border-divider bg-ht-surface px-4 py-2.5 text-sm font-medium text-ht-content-primary hover:bg-ht-surface-hover transition-colors flex items-center justify-center gap-2">
+        <template x-if="authenticating">
+          <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+        </template>
+        <template x-if="!authenticating">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/>
+          </svg>
+        </template>
+        <span x-text="authenticating ? 'Authenticating…' : 'Sign in with passkey'"></span>
+      </button>
+    </div>
+  </template>
+
   <div class="mt-4 text-center">
     <a href="/ui/forgot-password" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">Forgot password?</a>
   </div>
 </div>
+
+<script>
+function passkeyLogin() {
+  return {
+    passkeyAvailable: false,
+    authenticating: false,
+    passkeyError: null,
+
+    init() {
+      // Check if WebAuthn is available in this browser
+      if (window.PublicKeyCredential) {
+        this.passkeyAvailable = true;
+        // Attempt conditional mediation (autofill) if supported
+        this.tryConditionalMediation();
+      }
+    },
+
+    async tryConditionalMediation() {
+      try {
+        if (!PublicKeyCredential.isConditionalMediationAvailable ||
+            !(await PublicKeyCredential.isConditionalMediationAvailable())) {
+          return;
+        }
+        const opts = await this.fetchBeginOptions();
+        if (!opts) return;
+
+        const assertion = await navigator.credentials.get({
+          publicKey: opts,
+          mediation: 'conditional',
+        });
+        if (assertion) {
+          await this.completeAuthentication(assertion);
+        }
+      } catch (e) {
+        // Conditional mediation silently fails — that's fine
+        if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') {
+          console.debug('Conditional mediation unavailable:', e);
+        }
+      }
+    },
+
+    async authenticatePasskey() {
+      this.passkeyError = null;
+      this.authenticating = true;
+      try {
+        const opts = await this.fetchBeginOptions();
+        if (!opts) {
+          this.passkeyError = 'Passkey authentication is not available.';
+          return;
+        }
+
+        const assertion = await navigator.credentials.get({ publicKey: opts });
+        if (!assertion) {
+          this.passkeyError = 'Authentication was cancelled.';
+          return;
+        }
+        await this.completeAuthentication(assertion);
+      } catch (e) {
+        if (e.name !== 'NotAllowedError') {
+          this.passkeyError = e.message || 'Passkey authentication failed.';
+        }
+      } finally {
+        this.authenticating = false;
+      }
+    },
+
+    async fetchBeginOptions() {
+      const resp = await fetch('/ui/login/passkey-begin');
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      // Decode base64url challenge
+      data.challenge = this.b64urlDecode(data.challenge);
+      // Remove string fields that aren't part of PublicKeyCredentialRequestOptions
+      const opts = {
+        challenge: data.challenge,
+        rpId: data.rpId,
+        userVerification: data.userVerification || 'preferred',
+        timeout: data.timeout || 300000,
+      };
+      return opts;
+    },
+
+    async completeAuthentication(assertion) {
+      const body = {
+        credential_id: this.b64urlEncode(assertion.rawId),
+        client_data_json: this.b64urlEncode(assertion.response.clientDataJSON),
+        authenticator_data: this.b64urlEncode(assertion.response.authenticatorData),
+        signature: this.b64urlEncode(assertion.response.signature),
+      };
+      if (assertion.response.userHandle && assertion.response.userHandle.byteLength > 0) {
+        body.user_handle = this.b64urlEncode(assertion.response.userHandle);
+      }
+
+      const resp = await fetch('/ui/login/passkey-complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || 'Authentication failed');
+      }
+
+      const result = await resp.json();
+      if (result.error) {
+        this.passkeyError = result.error;
+        return;
+      }
+      if (result.redirect) {
+        window.location.href = result.redirect;
+      }
+    },
+
+    b64urlEncode(buf) {
+      return btoa(String.fromCharCode(...new Uint8Array(buf)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    },
+
+    b64urlDecode(str) {
+      const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+      return Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    },
+  };
+}
+</script>
 {% endblock %}
