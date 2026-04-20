@@ -260,11 +260,11 @@ impl std::fmt::Display for ConsistencyToken {
 
 /// Namespace configuration defining valid object types, relations, and subject types.
 ///
-/// When set for a tenant, `write_tuples()` validates every tuple against this
+/// When set for a realm, `write_tuples()` validates every tuple against this
 /// schema before persisting. If not set, all tuples are accepted (backward
 /// compatible with Phase 0).
 ///
-/// Stored as JSON in storage under the `ns:config` key per tenant.
+/// Stored as JSON in storage under the `ns:config` key per realm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamespaceConfig {
     /// Map of object type names to their configuration.
@@ -315,8 +315,8 @@ pub struct TupleChangeEvent {
     pub relation: String,
     /// The subject display string of the affected tuple.
     pub subject: String,
-    /// The tenant this event belongs to.
-    pub tenant_id: String,
+    /// The realm this event belongs to.
+    pub realm_id: String,
     /// Timestamp in Unix microseconds.
     pub timestamp_us: u64,
 }

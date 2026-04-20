@@ -5,15 +5,15 @@
 
 mod common;
 
-use hearth::core::{SessionId, TenantId};
+use hearth::core::{RealmId, SessionId};
 use hearth::identity::{CreateUserRequest, IdentityEngine, User};
 
-/// Helper: creates a user with a unique email in the given tenant.
-fn create_user(harness: &common::TestHarness, tenant: &TenantId) -> User {
+/// Helper: creates a user with a unique email in the given realm.
+fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
         .identity()
         .create_user(
-            tenant,
+            realm,
             &CreateUserRequest {
                 email: format!("user-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "Test User".to_string(),
@@ -29,14 +29,14 @@ async fn session_full_lifecycle() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     // 1. Create session
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -46,7 +46,7 @@ async fn session_full_lifecycle() {
     // 2. Validate (lookup should succeed)
     let fetched = harness
         .identity()
-        .get_session(&tenant, session.id())
+        .get_session(&realm, session.id())
         .expect("get session")
         .expect("session should exist");
     assert_eq!(fetched.id(), session.id());
@@ -55,20 +55,20 @@ async fn session_full_lifecycle() {
     // 3. Refresh
     let refreshed = harness
         .identity()
-        .refresh_session(&tenant, session.id())
+        .refresh_session(&realm, session.id())
         .expect("refresh");
     assert_eq!(refreshed.id(), session.id());
 
     // 4. Revoke
     harness
         .identity()
-        .revoke_session(&tenant, session.id())
+        .revoke_session(&realm, session.id())
         .expect("revoke");
 
     // 5. Validate should now fail
     let gone = harness
         .identity()
-        .get_session(&tenant, session.id())
+        .get_session(&realm, session.id())
         .expect("get");
     assert!(gone.is_none(), "revoked session should not be found");
 }
@@ -95,7 +95,7 @@ async fn session_persists_across_restart() {
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
 
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
     let session_id;
 
     // Phase 1: Create engine, create user + session
@@ -116,7 +116,7 @@ async fn session_persists_across_restart() {
 
         let user = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "persist@example.com".to_string(),
                     display_name: "Persist User".to_string(),
@@ -126,7 +126,7 @@ async fn session_persists_across_restart() {
 
         let session = engine
             .create_session(
-                &tenant,
+                &realm,
                 user.id(),
                 &hearth::identity::SessionContext::default(),
             )
@@ -135,7 +135,7 @@ async fn session_persists_across_restart() {
 
         // Verify session exists
         let check = engine
-            .get_session(&tenant, &session_id)
+            .get_session(&realm, &session_id)
             .expect("get session");
         assert!(check.is_some(), "session should exist before restart");
 
@@ -160,7 +160,7 @@ async fn session_persists_across_restart() {
 
         // Session should survive restart (WAL durability)
         let recovered = engine
-            .get_session(&tenant, &session_id)
+            .get_session(&realm, &session_id)
             .expect("get after restart");
         assert!(
             recovered.is_some(),
@@ -176,14 +176,14 @@ async fn delete_user_invalidates_sessions() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     // Create sessions
     let s1 = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -191,7 +191,7 @@ async fn delete_user_invalidates_sessions() {
     let s2 = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -200,51 +200,51 @@ async fn delete_user_invalidates_sessions() {
     // Delete user
     harness
         .identity()
-        .delete_user(&tenant, user.id())
+        .delete_user(&realm, user.id())
         .expect("delete user");
 
     // Sessions should be gone
     assert!(harness
         .identity()
-        .get_session(&tenant, s1.id())
+        .get_session(&realm, s1.id())
         .expect("get")
         .is_none());
     assert!(harness
         .identity()
-        .get_session(&tenant, s2.id())
+        .get_session(&realm, s2.id())
         .expect("get")
         .is_none());
 }
 
-// ===== Cross-tenant session isolation =====
+// ===== Cross-realm session isolation =====
 
 #[tokio::test]
-async fn sessions_are_tenant_isolated() {
+async fn sessions_are_realm_isolated() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant_a = TenantId::generate();
-    let tenant_b = TenantId::generate();
+    let realm_a = RealmId::generate();
+    let realm_b = RealmId::generate();
 
-    let user = create_user(&harness, &tenant_a);
+    let user = create_user(&harness, &realm_a);
 
     let session = harness
         .identity()
         .create_session(
-            &tenant_a,
+            &realm_a,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
 
-    // Can't see tenant A's session from tenant B
-    let cross_tenant = harness
+    // Can't see realm A's session from realm B
+    let cross_realm = harness
         .identity()
-        .get_session(&tenant_b, session.id())
+        .get_session(&realm_b, session.id())
         .expect("get");
     assert!(
-        cross_tenant.is_none(),
-        "session should not be visible in different tenant"
+        cross_realm.is_none(),
+        "session should not be visible in different realm"
     );
 }
 
@@ -255,13 +255,13 @@ async fn create_session_for_nonexistent_user_fails() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
     let fake_user = hearth::core::UserId::generate();
 
     let err = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             &fake_user,
             &hearth::identity::SessionContext::default(),
         )
@@ -279,11 +279,11 @@ async fn revoke_nonexistent_session_returns_error() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let err = harness
         .identity()
-        .revoke_session(&tenant, &SessionId::generate())
+        .revoke_session(&realm, &SessionId::generate())
         .expect_err("should fail");
     assert!(
         format!("{err}").contains("session not found"),
@@ -302,13 +302,13 @@ async fn replayed_session_token_rejected_after_revocation() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -320,7 +320,7 @@ async fn replayed_session_token_rejected_after_revocation() {
     // Session works before revocation
     let pre_revoke = harness
         .identity()
-        .get_session(&tenant, &captured_id)
+        .get_session(&realm, &captured_id)
         .expect("get");
     assert!(
         pre_revoke.is_some(),
@@ -330,13 +330,13 @@ async fn replayed_session_token_rejected_after_revocation() {
     // Revoke the session
     harness
         .identity()
-        .revoke_session(&tenant, &captured_id)
+        .revoke_session(&realm, &captured_id)
         .expect("revoke");
 
     // Replaying the same session ID should fail
     let replay = harness
         .identity()
-        .get_session(&tenant, &captured_id)
+        .get_session(&realm, &captured_id)
         .expect("get");
     assert!(
         replay.is_none(),
@@ -346,7 +346,7 @@ async fn replayed_session_token_rejected_after_revocation() {
     // Attempting to refresh the replayed session should also fail
     let refresh_err = harness
         .identity()
-        .refresh_session(&tenant, &captured_id)
+        .refresh_session(&realm, &captured_id)
         .expect_err("should fail");
     assert!(
         format!("{refresh_err}").contains("session not found"),
@@ -364,14 +364,14 @@ async fn session_fixation_prevention() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     // Create multiple sessions — each must get a unique ID
     let s1 = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -379,7 +379,7 @@ async fn session_fixation_prevention() {
     let s2 = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -387,7 +387,7 @@ async fn session_fixation_prevention() {
     let s3 = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -402,7 +402,7 @@ async fn session_fixation_prevention() {
     let attacker_id = SessionId::generate();
     let result = harness
         .identity()
-        .get_session(&tenant, &attacker_id)
+        .get_session(&realm, &attacker_id)
         .expect("get");
     assert!(
         result.is_none(),
@@ -442,10 +442,10 @@ async fn enumeration_resistance() {
     )
     .expect("engine creation");
 
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
     let user = engine
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "enum@example.com".to_string(),
                 display_name: "Enum User".to_string(),
@@ -456,19 +456,19 @@ async fn enumeration_resistance() {
     // Create a session, then revoke it
     let revoked_session = engine
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     engine
-        .revoke_session(&tenant, revoked_session.id())
+        .revoke_session(&realm, revoked_session.id())
         .expect("revoke");
 
     // Create a session, then let it expire
     let expired_session = engine
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -479,13 +479,13 @@ async fn enumeration_resistance() {
     let nonexistent_id = SessionId::generate();
 
     let resp_nonexistent = engine
-        .get_session(&tenant, &nonexistent_id)
+        .get_session(&realm, &nonexistent_id)
         .expect("get nonexistent");
     let resp_revoked = engine
-        .get_session(&tenant, revoked_session.id())
+        .get_session(&realm, revoked_session.id())
         .expect("get revoked");
     let resp_expired = engine
-        .get_session(&tenant, expired_session.id())
+        .get_session(&realm, expired_session.id())
         .expect("get expired");
 
     // All three must be indistinguishable: None
@@ -495,13 +495,13 @@ async fn enumeration_resistance() {
 
     // Verify that the error type for refresh is also the same
     let err_nonexistent = engine
-        .refresh_session(&tenant, &nonexistent_id)
+        .refresh_session(&realm, &nonexistent_id)
         .expect_err("refresh nonexistent");
     let err_revoked = engine
-        .refresh_session(&tenant, revoked_session.id())
+        .refresh_session(&realm, revoked_session.id())
         .expect_err("refresh revoked");
     let err_expired = engine
-        .refresh_session(&tenant, expired_session.id())
+        .refresh_session(&realm, expired_session.id())
         .expect_err("refresh expired");
 
     // All should produce the same error message

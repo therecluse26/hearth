@@ -1,8 +1,8 @@
-//! Identity domain types: users, tenants, requests, and status.
+//! Identity domain types: users, realms, requests, and status.
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{InvitationId, OrganizationId, SessionId, TenantId, Timestamp, UserId};
+use crate::core::{InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
 use crate::identity::email::EmailBranding;
 
 /// A cursor-based page of results.
@@ -50,7 +50,7 @@ pub enum UserStatus {
     PendingVerification,
 }
 
-/// A user record within a tenant.
+/// A user record within a realm.
 ///
 /// Fields are private; access via accessor methods. Email is always stored
 /// normalized (lowercase, trimmed, NFC).
@@ -275,24 +275,24 @@ pub struct UpdateUserRequest {
     pub status: Option<UserStatus>,
 }
 
-// ===== Tenant types =====
+// ===== Realm types =====
 
-/// The lifecycle status of a tenant.
+/// The lifecycle status of a realm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum TenantStatus {
-    /// Tenant is active; all operations proceed normally.
+pub enum RealmStatus {
+    /// Realm is active; all operations proceed normally.
     Active,
-    /// Tenant is suspended; authentication and authorization are denied.
+    /// Realm is suspended; authentication and authorization are denied.
     Suspended,
-    /// Tenant was removed from YAML config and soft-deleted.
+    /// Realm was removed from YAML config and soft-deleted.
     ///
     /// Behaves like `Suspended` (auth denied) but additionally signals
-    /// that the tenant can be permanently deleted from the admin UI.
+    /// that the realm can be permanently deleted from the admin UI.
     Archived,
 }
 
-/// Password complexity policy stored in a tenant's configuration.
+/// Password complexity policy stored in a realm's configuration.
 ///
 /// These are *declarations* — enforcement is a separate concern in the identity
 /// engine. When all fields are `None`, no additional complexity requirements
@@ -309,24 +309,24 @@ pub struct PasswordPolicy {
     pub require_special: Option<bool>,
 }
 
-/// Per-tenant configuration overrides.
+/// Per-realm configuration overrides.
 ///
 /// Fields are optional — when `None`, the engine-level default is used.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TenantConfig {
+pub struct RealmConfig {
     /// Session time-to-live in microseconds. Overrides engine default.
     pub session_ttl_micros: Option<i64>,
     /// Argon2id memory cost in KiB. Overrides engine default.
     pub password_memory_cost: Option<u32>,
     /// Argon2id time cost (iterations). Overrides engine default.
     pub password_time_cost: Option<u32>,
-    /// Per-tenant email branding overrides.
+    /// Per-realm email branding overrides.
     pub email_branding: Option<EmailBranding>,
     /// Composed CSS block (named theme + optional custom file contents) served
-    /// as the tenant-specific theme stylesheet. `None` means no per-tenant
+    /// as the realm-specific theme stylesheet. `None` means no per-realm
     /// theme is configured — the global theme applies.
     pub web_theme_css: Option<String>,
-    /// Whether MFA is required for all users in this tenant.
+    /// Whether MFA is required for all users in this realm.
     pub mfa_required: Option<bool>,
     /// Allowed MFA methods (e.g. `["totp", "webauthn"]`).
     pub mfa_methods: Option<Vec<String>>,
@@ -334,9 +334,9 @@ pub struct TenantConfig {
     pub allowed_auth_methods: Option<Vec<String>>,
     /// Password complexity policy.
     pub password_policy: Option<PasswordPolicy>,
-    /// Per-tenant access token TTL in microseconds.
+    /// Per-realm access token TTL in microseconds.
     pub access_token_ttl_micros: Option<i64>,
-    /// Per-tenant refresh token TTL in microseconds.
+    /// Per-realm refresh token TTL in microseconds.
     pub refresh_token_ttl_micros: Option<i64>,
     /// Maximum failed login attempts before lockout.
     pub max_failed_logins: Option<u32>,
@@ -348,28 +348,28 @@ pub struct TenantConfig {
     pub passkey_requires_mfa: Option<bool>,
 }
 
-/// A tenant record.
+/// A realm record.
 ///
-/// Each tenant is an isolated namespace for users, sessions, credentials,
+/// Each realm is an isolated namespace for users, sessions, credentials,
 /// tokens, and authorization tuples. Fields are private; access via
 /// accessor methods.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Tenant {
-    id: TenantId,
+pub struct Realm {
+    id: RealmId,
     name: String,
-    status: TenantStatus,
-    config: TenantConfig,
+    status: RealmStatus,
+    config: RealmConfig,
     created_at: Timestamp,
     updated_at: Timestamp,
 }
 
-impl Tenant {
-    /// Creates a new tenant. Used internally by the identity engine.
+impl Realm {
+    /// Creates a new realm. Used internally by the identity engine.
     pub(crate) fn new(
-        id: TenantId,
+        id: RealmId,
         name: String,
-        status: TenantStatus,
-        config: TenantConfig,
+        status: RealmStatus,
+        config: RealmConfig,
         created_at: Timestamp,
         updated_at: Timestamp,
     ) -> Self {
@@ -383,48 +383,48 @@ impl Tenant {
         }
     }
 
-    /// Returns the tenant's unique identifier.
-    pub fn id(&self) -> &TenantId {
+    /// Returns the realm's unique identifier.
+    pub fn id(&self) -> &RealmId {
         &self.id
     }
 
-    /// Returns the tenant's display name.
+    /// Returns the realm's display name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Returns the tenant's lifecycle status.
-    pub fn status(&self) -> TenantStatus {
+    /// Returns the realm's lifecycle status.
+    pub fn status(&self) -> RealmStatus {
         self.status
     }
 
-    /// Returns the tenant's configuration overrides.
-    pub fn config(&self) -> &TenantConfig {
+    /// Returns the realm's configuration overrides.
+    pub fn config(&self) -> &RealmConfig {
         &self.config
     }
 
-    /// Returns when the tenant was created (UTC microseconds).
+    /// Returns when the realm was created (UTC microseconds).
     pub fn created_at(&self) -> Timestamp {
         self.created_at
     }
 
-    /// Returns when the tenant was last updated (UTC microseconds).
+    /// Returns when the realm was last updated (UTC microseconds).
     pub fn updated_at(&self) -> Timestamp {
         self.updated_at
     }
 
-    /// Updates the tenant name. Used internally during updates.
+    /// Updates the realm name. Used internally during updates.
     pub(crate) fn set_name(&mut self, name: String) {
         self.name = name;
     }
 
-    /// Updates the tenant status. Used internally during updates.
-    pub(crate) fn set_status(&mut self, status: TenantStatus) {
+    /// Updates the realm status. Used internally during updates.
+    pub(crate) fn set_status(&mut self, status: RealmStatus) {
         self.status = status;
     }
 
-    /// Updates the tenant configuration. Used internally during updates.
-    pub(crate) fn set_config(&mut self, config: TenantConfig) {
+    /// Updates the realm configuration. Used internally during updates.
+    pub(crate) fn set_config(&mut self, config: RealmConfig) {
         self.config = config;
     }
 
@@ -434,26 +434,26 @@ impl Tenant {
     }
 }
 
-/// Request to create a new tenant.
+/// Request to create a new realm.
 #[derive(Clone, Debug)]
-pub struct CreateTenantRequest {
-    /// The tenant's display name.
+pub struct CreateRealmRequest {
+    /// The realm's display name.
     pub name: String,
-    /// Optional per-tenant configuration. Defaults applied if omitted.
-    pub config: Option<TenantConfig>,
+    /// Optional per-realm configuration. Defaults applied if omitted.
+    pub config: Option<RealmConfig>,
 }
 
-/// Request to update an existing tenant.
+/// Request to update an existing realm.
 ///
 /// Only `Some` fields are applied; `None` fields are left unchanged.
 #[derive(Clone, Debug, Default)]
-pub struct UpdateTenantRequest {
+pub struct UpdateRealmRequest {
     /// New display name.
     pub name: Option<String>,
-    /// New tenant status.
-    pub status: Option<TenantStatus>,
+    /// New realm status.
+    pub status: Option<RealmStatus>,
     /// New configuration overrides.
-    pub config: Option<TenantConfig>,
+    pub config: Option<RealmConfig>,
 }
 
 // ===== Organization types =====
@@ -474,10 +474,10 @@ pub struct OrganizationConfig {
     pub max_members: Option<u32>,
 }
 
-/// An organization within a tenant.
+/// An organization within a realm.
 ///
 /// Organizations represent B2B customer groups. Users can be members of
-/// multiple organizations within the same tenant. Fields are private;
+/// multiple organizations within the same realm. Fields are private;
 /// access via accessor methods.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Organization {
@@ -877,8 +877,8 @@ pub struct ImportClientRequest {
 /// used an unsupported KDF and was skipped).
 #[derive(Clone, Debug, Default)]
 pub struct MigrationReport {
-    /// ID of the tenant the migrated realm was imported into.
-    pub tenant_id: Option<TenantId>,
+    /// ID of the realm the migrated realm was imported into.
+    pub realm_id: Option<RealmId>,
     /// Number of users written.
     pub users_imported: usize,
     /// Number of users whose credentials could not be imported
@@ -977,31 +977,31 @@ mod tests {
         assert!(req.status.is_none());
     }
 
-    // ===== Tenant type tests =====
+    // ===== Realm type tests =====
 
     #[test]
-    fn tenant_accessors() {
-        let id = TenantId::generate();
+    fn realm_accessors() {
+        let id = RealmId::generate();
         let now = Timestamp::from_micros(1_000_000);
-        let config = TenantConfig {
+        let config = RealmConfig {
             session_ttl_micros: Some(3_600_000_000),
-            ..TenantConfig::default()
+            ..RealmConfig::default()
         };
-        let tenant = Tenant::new(
+        let realm = Realm::new(
             id.clone(),
             "Acme Corp".to_string(),
-            TenantStatus::Active,
+            RealmStatus::Active,
             config.clone(),
             now,
             now,
         );
 
-        assert_eq!(tenant.id(), &id);
-        assert_eq!(tenant.name(), "Acme Corp");
-        assert_eq!(tenant.status(), TenantStatus::Active);
-        assert_eq!(tenant.config(), &config);
-        assert_eq!(tenant.created_at(), now);
-        assert_eq!(tenant.updated_at(), now);
+        assert_eq!(realm.id(), &id);
+        assert_eq!(realm.name(), "Acme Corp");
+        assert_eq!(realm.status(), RealmStatus::Active);
+        assert_eq!(realm.config(), &config);
+        assert_eq!(realm.created_at(), now);
+        assert_eq!(realm.updated_at(), now);
 
         // Verify new auth policy fields default to None
         assert!(config.mfa_required.is_none());
@@ -1015,69 +1015,69 @@ mod tests {
     }
 
     #[test]
-    fn tenant_serde_round_trip() {
-        let tenant = Tenant::new(
-            TenantId::generate(),
-            "Test Tenant".to_string(),
-            TenantStatus::Active,
-            TenantConfig::default(),
+    fn realm_serde_round_trip() {
+        let realm = Realm::new(
+            RealmId::generate(),
+            "Test Realm".to_string(),
+            RealmStatus::Active,
+            RealmConfig::default(),
             Timestamp::from_micros(1_000),
             Timestamp::from_micros(2_000),
         );
 
-        let json = serde_json::to_string(&tenant).expect("serialize");
-        let deserialized: Tenant = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(tenant, deserialized);
+        let json = serde_json::to_string(&realm).expect("serialize");
+        let deserialized: Realm = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(realm, deserialized);
     }
 
     #[test]
-    fn tenant_status_serde_round_trip() {
-        for status in [TenantStatus::Active, TenantStatus::Suspended] {
+    fn realm_status_serde_round_trip() {
+        for status in [RealmStatus::Active, RealmStatus::Suspended] {
             let json = serde_json::to_string(&status).expect("serialize");
-            let deserialized: TenantStatus = serde_json::from_str(&json).expect("deserialize");
+            let deserialized: RealmStatus = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(status, deserialized);
         }
     }
 
     #[test]
-    fn tenant_mutators() {
-        let mut tenant = Tenant::new(
-            TenantId::generate(),
+    fn realm_mutators() {
+        let mut realm = Realm::new(
+            RealmId::generate(),
             "Old Name".to_string(),
-            TenantStatus::Active,
-            TenantConfig::default(),
+            RealmStatus::Active,
+            RealmConfig::default(),
             Timestamp::from_micros(1_000),
             Timestamp::from_micros(1_000),
         );
 
-        tenant.set_name("New Name".to_string());
-        tenant.set_status(TenantStatus::Suspended);
-        let new_config = TenantConfig {
+        realm.set_name("New Name".to_string());
+        realm.set_status(RealmStatus::Suspended);
+        let new_config = RealmConfig {
             session_ttl_micros: Some(7_200_000_000),
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
-            ..TenantConfig::default()
+            ..RealmConfig::default()
         };
-        tenant.set_config(new_config.clone());
-        tenant.set_updated_at(Timestamp::from_micros(2_000));
+        realm.set_config(new_config.clone());
+        realm.set_updated_at(Timestamp::from_micros(2_000));
 
-        assert_eq!(tenant.name(), "New Name");
-        assert_eq!(tenant.status(), TenantStatus::Suspended);
-        assert_eq!(tenant.config(), &new_config);
-        assert_eq!(tenant.updated_at(), Timestamp::from_micros(2_000));
+        assert_eq!(realm.name(), "New Name");
+        assert_eq!(realm.status(), RealmStatus::Suspended);
+        assert_eq!(realm.config(), &new_config);
+        assert_eq!(realm.updated_at(), Timestamp::from_micros(2_000));
     }
 
     #[test]
-    fn tenant_config_default_is_all_none() {
-        let config = TenantConfig::default();
+    fn realm_config_default_is_all_none() {
+        let config = RealmConfig::default();
         assert!(config.session_ttl_micros.is_none());
         assert!(config.password_memory_cost.is_none());
         assert!(config.password_time_cost.is_none());
     }
 
     #[test]
-    fn update_tenant_request_default_is_all_none() {
-        let req = UpdateTenantRequest::default();
+    fn update_realm_request_default_is_all_none() {
+        let req = UpdateRealmRequest::default();
         assert!(req.name.is_none());
         assert!(req.status.is_none());
         assert!(req.config.is_none());

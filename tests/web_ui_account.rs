@@ -16,11 +16,11 @@ use axum::http::{header, Request, StatusCode};
 use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
 use hearth::core::Clock;
 use hearth::core::SystemClock;
-use hearth::core::{SessionId, TenantId};
+use hearth::core::{RealmId, SessionId};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{
-    CleartextPassword, CreateTenantRequest, CreateUserRequest, CredentialConfig,
+    CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
     EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, UpdateUserRequest, UserStatus,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
@@ -49,7 +49,7 @@ const NEW_PASSWORD: &str = "new-horse-battery-staple-12345";
 struct TestRig {
     app: axum::Router,
     identity: Arc<dyn IdentityEngine>,
-    tenant_id: TenantId,
+    realm_id: RealmId,
     user_id: hearth::core::UserId,
     session_id: SessionId,
 }
@@ -83,15 +83,15 @@ fn build_rig() -> TestRig {
         Arc::clone(&clock),
     )) as Arc<dyn hearth::audit::AuditEngine>;
 
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
             name: "Acme".to_string(),
             config: None,
         })
-        .expect("create tenant");
+        .expect("create realm");
     let user = identity
         .create_user(
-            tenant.id(),
+            realm.id(),
             &CreateUserRequest {
                 email: "alice@acme.test".to_string(),
                 display_name: "Alice".to_string(),
@@ -100,11 +100,11 @@ fn build_rig() -> TestRig {
         .expect("create user");
     let password = CleartextPassword::from_string(OLD_PASSWORD.to_string());
     identity
-        .set_password(tenant.id(), user.id(), &password)
+        .set_password(realm.id(), user.id(), &password)
         .expect("set password");
     identity
         .update_user(
-            tenant.id(),
+            realm.id(),
             user.id(),
             &UpdateUserRequest {
                 email: None,
@@ -115,7 +115,7 @@ fn build_rig() -> TestRig {
         .expect("activate user");
     let session = identity
         .create_session(
-            tenant.id(),
+            realm.id(),
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -140,7 +140,7 @@ fn build_rig() -> TestRig {
     TestRig {
         app,
         identity,
-        tenant_id: tenant.id().clone(),
+        realm_id: realm.id().clone(),
         user_id: user.id().clone(),
         session_id: session.id().clone(),
     }
@@ -152,12 +152,12 @@ fn auth_cookie(rig: &TestRig, csrf: &str) -> String {
     let mut mac = <Hmac<Sha256>>::new_from_slice(&COOKIE_SECRET_BYTES).expect("hmac key");
     mac.update(rig.session_id.as_uuid().as_bytes());
     mac.update(b"|");
-    mac.update(rig.tenant_id.as_uuid().as_bytes());
+    mac.update(rig.realm_id.as_uuid().as_bytes());
     let tag = data_encoding::BASE64URL_NOPAD.encode(&mac.finalize().into_bytes());
     format!(
         "hearth_ui_session={}.{}.{}; hearth_ui_csrf={}",
         rig.session_id.as_uuid(),
-        rig.tenant_id.as_uuid(),
+        rig.realm_id.as_uuid(),
         tag,
         csrf,
     )
@@ -245,7 +245,7 @@ async fn change_password_without_csrf_returns_403() {
     let check = CleartextPassword::from_string(OLD_PASSWORD.to_string());
     assert!(rig
         .identity
-        .verify_password(&rig.tenant_id, &rig.user_id, &check)
+        .verify_password(&rig.realm_id, &rig.user_id, &check)
         .expect("verify"));
 }
 
@@ -288,7 +288,7 @@ async fn change_password_with_wrong_current_shows_inline_error() {
     let check = CleartextPassword::from_string(OLD_PASSWORD.to_string());
     assert!(rig
         .identity
-        .verify_password(&rig.tenant_id, &rig.user_id, &check)
+        .verify_password(&rig.realm_id, &rig.user_id, &check)
         .expect("verify"));
 }
 
@@ -367,12 +367,12 @@ async fn change_password_success_updates_credential() {
     let new = CleartextPassword::from_string(NEW_PASSWORD.to_string());
     assert!(rig
         .identity
-        .verify_password(&rig.tenant_id, &rig.user_id, &new)
+        .verify_password(&rig.realm_id, &rig.user_id, &new)
         .expect("verify new"));
     let old = CleartextPassword::from_string(OLD_PASSWORD.to_string());
     assert!(!rig
         .identity
-        .verify_password(&rig.tenant_id, &rig.user_id, &old)
+        .verify_password(&rig.realm_id, &rig.user_id, &old)
         .expect("verify old"));
 }
 
@@ -507,7 +507,7 @@ async fn totp_activate_enables_mfa_with_valid_code() {
     );
     assert!(rig
         .identity
-        .mfa_enabled(&rig.tenant_id, &rig.user_id)
+        .mfa_enabled(&rig.realm_id, &rig.user_id)
         .expect("mfa_enabled"));
 }
 
@@ -559,7 +559,7 @@ async fn totp_activate_with_bad_code_shows_inline_error() {
     );
     assert!(!rig
         .identity
-        .mfa_enabled(&rig.tenant_id, &rig.user_id)
+        .mfa_enabled(&rig.realm_id, &rig.user_id)
         .expect("mfa_enabled"));
 }
 
@@ -595,7 +595,7 @@ async fn totp_enroll_page_shows_disable_form_when_already_enabled() {
     // Enrol MFA directly through the engine before hitting the page.
     let enrollment = rig
         .identity
-        .enroll_totp(&rig.tenant_id, &rig.user_id)
+        .enroll_totp(&rig.realm_id, &rig.user_id)
         .expect("enroll");
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -603,7 +603,7 @@ async fn totp_enroll_page_shows_disable_form_when_already_enabled() {
         .as_secs();
     let code = compute_totp_code(&enrollment.secret_base32, now_secs);
     rig.identity
-        .verify_totp_enrollment(&rig.tenant_id, &rig.user_id, &code)
+        .verify_totp_enrollment(&rig.realm_id, &rig.user_id, &code)
         .expect("verify enrollment");
 
     let response = rig
@@ -639,7 +639,7 @@ async fn totp_disable_turns_mfa_off() {
     // Enrol and activate through the engine first.
     let enrollment = rig
         .identity
-        .enroll_totp(&rig.tenant_id, &rig.user_id)
+        .enroll_totp(&rig.realm_id, &rig.user_id)
         .expect("enroll");
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -647,11 +647,11 @@ async fn totp_disable_turns_mfa_off() {
         .as_secs();
     let code = compute_totp_code(&enrollment.secret_base32, now_secs);
     rig.identity
-        .verify_totp_enrollment(&rig.tenant_id, &rig.user_id, &code)
+        .verify_totp_enrollment(&rig.realm_id, &rig.user_id, &code)
         .expect("verify enrollment");
     assert!(rig
         .identity
-        .mfa_enabled(&rig.tenant_id, &rig.user_id)
+        .mfa_enabled(&rig.realm_id, &rig.user_id)
         .expect("mfa_enabled"));
 
     let form = format!("_csrf={csrf}");
@@ -673,6 +673,6 @@ async fn totp_disable_turns_mfa_off() {
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert!(!rig
         .identity
-        .mfa_enabled(&rig.tenant_id, &rig.user_id)
+        .mfa_enabled(&rig.realm_id, &rig.user_id)
         .expect("mfa_enabled"));
 }

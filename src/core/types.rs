@@ -49,12 +49,12 @@ macro_rules! define_id_type {
 }
 
 define_id_type!(
-    /// Unique identifier for a tenant. All storage operations require this.
-    TenantId, "tenant_"
+    /// Unique identifier for a realm. All storage operations require this.
+    RealmId, "realm_"
 );
 
 define_id_type!(
-    /// Unique identifier for a user within a tenant.
+    /// Unique identifier for a user within a realm.
     UserId, "user_"
 );
 
@@ -74,7 +74,7 @@ define_id_type!(
 );
 
 define_id_type!(
-    /// Unique identifier for an organization within a tenant.
+    /// Unique identifier for an organization within a realm.
     OrganizationId, "org_"
 );
 
@@ -89,39 +89,39 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn tenant_id_creation_and_accessor() {
+    fn realm_id_creation_and_accessor() {
         let uuid = Uuid::new_v4();
-        let id = TenantId::new(uuid);
+        let id = RealmId::new(uuid);
         assert_eq!(*id.as_uuid(), uuid);
     }
 
     #[test]
-    fn tenant_id_equality_and_hashing() {
+    fn realm_id_equality_and_hashing() {
         let uuid = Uuid::new_v4();
-        let id1 = TenantId::new(uuid);
-        let id2 = TenantId::new(uuid);
+        let id1 = RealmId::new(uuid);
+        let id2 = RealmId::new(uuid);
         assert_eq!(id1, id2);
 
         let mut set = HashSet::new();
         set.insert(id1.clone());
         assert!(set.contains(&id2));
 
-        let other = TenantId::generate();
+        let other = RealmId::generate();
         assert!(!set.contains(&other));
     }
 
     #[test]
-    fn tenant_id_display_shows_prefix() {
-        let id = TenantId::generate();
+    fn realm_id_display_shows_prefix() {
+        let id = RealmId::generate();
         let display = format!("{id}");
-        assert!(display.starts_with("tenant_"), "got: {display}");
+        assert!(display.starts_with("realm_"), "got: {display}");
     }
 
     #[test]
-    fn tenant_id_serde_round_trip() {
-        let id = TenantId::generate();
+    fn realm_id_serde_round_trip() {
+        let id = RealmId::generate();
         let json = serde_json::to_string(&id).expect("serialize");
-        let deserialized: TenantId = serde_json::from_str(&json).expect("deserialize");
+        let deserialized: RealmId = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(id, deserialized);
     }
 

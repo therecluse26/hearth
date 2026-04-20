@@ -11,7 +11,7 @@
 //! DATA SECTION (variable, entries sorted by CompositeKey):
 //!   Per entry:
 //!     [1B]  type (0x00=Data, 0x01=Tombstone)
-//!     [16B] tenant UUID
+//!     [16B] realm UUID
 //!     [4B]  key length (u32 LE)
 //!     [NB]  key bytes
 //!     [4B]  value length (u32 LE, 0 for tombstone)
@@ -26,7 +26,7 @@ use std::path::Path;
 
 use uuid::Uuid;
 
-use crate::core::TenantId;
+use crate::core::RealmId;
 use crate::storage::error::StorageError;
 use crate::storage::fs::{Fs, RealFs};
 use crate::storage::memtable::{CompositeKey, MemtableValue};
@@ -122,8 +122,8 @@ impl SstWriter {
             MemtableValue::Tombstone => buf.push(0x01),
         }
 
-        // Tenant UUID (16 bytes)
-        buf.extend_from_slice(key.tenant_id().as_uuid().as_bytes());
+        // Realm UUID (16 bytes)
+        buf.extend_from_slice(key.realm_id().as_uuid().as_bytes());
 
         // Key: length-prefixed
         #[allow(clippy::cast_possible_truncation)]
@@ -228,35 +228,35 @@ impl SstReader {
         &self.entries
     }
 
-    /// Returns all entries for a specific tenant, with raw keys (no tenant prefix).
-    pub(crate) fn iter_tenant(&self, tenant_id: &TenantId) -> Vec<(Vec<u8>, MemtableValue)> {
+    /// Returns all entries for a specific realm, with raw keys (no realm prefix).
+    pub(crate) fn iter_realm(&self, realm_id: &RealmId) -> Vec<(Vec<u8>, MemtableValue)> {
         self.entries
             .iter()
-            .filter(|(k, _)| k.tenant_id() == tenant_id)
+            .filter(|(k, _)| k.realm_id() == realm_id)
             .map(|(k, v)| (k.key().to_vec(), v.clone()))
             .collect()
     }
 
-    /// Point lookup for a specific tenant and key.
-    pub(crate) fn get(&self, tenant_id: &TenantId, key: &[u8]) -> Option<MemtableValue> {
-        let target = CompositeKey::new(tenant_id.clone(), key.to_vec());
+    /// Point lookup for a specific realm and key.
+    pub(crate) fn get(&self, realm_id: &RealmId, key: &[u8]) -> Option<MemtableValue> {
+        let target = CompositeKey::new(realm_id.clone(), key.to_vec());
         self.entries
             .binary_search_by(|(k, _)| k.cmp(&target))
             .ok()
             .map(|idx| self.entries[idx].1.clone())
     }
 
-    /// Range scan within a single tenant's key space.
+    /// Range scan within a single realm's key space.
     ///
     /// Returns entries where `start_key <= key < end_key` (half-open interval).
     pub(crate) fn range_scan(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         start_key: &[u8],
         end_key: &[u8],
     ) -> Vec<(Vec<u8>, MemtableValue)> {
-        let start = CompositeKey::new(tenant_id.clone(), start_key.to_vec());
-        let end = CompositeKey::new(tenant_id.clone(), end_key.to_vec());
+        let start = CompositeKey::new(realm_id.clone(), start_key.to_vec());
+        let end = CompositeKey::new(realm_id.clone(), end_key.to_vec());
 
         self.entries
             .iter()
@@ -288,10 +288,10 @@ impl SstReader {
             let entry_type = data[pos];
             pos += 1;
 
-            // Tenant UUID (16 bytes)
+            // Realm UUID (16 bytes)
             if pos + 16 > data.len() {
                 return Err(StorageError::InvalidSstFormat {
-                    reason: "truncated entry: missing tenant UUID".to_string(),
+                    reason: "truncated entry: missing realm UUID".to_string(),
                 });
             }
             let uuid_bytes: [u8; 16] =
@@ -300,7 +300,7 @@ impl SstReader {
                     .map_err(|_| StorageError::InvalidSstFormat {
                         reason: "invalid UUID bytes".to_string(),
                     })?;
-            let tenant_id = TenantId::new(Uuid::from_bytes(uuid_bytes));
+            let realm_id = RealmId::new(Uuid::from_bytes(uuid_bytes));
             pos += 16;
 
             // Key length + key data
@@ -345,7 +345,7 @@ impl SstReader {
             let value_data = data[pos..pos + val_len].to_vec();
             pos += val_len;
 
-            let composite_key = CompositeKey::new(tenant_id, key);
+            let composite_key = CompositeKey::new(realm_id, key);
             let value = match entry_type {
                 0x00 => MemtableValue::Data(value_data),
                 0x01 => MemtableValue::Tombstone,
@@ -411,7 +411,7 @@ pub(crate) fn compact_with_fs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::TenantId;
+    use crate::core::RealmId;
     use crate::storage::memtable::{Memtable, MemtableConfig};
     // ===== Phase A: P0 Fast Unit Tests =====
 
@@ -423,11 +423,11 @@ mod tests {
         let sst_path = dir.path().join("test.sst");
 
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", b"value1").expect("put");
-        mt.put(&tenant, b"key2", b"value2").expect("put");
-        mt.put(&tenant, b"key3", b"value3").expect("put");
+        mt.put(&realm, b"key1", b"value1").expect("put");
+        mt.put(&realm, b"key2", b"value2").expect("put");
+        mt.put(&realm, b"key3", b"value3").expect("put");
 
         let entries = mt.iter_all();
         let metadata = SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
@@ -470,12 +470,12 @@ mod tests {
         let sst_path = dir.path().join("test.sst");
 
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"alpha", b"val-a").expect("put");
-        mt.put(&tenant, b"bravo", b"val-b").expect("put");
-        mt.delete(&tenant, b"charlie").expect("delete");
-        mt.put(&tenant, b"delta", b"val-d").expect("put");
+        mt.put(&realm, b"alpha", b"val-a").expect("put");
+        mt.put(&realm, b"bravo", b"val-b").expect("put");
+        mt.delete(&realm, b"charlie").expect("delete");
+        mt.put(&realm, b"delta", b"val-d").expect("put");
 
         let original_entries = mt.iter_all();
         SstWriter::write_sst(&sst_path, &original_entries).expect("write_sst");
@@ -494,21 +494,21 @@ mod tests {
     #[test]
     fn compaction_merges_deduplicates_and_removes_tombstones() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         // SST 1 (older): key1=v1, key2=v2, key3=v3
         let sst1_path = dir.path().join("sst1.sst");
         let entries1 = vec![
             (
-                CompositeKey::new(tenant.clone(), b"key1".to_vec()),
+                CompositeKey::new(realm.clone(), b"key1".to_vec()),
                 MemtableValue::Data(b"v1-old".to_vec()),
             ),
             (
-                CompositeKey::new(tenant.clone(), b"key2".to_vec()),
+                CompositeKey::new(realm.clone(), b"key2".to_vec()),
                 MemtableValue::Data(b"v2".to_vec()),
             ),
             (
-                CompositeKey::new(tenant.clone(), b"key3".to_vec()),
+                CompositeKey::new(realm.clone(), b"key3".to_vec()),
                 MemtableValue::Data(b"v3".to_vec()),
             ),
         ];
@@ -518,11 +518,11 @@ mod tests {
         let sst2_path = dir.path().join("sst2.sst");
         let entries2 = vec![
             (
-                CompositeKey::new(tenant.clone(), b"key1".to_vec()),
+                CompositeKey::new(realm.clone(), b"key1".to_vec()),
                 MemtableValue::Data(b"v1-new".to_vec()),
             ),
             (
-                CompositeKey::new(tenant.clone(), b"key3".to_vec()),
+                CompositeKey::new(realm.clone(), b"key3".to_vec()),
                 MemtableValue::Tombstone,
             ),
         ];
@@ -569,9 +569,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let sst_path = dir.path().join("corrupt.sst");
 
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
         let entries = vec![(
-            CompositeKey::new(tenant, b"key1".to_vec()),
+            CompositeKey::new(realm, b"key1".to_vec()),
             MemtableValue::Data(b"val1".to_vec()),
         )];
         SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
@@ -579,7 +579,7 @@ mod tests {
         // Corrupt a byte in the data section
         let mut raw = std::fs::read(&sst_path).expect("read");
         let data_start = HEADER_SIZE;
-        raw[data_start + 1] ^= 0xFF; // flip a byte in the tenant UUID area
+        raw[data_start + 1] ^= 0xFF; // flip a byte in the realm UUID area
         std::fs::write(&sst_path, &raw).expect("write corrupt");
 
         let result = SstReader::open(&sst_path);
@@ -595,9 +595,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let sst_path = dir.path().join("bad_magic.sst");
 
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
         let entries = vec![(
-            CompositeKey::new(tenant, b"k".to_vec()),
+            CompositeKey::new(realm, b"k".to_vec()),
             MemtableValue::Data(b"v".to_vec()),
         )];
         SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
@@ -611,54 +611,54 @@ mod tests {
     }
 
     #[test]
-    fn tenant_isolation_in_reader() {
+    fn realm_isolation_in_reader() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let sst_path = dir.path().join("multi_tenant.sst");
+        let sst_path = dir.path().join("multi_realm.sst");
 
-        let tenant_a = TenantId::generate();
-        let tenant_b = TenantId::generate();
+        let realm_a = RealmId::generate();
+        let realm_b = RealmId::generate();
 
         // Ensure deterministic ordering: use iter_all from a memtable
         let mt = Memtable::new(MemtableConfig::default());
-        mt.put(&tenant_a, b"a-key1", b"a-val1").expect("put");
-        mt.put(&tenant_a, b"a-key2", b"a-val2").expect("put");
-        mt.put(&tenant_b, b"b-key1", b"b-val1").expect("put");
+        mt.put(&realm_a, b"a-key1", b"a-val1").expect("put");
+        mt.put(&realm_a, b"a-key2", b"a-val2").expect("put");
+        mt.put(&realm_b, b"b-key1", b"b-val1").expect("put");
 
         let entries = mt.iter_all();
         SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
 
         let reader = SstReader::open(&sst_path).expect("open");
 
-        // Tenant A sees only their keys
-        let a_entries = reader.iter_tenant(&tenant_a);
+        // Realm A sees only their keys
+        let a_entries = reader.iter_realm(&realm_a);
         assert_eq!(a_entries.len(), 2);
         for (k, _) in &a_entries {
             assert!(k.starts_with(b"a-key"), "unexpected key: {k:?}");
         }
 
-        // Tenant B sees only their key
-        let b_entries = reader.iter_tenant(&tenant_b);
+        // Realm B sees only their key
+        let b_entries = reader.iter_realm(&realm_b);
         assert_eq!(b_entries.len(), 1);
         assert_eq!(b_entries[0].0, b"b-key1".to_vec());
 
-        // Non-existent tenant sees nothing
-        let ghost = TenantId::generate();
-        assert!(reader.iter_tenant(&ghost).is_empty());
+        // Non-existent realm sees nothing
+        let ghost = RealmId::generate();
+        assert!(reader.iter_realm(&ghost).is_empty());
     }
 
     #[test]
     fn compaction_all_tombstones_produces_empty_sst() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let sst_path = dir.path().join("tombstones.sst");
         let entries = vec![
             (
-                CompositeKey::new(tenant.clone(), b"k1".to_vec()),
+                CompositeKey::new(realm.clone(), b"k1".to_vec()),
                 MemtableValue::Tombstone,
             ),
             (
-                CompositeKey::new(tenant, b"k2".to_vec()),
+                CompositeKey::new(realm, b"k2".to_vec()),
                 MemtableValue::Tombstone,
             ),
         ];
@@ -676,20 +676,20 @@ mod tests {
     #[test]
     fn compaction_single_sst_input_preserves_live_entries() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let sst_path = dir.path().join("single.sst");
         let entries = vec![
             (
-                CompositeKey::new(tenant.clone(), b"k1".to_vec()),
+                CompositeKey::new(realm.clone(), b"k1".to_vec()),
                 MemtableValue::Data(b"v1".to_vec()),
             ),
             (
-                CompositeKey::new(tenant.clone(), b"k2".to_vec()),
+                CompositeKey::new(realm.clone(), b"k2".to_vec()),
                 MemtableValue::Tombstone,
             ),
             (
-                CompositeKey::new(tenant, b"k3".to_vec()),
+                CompositeKey::new(realm, b"k3".to_vec()),
                 MemtableValue::Data(b"v3".to_vec()),
             ),
         ];
@@ -715,15 +715,15 @@ mod tests {
     fn point_lookup_and_range_scan_over_sst() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sst_path = dir.path().join("lookup.sst");
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let mt = Memtable::new(MemtableConfig::default());
-        mt.put(&tenant, b"apple", b"v-apple").expect("put");
-        mt.put(&tenant, b"banana", b"v-banana").expect("put");
-        mt.put(&tenant, b"cherry", b"v-cherry").expect("put");
-        mt.put(&tenant, b"date", b"v-date").expect("put");
-        mt.put(&tenant, b"elderberry", b"v-elder").expect("put");
-        mt.delete(&tenant, b"fig").expect("delete");
+        mt.put(&realm, b"apple", b"v-apple").expect("put");
+        mt.put(&realm, b"banana", b"v-banana").expect("put");
+        mt.put(&realm, b"cherry", b"v-cherry").expect("put");
+        mt.put(&realm, b"date", b"v-date").expect("put");
+        mt.put(&realm, b"elderberry", b"v-elder").expect("put");
+        mt.delete(&realm, b"fig").expect("delete");
 
         let entries = mt.iter_all();
         SstWriter::write_sst(&sst_path, &entries).expect("write");
@@ -732,37 +732,37 @@ mod tests {
 
         // Point lookup: hit
         assert_eq!(
-            reader.get(&tenant, b"banana"),
+            reader.get(&realm, b"banana"),
             Some(MemtableValue::Data(b"v-banana".to_vec()))
         );
 
         // Point lookup: miss
-        assert_eq!(reader.get(&tenant, b"grape"), None);
+        assert_eq!(reader.get(&realm, b"grape"), None);
 
         // Point lookup: tombstone (returns Some(Tombstone), caller decides behavior)
-        assert_eq!(reader.get(&tenant, b"fig"), Some(MemtableValue::Tombstone));
+        assert_eq!(reader.get(&realm, b"fig"), Some(MemtableValue::Tombstone));
 
         // Range scan: [banana, date) = banana, cherry
-        let range = reader.range_scan(&tenant, b"banana", b"date");
+        let range = reader.range_scan(&realm, b"banana", b"date");
         assert_eq!(range.len(), 2);
         assert_eq!(range[0].0, b"banana".to_vec());
         assert_eq!(range[1].0, b"cherry".to_vec());
 
-        // Range scan: tenant isolation
-        let ghost = TenantId::generate();
+        // Range scan: realm isolation
+        let ghost = RealmId::generate();
         assert!(reader.range_scan(&ghost, b"a", b"z").is_empty());
         assert_eq!(reader.get(&ghost, b"apple"), None);
 
-        // iter_tenant returns correct subset
-        let tenant_entries = reader.iter_tenant(&tenant);
-        assert_eq!(tenant_entries.len(), 6); // 5 data + 1 tombstone
+        // iter_realm returns correct subset
+        let realm_entries = reader.iter_realm(&realm);
+        assert_eq!(realm_entries.len(), 6); // 5 data + 1 tombstone
     }
 
     // ===== Phase B: P0 Extended (proptest) =====
 
     use proptest::prelude::*;
 
-    /// Strategy for a (key, value) pair within a single tenant.
+    /// Strategy for a (key, value) pair within a single realm.
     fn arb_kv() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
         (
             prop::collection::vec(any::<u8>(), 1..64),
@@ -779,12 +779,12 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let sst_path = dir.path().join("prop.sst");
             let mt = Memtable::new(MemtableConfig::default());
-            let tenant = TenantId::generate();
+            let realm = RealmId::generate();
 
             // Apply all ops to memtable (some keys may be overwritten)
             let mut oracle = std::collections::BTreeMap::new();
             for (k, v) in &kvs {
-                mt.put(&tenant, k, v).expect("put");
+                mt.put(&realm, k, v).expect("put");
                 oracle.insert(k.clone(), v.clone());
             }
 
@@ -794,10 +794,10 @@ mod tests {
 
             // Read back
             let reader = SstReader::open(&sst_path).expect("open");
-            let tenant_entries = reader.iter_tenant(&tenant);
+            let realm_entries = reader.iter_realm(&realm);
 
             // All live entries should match oracle
-            let read_map: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = tenant_entries
+            let read_map: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = realm_entries
                 .into_iter()
                 .filter_map(|(k, v)| match v {
                     MemtableValue::Data(d) => Some((k, d)),
@@ -835,7 +835,7 @@ mod tests {
             ops2 in prop::collection::vec(arb_compact_op(), 1..50),
         ) {
             let dir = tempfile::tempdir().expect("tempdir");
-            let tenant = TenantId::generate();
+            let realm = RealmId::generate();
 
             // Build SST 1 (older)
             let mt1 = Memtable::new(MemtableConfig::default());
@@ -843,11 +843,11 @@ mod tests {
             for op in &ops1 {
                 match op {
                     CompactOp::Put(k, v) => {
-                        mt1.put(&tenant, k, v).expect("put");
+                        mt1.put(&realm, k, v).expect("put");
                         oracle.insert(k.clone(), Some(v.clone()));
                     }
                     CompactOp::Delete(k) => {
-                        mt1.delete(&tenant, k).expect("delete");
+                        mt1.delete(&realm, k).expect("delete");
                         oracle.insert(k.clone(), None);
                     }
                 }
@@ -860,11 +860,11 @@ mod tests {
             for op in &ops2 {
                 match op {
                     CompactOp::Put(k, v) => {
-                        mt2.put(&tenant, k, v).expect("put");
+                        mt2.put(&realm, k, v).expect("put");
                         oracle.insert(k.clone(), Some(v.clone()));
                     }
                     CompactOp::Delete(k) => {
-                        mt2.delete(&tenant, k).expect("delete");
+                        mt2.delete(&realm, k).expect("delete");
                         oracle.insert(k.clone(), None);
                     }
                 }
@@ -880,7 +880,7 @@ mod tests {
 
             // Verify against oracle
             let compacted = SstReader::open(&output_path).expect("open compacted");
-            let compacted_entries = compacted.iter_tenant(&tenant);
+            let compacted_entries = compacted.iter_realm(&realm);
             let compacted_map: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = compacted_entries
                 .into_iter()
                 .filter_map(|(k, v)| match v {

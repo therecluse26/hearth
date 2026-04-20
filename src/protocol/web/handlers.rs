@@ -28,7 +28,7 @@
 //!   the page can echo it via HTMX headers). Both are `Path=/ui` +
 //!   `SameSite=Lax`.
 //! * The session cookie value is `sid.tid.mac` (stateless binding of a
-//!   session id to its tenant id via HMAC-SHA256). See [`super::auth`]
+//!   session id to its realm id via HMAC-SHA256). See [`super::auth`]
 //!   for parsing.
 
 use std::net::SocketAddr;
@@ -82,7 +82,7 @@ struct SetupTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl SetupTemplate {
@@ -100,7 +100,7 @@ impl SetupTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -123,7 +123,7 @@ struct SetupSentTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl SetupSentTemplate {
@@ -140,7 +140,7 @@ impl SetupSentTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -161,7 +161,7 @@ struct LoginTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl LoginTemplate {
@@ -184,7 +184,7 @@ impl LoginTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -203,7 +203,7 @@ struct VerifyOkTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl VerifyOkTemplate {
@@ -219,7 +219,7 @@ impl VerifyOkTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -239,11 +239,11 @@ struct DashboardTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
     config_warnings: Vec<crate::config::EnvVarWarning>,
     /// Entity counts for the admin stats row.
     user_count: usize,
-    tenant_count: usize,
+    realm_count: usize,
     app_count: usize,
     org_count: usize,
 }
@@ -264,7 +264,7 @@ struct VerifyInvalidTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl VerifyInvalidTemplate {
@@ -287,7 +287,7 @@ impl VerifyInvalidTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -308,7 +308,7 @@ struct MfaChallengeTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl MfaChallengeTemplate {
@@ -325,7 +325,7 @@ impl MfaChallengeTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -346,7 +346,7 @@ pub struct SetupQuery {
 /// Returns `404 Not Found` if:
 /// - the `token` query parameter is missing,
 /// - the token does not match the on-disk file, or
-/// - Hearth is already configured (a tenant exists).
+/// - Hearth is already configured (a realm exists).
 ///
 /// The 404 is deliberately generic so that a would-be attacker cannot
 /// distinguish "wrong token" from "system already set up".
@@ -437,10 +437,10 @@ pub async fn setup_submit(
         &base_url,
     ) {
         Ok(outcome) => {
-            // Pin the newly-created tenant as the "current" tenant for
+            // Pin the newly-created realm as the "current" realm for
             // future logins through this process. On restart the first
-            // tenant is re-resolved at login time.
-            state.set_current_tenant(outcome.tenant_id.clone());
+            // realm is re-resolved at login time.
+            state.set_current_realm(outcome.realm_id.clone());
             Redirect::to("/ui/setup/sent").into_response()
         }
         Err(OnboardingError::AlreadyConfigured) => {
@@ -451,9 +451,9 @@ pub async fn setup_submit(
             "An account with that email already exists in this system.".to_string(),
             StatusCode::CONFLICT,
         ),
-        Err(OnboardingError::Identity(IdentityError::TenantNotFound)) => setup_err(
+        Err(OnboardingError::Identity(IdentityError::RealmNotFound)) => setup_err(
             form.token.clone(),
-            "No tenant is configured. Add a tenant to hearth.yaml and restart.".to_string(),
+            "No realm is configured. Add a realm to hearth.yaml and restart.".to_string(),
             StatusCode::CONFLICT,
         ),
         Err(OnboardingError::Identity(IdentityError::InvalidInput { reason })) => setup_err(
@@ -524,20 +524,20 @@ pub async fn verify_email(
         return render_status(&tmpl, StatusCode::BAD_REQUEST);
     };
 
-    // The token is not tenant-scoped in the URL. Walk the first page
-    // of tenants and try each until one succeeds or we exhaust them.
-    // Phase 1 deployments are almost always single-tenant; this stays
-    // O(#tenants) and off the hot path.
-    let tenants = match state.identity.list_tenants(None, 100) {
+    // The token is not realm-scoped in the URL. Walk the first page
+    // of realms and try each until one succeeds or we exhaust them.
+    // Phase 1 deployments are almost always single-realm; this stays
+    // O(#realms) and off the hot path.
+    let realms = match state.identity.list_realms(None, 100) {
         Ok(page) => page.items,
         Err(e) => {
-            tracing::error!(error = %e, "verify-email: list_tenants failed");
+            tracing::error!(error = %e, "verify-email: list_realms failed");
             return internal_error_response();
         }
     };
 
-    for tenant in &tenants {
-        match state.identity.verify_email_token(tenant.id(), token) {
+    for realm in &realms {
+        match state.identity.verify_email_token(realm.id(), token) {
             Ok(_) => {
                 let mut tmpl = VerifyOkTemplate::new(product_name, logo_url);
                 tmpl.theme_css.clone_from(&state.theme_css);
@@ -633,17 +633,17 @@ pub async fn login_submit(
         render_status(&tmpl, StatusCode::UNAUTHORIZED)
     };
 
-    // Walk up to the first page of tenants (Phase 1 = usually one).
-    let tenants = match state.identity.list_tenants(None, 100) {
+    // Walk up to the first page of realms (Phase 1 = usually one).
+    let realms = match state.identity.list_realms(None, 100) {
         Ok(page) => page.items,
         Err(e) => {
-            tracing::error!(error = %e, "login: failed to list tenants");
+            tracing::error!(error = %e, "login: failed to list realms");
             return internal_error_response();
         }
     };
 
-    for tenant in &tenants {
-        let Ok(Some(user)) = state.identity.get_user_by_email(tenant.id(), email) else {
+    for realm in &realms {
+        let Ok(Some(user)) = state.identity.get_user_by_email(realm.id(), email) else {
             continue;
         };
 
@@ -651,7 +651,7 @@ pub async fn login_submit(
 
         match state
             .identity
-            .verify_password(tenant.id(), user.id(), &password)
+            .verify_password(realm.id(), user.id(), &password)
         {
             Ok(true) => {}
             Ok(false) => return generic_error(),
@@ -666,16 +666,16 @@ pub async fn login_submit(
         // to the challenge page instead of creating a session.
         let mfa_on = state
             .identity
-            .mfa_enabled(tenant.id(), user.id())
+            .mfa_enabled(realm.id(), user.id())
             .unwrap_or(false);
         if mfa_on {
             let cookie = issue_mfa_pending_cookie(
                 &state.cookie_secret,
-                tenant.id(),
+                realm.id(),
                 user.id(),
                 return_to.as_deref(),
             );
-            state.set_current_tenant(tenant.id().clone());
+            state.set_current_realm(realm.id().clone());
             let mut response = Redirect::to("/ui/mfa-challenge").into_response();
             append_cookie(&mut response, &cookie);
             return response;
@@ -683,17 +683,17 @@ pub async fn login_submit(
 
         match state
             .identity
-            .create_session(tenant.id(), user.id(), &session_ctx)
+            .create_session(realm.id(), user.id(), &session_ctx)
         {
             Ok(session) => {
                 let IssuedCookies {
                     session_cookie,
                     csrf_cookie,
-                } = issue_auth_cookies(&state.cookie_secret, tenant.id(), session.id());
+                } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id());
 
-                // Pin this tenant as the "current" one so subsequent logins from
+                // Pin this realm as the "current" one so subsequent logins from
                 // this process resolve consistently.
-                state.set_current_tenant(tenant.id().clone());
+                state.set_current_realm(realm.id().clone());
 
                 let location = return_to.as_deref().unwrap_or("/ui");
                 let mut response = Redirect::to(location).into_response();
@@ -733,8 +733,8 @@ pub async fn login_submit(
 /// authentication ceremony and returns the challenge as JSON.
 ///
 /// This is a pre-auth endpoint: no session is required. The challenge
-/// is created per-tenant (iterating all active tenants) since we don't
-/// know which tenant the user belongs to yet.
+/// is created per-realm (iterating all active realms) since we don't
+/// know which realm the user belongs to yet.
 pub async fn passkey_login_begin(
     State(state): State<Arc<WebState>>,
     headers: HeaderMap,
@@ -756,23 +756,23 @@ pub async fn passkey_login_begin(
         rp_id: rp_id.clone(),
     };
 
-    // We only need ONE challenge — the challenge store is tenant-agnostic
-    // and `user_id=None` (discoverable flow) skips the per-tenant user
-    // existence check. Use the first tenant just to satisfy the API.
-    let tenants = match state.identity.list_tenants(None, 100) {
+    // We only need ONE challenge — the challenge store is realm-agnostic
+    // and `user_id=None` (discoverable flow) skips the per-realm user
+    // existence check. Use the first realm just to satisfy the API.
+    let realms = match state.identity.list_realms(None, 100) {
         Ok(page) => page.items,
         Err(e) => {
-            tracing::error!(error = %e, "passkey-login-begin: failed to list tenants");
+            tracing::error!(error = %e, "passkey-login-begin: failed to list realms");
             return (StatusCode::INTERNAL_SERVER_ERROR, "Unavailable").into_response();
         }
     };
 
-    let Some(first_tenant) = tenants.first() else {
-        return (StatusCode::BAD_REQUEST, "No tenants configured").into_response();
+    let Some(first_realm) = realms.first() else {
+        return (StatusCode::BAD_REQUEST, "No realms configured").into_response();
     };
 
     let challenge = match state.identity.start_webauthn_authentication(
-        first_tenant.id(),
+        first_realm.id(),
         None,
         &options,
     ) {
@@ -811,7 +811,7 @@ pub struct PasskeyLoginCompleteBody {
 /// `POST /ui/login/passkey-complete` — completes the discoverable
 /// credential authentication ceremony and issues a session.
 ///
-/// Iterates tenants to find the one that owns the credential. On
+/// Iterates realms to find the one that owns the credential. On
 /// success, creates a session and returns the redirect location as
 /// JSON (the browser JS will navigate to it).
 pub async fn passkey_login_complete(
@@ -852,7 +852,7 @@ pub async fn passkey_login_complete(
 
     // For discoverable credentials the authenticator returns the user
     // handle (the user UUID we set during registration). Use it to
-    // identify the correct tenant BEFORE consuming the one-shot challenge.
+    // identify the correct realm BEFORE consuming the one-shot challenge.
     let Some(ref uh_bytes) = user_handle_bytes else {
         tracing::warn!("passkey-login-complete: no user_handle in assertion");
         return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
@@ -912,7 +912,7 @@ pub async fn passkey_login_complete(
     )
 }
 
-/// Resolves the tenant that owns `user_id`, then completes the
+/// Resolves the realm that owns `user_id`, then completes the
 /// `WebAuthn` authentication and creates a session.
 ///
 /// This is extracted so the UUID-parsing branches in
@@ -929,16 +929,16 @@ fn passkey_complete_for_user(
     origin: &str,
     session_ctx: &SessionContext,
 ) -> Response {
-    // Find which tenant owns this user.
-    let tenants = match state.identity.list_tenants(None, 100) {
+    // Find which realm owns this user.
+    let realms = match state.identity.list_realms(None, 100) {
         Ok(page) => page.items,
         Err(e) => {
-            tracing::error!(error = %e, "passkey-login-complete: failed to list tenants");
+            tracing::error!(error = %e, "passkey-login-complete: failed to list realms");
             return (StatusCode::INTERNAL_SERVER_ERROR, "Unavailable").into_response();
         }
     };
 
-    let tenant = tenants.iter().find(|t| {
+    let realm = realms.iter().find(|t| {
         state
             .identity
             .get_user(t.id(), user_id)
@@ -947,8 +947,8 @@ fn passkey_complete_for_user(
             .is_some()
     });
 
-    let Some(tenant) = tenant else {
-        tracing::warn!(user_id = %user_id, "passkey-login-complete: user not found in any tenant");
+    let Some(realm) = realm else {
+        tracing::warn!(user_id = %user_id, "passkey-login-complete: user not found in any realm");
         return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
     };
 
@@ -963,7 +963,7 @@ fn passkey_complete_for_user(
 
     let auth_result = match state
         .identity
-        .complete_webauthn_authentication(tenant.id(), &params)
+        .complete_webauthn_authentication(realm.id(), &params)
     {
         Ok(r) => r,
         Err(e) => {
@@ -972,23 +972,23 @@ fn passkey_complete_for_user(
         }
     };
 
-    // Check tenant policy: some regulated environments require TOTP
+    // Check realm policy: some regulated environments require TOTP
     // even after passkey auth despite its inherent multi-factor nature.
-    let require_mfa_after_passkey = tenant.config().passkey_requires_mfa.unwrap_or(false);
+    let require_mfa_after_passkey = realm.config().passkey_requires_mfa.unwrap_or(false);
 
     if require_mfa_after_passkey {
         let mfa_on = state
             .identity
-            .mfa_enabled(tenant.id(), auth_result.user_id())
+            .mfa_enabled(realm.id(), auth_result.user_id())
             .unwrap_or(false);
         if mfa_on {
             let cookie = issue_mfa_pending_cookie(
                 &state.cookie_secret,
-                tenant.id(),
+                realm.id(),
                 auth_result.user_id(),
                 None, // no return_to for passkey flow
             );
-            state.set_current_tenant(tenant.id().clone());
+            state.set_current_realm(realm.id().clone());
             let response_json = axum::Json(serde_json::json!({
                 "redirect": "/ui/mfa-challenge",
             }));
@@ -1003,15 +1003,15 @@ fn passkey_complete_for_user(
     // Only reached if passkey_requires_mfa is false or user has no MFA enrolled.
     match state
         .identity
-        .create_session(tenant.id(), auth_result.user_id(), session_ctx)
+        .create_session(realm.id(), auth_result.user_id(), session_ctx)
     {
         Ok(session) => {
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, tenant.id(), session.id());
+            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id());
 
-            state.set_current_tenant(tenant.id().clone());
+            state.set_current_realm(realm.id().clone());
 
             let mut response = axum::Json(serde_json::json!({
                 "redirect": "/ui",
@@ -1098,11 +1098,11 @@ pub async fn mfa_challenge_submit(
     let verify_result = if is_totp {
         state
             .identity
-            .verify_totp(&pending.tenant_id, &pending.user_id, code)
+            .verify_totp(&pending.realm_id, &pending.user_id, code)
     } else {
         state
             .identity
-            .verify_recovery_code(&pending.tenant_id, &pending.user_id, code)
+            .verify_recovery_code(&pending.realm_id, &pending.user_id, code)
     };
 
     let product_name = state.product_name.clone();
@@ -1140,13 +1140,13 @@ pub async fn mfa_challenge_submit(
     // MFA passed — create the session.
     match state
         .identity
-        .create_session(&pending.tenant_id, &pending.user_id, &session_ctx)
+        .create_session(&pending.realm_id, &pending.user_id, &session_ctx)
     {
         Ok(session) => {
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, &pending.tenant_id, session.id());
+            } = issue_auth_cookies(&state.cookie_secret, &pending.realm_id, session.id());
 
             let location = pending.return_to.as_deref().unwrap_or("/ui");
             let mut response = Redirect::to(location).into_response();
@@ -1194,25 +1194,25 @@ pub async fn dashboard(
     };
 
     // Count entities for admin stats. Non-fatal — defaults to 0.
-    let (user_count, tenant_count, app_count, org_count) = if is_admin {
+    let (user_count, realm_count, app_count, org_count) = if is_admin {
         let uc = state
             .identity
-            .list_users(&session.tenant_id, None, 10_000)
+            .list_users(&session.realm_id, None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
         let tc = state
             .identity
-            .list_tenants(None, 10_000)
+            .list_realms(None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
         let ac = state
             .identity
-            .list_clients(&session.tenant_id, None, 10_000)
+            .list_clients(&session.realm_id, None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
         let oc = state
             .identity
-            .list_organizations(&session.tenant_id, None, 10_000)
+            .list_organizations(&session.realm_id, None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
         (uc, tc, ac, oc)
@@ -1231,10 +1231,10 @@ pub async fn dashboard(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
         config_warnings,
         user_count,
-        tenant_count,
+        realm_count,
         app_count,
         org_count,
     })
@@ -1253,7 +1253,7 @@ pub(crate) fn is_admin(state: &WebState, session: &super::auth::UiSession) -> bo
         crate::authz::SubjectRef::direct("user", &session.user_id.as_uuid().to_string()).unwrap();
     state
         .authz
-        .check(&session.tenant_id, &object, "admin", &subject, None)
+        .check(&session.realm_id, &object, "admin", &subject, None)
         .unwrap_or(false)
 }
 
@@ -1285,7 +1285,7 @@ pub async fn logout_submit(
 
     match state
         .identity
-        .revoke_session(&session.tenant_id, &session.session_id)
+        .revoke_session(&session.realm_id, &session.session_id)
     {
         Ok(()) | Err(crate::identity::IdentityError::SessionNotFound) => {}
         Err(e) => {
@@ -1366,7 +1366,7 @@ struct ForgotPasswordTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl ForgotPasswordTemplate {
@@ -1383,7 +1383,7 @@ impl ForgotPasswordTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -1402,7 +1402,7 @@ struct ForgotPasswordSentTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl ForgotPasswordSentTemplate {
@@ -1418,7 +1418,7 @@ impl ForgotPasswordSentTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -1439,7 +1439,7 @@ struct ResetPasswordTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl ResetPasswordTemplate {
@@ -1457,7 +1457,7 @@ impl ResetPasswordTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -1476,7 +1476,7 @@ struct ResetPasswordOkTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl ResetPasswordOkTemplate {
@@ -1492,7 +1492,7 @@ impl ResetPasswordOkTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -1514,7 +1514,7 @@ pub struct ForgotPasswordForm {
 
 /// Handles forgot-password form submission.
 ///
-/// Looks up the user across tenants. If found, requests a password reset
+/// Looks up the user across realms. If found, requests a password reset
 /// token and sends a reset email. Always redirects to the "check your
 /// email" page regardless of whether the email exists (enumeration
 /// resistance).
@@ -1525,17 +1525,17 @@ pub async fn forgot_password_submit(
 ) -> Response {
     let email = form.email.trim();
 
-    // Walk tenants (same pattern as login)
-    let tenants = match state.identity.list_tenants(None, 100) {
+    // Walk realms (same pattern as login)
+    let realms = match state.identity.list_realms(None, 100) {
         Ok(page) => page.items,
         Err(e) => {
-            tracing::error!(error = %e, "forgot_password: failed to list tenants");
+            tracing::error!(error = %e, "forgot_password: failed to list realms");
             return Redirect::to("/ui/forgot-password/sent").into_response();
         }
     };
 
-    for tenant in &tenants {
-        match state.identity.request_password_reset(tenant.id(), email) {
+    for realm in &realms {
+        match state.identity.request_password_reset(realm.id(), email) {
             Ok(Some(token)) => {
                 // Build the reset URL
                 let base = derive_base_url(&headers);
@@ -1543,16 +1543,16 @@ pub async fn forgot_password_submit(
 
                 // Send email if service is configured
                 if let Some(ref email_service) = state.email {
-                    let tenant_branding = state
+                    let realm_branding = state
                         .identity
-                        .get_tenant(tenant.id())
+                        .get_realm(realm.id())
                         .ok()
                         .flatten()
                         .and_then(|t| t.config().email_branding.clone());
                     if let Err(e) = email_service.send_password_reset_email(
                         email,
                         &reset_url,
-                        tenant_branding.as_ref(),
+                        realm_branding.as_ref(),
                     ) {
                         tracing::warn!(error = %e, "forgot_password: failed to send email");
                     }
@@ -1563,7 +1563,7 @@ pub async fn forgot_password_submit(
                 break;
             }
             Ok(None) => {
-                // Unknown email — try next tenant
+                // Unknown email — try next realm
             }
             Err(IdentityError::RateLimited) => {
                 // Rate limited — still show success page (enumeration resistance)
@@ -1631,7 +1631,7 @@ pub struct ResetPasswordFormData {
 
 /// Handles reset-password form submission.
 ///
-/// Validates the token across tenants, checks password confirmation match,
+/// Validates the token across realms, checks password confirmation match,
 /// sets the new password, and shows a success page.
 pub async fn reset_password_submit(
     State(state): State<Arc<WebState>>,
@@ -1662,19 +1662,19 @@ pub async fn reset_password_submit(
 
     let password = CleartextPassword::from_string(form.password);
 
-    // 3. Walk tenants
-    let tenants = match state.identity.list_tenants(None, 100) {
+    // 3. Walk realms
+    let realms = match state.identity.list_realms(None, 100) {
         Ok(page) => page.items,
         Err(e) => {
-            tracing::error!(error = %e, "reset_password: failed to list tenants");
+            tracing::error!(error = %e, "reset_password: failed to list realms");
             return internal_error_response();
         }
     };
 
-    for tenant in &tenants {
+    for realm in &realms {
         match state
             .identity
-            .reset_password_with_token(tenant.id(), &form.token, &password)
+            .reset_password_with_token(realm.id(), &form.token, &password)
         {
             Ok(_user_id) => {
                 let mut tmpl = ResetPasswordOkTemplate::new(product_name, logo_url);
@@ -1682,7 +1682,7 @@ pub async fn reset_password_submit(
                 return render(&tmpl);
             }
             Err(IdentityError::PasswordResetTokenInvalid) => {
-                // Try next tenant
+                // Try next realm
             }
             Err(e) => {
                 tracing::warn!(error = %e, "reset_password: error resetting password");
@@ -1694,7 +1694,7 @@ pub async fn reset_password_submit(
         }
     }
 
-    // Token not valid in any tenant
+    // Token not valid in any realm
     reset_err(
         String::new(),
         "This reset link is invalid or has expired. Please request a new one.".to_string(),
@@ -1743,12 +1743,12 @@ struct AcceptInvitationTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/accept-invitation?token=...` — accepts an organization invitation.
 ///
-/// Walks all tenants, trying `accept_invitation` with the token.
+/// Walks all realms, trying `accept_invitation` with the token.
 /// On success, renders a welcome page; on failure, renders an error.
 pub async fn accept_invitation_page(
     State(state): State<Arc<WebState>>,
@@ -1771,16 +1771,16 @@ pub async fn accept_invitation_page(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: None,
+                realm_theme_css: None,
             });
         }
     };
 
-    // Walk tenants and try to accept the invitation
-    let tenants = match state.identity.list_tenants(None, 100) {
+    // Walk realms and try to accept the invitation
+    let realms = match state.identity.list_realms(None, 100) {
         Ok(page) => page.items,
         Err(e) => {
-            tracing::error!(error = %e, "accept_invitation: failed to list tenants");
+            tracing::error!(error = %e, "accept_invitation: failed to list realms");
             return render(&AcceptInvitationTemplate {
                 success: false,
                 org_name: String::new(),
@@ -1795,17 +1795,17 @@ pub async fn accept_invitation_page(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: None,
+                realm_theme_css: None,
             });
         }
     };
 
-    for tenant in &tenants {
-        if let Ok(membership) = state.identity.accept_invitation(tenant.id(), token) {
+    for realm in &realms {
+        if let Ok(membership) = state.identity.accept_invitation(realm.id(), token) {
             // Resolve org name for display
             let org_name = state
                 .identity
-                .get_organization(tenant.id(), membership.org_id())
+                .get_organization(realm.id(), membership.org_id())
                 .ok()
                 .flatten()
                 .map_or_else(|| "the organization".to_string(), |o| o.name().to_string());
@@ -1824,12 +1824,12 @@ pub async fn accept_invitation_page(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: None,
+                realm_theme_css: None,
             });
         }
     }
 
-    // No tenant accepted the token
+    // No realm accepted the token
     render(&AcceptInvitationTemplate {
         success: false,
         org_name: String::new(),
@@ -1844,7 +1844,7 @@ pub async fn accept_invitation_page(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: None,
+        realm_theme_css: None,
     })
 }
 
@@ -1874,7 +1874,7 @@ pub struct DeviceApproveTemplate {
     pub product_name: String,
     pub logo_url: String,
     pub theme_css: String,
-    pub tenant_theme_css: Option<String>,
+    pub realm_theme_css: Option<String>,
 }
 
 /// Form submitted when the user approves a device.
@@ -1921,7 +1921,7 @@ pub async fn device_approve_form(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
     })
 }
 
@@ -1939,7 +1939,7 @@ pub async fn device_approve_submit(
 
     match state
         .identity
-        .approve_device(&session.tenant_id, &code, &session.user_id)
+        .approve_device(&session.realm_id, &code, &session.user_id)
     {
         Ok(()) => Redirect::to("/ui/device?flash=approved").into_response(),
         Err(IdentityError::DeviceCodeExpired) => {

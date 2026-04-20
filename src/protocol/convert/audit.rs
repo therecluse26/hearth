@@ -18,9 +18,9 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::SessionRevoked => pb::AuditAction::SessionRevoked,
         domain::AuditAction::TokenIssued => pb::AuditAction::TokenIssued,
         domain::AuditAction::TokenRefreshed => pb::AuditAction::TokenRefreshed,
-        domain::AuditAction::TenantCreated => pb::AuditAction::TenantCreated,
-        domain::AuditAction::TenantUpdated => pb::AuditAction::TenantUpdated,
-        domain::AuditAction::TenantDeleted => pb::AuditAction::TenantDeleted,
+        domain::AuditAction::RealmCreated => pb::AuditAction::RealmCreated,
+        domain::AuditAction::RealmUpdated => pb::AuditAction::RealmUpdated,
+        domain::AuditAction::RealmDeleted => pb::AuditAction::RealmDeleted,
         domain::AuditAction::ClientRegistered => pb::AuditAction::ClientRegistered,
         domain::AuditAction::AuthorizationCodeIssued => pb::AuditAction::AuthorizationCodeIssued,
         domain::AuditAction::AuthorizationCodeExchanged => {
@@ -44,7 +44,7 @@ impl From<&domain::AuditEvent> for pb::AuditEvent {
     fn from(e: &domain::AuditEvent) -> Self {
         Self {
             id: e.id.as_uuid().to_string(),
-            tenant_id: e.tenant_id.as_uuid().to_string(),
+            realm_id: e.realm_id.as_uuid().to_string(),
             actor: e.actor.clone(),
             action: domain_audit_action_to_proto(&e.action).into(),
             resource_type: e.resource_type.clone(),
@@ -59,13 +59,13 @@ impl From<&domain::AuditEvent> for pb::AuditEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{AuditEventId, TenantId, Timestamp};
+    use crate::core::{AuditEventId, RealmId, Timestamp};
 
     #[test]
     fn audit_event_to_proto() {
         let event = domain::AuditEvent {
             id: AuditEventId::generate(),
-            tenant_id: TenantId::generate(),
+            realm_id: RealmId::generate(),
             actor: "user_123".to_string(),
             action: domain::AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -99,9 +99,9 @@ mod tests {
             domain::AuditAction::SessionRevoked,
             domain::AuditAction::TokenIssued,
             domain::AuditAction::TokenRefreshed,
-            domain::AuditAction::TenantCreated,
-            domain::AuditAction::TenantUpdated,
-            domain::AuditAction::TenantDeleted,
+            domain::AuditAction::RealmCreated,
+            domain::AuditAction::RealmUpdated,
+            domain::AuditAction::RealmDeleted,
             domain::AuditAction::ClientRegistered,
             domain::AuditAction::AuthorizationCodeIssued,
             domain::AuditAction::AuthorizationCodeExchanged,

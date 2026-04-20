@@ -1,17 +1,17 @@
 meta {
-  name: List Tenants
+  name: List Realms
   type: http
   seq: 1
 }
 
 get {
-  url: {{baseUrl}}/admin/tenants
+  url: {{baseUrl}}/admin/realms
   body: none
   auth: bearer
 }
 
 headers {
-  X-Tenant-ID: {{tenantId}}
+  X-Realm-ID: {{realmId}}
 }
 
 auth:bearer {

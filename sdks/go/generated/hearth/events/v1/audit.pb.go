@@ -36,9 +36,9 @@ const (
 	AuditAction_AUDIT_ACTION_SESSION_REVOKED              AuditAction = 8
 	AuditAction_AUDIT_ACTION_TOKEN_ISSUED                 AuditAction = 9
 	AuditAction_AUDIT_ACTION_TOKEN_REFRESHED              AuditAction = 10
-	AuditAction_AUDIT_ACTION_TENANT_CREATED               AuditAction = 11
-	AuditAction_AUDIT_ACTION_TENANT_UPDATED               AuditAction = 12
-	AuditAction_AUDIT_ACTION_TENANT_DELETED               AuditAction = 13
+	AuditAction_AUDIT_ACTION_REALM_CREATED                AuditAction = 11
+	AuditAction_AUDIT_ACTION_REALM_UPDATED                AuditAction = 12
+	AuditAction_AUDIT_ACTION_REALM_DELETED                AuditAction = 13
 	AuditAction_AUDIT_ACTION_CLIENT_REGISTERED            AuditAction = 14
 	AuditAction_AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED    AuditAction = 15
 	AuditAction_AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED AuditAction = 16
@@ -67,9 +67,9 @@ var (
 		8:  "AUDIT_ACTION_SESSION_REVOKED",
 		9:  "AUDIT_ACTION_TOKEN_ISSUED",
 		10: "AUDIT_ACTION_TOKEN_REFRESHED",
-		11: "AUDIT_ACTION_TENANT_CREATED",
-		12: "AUDIT_ACTION_TENANT_UPDATED",
-		13: "AUDIT_ACTION_TENANT_DELETED",
+		11: "AUDIT_ACTION_REALM_CREATED",
+		12: "AUDIT_ACTION_REALM_UPDATED",
+		13: "AUDIT_ACTION_REALM_DELETED",
 		14: "AUDIT_ACTION_CLIENT_REGISTERED",
 		15: "AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED",
 		16: "AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED",
@@ -95,9 +95,9 @@ var (
 		"AUDIT_ACTION_SESSION_REVOKED":              8,
 		"AUDIT_ACTION_TOKEN_ISSUED":                 9,
 		"AUDIT_ACTION_TOKEN_REFRESHED":              10,
-		"AUDIT_ACTION_TENANT_CREATED":               11,
-		"AUDIT_ACTION_TENANT_UPDATED":               12,
-		"AUDIT_ACTION_TENANT_DELETED":               13,
+		"AUDIT_ACTION_REALM_CREATED":                11,
+		"AUDIT_ACTION_REALM_UPDATED":                12,
+		"AUDIT_ACTION_REALM_DELETED":                13,
 		"AUDIT_ACTION_CLIENT_REGISTERED":            14,
 		"AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED":    15,
 		"AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED": 16,
@@ -144,7 +144,7 @@ func (AuditAction) EnumDescriptor() ([]byte, []int) {
 type AuditEvent struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	Id           string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	TenantId     string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	RealmId      string                 `protobuf:"bytes,2,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
 	Actor        string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
 	Action       AuditAction            `protobuf:"varint,4,opt,name=action,proto3,enum=hearth.events.v1.AuditAction" json:"action,omitempty"`
 	ResourceType string                 `protobuf:"bytes,5,opt,name=resource_type,json=resourceType,proto3" json:"resource_type,omitempty"`
@@ -194,9 +194,9 @@ func (x *AuditEvent) GetId() string {
 	return ""
 }
 
-func (x *AuditEvent) GetTenantId() string {
+func (x *AuditEvent) GetRealmId() string {
 	if x != nil {
-		return x.TenantId
+		return x.RealmId
 	}
 	return ""
 }
@@ -253,7 +253,7 @@ func (x *AuditEvent) GetIntegrityHash() string {
 // Request to append a new audit event.
 type CreateAuditEvent struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
-	TenantId     string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	RealmId      string                 `protobuf:"bytes,1,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
 	Actor        string                 `protobuf:"bytes,2,opt,name=actor,proto3" json:"actor,omitempty"`
 	Action       AuditAction            `protobuf:"varint,3,opt,name=action,proto3,enum=hearth.events.v1.AuditAction" json:"action,omitempty"`
 	ResourceType string                 `protobuf:"bytes,4,opt,name=resource_type,json=resourceType,proto3" json:"resource_type,omitempty"`
@@ -294,9 +294,9 @@ func (*CreateAuditEvent) Descriptor() ([]byte, []int) {
 	return file_hearth_events_v1_audit_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *CreateAuditEvent) GetTenantId() string {
+func (x *CreateAuditEvent) GetRealmId() string {
 	if x != nil {
-		return x.TenantId
+		return x.RealmId
 	}
 	return ""
 }
@@ -339,7 +339,7 @@ func (x *CreateAuditEvent) GetMetadata() string {
 // Query parameters for filtering audit events.
 type AuditQuery struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	RealmId       string                 `protobuf:"bytes,1,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
 	StartTime     *int64                 `protobuf:"varint,2,opt,name=start_time,json=startTime,proto3,oneof" json:"start_time,omitempty"`
 	EndTime       *int64                 `protobuf:"varint,3,opt,name=end_time,json=endTime,proto3,oneof" json:"end_time,omitempty"`
 	Actor         *string                `protobuf:"bytes,4,opt,name=actor,proto3,oneof" json:"actor,omitempty"`
@@ -379,9 +379,9 @@ func (*AuditQuery) Descriptor() ([]byte, []int) {
 	return file_hearth_events_v1_audit_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *AuditQuery) GetTenantId() string {
+func (x *AuditQuery) GetRealmId() string {
 	if x != nil {
-		return x.TenantId
+		return x.RealmId
 	}
 	return ""
 }
@@ -425,11 +425,11 @@ var File_hearth_events_v1_audit_proto protoreflect.FileDescriptor
 
 const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x1chearth/events/v1/audit.proto\x12\x10hearth.events.v1\"\xbf\x02\n" +
+	"\x1chearth/events/v1/audit.proto\x12\x10hearth.events.v1\"\xbd\x02\n" +
 	"\n" +
 	"AuditEvent\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
-	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x14\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
+	"\brealm_id\x18\x02 \x01(\tR\arealmId\x12\x14\n" +
 	"\x05actor\x18\x03 \x01(\tR\x05actor\x125\n" +
 	"\x06action\x18\x04 \x01(\x0e2\x1d.hearth.events.v1.AuditActionR\x06action\x12#\n" +
 	"\rresource_type\x18\x05 \x01(\tR\fresourceType\x12\x1f\n" +
@@ -438,19 +438,19 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\ttimestamp\x18\a \x01(\x03R\ttimestamp\x12\x1f\n" +
 	"\bmetadata\x18\b \x01(\tH\x00R\bmetadata\x88\x01\x01\x12%\n" +
 	"\x0eintegrity_hash\x18\t \x01(\tR\rintegrityHashB\v\n" +
-	"\t_metadata\"\xf0\x01\n" +
-	"\x10CreateAuditEvent\x12\x1b\n" +
-	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x14\n" +
+	"\t_metadata\"\xee\x01\n" +
+	"\x10CreateAuditEvent\x12\x19\n" +
+	"\brealm_id\x18\x01 \x01(\tR\arealmId\x12\x14\n" +
 	"\x05actor\x18\x02 \x01(\tR\x05actor\x125\n" +
 	"\x06action\x18\x03 \x01(\x0e2\x1d.hearth.events.v1.AuditActionR\x06action\x12#\n" +
 	"\rresource_type\x18\x04 \x01(\tR\fresourceType\x12\x1f\n" +
 	"\vresource_id\x18\x05 \x01(\tR\n" +
 	"resourceId\x12\x1f\n" +
 	"\bmetadata\x18\x06 \x01(\tH\x00R\bmetadata\x88\x01\x01B\v\n" +
-	"\t_metadata\"\x9a\x02\n" +
+	"\t_metadata\"\x98\x02\n" +
 	"\n" +
-	"AuditQuery\x12\x1b\n" +
-	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\"\n" +
+	"AuditQuery\x12\x19\n" +
+	"\brealm_id\x18\x01 \x01(\tR\arealmId\x12\"\n" +
 	"\n" +
 	"start_time\x18\x02 \x01(\x03H\x00R\tstartTime\x88\x01\x01\x12\x1e\n" +
 	"\bend_time\x18\x03 \x01(\x03H\x01R\aendTime\x88\x01\x01\x12\x19\n" +
@@ -461,7 +461,7 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\t_end_timeB\b\n" +
 	"\x06_actorB\t\n" +
 	"\a_actionB\b\n" +
-	"\x06_limit*\x82\a\n" +
+	"\x06_limit*\xff\x06\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -474,10 +474,10 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\x1cAUDIT_ACTION_SESSION_REVOKED\x10\b\x12\x1d\n" +
 	"\x19AUDIT_ACTION_TOKEN_ISSUED\x10\t\x12 \n" +
 	"\x1cAUDIT_ACTION_TOKEN_REFRESHED\x10\n" +
-	"\x12\x1f\n" +
-	"\x1bAUDIT_ACTION_TENANT_CREATED\x10\v\x12\x1f\n" +
-	"\x1bAUDIT_ACTION_TENANT_UPDATED\x10\f\x12\x1f\n" +
-	"\x1bAUDIT_ACTION_TENANT_DELETED\x10\r\x12\"\n" +
+	"\x12\x1e\n" +
+	"\x1aAUDIT_ACTION_REALM_CREATED\x10\v\x12\x1e\n" +
+	"\x1aAUDIT_ACTION_REALM_UPDATED\x10\f\x12\x1e\n" +
+	"\x1aAUDIT_ACTION_REALM_DELETED\x10\r\x12\"\n" +
 	"\x1eAUDIT_ACTION_CLIENT_REGISTERED\x10\x0e\x12*\n" +
 	"&AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED\x10\x0f\x12-\n" +
 	")AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED\x10\x10\x12\x1e\n" +

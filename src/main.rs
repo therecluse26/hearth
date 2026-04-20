@@ -54,10 +54,10 @@ enum Commands {
         #[arg(long)]
         bind: Option<String>,
     },
-    /// Manage tenants.
-    Tenant {
+    /// Manage realms.
+    Realm {
         #[command(subcommand)]
-        action: TenantAction,
+        action: RealmAction,
     },
     /// Manage OAuth 2.0 applications (clients).
     App {
@@ -86,11 +86,11 @@ enum MigrateSource {
         #[arg(long)]
         data_dir: Option<PathBuf>,
 
-        /// Optional tenant UUID to import into. When omitted, the realm
+        /// Optional realm UUID to import into. When omitted, the realm
         /// `id` field from the export is used; if that is also missing
         /// or malformed, a fresh UUID is generated.
         #[arg(long)]
-        tenant: Option<String>,
+        realm: Option<String>,
 
         /// Validate the export and print the report without writing any
         /// data. `--data-dir` is not required in this mode.
@@ -99,10 +99,10 @@ enum MigrateSource {
     },
 }
 
-/// Tenant management subcommands.
+/// Realm management subcommands.
 #[derive(Subcommand)]
-enum TenantAction {
-    /// Create a new tenant (generates a UUID).
+enum RealmAction {
+    /// Create a new realm (generates a UUID).
     Create,
 }
 
@@ -115,9 +115,9 @@ enum AppAction {
         #[arg(long)]
         server: String,
 
-        /// Tenant UUID to register the application under.
+        /// Realm UUID to register the application under.
         #[arg(long)]
-        tenant_id: String,
+        realm_id: String,
 
         /// Human-readable name for the application.
         #[arg(long)]
@@ -147,17 +147,17 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Tenant { action } => match action {
-            TenantAction::Create => run_tenant_create(),
+        Commands::Realm { action } => match action {
+            RealmAction::Create => run_realm_create(),
         },
         Commands::App { action } => match action {
             AppAction::Create {
                 server,
-                tenant_id,
+                realm_id,
                 name,
                 redirect_uri,
             } => {
-                if let Err(e) = run_app_create(&server, &tenant_id, &name, &redirect_uri) {
+                if let Err(e) = run_app_create(&server, &realm_id, &name, &redirect_uri) {
                     error!("{e}");
                     std::process::exit(1);
                 }
@@ -167,11 +167,11 @@ async fn main() {
             MigrateSource::Keycloak {
                 file,
                 data_dir,
-                tenant,
+                realm,
                 dry_run,
             } => {
                 if let Err(e) =
-                    run_migrate_keycloak(&file, data_dir.as_deref(), tenant.as_deref(), dry_run)
+                    run_migrate_keycloak(&file, data_dir.as_deref(), realm.as_deref(), dry_run)
                 {
                     error!("{e}");
                     std::process::exit(1);
@@ -324,8 +324,8 @@ async fn run_serve(
     let email_sender: SharedEmailSender = build_email_sender(&config)?;
     let email_service = Arc::new(build_email_service(email_sender, &config)?);
 
-    // Ensure a first-run setup token exists BEFORE tenant reconciliation.
-    // Reconciliation may auto-create tenants from YAML config, which would
+    // Ensure a first-run setup token exists BEFORE realm reconciliation.
+    // Reconciliation may auto-create realms from YAML config, which would
     // make is_first_run() return false and prevent the setup URL from being
     // logged on a truly fresh instance.
     let data_dir: PathBuf = if config.dev_mode {
@@ -345,10 +345,10 @@ async fn run_serve(
         }
     }
 
-    // Reconcile YAML-declared tenants with storage. Runs after setup-token
-    // generation so reconciliation-created tenants don't suppress the
+    // Reconcile YAML-declared realms with storage. Runs after setup-token
+    // generation so reconciliation-created realms don't suppress the
     // setup URL on a fresh instance.
-    match hearth::identity::reconcile::reconcile_tenants(identity_engine.as_ref(), &config) {
+    match hearth::identity::reconcile::reconcile_realms(identity_engine.as_ref(), &config) {
         Ok(report) => {
             if !report.created.is_empty()
                 || !report.archived.is_empty()
@@ -360,12 +360,12 @@ async fn run_serve(
                     updated = report.updated.len(),
                     archived = report.archived.len(),
                     unarchived = report.unarchived.len(),
-                    "tenant reconciliation complete"
+                    "realm reconciliation complete"
                 );
             }
         }
         Err(e) => {
-            error!(error = %e, "tenant reconciliation failed");
+            error!(error = %e, "realm reconciliation failed");
         }
     }
 
@@ -471,22 +471,22 @@ async fn run_serve(
     }
     let global_theme_css = format!("{theme_base_css}\n{global_custom_css}");
 
-    // Build per-tenant theme CSS map (keyed by tenant UUID string).
-    let mut tenant_themes: std::collections::HashMap<String, String> =
+    // Build per-realm theme CSS map (keyed by realm UUID string).
+    let mut realm_themes: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for (tenant_name, tenant_yaml) in config.tenants.iter().flatten() {
-        let web_cfg = match tenant_yaml.web.as_ref() {
+    for (realm_name, realm_yaml) in config.realms.iter().flatten() {
+        let web_cfg = match realm_yaml.web.as_ref() {
             Some(w) if w.theme.is_some() || w.custom_css.is_some() => w,
             _ => continue,
         };
-        let tenant = match identity_engine.get_tenant_by_name(tenant_name) {
+        let realm = match identity_engine.get_realm_by_name(realm_name) {
             Ok(Some(t)) => t,
             Ok(None) => {
-                warn!(name = %tenant_name, "tenant not found in storage, skipping per-tenant theme");
+                warn!(name = %realm_name, "realm not found in storage, skipping per-realm theme");
                 continue;
             }
             Err(e) => {
-                warn!(name = %tenant_name, error = %e, "failed to look up tenant for theme wiring");
+                warn!(name = %realm_name, error = %e, "failed to look up realm for theme wiring");
                 continue;
             }
         };
@@ -496,28 +496,28 @@ async fn run_serve(
             .as_deref()
             .map(|path| {
                 std::fs::read_to_string(path).unwrap_or_else(|e| {
-                    warn!(path = %path, name = %tenant_name, error = %e, "failed to read tenant custom CSS file");
+                    warn!(path = %path, name = %realm_name, error = %e, "failed to read realm custom CSS file");
                     String::new()
                 })
             })
             .unwrap_or_default();
         if !custom.is_empty() {
             info!(
-                tenant = %tenant_name,
+                realm = %realm_name,
                 path = %web_cfg.custom_css.as_deref().unwrap_or(""),
                 bytes = custom.len(),
-                "loaded tenant custom CSS"
+                "loaded realm custom CSS"
             );
         }
         let combined = format!("{base}\n{custom}");
         if !combined.trim().is_empty() {
-            tenant_themes.insert(tenant.id().as_uuid().to_string(), combined);
+            realm_themes.insert(realm.id().as_uuid().to_string(), combined);
         }
     }
 
     web_state = web_state
         .with_theme_css(global_theme_css)
-        .with_tenant_themes(tenant_themes);
+        .with_realm_themes(realm_themes);
 
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
@@ -759,12 +759,12 @@ fn load_config(
     Ok(Config::default())
 }
 
-/// Runs the `hearth tenant create` command.
+/// Runs the `hearth realm create` command.
 ///
-/// Generates a new tenant UUID and prints it as JSON to stdout.
-fn run_tenant_create() {
-    let tenant_id = uuid::Uuid::new_v4();
-    let output = serde_json::json!({ "tenant_id": tenant_id.to_string() });
+/// Generates a new realm UUID and prints it as JSON to stdout.
+fn run_realm_create() {
+    let realm_id = uuid::Uuid::new_v4();
+    let output = serde_json::json!({ "realm_id": realm_id.to_string() });
     println!("{output}");
 }
 
@@ -773,7 +773,7 @@ fn run_tenant_create() {
 /// Registers an OAuth 2.0 client against a running Hearth server via HTTP.
 fn run_app_create(
     server: &str,
-    tenant_id: &str,
+    realm_id: &str,
     name: &str,
     redirect_uri: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -784,7 +784,7 @@ fn run_app_create(
     });
 
     let response: serde_json::Value = ureq::post(&url)
-        .header("X-Tenant-ID", tenant_id)
+        .header("X-Realm-ID", realm_id)
         .header("Content-Type", "application/json")
         .send_json(&body)?
         .body_mut()
@@ -796,26 +796,26 @@ fn run_app_create(
 
 /// Runs the `hearth migrate keycloak` command.
 ///
-/// Parses a Keycloak realm export and imports its tenant, users, clients,
+/// Parses a Keycloak realm export and imports its realm, users, clients,
 /// and realm roles. In dry-run mode no state is written; otherwise a data
 /// directory is required.
 fn run_migrate_keycloak(
     file: &std::path::Path,
     data_dir: Option<&std::path::Path>,
-    tenant: Option<&str>,
+    realm: Option<&str>,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use hearth::core::TenantId;
+    use hearth::core::RealmId;
     use hearth::identity::migration::{ImportOptions, KeycloakImporter, KeycloakRealmExport};
     use uuid::Uuid;
 
     let bytes = std::fs::read(file)?;
     let export: KeycloakRealmExport = KeycloakImporter::parse(&bytes)?;
 
-    let requested_tenant = tenant
-        .map(|s| -> Result<TenantId, Box<dyn std::error::Error>> {
-            let uuid = Uuid::parse_str(s).map_err(|e| format!("invalid --tenant UUID: {e}"))?;
-            Ok(TenantId::new(uuid))
+    let requested_realm = realm
+        .map(|s| -> Result<RealmId, Box<dyn std::error::Error>> {
+            let uuid = Uuid::parse_str(s).map_err(|e| format!("invalid --realm UUID: {e}"))?;
+            Ok(RealmId::new(uuid))
         })
         .transpose()?;
 
@@ -829,7 +829,7 @@ fn run_migrate_keycloak(
         let (identity, authz) = build_engines(&storage, true)?;
         let importer = KeycloakImporter::new(identity, authz);
         let report =
-            importer.import_realm(&export, requested_tenant, &ImportOptions { dry_run: true })?;
+            importer.import_realm(&export, requested_realm, &ImportOptions { dry_run: true })?;
         print_migration_report(&report);
         return Ok(());
     }
@@ -844,7 +844,7 @@ fn run_migrate_keycloak(
     let importer = KeycloakImporter::new(identity, authz);
 
     let report =
-        importer.import_realm(&export, requested_tenant, &ImportOptions { dry_run: false })?;
+        importer.import_realm(&export, requested_realm, &ImportOptions { dry_run: false })?;
     print_migration_report(&report);
     Ok(())
 }
@@ -945,10 +945,10 @@ fn mime_for_logo(path: &std::path::Path) -> &'static str {
 /// Prints a `MigrationReport` as a human-readable summary.
 fn print_migration_report(report: &hearth::identity::MigrationReport) {
     println!("Migration summary:");
-    if let Some(tid) = &report.tenant_id {
-        println!("  tenant:                {tid}");
+    if let Some(tid) = &report.realm_id {
+        println!("  realm:                {tid}");
     } else {
-        println!("  tenant:                <none>");
+        println!("  realm:                <none>");
     }
     println!("  users imported:        {}", report.users_imported);
     println!(

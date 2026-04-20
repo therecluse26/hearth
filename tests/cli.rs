@@ -197,26 +197,26 @@ fn cli_serve_missing_config_file_exits_with_error() {
 // === TEST_SCENARIOS: CLI management commands ===
 
 #[test]
-fn cli_tenant_create_generates_uuid() {
+fn cli_realm_create_generates_uuid() {
     let output = Command::new(hearth_bin())
-        .args(["tenant", "create"])
+        .args(["realm", "create"])
         .output()
-        .expect("run hearth tenant create");
+        .expect("run hearth realm create");
 
     assert!(
         output.status.success(),
-        "tenant create should exit 0; stderr: {}",
+        "realm create should exit 0; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Should output valid JSON with a tenant_id UUID
+    // Should output valid JSON with a realm_id UUID
     let body: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("tenant create output should be JSON");
-    let tenant_id = body["tenant_id"].as_str().expect("should have tenant_id");
+        serde_json::from_str(stdout.trim()).expect("realm create output should be JSON");
+    let realm_id = body["realm_id"].as_str().expect("should have realm_id");
     assert!(
-        uuid::Uuid::parse_str(tenant_id).is_ok(),
-        "tenant_id should be a valid UUID, got: {tenant_id}"
+        uuid::Uuid::parse_str(realm_id).is_ok(),
+        "realm_id should be a valid UUID, got: {realm_id}"
     );
 }
 
@@ -230,21 +230,18 @@ async fn cli_app_create_against_running_server() {
         "server should accept TCP connections within 10s"
     );
 
-    // First create a tenant ID
-    let tenant_output = Command::new(hearth_bin())
-        .args(["tenant", "create"])
+    // First create a realm ID
+    let realm_output = Command::new(hearth_bin())
+        .args(["realm", "create"])
         .output()
-        .expect("run hearth tenant create");
-    assert!(
-        tenant_output.status.success(),
-        "tenant create should exit 0"
-    );
-    let tenant_body: serde_json::Value =
-        serde_json::from_str(String::from_utf8_lossy(&tenant_output.stdout).trim())
-            .expect("parse tenant JSON");
-    let tenant_id = tenant_body["tenant_id"]
+        .expect("run hearth realm create");
+    assert!(realm_output.status.success(), "realm create should exit 0");
+    let realm_body: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&realm_output.stdout).trim())
+            .expect("parse realm JSON");
+    let realm_id = realm_body["realm_id"]
         .as_str()
-        .expect("tenant_id")
+        .expect("realm_id")
         .to_string();
 
     // Register an app (OAuth client) via CLI
@@ -254,8 +251,8 @@ async fn cli_app_create_against_running_server() {
             "create",
             "--server",
             &format!("http://127.0.0.1:{port}"),
-            "--tenant-id",
-            &tenant_id,
+            "--realm-id",
+            &realm_id,
             "--name",
             "CLI Test App",
             "--redirect-uri",

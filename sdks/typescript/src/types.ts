@@ -1,6 +1,6 @@
 /** Response from the dev bootstrap endpoint. */
 export interface BootstrapResponse {
-  tenant_id: string;
+  realm_id: string;
   user_id: string;
   access_token: string;
   refresh_token: string;
@@ -73,14 +73,14 @@ export interface UpdateUserParams {
   status?: string;
 }
 
-/** Parameters for creating a tenant. */
-export interface CreateTenantParams {
+/** Parameters for creating a realm. */
+export interface CreateRealmParams {
   name: string;
   config?: Record<string, unknown>;
 }
 
-/** Tenant record from the API. */
-export interface Tenant {
+/** Realm record from the API. */
+export interface Realm {
   id: string;
   name: string;
   status: string;
@@ -89,8 +89,8 @@ export interface Tenant {
   updated_at?: number;
 }
 
-/** Parameters for updating a tenant. */
-export interface UpdateTenantParams {
+/** Parameters for updating a realm. */
+export interface UpdateRealmParams {
   name?: string;
   status?: string;
   config?: Record<string, unknown>;

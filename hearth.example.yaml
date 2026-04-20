@@ -103,8 +103,8 @@ email:
 
   # --- Branding (applied to all outbound emails) ----------------------------
   # Email-specific overrides. product_name and logo_url come from the
-  # global `branding:` section above. Per-tenant overrides are stored in
-  # TenantConfig.email_branding.
+  # global `branding:` section above. Per-realm overrides are stored in
+  # RealmConfig.email_branding.
 
   # branding:
   #   accent_color: "#4F46E5"              # default: "#E85D04"
@@ -134,7 +134,7 @@ email:
 #   refresh_token_ttl: "7d"             # default: 7 days
 
 # --- Auth defaults (global) -------------------------------------------------
-# These apply to all tenants unless overridden per-tenant below.
+# These apply to all realms unless overridden per-realm below.
 
 # auth:
 #   session_ttl: "24h"              # duration: 30s, 5m, 8h, 1d
@@ -143,37 +143,37 @@ email:
 #   mfa_required: false             # require MFA for all users (global default)
 #   passkey_requires_mfa: false     # enforce TOTP even after passkey login (global default)
 
-# --- Tenants ----------------------------------------------------------------
-# Tenants are managed declaratively in this file. On startup, Hearth
+# --- Realms ----------------------------------------------------------------
+# Realms are managed declaratively in this file. On startup, Hearth
 # reconciles what's declared here with what's in storage:
 #
 #   - YAML entry not in storage     → created
 #   - YAML entry in storage         → config updated if changed
-#   - Storage tenant not in YAML    → archived (soft-deleted)
+#   - Storage realm not in YAML    → archived (soft-deleted)
 #
-# Archived tenants appear in the Admin UI with an "Archived" badge and
+# Archived realms appear in the Admin UI with an "Archived" badge and
 # can be permanently deleted from there.
 #
-# If the `tenants` key is OMITTED entirely:
-#   - No tenants in storage → a "default" tenant is auto-created
-#   - Tenants already exist → left untouched (backward compatibility)
+# If the `realms` key is OMITTED entirely:
+#   - No realms in storage → a "default" realm is auto-created
+#   - Realms already exist → left untouched (backward compatibility)
 #
-# Single-tenant (most deployments): omit `tenants` entirely and let
+# Single-realm (most deployments): omit `realms` entirely and let
 # Hearth auto-create "default" using the global `auth` settings above.
 
-# --- Single-tenant example (just omit the tenants key) ---
+# --- Single-realm example (just omit the realms key) ---
 # (nothing to add — Hearth creates "default" automatically)
 
-# --- Multi-tenant example ---
-# tenants:
+# --- Multi-realm example ---
+# realms:
 #   customer-portal:
 #     session_ttl: "12h"                # overrides global auth.session_ttl
 #     email:
 #       branding:
 #         accent_color: "#2563EB"
 #     web:
-#       theme: cloud                    # light theme for this tenant
-#       custom_css: /etc/hearth/customer-portal.css   # optional tenant CSS
+#       theme: cloud                    # light theme for this realm
+#       custom_css: /etc/hearth/customer-portal.css   # optional realm CSS
 #     auth:
 #       mfa_required: true              # require MFA for all users
 #       passkey_requires_mfa: false     # enforce TOTP even after passkey login (regulated environments)
@@ -190,7 +190,7 @@ email:
 #         require_number: true
 #         require_special: false
 #       token:
-#         access_token_ttl: "30m"       # per-tenant token TTL override
+#         access_token_ttl: "30m"       # per-realm token TTL override
 #         refresh_token_ttl: "14d"
 #       rate_limit:
 #         max_failed_logins: 5

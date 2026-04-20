@@ -1,14 +1,14 @@
 //! Multi-tenancy crash-recovery simulation tests.
 //!
 //! Oracle invariant (from `TEST_SCENARIOS.md` § Multi-Tenancy — Simulation):
-//! "Crash during cascading tenant deletion — recovery completes deletion or
+//! "Crash during cascading realm deletion — recovery completes deletion or
 //!  fully rolls back."
 //!
-//! Hearth's `delete_tenant` does not transactionally group the 11-step
+//! Hearth's `delete_realm` does not transactionally group the 11-step
 //! cascade, so the invariant we can reasonably enforce is the stronger of the
 //! two: a subsequent call MUST converge to "no residue anywhere" even when a
 //! prior invocation crashed mid-way. This is the contract the idempotency
-//! changes in `identity::engine::delete_tenant` were introduced to maintain.
+//! changes in `identity::engine::delete_realm` were introduced to maintain.
 //!
 //! Rather than wiring fault injection into a custom `StorageEngine`, we
 //! simulate the post-crash state directly: after seeding data we drop the
@@ -22,27 +22,27 @@ use hearth::authz::{
     AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
     SubjectRef, TupleWrite,
 };
-use hearth::core::{Clock, SystemClock, TenantId};
+use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
-    CreateTenantRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
+    CreateRealmRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
     IdentityError,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
-/// Keys for the system tenant. Derived from `src/identity/keys.rs` so the
+/// Keys for the system realm. Derived from `src/identity/keys.rs` so the
 /// simulation doesn't need to depend on internal `pub(crate)` helpers.
-fn system_tenant_id() -> TenantId {
-    TenantId::new(uuid::Uuid::nil())
+fn system_realm_id() -> RealmId {
+    RealmId::new(uuid::Uuid::nil())
 }
 
-fn tenant_record_key(tenant_id: &TenantId) -> Vec<u8> {
-    format!("tenant:id:{}", tenant_id.as_uuid()).into_bytes()
+fn realm_record_key(realm_id: &RealmId) -> Vec<u8> {
+    format!("realm:id:{}", realm_id.as_uuid()).into_bytes()
 }
 
 /// Cascade key prefixes — every byte sequence that should be empty for a
-/// fully-deleted tenant. Mirrors the exact strings declared in
+/// fully-deleted realm. Mirrors the exact strings declared in
 /// `src/identity/keys.rs`; a future addition there that forgets to wire a new
-/// prefix into `delete_tenant` will leak residue and fail this test.
+/// prefix into `delete_realm` will leak residue and fail this test.
 const CASCADE_PREFIXES: &[&[u8]] = &[
     b"usr:id:",
     b"usr:email:",
@@ -86,21 +86,21 @@ fn open_engines(
     (storage, identity, authz)
 }
 
-/// Seeds N users, a few tuples, and an OAuth client into the tenant so the
-/// cascade has real work to do. Returns the tenant id.
-fn seed_tenant(identity: &EmbeddedIdentityEngine, authz: &EmbeddedAuthzEngine) -> TenantId {
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
-            name: "crash-sim-tenant".to_string(),
+/// Seeds N users, a few tuples, and an OAuth client into the realm so the
+/// cascade has real work to do. Returns the realm id.
+fn seed_realm(identity: &EmbeddedIdentityEngine, authz: &EmbeddedAuthzEngine) -> RealmId {
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "crash-sim-realm".to_string(),
             config: None,
         })
-        .expect("create tenant");
-    let tenant_id = tenant.id().clone();
+        .expect("create realm");
+    let realm_id = realm.id().clone();
 
     for i in 0..5 {
         identity
             .create_user(
-                &tenant_id,
+                &realm_id,
                 &CreateUserRequest {
                     email: format!("user-{i}@crash.example.com"),
                     display_name: format!("Crash User {i}"),
@@ -114,21 +114,21 @@ fn seed_tenant(identity: &EmbeddedIdentityEngine, authz: &EmbeddedAuthzEngine) -
         let subj = SubjectRef::direct("user", &format!("user{i}")).expect("subject");
         let tuple = RelationshipTuple::new(obj, "viewer", subj).expect("tuple");
         authz
-            .write_tuples(&tenant_id, &[TupleWrite::Touch(tuple)])
+            .write_tuples(&realm_id, &[TupleWrite::Touch(tuple)])
             .expect("write tuple");
     }
 
-    tenant_id
+    realm_id
 }
 
-/// Counts every residual key for `tenant_id` across all cascade prefixes.
+/// Counts every residual key for `realm_id` across all cascade prefixes.
 /// A completed deletion leaves this at zero.
-fn count_residual_keys(storage: &dyn StorageEngine, tenant_id: &TenantId) -> usize {
+fn count_residual_keys(storage: &dyn StorageEngine, realm_id: &RealmId) -> usize {
     let mut total = 0usize;
     for prefix in CASCADE_PREFIXES {
         let end = prefix_end(prefix);
         let entries = storage
-            .scan(tenant_id, prefix, &end)
+            .scan(realm_id, prefix, &end)
             .expect("scan cascade prefix");
         total += entries.len();
     }
@@ -146,31 +146,31 @@ fn prefix_end(prefix: &[u8]) -> Vec<u8> {
     end
 }
 
-/// Crash AFTER tenant-record deletion but BEFORE cascade cleanup completes.
+/// Crash AFTER realm-record deletion but BEFORE cascade cleanup completes.
 ///
-/// This is the scenario the idempotency fix was designed for: the tenant
-/// record is gone (so the old `get_tenant()?.ok_or(TenantNotFound)` check
+/// This is the scenario the idempotency fix was designed for: the realm
+/// record is gone (so the old `get_realm()?.ok_or(RealmNotFound)` check
 /// would bail out) yet downstream keyspaces still hold orphaned data. A
-/// second `delete_tenant` call must fully clean the residue rather than
-/// returning `TenantNotFound`.
+/// second `delete_realm` call must fully clean the residue rather than
+/// returning `RealmNotFound`.
 #[test]
 fn simulation_crash_after_record_deletion_cleans_residue() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    // Phase 1: seed a full tenant, then crash-simulate by deleting only the
-    // tenant record. This mirrors the durable state after a crash between
-    // "delete tenant record" and "delete cascade keys" in an alternate
+    // Phase 1: seed a full realm, then crash-simulate by deleting only the
+    // realm record. This mirrors the durable state after a crash between
+    // "delete realm record" and "delete cascade keys" in an alternate
     // cascade ordering, or after a future transactional rewrite where the
     // record commit lands before cascade commits replay from the WAL.
-    let tenant_id = {
+    let realm_id = {
         let (storage, identity, authz) = open_engines(dir.path());
-        let tid = seed_tenant(&identity, &authz);
+        let tid = seed_realm(&identity, &authz);
 
-        // Surgical "crash": delete just the tenant record, leave everything
+        // Surgical "crash": delete just the realm record, leave everything
         // else (users, tuples, oauth clients, signing key) in place.
         storage
-            .delete(&system_tenant_id(), &tenant_record_key(&tid))
-            .expect("delete tenant record");
+            .delete(&system_realm_id(), &realm_record_key(&tid))
+            .expect("delete realm record");
 
         // Sanity check: cascade data is still present.
         assert!(
@@ -181,15 +181,15 @@ fn simulation_crash_after_record_deletion_cleans_residue() {
         tid
     };
 
-    // Phase 2: reopen (WAL replay) and re-run delete_tenant. The fix guarantees
-    // this converges even though get_tenant() now returns None.
+    // Phase 2: reopen (WAL replay) and re-run delete_realm. The fix guarantees
+    // this converges even though get_realm() now returns None.
     {
         let (storage, identity, _authz) = open_engines(dir.path());
         identity
-            .delete_tenant(&tenant_id)
+            .delete_realm(&realm_id)
             .expect("idempotent delete after crash");
 
-        let residual = count_residual_keys(storage.as_ref(), &tenant_id);
+        let residual = count_residual_keys(storage.as_ref(), &realm_id);
         assert_eq!(
             residual, 0,
             "expected zero residual cascade keys after recovery, found {residual}"
@@ -197,18 +197,18 @@ fn simulation_crash_after_record_deletion_cleans_residue() {
     }
 }
 
-/// Crash DURING cascade with tenant record still present.
+/// Crash DURING cascade with realm record still present.
 ///
 /// Seed, partially delete users via the storage API (mimicking a crash after
-/// some but not all cascade steps), then re-run delete_tenant. The second
+/// some but not all cascade steps), then re-run delete_realm. The second
 /// call must converge to zero residue.
 #[test]
 fn simulation_crash_mid_cascade_record_intact() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let tenant_id = {
+    let realm_id = {
         let (storage, identity, authz) = open_engines(dir.path());
-        let tid = seed_tenant(&identity, &authz);
+        let tid = seed_realm(&identity, &authz);
 
         // Simulate a crash after deleting SOME but not all users — the oauth
         // clients, tuples, and remaining users still exist. Here we walk the
@@ -232,32 +232,32 @@ fn simulation_crash_mid_cascade_record_intact() {
     {
         let (storage, identity, _authz) = open_engines(dir.path());
         identity
-            .delete_tenant(&tenant_id)
+            .delete_realm(&realm_id)
             .expect("complete cascade on retry");
         assert_eq!(
-            count_residual_keys(storage.as_ref(), &tenant_id),
+            count_residual_keys(storage.as_ref(), &realm_id),
             0,
             "cascade must be fully cleaned on retry"
         );
     }
 }
 
-/// Calling delete_tenant for a tenant that never existed still errors out.
+/// Calling delete_realm for a realm that never existed still errors out.
 ///
-/// Guards the `TenantNotFound` contract: the idempotency fix only changes
-/// behavior when cascade residue exists — a truly unknown tenant id must
+/// Guards the `RealmNotFound` contract: the idempotency fix only changes
+/// behavior when cascade residue exists — a truly unknown realm id must
 /// remain an error so callers don't silently mask bugs.
 #[test]
-fn simulation_delete_unknown_tenant_returns_not_found() {
+fn simulation_delete_unknown_realm_returns_not_found() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (_storage, identity, _authz) = open_engines(dir.path());
 
-    let unknown = TenantId::generate();
+    let unknown = RealmId::generate();
     let err = identity
-        .delete_tenant(&unknown)
-        .expect_err("unknown tenant must error");
+        .delete_realm(&unknown)
+        .expect_err("unknown realm must error");
     assert!(
-        matches!(err, IdentityError::TenantNotFound),
-        "expected TenantNotFound, got {err:?}"
+        matches!(err, IdentityError::RealmNotFound),
+        "expected RealmNotFound, got {err:?}"
     );
 }

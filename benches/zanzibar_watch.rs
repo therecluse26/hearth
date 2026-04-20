@@ -18,14 +18,14 @@ use hearth::authz::{
     AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
     SubjectRef, TupleWrite, WatchFilter, WatchReceiver,
 };
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig};
 use tokio::runtime::Runtime;
 
 fn setup() -> (
     tempfile::TempDir,
     Arc<EmbeddedAuthzEngine>,
-    TenantId,
+    RealmId,
     Runtime,
     WatchReceiver,
 ) {
@@ -36,13 +36,13 @@ fn setup() -> (
         Arc::new(storage),
         AuthzConfig::default(),
     ));
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let rt = Runtime::new().expect("runtime");
     let rx = engine
-        .watch(&tenant, &WatchFilter { object_type: None }, None)
+        .watch(&realm, &WatchFilter { object_type: None }, None)
         .expect("watch");
-    (dir, engine, tenant, rt, rx)
+    (dir, engine, realm, rt, rx)
 }
 
 fn make_tuple(seed: u64) -> RelationshipTuple {
@@ -52,7 +52,7 @@ fn make_tuple(seed: u64) -> RelationshipTuple {
 }
 
 fn bench_watch_event_delivery(c: &mut Criterion) {
-    let (_dir, engine, tenant, rt, mut rx) = setup();
+    let (_dir, engine, realm, rt, mut rx) = setup();
 
     // Counter ensures every iteration dispatches a unique tuple so namespace
     // dedup logic cannot short-circuit the write.
@@ -63,7 +63,7 @@ fn bench_watch_event_delivery(c: &mut Criterion) {
             i += 1;
             let tuple = make_tuple(i);
             engine
-                .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+                .write_tuples(&realm, &[TupleWrite::Touch(tuple)])
                 .expect("write");
 
             // Block the current thread on the tokio runtime until the event

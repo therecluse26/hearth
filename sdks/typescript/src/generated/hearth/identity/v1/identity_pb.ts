@@ -10,10 +10,10 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hearth/identity/v1/identity.proto.
  */
 export const file_hearth_identity_v1_identity: GenFile = /*@__PURE__*/
-  fileDesc("CiFoZWFydGgvaWRlbnRpdHkvdjEvaWRlbnRpdHkucHJvdG8SEmhlYXJ0aC5pZGVudGl0eS52MSKPAQoEVXNlchIKCgJpZBgBIAEoCRINCgVlbWFpbBgCIAEoCRIUCgxkaXNwbGF5X25hbWUYAyABKAkSLgoGc3RhdHVzGAQgASgOMh4uaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJTdGF0dXMSEgoKY3JlYXRlZF9hdBgFIAEoAxISCgp1cGRhdGVkX2F0GAYgASgDImkKB1Nlc3Npb24SCgoCaWQYASABKAkSDwoHdXNlcl9pZBgCIAEoCRISCgpjcmVhdGVkX2F0GAMgASgDEhIKCmV4cGlyZXNfYXQYBCABKAMSGQoRbGFzdF9yZWZyZXNoZWRfYXQYBSABKAMiugEKDFRlbmFudENvbmZpZxIfChJzZXNzaW9uX3R0bF9taWNyb3MYASABKANIAIgBARIhChRwYXNzd29yZF9tZW1vcnlfY29zdBgCIAEoDUgBiAEBEh8KEnBhc3N3b3JkX3RpbWVfY29zdBgDIAEoDUgCiAEBQhUKE19zZXNzaW9uX3R0bF9taWNyb3NCFwoVX3Bhc3N3b3JkX21lbW9yeV9jb3N0QhUKE19wYXNzd29yZF90aW1lX2Nvc3QirgEKBlRlbmFudBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEjAKBnN0YXR1cxgDIAEoDjIgLmhlYXJ0aC5pZGVudGl0eS52MS5UZW5hbnRTdGF0dXMSMAoGY29uZmlnGAQgASgLMiAuaGVhcnRoLmlkZW50aXR5LnYxLlRlbmFudENvbmZpZxISCgpjcmVhdGVkX2F0GAUgASgDEhIKCnVwZGF0ZWRfYXQYBiABKAMiOAoRQ3JlYXRlVXNlclJlcXVlc3QSDQoFZW1haWwYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJIp0BChFVcGRhdGVVc2VyUmVxdWVzdBISCgVlbWFpbBgBIAEoCUgAiAEBEhkKDGRpc3BsYXlfbmFtZRgCIAEoCUgBiAEBEjMKBnN0YXR1cxgDIAEoDjIeLmhlYXJ0aC5pZGVudGl0eS52MS5Vc2VyU3RhdHVzSAKIAQFCCAoGX2VtYWlsQg8KDV9kaXNwbGF5X25hbWVCCQoHX3N0YXR1cyJlChNDcmVhdGVUZW5hbnRSZXF1ZXN0EgwKBG5hbWUYASABKAkSNQoGY29uZmlnGAIgASgLMiAuaGVhcnRoLmlkZW50aXR5LnYxLlRlbmFudENvbmZpZ0gAiAEBQgkKB19jb25maWcitQEKE1VwZGF0ZVRlbmFudFJlcXVlc3QSEQoEbmFtZRgBIAEoCUgAiAEBEjUKBnN0YXR1cxgCIAEoDjIgLmhlYXJ0aC5pZGVudGl0eS52MS5UZW5hbnRTdGF0dXNIAYgBARI1CgZjb25maWcYAyABKAsyIC5oZWFydGguaWRlbnRpdHkudjEuVGVuYW50Q29uZmlnSAKIAQFCBwoFX25hbWVCCQoHX3N0YXR1c0IJCgdfY29uZmlnIl0KCFVzZXJQYWdlEicKBWl0ZW1zGAEgAygLMhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXISGAoLbmV4dF9jdXJzb3IYAiABKAlIAIgBAUIOCgxfbmV4dF9jdXJzb3IiYQoKVGVuYW50UGFnZRIpCgVpdGVtcxgBIAMoCzIaLmhlYXJ0aC5pZGVudGl0eS52MS5UZW5hbnQSGAoLbmV4dF9jdXJzb3IYAiABKAlIAIgBAUIOCgxfbmV4dF9jdXJzb3IihQEKD0J1bGtSZXN1bHRFbnRyeRINCgVpbmRleBgBIAEoDRIPCgdzdWNjZXNzGAIgASgIEisKBHVzZXIYAyABKAsyGC5oZWFydGguaWRlbnRpdHkudjEuVXNlckgAiAEBEhIKBWVycm9yGAQgASgJSAGIAQFCBwoFX3VzZXJCCAoGX2Vycm9yIkIKCkJ1bGtSZXN1bHQSNAoHcmVzdWx0cxgBIAMoCzIjLmhlYXJ0aC5pZGVudGl0eS52MS5CdWxrUmVzdWx0RW50cnkqgQEKClVzZXJTdGF0dXMSGwoXVVNFUl9TVEFUVVNfVU5TUEVDSUZJRUQQABIWChJVU0VSX1NUQVRVU19BQ1RJVkUQARIYChRVU0VSX1NUQVRVU19ESVNBQkxFRBACEiQKIFVTRVJfU1RBVFVTX1BFTkRJTkdfVkVSSUZJQ0FUSU9OEAMqZAoMVGVuYW50U3RhdHVzEh0KGVRFTkFOVF9TVEFUVVNfVU5TUEVDSUZJRUQQABIYChRURU5BTlRfU1RBVFVTX0FDVElWRRABEhsKF1RFTkFOVF9TVEFUVVNfU1VTUEVOREVEEAJCRVpDZ2l0aHViLmNvbS9oZWFydGhkYi9oZWFydGgvc2Rrcy9nby9nZW5lcmF0ZWQvaWRlbnRpdHkvdjE7aWRlbnRpdHl2MWIGcHJvdG8z");
+  fileDesc("CiFoZWFydGgvaWRlbnRpdHkvdjEvaWRlbnRpdHkucHJvdG8SEmhlYXJ0aC5pZGVudGl0eS52MSKPAQoEVXNlchIKCgJpZBgBIAEoCRINCgVlbWFpbBgCIAEoCRIUCgxkaXNwbGF5X25hbWUYAyABKAkSLgoGc3RhdHVzGAQgASgOMh4uaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJTdGF0dXMSEgoKY3JlYXRlZF9hdBgFIAEoAxISCgp1cGRhdGVkX2F0GAYgASgDImkKB1Nlc3Npb24SCgoCaWQYASABKAkSDwoHdXNlcl9pZBgCIAEoCRISCgpjcmVhdGVkX2F0GAMgASgDEhIKCmV4cGlyZXNfYXQYBCABKAMSGQoRbGFzdF9yZWZyZXNoZWRfYXQYBSABKAMiuQEKC1JlYWxtQ29uZmlnEh8KEnNlc3Npb25fdHRsX21pY3JvcxgBIAEoA0gAiAEBEiEKFHBhc3N3b3JkX21lbW9yeV9jb3N0GAIgASgNSAGIAQESHwoScGFzc3dvcmRfdGltZV9jb3N0GAMgASgNSAKIAQFCFQoTX3Nlc3Npb25fdHRsX21pY3Jvc0IXChVfcGFzc3dvcmRfbWVtb3J5X2Nvc3RCFQoTX3Bhc3N3b3JkX3RpbWVfY29zdCKrAQoFUmVhbG0SCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIvCgZzdGF0dXMYAyABKA4yHy5oZWFydGguaWRlbnRpdHkudjEuUmVhbG1TdGF0dXMSLwoGY29uZmlnGAQgASgLMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtQ29uZmlnEhIKCmNyZWF0ZWRfYXQYBSABKAMSEgoKdXBkYXRlZF9hdBgGIAEoAyI4ChFDcmVhdGVVc2VyUmVxdWVzdBINCgVlbWFpbBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkinQEKEVVwZGF0ZVVzZXJSZXF1ZXN0EhIKBWVtYWlsGAEgASgJSACIAQESGQoMZGlzcGxheV9uYW1lGAIgASgJSAGIAQESMwoGc3RhdHVzGAMgASgOMh4uaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJTdGF0dXNIAogBAUIICgZfZW1haWxCDwoNX2Rpc3BsYXlfbmFtZUIJCgdfc3RhdHVzImMKEkNyZWF0ZVJlYWxtUmVxdWVzdBIMCgRuYW1lGAEgASgJEjQKBmNvbmZpZxgCIAEoCzIfLmhlYXJ0aC5pZGVudGl0eS52MS5SZWFsbUNvbmZpZ0gAiAEBQgkKB19jb25maWcisgEKElVwZGF0ZVJlYWxtUmVxdWVzdBIRCgRuYW1lGAEgASgJSACIAQESNAoGc3RhdHVzGAIgASgOMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtU3RhdHVzSAGIAQESNAoGY29uZmlnGAMgASgLMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtQ29uZmlnSAKIAQFCBwoFX25hbWVCCQoHX3N0YXR1c0IJCgdfY29uZmlnIl0KCFVzZXJQYWdlEicKBWl0ZW1zGAEgAygLMhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXISGAoLbmV4dF9jdXJzb3IYAiABKAlIAIgBAUIOCgxfbmV4dF9jdXJzb3IiXwoJUmVhbG1QYWdlEigKBWl0ZW1zGAEgAygLMhkuaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtEhgKC25leHRfY3Vyc29yGAIgASgJSACIAQFCDgoMX25leHRfY3Vyc29yIoUBCg9CdWxrUmVzdWx0RW50cnkSDQoFaW5kZXgYASABKA0SDwoHc3VjY2VzcxgCIAEoCBIrCgR1c2VyGAMgASgLMhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJIAIgBARISCgVlcnJvchgEIAEoCUgBiAEBQgcKBV91c2VyQggKBl9lcnJvciJCCgpCdWxrUmVzdWx0EjQKB3Jlc3VsdHMYASADKAsyIy5oZWFydGguaWRlbnRpdHkudjEuQnVsa1Jlc3VsdEVudHJ5KoEBCgpVc2VyU3RhdHVzEhsKF1VTRVJfU1RBVFVTX1VOU1BFQ0lGSUVEEAASFgoSVVNFUl9TVEFUVVNfQUNUSVZFEAESGAoUVVNFUl9TVEFUVVNfRElTQUJMRUQQAhIkCiBVU0VSX1NUQVRVU19QRU5ESU5HX1ZFUklGSUNBVElPThADKmAKC1JlYWxtU3RhdHVzEhwKGFJFQUxNX1NUQVRVU19VTlNQRUNJRklFRBAAEhcKE1JFQUxNX1NUQVRVU19BQ1RJVkUQARIaChZSRUFMTV9TVEFUVVNfU1VTUEVOREVEEAJCRVpDZ2l0aHViLmNvbS9oZWFydGhkYi9oZWFydGgvc2Rrcy9nby9nZW5lcmF0ZWQvaWRlbnRpdHkvdjE7aWRlbnRpdHl2MWIGcHJvdG8z");
 
 /**
- * A user record within a tenant.
+ * A user record within a realm.
  *
  * @generated from message hearth.identity.v1.User
  */
@@ -96,11 +96,11 @@ export const SessionSchema: GenMessage<Session> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 1);
 
 /**
- * Per-tenant configuration overrides.
+ * Per-realm configuration overrides.
  *
- * @generated from message hearth.identity.v1.TenantConfig
+ * @generated from message hearth.identity.v1.RealmConfig
  */
-export type TenantConfig = Message<"hearth.identity.v1.TenantConfig"> & {
+export type RealmConfig = Message<"hearth.identity.v1.RealmConfig"> & {
   /**
    * @generated from field: optional int64 session_ttl_micros = 1;
    */
@@ -118,18 +118,18 @@ export type TenantConfig = Message<"hearth.identity.v1.TenantConfig"> & {
 };
 
 /**
- * Describes the message hearth.identity.v1.TenantConfig.
- * Use `create(TenantConfigSchema)` to create a new message.
+ * Describes the message hearth.identity.v1.RealmConfig.
+ * Use `create(RealmConfigSchema)` to create a new message.
  */
-export const TenantConfigSchema: GenMessage<TenantConfig> = /*@__PURE__*/
+export const RealmConfigSchema: GenMessage<RealmConfig> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 2);
 
 /**
- * A tenant record.
+ * A realm record.
  *
- * @generated from message hearth.identity.v1.Tenant
+ * @generated from message hearth.identity.v1.Realm
  */
-export type Tenant = Message<"hearth.identity.v1.Tenant"> & {
+export type Realm = Message<"hearth.identity.v1.Realm"> & {
   /**
    * @generated from field: string id = 1;
    */
@@ -141,14 +141,14 @@ export type Tenant = Message<"hearth.identity.v1.Tenant"> & {
   name: string;
 
   /**
-   * @generated from field: hearth.identity.v1.TenantStatus status = 3;
+   * @generated from field: hearth.identity.v1.RealmStatus status = 3;
    */
-  status: TenantStatus;
+  status: RealmStatus;
 
   /**
-   * @generated from field: hearth.identity.v1.TenantConfig config = 4;
+   * @generated from field: hearth.identity.v1.RealmConfig config = 4;
    */
-  config?: TenantConfig;
+  config?: RealmConfig;
 
   /**
    * @generated from field: int64 created_at = 5;
@@ -162,10 +162,10 @@ export type Tenant = Message<"hearth.identity.v1.Tenant"> & {
 };
 
 /**
- * Describes the message hearth.identity.v1.Tenant.
- * Use `create(TenantSchema)` to create a new message.
+ * Describes the message hearth.identity.v1.Realm.
+ * Use `create(RealmSchema)` to create a new message.
  */
-export const TenantSchema: GenMessage<Tenant> = /*@__PURE__*/
+export const RealmSchema: GenMessage<Realm> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 3);
 
 /**
@@ -222,56 +222,56 @@ export const UpdateUserRequestSchema: GenMessage<UpdateUserRequest> = /*@__PURE_
   messageDesc(file_hearth_identity_v1_identity, 5);
 
 /**
- * Request to create a new tenant.
+ * Request to create a new realm.
  *
- * @generated from message hearth.identity.v1.CreateTenantRequest
+ * @generated from message hearth.identity.v1.CreateRealmRequest
  */
-export type CreateTenantRequest = Message<"hearth.identity.v1.CreateTenantRequest"> & {
+export type CreateRealmRequest = Message<"hearth.identity.v1.CreateRealmRequest"> & {
   /**
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
-   * @generated from field: optional hearth.identity.v1.TenantConfig config = 2;
+   * @generated from field: optional hearth.identity.v1.RealmConfig config = 2;
    */
-  config?: TenantConfig;
+  config?: RealmConfig;
 };
 
 /**
- * Describes the message hearth.identity.v1.CreateTenantRequest.
- * Use `create(CreateTenantRequestSchema)` to create a new message.
+ * Describes the message hearth.identity.v1.CreateRealmRequest.
+ * Use `create(CreateRealmRequestSchema)` to create a new message.
  */
-export const CreateTenantRequestSchema: GenMessage<CreateTenantRequest> = /*@__PURE__*/
+export const CreateRealmRequestSchema: GenMessage<CreateRealmRequest> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 6);
 
 /**
- * Request to update an existing tenant.
+ * Request to update an existing realm.
  *
- * @generated from message hearth.identity.v1.UpdateTenantRequest
+ * @generated from message hearth.identity.v1.UpdateRealmRequest
  */
-export type UpdateTenantRequest = Message<"hearth.identity.v1.UpdateTenantRequest"> & {
+export type UpdateRealmRequest = Message<"hearth.identity.v1.UpdateRealmRequest"> & {
   /**
    * @generated from field: optional string name = 1;
    */
   name?: string;
 
   /**
-   * @generated from field: optional hearth.identity.v1.TenantStatus status = 2;
+   * @generated from field: optional hearth.identity.v1.RealmStatus status = 2;
    */
-  status?: TenantStatus;
+  status?: RealmStatus;
 
   /**
-   * @generated from field: optional hearth.identity.v1.TenantConfig config = 3;
+   * @generated from field: optional hearth.identity.v1.RealmConfig config = 3;
    */
-  config?: TenantConfig;
+  config?: RealmConfig;
 };
 
 /**
- * Describes the message hearth.identity.v1.UpdateTenantRequest.
- * Use `create(UpdateTenantRequestSchema)` to create a new message.
+ * Describes the message hearth.identity.v1.UpdateRealmRequest.
+ * Use `create(UpdateRealmRequestSchema)` to create a new message.
  */
-export const UpdateTenantRequestSchema: GenMessage<UpdateTenantRequest> = /*@__PURE__*/
+export const UpdateRealmRequestSchema: GenMessage<UpdateRealmRequest> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 7);
 
 /**
@@ -299,15 +299,15 @@ export const UserPageSchema: GenMessage<UserPage> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 8);
 
 /**
- * A cursor-based page of tenants.
+ * A cursor-based page of realms.
  *
- * @generated from message hearth.identity.v1.TenantPage
+ * @generated from message hearth.identity.v1.RealmPage
  */
-export type TenantPage = Message<"hearth.identity.v1.TenantPage"> & {
+export type RealmPage = Message<"hearth.identity.v1.RealmPage"> & {
   /**
-   * @generated from field: repeated hearth.identity.v1.Tenant items = 1;
+   * @generated from field: repeated hearth.identity.v1.Realm items = 1;
    */
-  items: Tenant[];
+  items: Realm[];
 
   /**
    * @generated from field: optional string next_cursor = 2;
@@ -316,10 +316,10 @@ export type TenantPage = Message<"hearth.identity.v1.TenantPage"> & {
 };
 
 /**
- * Describes the message hearth.identity.v1.TenantPage.
- * Use `create(TenantPageSchema)` to create a new message.
+ * Describes the message hearth.identity.v1.RealmPage.
+ * Use `create(RealmPageSchema)` to create a new message.
  */
-export const TenantPageSchema: GenMessage<TenantPage> = /*@__PURE__*/
+export const RealmPageSchema: GenMessage<RealmPage> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 9);
 
 /**
@@ -413,30 +413,30 @@ export const UserStatusSchema: GenEnum<UserStatus> = /*@__PURE__*/
   enumDesc(file_hearth_identity_v1_identity, 0);
 
 /**
- * The lifecycle status of a tenant.
+ * The lifecycle status of a realm.
  *
- * @generated from enum hearth.identity.v1.TenantStatus
+ * @generated from enum hearth.identity.v1.RealmStatus
  */
-export enum TenantStatus {
+export enum RealmStatus {
   /**
-   * @generated from enum value: TENANT_STATUS_UNSPECIFIED = 0;
+   * @generated from enum value: REALM_STATUS_UNSPECIFIED = 0;
    */
   UNSPECIFIED = 0,
 
   /**
-   * @generated from enum value: TENANT_STATUS_ACTIVE = 1;
+   * @generated from enum value: REALM_STATUS_ACTIVE = 1;
    */
   ACTIVE = 1,
 
   /**
-   * @generated from enum value: TENANT_STATUS_SUSPENDED = 2;
+   * @generated from enum value: REALM_STATUS_SUSPENDED = 2;
    */
   SUSPENDED = 2,
 }
 
 /**
- * Describes the enum hearth.identity.v1.TenantStatus.
+ * Describes the enum hearth.identity.v1.RealmStatus.
  */
-export const TenantStatusSchema: GenEnum<TenantStatus> = /*@__PURE__*/
+export const RealmStatusSchema: GenEnum<RealmStatus> = /*@__PURE__*/
   enumDesc(file_hearth_identity_v1_identity, 1);
 

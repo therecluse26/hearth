@@ -24,12 +24,12 @@ pub use types::{
     WatchReceiver,
 };
 
-use crate::core::TenantId;
+use crate::core::RealmId;
 
 /// Trait defining the authorization engine interface.
 ///
 /// Synchronous for Phase 0 — callers should use `spawn_blocking` for async
-/// contexts. All operations require a `TenantId` for multi-tenant isolation.
+/// contexts. All operations require a `RealmId` for multi-realm isolation.
 ///
 /// The engine evaluates Zanzibar-style relationship tuples via graph traversal:
 /// - `check()`: Does subject have relation on object? (BFS with cycle detection)
@@ -37,7 +37,7 @@ use crate::core::TenantId;
 /// - `write_tuples()`: Add or remove relationship tuples.
 /// - `watch()`: Subscribe to tuple changes (stub for Phase 1+).
 pub trait AuthorizationEngine: Send + Sync {
-    /// Checks whether `subject` has `relation` on `object` for the given tenant.
+    /// Checks whether `subject` has `relation` on `object` for the given realm.
     ///
     /// Performs a BFS traversal through userset indirections with cycle detection
     /// and depth limiting. Returns `false` (fail-closed) if max depth is reached.
@@ -46,14 +46,14 @@ pub trait AuthorizationEngine: Send + Sync {
     /// that version. In single-node mode this is always satisfied.
     fn check(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         object: &ObjectRef,
         relation: &str,
         subject: &SubjectRef,
         at_least: Option<&ConsistencyToken>,
     ) -> Result<bool, AuthzError>;
 
-    /// Expands all subjects that have `relation` on `object` for the given tenant.
+    /// Expands all subjects that have `relation` on `object` for the given realm.
     ///
     /// Performs a BFS traversal collecting all reachable `SubjectRef::Direct` nodes.
     /// Respects the same depth limit and cycle detection as `check()`.
@@ -62,35 +62,32 @@ pub trait AuthorizationEngine: Send + Sync {
     /// that version. In single-node mode this is always satisfied.
     fn expand(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         object: &ObjectRef,
         relation: &str,
         at_least: Option<&ConsistencyToken>,
     ) -> Result<Vec<SubjectRef>, AuthzError>;
 
-    /// Writes (adds or deletes) relationship tuples for the given tenant.
+    /// Writes (adds or deletes) relationship tuples for the given realm.
     ///
     /// Returns a `ConsistencyToken` representing the version after this write.
     /// Callers can pass this token to subsequent reads via `at_least` to
     /// guarantee they see the effects of this write.
     fn write_tuples(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         writes: &[TupleWrite],
     ) -> Result<ConsistencyToken, AuthzError>;
 
-    /// Sets the namespace configuration for a tenant.
+    /// Sets the namespace configuration for a realm.
     ///
     /// The namespace defines valid object types, relations, and allowed subject
     /// types. Once set, `write_tuples()` validates tuples against this schema.
-    fn set_namespace(
-        &self,
-        tenant_id: &TenantId,
-        config: &NamespaceConfig,
-    ) -> Result<(), AuthzError>;
+    fn set_namespace(&self, realm_id: &RealmId, config: &NamespaceConfig)
+        -> Result<(), AuthzError>;
 
-    /// Gets the namespace configuration for a tenant, if one exists.
-    fn get_namespace(&self, tenant_id: &TenantId) -> Result<Option<NamespaceConfig>, AuthzError>;
+    /// Gets the namespace configuration for a realm, if one exists.
+    fn get_namespace(&self, realm_id: &RealmId) -> Result<Option<NamespaceConfig>, AuthzError>;
 
     /// Subscribes to relationship tuple changes matching the filter.
     ///
@@ -101,7 +98,7 @@ pub trait AuthorizationEngine: Send + Sync {
     /// The optional `resume_from` token replays all events since that version.
     fn watch(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         filter: &WatchFilter,
         resume_from: Option<&ConsistencyToken>,
     ) -> Result<WatchReceiver, AuthzError>;

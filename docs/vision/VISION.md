@@ -66,7 +66,7 @@ The auth ecosystem is fragmented in a way that compounds every other problem:
 - **Authorization** is a different service (OPA, Cerbos, Authzed, homegrown RBAC)
 - **Session management** is often a third system (Redis, with custom logic)
 - **User management** is sometimes in the auth server, sometimes in your application database, often partially in both
-- **Multi-tenancy** is almost always custom code, because the auth server's concept of "organizations" doesn't match your product's concept of "tenants"
+- **Multi-tenancy** is almost always custom code, because the auth server's concept of "organizations" doesn't match your product's concept of "realms"
 
 Each of these systems has its own data model, its own operational requirements, its own failure modes, and its own upgrade path. They communicate over the network, introducing latency, partial failure scenarios, and consistency challenges. And they were never designed to work together — the integration is always custom, always fragile, and always the platform team's problem.
 
@@ -191,7 +191,7 @@ What Hearth explicitly **does**:
 - TOTP / authenticator apps
 - SCIM 2.0 provisioning
 - Zanzibar-style permissions: built-in RBAC schemas (admin/editor/viewer) as the starting point, fine-grained relationship-based permissions as the growth path, conditional rules for time-based and attribute-based policies
-- Multi-tenancy with per-tenant identity provider configuration
+- Multi-tenancy with per-realm identity provider configuration
 - Session management with revocation and device tracking
 - Comprehensive audit logging
 - Password hashing with Argon2id default, support for bcrypt/PBKDF2/scrypt verification (for migration), automatic upgrade-on-login, and enforced minimum parameters
@@ -214,7 +214,7 @@ Identity infrastructure has zero tolerance for data loss and low tolerance for i
 - **Crash safety**: every committed write survives a power failure. The WAL is fsync'd before acknowledgment.
 - **Consistency**: within a cluster, reads reflect the most recent committed write. No eventually-consistent session stores that lead to "phantom logout" bugs.
 - **Auditability**: every mutation to identity data is logged in an append-only audit log. Compliance teams can reconstruct the state of any identity at any point in time.
-- **Encryption at rest**: credentials and sensitive fields are encrypted with per-tenant keys. Compromising the storage layer does not compromise credentials.
+- **Encryption at rest**: credentials and sensitive fields are encrypted with per-realm keys. Compromising the storage layer does not compromise credentials.
 
 ### 5.5 Migration Is a First-Class Feature
 
@@ -244,7 +244,7 @@ Hearth compiles to a single statically-linked binary. Inside that binary are sev
 │         │                 │                 │           │
 │  ┌──────┴─────────────────┴─────────────────┴───────┐  │
 │  │              Identity Engine (Core API)            │  │
-│  │   authn · sessions · users · tenants · audit      │  │
+│  │   authn · sessions · users · realms · audit      │  │
 │  └──────────────────┬───────────────────────────────┘  │
 │                     │                                   │
 │  ┌──────────────────┴───────────────────────────────┐  │
@@ -265,20 +265,20 @@ Hearth compiles to a single statically-linked binary. Inside that binary are sev
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Protocol Layer**: Speaks OIDC, OAuth 2.0, SAML 2.0, SCIM 2.0, and WebAuthn natively. Each protocol is implemented as a thin adapter over the Identity Engine. The protocol layer also exposes a gRPC and REST management API for operations that don't map to a standard protocol (tenant configuration, migration, admin operations).
+**Protocol Layer**: Speaks OIDC, OAuth 2.0, SAML 2.0, SCIM 2.0, and WebAuthn natively. Each protocol is implemented as a thin adapter over the Identity Engine. The protocol layer also exposes a gRPC and REST management API for operations that don't map to a standard protocol (realm configuration, migration, admin operations).
 
-**Identity Engine**: The core logic layer. Handles user lifecycle, credential management, session management, token issuance and validation, and multi-tenant isolation. This is where authentication flows are orchestrated and where the opinionated decisions about supported flows are enforced.
+**Identity Engine**: The core logic layer. Handles user lifecycle, credential management, session management, token issuance and validation, and multi-realm isolation. This is where authentication flows are orchestrated and where the opinionated decisions about supported flows are enforced.
 
 **Authorization Engine**: A Zanzibar-style permission system embedded directly in the same process, covering the full RBAC → ReBAC → conditional spectrum through a single engine. Key design choices:
 - **Pre-built RBAC schemas**: Admin/editor/viewer role templates work out of the box. Teams start with familiar role-based patterns and grow into fine-grained relationships when they need them.
 - **Conditional relationships (caveats)**: Tuples can carry conditions evaluated at check time — time-based expiration, IP range restrictions, attribute comparisons — following the pattern established by SpiceDB caveats. This provides ABAC-lite capability without a separate policy engine.
 - **SDK-level RBAC convenience APIs**: The SDK exposes `assignRole()` / `hasRole()` / `removeRole()` helpers that abstract away the underlying tuple mechanics. Developers who only need roles never have to think about relationship graphs.
-- **Co-located with identity data**: Because relationship tuples live in the same storage engine as users, tenants, and sessions, permission setup is atomic with identity operations. Creating a user and assigning their initial roles happens in a single transaction — no dual-write synchronization, no eventual consistency between an identity store and a separate authorization service.
+- **Co-located with identity data**: Because relationship tuples live in the same storage engine as users, realms, and sessions, permission setup is atomic with identity operations. Creating a user and assigning their initial roles happens in a single transaction — no dual-write synchronization, no eventual consistency between an identity store and a separate authorization service.
 
 Permission checks are in-process function calls, not network requests — enabling sub-microsecond authorization checks once the data is in memory.
 
 **Storage Engine**: A purpose-built embedded storage engine optimized for identity access patterns. Not a generic LSM tree or B-tree — a hybrid that recognizes the distinct access patterns of different identity data types:
-- **User profiles and credentials**: relatively static, read-heavy, indexed by multiple keys (email, username, external ID, tenant). Stored in a B-tree-like structure optimized for point lookups.
+- **User profiles and credentials**: relatively static, read-heavy, indexed by multiple keys (email, username, external ID, realm). Stored in a B-tree-like structure optimized for point lookups.
 - **Sessions**: time-bounded, write-moderate, naturally ordered by creation time with TTL-based expiration. Stored in a time-partitioned structure that efficiently handles both lookups and bulk expiration.
 - **Relationship tuples**: graph-structured, read-heavy with occasional writes, traversed for permission checks. Tuples may carry optional condition data (caveats) evaluated at check time. Stored in an adjacency-list structure optimized for the specific traversal patterns of Zanzibar `Check` and `Expand` operations.
 - **Audit log**: append-only, write-heavy, rarely read except for compliance queries. Stored in a sequential log structure, compacted to S3-compatible object storage for long-term retention.
@@ -434,9 +434,9 @@ hearth serve --dev
 # Open the admin console
 open http://localhost:9090
 
-# Or: create a tenant and application programmatically
-hearth tenant create --name "my-app"
-hearth app create --tenant "my-app" --redirect-uri "http://localhost:3000/callback"
+# Or: create a realm and application programmatically
+hearth realm create --name "my-app"
+hearth app create --realm "my-app" --redirect-uri "http://localhost:3000/callback"
 ```
 
 The `--dev` flag starts Hearth in an opinionated development mode: in-memory storage (no persistence), relaxed security policies (localhost-only, no TLS required), pre-configured test users, and hot-reload for configuration changes. This mode is explicitly not for production — it's for getting started in seconds.
@@ -466,13 +466,13 @@ Migration is the highest-friction part of adopting new infrastructure. Hearth ad
 
 **Keycloak migration:**
 - Import realms, clients, users, roles, and groups from a Keycloak export
-- Map Keycloak's realm model to Hearth's tenant model
+- Map Keycloak's realm model to Hearth's realm model
 - Preserve user credentials (password hashes) so users don't need to re-register
 - Support a dual-running period where Hearth and Keycloak are both active, with Hearth validating tokens issued by either system
 
 **Auth0 migration:**
 - Import users, connections, and applications via the Auth0 Management API
-- Map Auth0's tenant/application model to Hearth's equivalents
+- Map Auth0's realm/application model to Hearth's equivalents
 - Handle Auth0-specific credential formats and social connection configurations
 
 **Clerk migration:**
@@ -567,7 +567,7 @@ This path is not the only option. The project could remain community-funded and 
 - WebAuthn / Passkey support
 - Magic link / passwordless email authentication
 - TOTP / MFA support
-- Multi-tenancy (tenant isolation, per-tenant configuration)
+- Multi-tenancy (realm isolation, per-realm configuration)
 - Admin API (REST + gRPC)
 - Admin web console
 - Zanzibar-style authorization engine (Check, Expand, Write, Watch)
@@ -712,7 +712,7 @@ Concrete markers:
 
 The following items are not part of the core vision but represent areas where further thinking is needed:
 
-1. **Authorization schema language approach**: The permission model needs a schema definition language — both SpiceDB and OpenFGA converged on this, and the developer experience benefits (validation, IDE support, version-controlled schemas) are clear. The open question is: how closely should Hearth follow SpiceDB's schema language (which is becoming a de facto standard) vs. designing a bespoke DSL optimized for Hearth's co-located architecture? SpiceDB compatibility would ease migration and leverage existing tooling; a custom language could better express Hearth-specific concepts like tenant-scoped relationships and identity-aware conditions.
+1. **Authorization schema language approach**: The permission model needs a schema definition language — both SpiceDB and OpenFGA converged on this, and the developer experience benefits (validation, IDE support, version-controlled schemas) are clear. The open question is: how closely should Hearth follow SpiceDB's schema language (which is becoming a de facto standard) vs. designing a bespoke DSL optimized for Hearth's co-located architecture? SpiceDB compatibility would ease migration and leverage existing tooling; a custom language could better express Hearth-specific concepts like realm-scoped relationships and identity-aware conditions.
 
 2. **Expression language for conditions**: Conditional relationships (caveats) need an expression language for evaluating conditions at check time. CEL (Common Expression Language, used by Google and adopted by SpiceDB) is the obvious candidate — it's sandboxed, performant, and well-specified. The alternative is a custom expression evaluator that could be more tightly integrated with Hearth's type system and identity data model. The tradeoffs are ecosystem compatibility vs. integration depth and control over evaluation performance in the hot path.
 
@@ -720,7 +720,7 @@ The following items are not part of the core vision but represent areas where fu
 
 4. **UI components**: Should the project maintain headless login/signup UI components (React, Vue, Svelte) as part of the core project, or leave this to the community? Clerk's strength is partly its pre-built UI components. There's a tension between "database, not application" positioning and the DX benefits of shipping UI components.
 
-5. **Tenant federation**: For B2B SaaS use cases, should Hearth support a model where multiple Hearth instances federate identity across organizational boundaries? This is a complex feature but potentially high-value for large enterprise deployments.
+5. **Realm federation**: For B2B SaaS use cases, should Hearth support a model where multiple Hearth instances federate identity across organizational boundaries? This is a complex feature but potentially high-value for large enterprise deployments.
 
 6. **Hardware security module (HSM) integration**: For high-security deployments, should Hearth support PKCS#11 or cloud KMS integration for key management? This is common in enterprise auth products but adds significant complexity.
 

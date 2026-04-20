@@ -6,30 +6,30 @@
 
 mod common;
 
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{
-    ClientCredentialsRequest, CreateTenantRequest, CreateUserRequest, DeviceAuthorizationRequest,
+    ClientCredentialsRequest, CreateRealmRequest, CreateUserRequest, DeviceAuthorizationRequest,
     RegisterClientRequest, TokenRevocationRequest, User,
 };
 
-/// Helper: creates a real tenant with a signing key.
-fn create_tenant(harness: &common::TestHarness) -> TenantId {
-    let tenant = harness
+/// Helper: creates a real realm with a signing key.
+fn create_realm(harness: &common::TestHarness) -> RealmId {
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: format!("oauth-test-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("create tenant");
-    tenant.id().clone()
+        .expect("create realm");
+    realm.id().clone()
 }
 
 /// Helper: creates a user with a unique email.
-fn create_user(harness: &common::TestHarness, tenant: &TenantId) -> User {
+fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
         .identity()
         .create_user(
-            tenant,
+            realm,
             &CreateUserRequest {
                 email: format!("oauth-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "OAuth Test User".to_string(),
@@ -48,13 +48,13 @@ async fn client_credentials_full_flow() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = create_tenant(&harness);
+    let realm = create_realm(&harness);
 
     // 1. Register a confidential client with a secret
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "Machine Client".to_string(),
                 redirect_uris: vec![],
@@ -76,7 +76,7 @@ async fn client_credentials_full_flow() {
     let token_resp = harness
         .identity()
         .client_credentials_token(
-            &tenant,
+            &realm,
             &ClientCredentialsRequest {
                 client_id: client.client_id().clone(),
                 client_secret: "super-secret-value-123!".to_string(),
@@ -93,7 +93,7 @@ async fn client_credentials_full_flow() {
     let introspect = harness
         .identity()
         .introspect_token(
-            &tenant,
+            &realm,
             &hearth::identity::TokenIntrospectionRequest {
                 token: token_resp.access_token().to_string(),
                 token_type_hint: None,
@@ -108,7 +108,7 @@ async fn client_credentials_full_flow() {
     harness
         .identity()
         .revoke_token(
-            &tenant,
+            &realm,
             &TokenRevocationRequest {
                 token: token_resp.access_token().to_string(),
                 token_type_hint: Some("access_token".to_string()),
@@ -120,7 +120,7 @@ async fn client_credentials_full_flow() {
     let introspect_after = harness
         .identity()
         .introspect_token(
-            &tenant,
+            &realm,
             &hearth::identity::TokenIntrospectionRequest {
                 token: token_resp.access_token().to_string(),
                 token_type_hint: None,
@@ -143,14 +143,14 @@ async fn device_authorization_full_flow() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = create_tenant(&harness);
-    let user = create_user(&harness, &tenant);
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
 
     // 1. Register a public client that supports device_code grant
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "TV App".to_string(),
                 redirect_uris: vec![],
@@ -164,7 +164,7 @@ async fn device_authorization_full_flow() {
     let device_resp = harness
         .identity()
         .device_authorize(
-            &tenant,
+            &realm,
             &DeviceAuthorizationRequest {
                 client_id: client.client_id().clone(),
                 scope: Some("openid".to_string()),
@@ -191,13 +191,13 @@ async fn device_authorization_full_flow() {
     // rate-limit interference with the happy-path flow.)
     harness
         .identity()
-        .approve_device(&tenant, &device_resp.user_code, user.id())
+        .approve_device(&realm, &device_resp.user_code, user.id())
         .expect("approve device");
 
     // 4. Polling after approval should return tokens
     let token_resp = harness
         .identity()
-        .poll_device_token(&tenant, &device_resp.device_code, client.client_id())
+        .poll_device_token(&realm, &device_resp.device_code, client.client_id())
         .expect("poll device token after approval");
 
     assert!(!token_resp.access_token().is_empty());
@@ -209,10 +209,10 @@ async fn device_authorization_full_flow() {
     // 5. Access token should be valid
     let claims = harness
         .identity()
-        .validate_token(&tenant, token_resp.access_token())
+        .validate_token(&realm, token_resp.access_token())
         .expect("validate device flow access token");
     assert_eq!(claims.sub, user.id().to_string());
-    assert_eq!(claims.tid, tenant.to_string());
+    assert_eq!(claims.tid, realm.to_string());
 }
 
 // ===== Scenario C3: Refresh token rotation E2E =====
@@ -227,14 +227,14 @@ async fn refresh_token_rotation_e2e() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = create_tenant(&harness);
-    let user = create_user(&harness, &tenant);
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
 
     // 1. Register a public client
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "Rotation Test App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -248,7 +248,7 @@ async fn refresh_token_rotation_e2e() {
     let auth_resp = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -266,7 +266,7 @@ async fn refresh_token_rotation_e2e() {
     let token_resp = harness
         .identity()
         .exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_resp.code().to_string(),
@@ -284,20 +284,18 @@ async fn refresh_token_rotation_e2e() {
     //    The rotation is tracked by the stored hash, not the token string.
     let refreshed = harness
         .identity()
-        .refresh_tokens(&tenant, &original_refresh)
+        .refresh_tokens(&realm, &original_refresh)
         .expect("refresh tokens");
 
     // 4. Validate new access token — should succeed
     let claims = harness
         .identity()
-        .validate_token(&tenant, refreshed.access_token())
+        .validate_token(&realm, refreshed.access_token())
         .expect("validate new access token");
     assert_eq!(claims.sub, user.id().to_string());
 
     // 5. Use old refresh token — should fail (grant family hash was rotated)
-    let reuse_result = harness
-        .identity()
-        .refresh_tokens(&tenant, &original_refresh);
+    let reuse_result = harness.identity().refresh_tokens(&realm, &original_refresh);
     assert!(
         reuse_result.is_err(),
         "reusing old refresh token after rotation must fail"
@@ -306,7 +304,7 @@ async fn refresh_token_rotation_e2e() {
     // 6. After theft detection (step 5), the grant family is revoked,
     // so even the current refresh token should also be invalid
     let new_refresh = refreshed.refresh_token().to_string();
-    let new_refresh_result = harness.identity().refresh_tokens(&tenant, &new_refresh);
+    let new_refresh_result = harness.identity().refresh_tokens(&realm, &new_refresh);
     assert!(
         new_refresh_result.is_err(),
         "current refresh token should also be revoked after theft detection"
@@ -329,13 +327,13 @@ async fn conformance_rfc7662_introspection_response() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = create_tenant(&harness);
-    let user = create_user(&harness, &tenant);
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
 
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "RFC 7662 Test".to_string(),
                 redirect_uris: vec!["https://app.example.com/cb".to_string()],
@@ -348,7 +346,7 @@ async fn conformance_rfc7662_introspection_response() {
     let auth = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/cb".to_string(),
@@ -366,7 +364,7 @@ async fn conformance_rfc7662_introspection_response() {
     let tokens = harness
         .identity()
         .exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth.code().to_string(),
@@ -380,7 +378,7 @@ async fn conformance_rfc7662_introspection_response() {
     let active_resp = harness
         .identity()
         .introspect_token(
-            &tenant,
+            &realm,
             &TokenIntrospectionRequest {
                 token: tokens.access_token().to_string(),
                 token_type_hint: None,
@@ -435,7 +433,7 @@ async fn conformance_rfc7662_introspection_response() {
     let inactive_resp = harness
         .identity()
         .introspect_token(
-            &tenant,
+            &realm,
             &TokenIntrospectionRequest {
                 token: "this-is-not-a-valid-token".to_string(),
                 token_type_hint: None,
@@ -479,13 +477,13 @@ async fn conformance_rfc8628_device_authorization() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = create_tenant(&harness);
-    let user = create_user(&harness, &tenant);
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
 
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "RFC 8628 Conformance".to_string(),
                 redirect_uris: vec![],
@@ -499,7 +497,7 @@ async fn conformance_rfc8628_device_authorization() {
     let device_resp = harness
         .identity()
         .device_authorize(
-            &tenant,
+            &realm,
             &DeviceAuthorizationRequest {
                 client_id: client.client_id().clone(),
                 scope: Some("openid".to_string()),
@@ -558,7 +556,7 @@ async fn conformance_rfc8628_device_authorization() {
     let pending =
         harness
             .identity()
-            .poll_device_token(&tenant, &device_resp.device_code, client.client_id());
+            .poll_device_token(&realm, &device_resp.device_code, client.client_id());
     assert!(
         pending.is_err(),
         "RFC 8628 §3.3: unapproved device should return error"
@@ -567,7 +565,7 @@ async fn conformance_rfc8628_device_authorization() {
     // --- §3.5: Successful Token Response ---
     harness
         .identity()
-        .approve_device(&tenant, &device_resp.user_code, user.id())
+        .approve_device(&realm, &device_resp.user_code, user.id())
         .expect("approve device");
 
     // Wait for rate limit interval (polling immediately after pending would SlowDown)
@@ -575,7 +573,7 @@ async fn conformance_rfc8628_device_authorization() {
     let device_resp2 = harness
         .identity()
         .device_authorize(
-            &tenant,
+            &realm,
             &DeviceAuthorizationRequest {
                 client_id: client.client_id().clone(),
                 scope: Some("openid".to_string()),
@@ -585,12 +583,12 @@ async fn conformance_rfc8628_device_authorization() {
 
     harness
         .identity()
-        .approve_device(&tenant, &device_resp2.user_code, user.id())
+        .approve_device(&realm, &device_resp2.user_code, user.id())
         .expect("approve device 2");
 
     let token_resp = harness
         .identity()
-        .poll_device_token(&tenant, &device_resp2.device_code, client.client_id())
+        .poll_device_token(&realm, &device_resp2.device_code, client.client_id())
         .expect("poll approved device");
 
     // RFC 8628 §3.5: response follows RFC 6749 §5.1

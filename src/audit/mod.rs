@@ -1,7 +1,7 @@
 //! Audit logging: append-only, tamper-evident event log.
 //!
 //! Cross-cutting infrastructure for recording security-critical mutations.
-//! All events are tenant-scoped and linked via a SHA-256 hash chain for
+//! All events are realm-scoped and linked via a SHA-256 hash chain for
 //! tamper detection.
 //!
 //! # Public API
@@ -21,7 +21,7 @@ pub use engine::EmbeddedAuditEngine;
 pub use error::AuditError;
 pub use types::{AuditAction, AuditEvent, AuditQuery, CreateAuditEvent};
 
-use crate::core::{TenantId, Timestamp};
+use crate::core::{RealmId, Timestamp};
 
 /// Trait defining the audit engine interface.
 ///
@@ -42,12 +42,12 @@ pub trait AuditEngine: Send + Sync {
 
     /// Verifies the integrity of the audit log hash chain.
     ///
-    /// Walks the event chain for the given tenant and time range,
+    /// Walks the event chain for the given realm and time range,
     /// recomputing hashes and comparing against stored values.
     /// Returns `true` if the chain is valid, `false` if tampered.
     fn verify_integrity(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         start: Option<Timestamp>,
         end: Option<Timestamp>,
     ) -> Result<bool, AuditError>;

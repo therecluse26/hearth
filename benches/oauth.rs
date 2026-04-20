@@ -8,19 +8,19 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use hearth::core::{Clock, SystemClock, TenantId};
+use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
-    ClientCredentialsRequest, CreateTenantRequest, EmbeddedIdentityEngine, IdentityConfig,
+    ClientCredentialsRequest, CreateRealmRequest, EmbeddedIdentityEngine, IdentityConfig,
     IdentityEngine, RegisterClientRequest, TokenIntrospectionRequest,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
-/// Sets up an engine with a tenant, a confidential client, and a pre-issued
+/// Sets up an engine with a realm, a confidential client, and a pre-issued
 /// access token for introspection benchmarks.
 fn setup_oauth() -> (
     tempfile::TempDir,
     EmbeddedIdentityEngine,
-    TenantId,
+    RealmId,
     String, // client_secret
     String, // access_token from client_credentials
 ) {
@@ -35,19 +35,19 @@ fn setup_oauth() -> (
     )
     .expect("engine creation");
 
-    // Create a real tenant (required for per-tenant signing keys).
-    let tenant = engine
-        .create_tenant(&CreateTenantRequest {
-            name: "bench-oauth-tenant".to_string(),
+    // Create a real realm (required for per-realm signing keys).
+    let realm = engine
+        .create_realm(&CreateRealmRequest {
+            name: "bench-oauth-realm".to_string(),
             config: None,
         })
-        .expect("create tenant");
-    let tenant_id = tenant.id().clone();
+        .expect("create realm");
+    let realm_id = realm.id().clone();
 
     let secret = "bench-client-secret-that-is-long-enough";
     let client = engine
         .register_client(
-            &tenant_id,
+            &realm_id,
             &RegisterClientRequest {
                 client_name: "Bench Confidential Client".to_string(),
                 redirect_uris: vec![],
@@ -60,7 +60,7 @@ fn setup_oauth() -> (
     // Pre-issue a token for introspection benchmarks.
     let cred_resp = engine
         .client_credentials_token(
-            &tenant_id,
+            &realm_id,
             &ClientCredentialsRequest {
                 client_id: client.client_id().clone(),
                 client_secret: secret.to_string(),
@@ -72,7 +72,7 @@ fn setup_oauth() -> (
     (
         dir,
         engine,
-        tenant_id,
+        realm_id,
         secret.to_string(),
         cred_resp.access_token().to_string(),
     )
@@ -82,12 +82,12 @@ fn setup_oauth() -> (
 ///
 /// Target: p50 < 500 μs, p99 < 2 ms.
 fn bench_client_credentials(c: &mut Criterion) {
-    let (_dir, engine, tenant_id, secret, _token) = setup_oauth();
+    let (_dir, engine, realm_id, secret, _token) = setup_oauth();
 
     // We need the client_id — re-register a second client for repeated issuance.
     let client = engine
         .register_client(
-            &tenant_id,
+            &realm_id,
             &RegisterClientRequest {
                 client_name: "Bench CC Client".to_string(),
                 redirect_uris: vec![],
@@ -101,7 +101,7 @@ fn bench_client_credentials(c: &mut Criterion) {
     c.bench_function("oauth_client_credentials_issuance", |b| {
         b.iter(|| {
             let result = engine.client_credentials_token(
-                &tenant_id,
+                &realm_id,
                 &ClientCredentialsRequest {
                     client_id: client_id.clone(),
                     client_secret: secret.clone(),
@@ -117,12 +117,12 @@ fn bench_client_credentials(c: &mut Criterion) {
 ///
 /// Target: p50 < 50 μs, p99 < 500 μs.
 fn bench_token_introspection(c: &mut Criterion) {
-    let (_dir, engine, tenant_id, _secret, access_token) = setup_oauth();
+    let (_dir, engine, realm_id, _secret, access_token) = setup_oauth();
 
     c.bench_function("oauth_token_introspection", |b| {
         b.iter(|| {
             let result = engine.introspect_token(
-                &tenant_id,
+                &realm_id,
                 &TokenIntrospectionRequest {
                     token: access_token.clone(),
                     token_type_hint: None,

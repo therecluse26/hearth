@@ -12,21 +12,21 @@ import (
 // Client is a Go client for the Hearth identity API.
 type Client struct {
 	baseURL  string
-	tenantID string
+	realmID string
 	http     *http.Client
 }
 
 // NewClient creates a new Hearth client.
-func NewClient(baseURL, tenantID string) *Client {
+func NewClient(baseURL, realmID string) *Client {
 	return &Client{
 		baseURL:  baseURL,
-		tenantID: tenantID,
+		realmID: realmID,
 		http:     &http.Client{},
 	}
 }
 
 // Bootstrap calls POST /admin/bootstrap in dev mode.
-// It creates a tenant, admin user, session, and admin tuple.
+// It creates a realm, admin user, session, and admin tuple.
 func Bootstrap(ctx context.Context, baseURL string) (*BootstrapResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/admin/bootstrap", nil)
 	if err != nil {
@@ -89,7 +89,7 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfoRes
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("X-Tenant-ID", c.tenantID)
+	httpReq.Header.Set("X-Realm-ID", c.realmID)
 	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
 
 	var result UserInfoResponse
@@ -103,7 +103,7 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfoRes
 func (c *Client) Admin(accessToken string) *AdminClient {
 	return &AdminClient{
 		baseURL:     c.baseURL,
-		tenantID:    c.tenantID,
+		realmID:    c.realmID,
 		accessToken: accessToken,
 		http:        c.http,
 	}
@@ -119,7 +119,7 @@ func (c *Client) post(ctx context.Context, path string, body, result any) error 
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Tenant-ID", c.tenantID)
+	httpReq.Header.Set("X-Realm-ID", c.realmID)
 
 	return doRequest(c.http, httpReq, result)
 }

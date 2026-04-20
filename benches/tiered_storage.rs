@@ -9,46 +9,46 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Sets up a storage engine with pre-populated hot-tier data.
 ///
 /// Writes `count` key-value pairs and reads each once to promote into the
 /// hot tier (lock-free `ArcSwap` path).
-fn setup_hot_tier(count: usize) -> (tempfile::TempDir, EmbeddedStorageEngine, TenantId) {
+fn setup_hot_tier(count: usize) -> (tempfile::TempDir, EmbeddedStorageEngine, RealmId) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = StorageConfig::dev(dir.path().to_path_buf());
     let engine = EmbeddedStorageEngine::open(config).expect("open");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     for i in 0..count {
         let key = format!("session:{i:08}");
         let value = format!("session-data-{i:08}-padding-to-realistic-size-xxxxxxxxxxxxx");
         engine
-            .put(&tenant, key.as_bytes(), value.as_bytes())
+            .put(&realm, key.as_bytes(), value.as_bytes())
             .expect("put");
     }
 
     // Read each key once to promote to hot tier
     for i in 0..count {
         let key = format!("session:{i:08}");
-        let _ = engine.get(&tenant, key.as_bytes());
+        let _ = engine.get(&realm, key.as_bytes());
     }
 
-    (dir, engine, tenant)
+    (dir, engine, realm)
 }
 
 /// Benchmarks hot-tier lookup (data already in hot tier, lock-free read).
 fn bench_hot_tier_lookup(c: &mut Criterion) {
-    let (_dir, engine, tenant) = setup_hot_tier(1000);
+    let (_dir, engine, realm) = setup_hot_tier(1000);
 
     c.bench_function("tiered_hot_tier_lookup", |b| {
         let mut i = 0u64;
         b.iter(|| {
             let idx = (i % 1000) as usize;
             let key = format!("session:{idx:08}");
-            let result = engine.get(&tenant, key.as_bytes()).expect("get");
+            let result = engine.get(&realm, key.as_bytes()).expect("get");
             assert!(result.is_some());
             i += 1;
         });
@@ -59,7 +59,7 @@ fn bench_hot_tier_lookup(c: &mut Criterion) {
 fn bench_cold_to_hot_promotion(c: &mut Criterion) {
     // Write data, flush to SST, then reopen so hot tier is empty
     let dir = tempfile::tempdir().expect("tempdir");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Phase 1: write data with small flush threshold to force SST creation
     {
@@ -71,7 +71,7 @@ fn bench_cold_to_hot_promotion(c: &mut Criterion) {
             let key = format!("cold:{i:08}");
             let value = format!("cold-data-{i:08}-padding-for-realistic-session-size-xxxxx");
             engine
-                .put(&tenant, key.as_bytes(), value.as_bytes())
+                .put(&realm, key.as_bytes(), value.as_bytes())
                 .expect("put");
         }
         // Drop engine — WAL + memtable data is persisted
@@ -90,7 +90,7 @@ fn bench_cold_to_hot_promotion(c: &mut Criterion) {
             // a mixed workload.
             let idx = (i % 500) as u32;
             let key = format!("cold:{idx:08}");
-            let result = engine.get(&tenant, key.as_bytes()).expect("get");
+            let result = engine.get(&realm, key.as_bytes()).expect("get");
             assert!(result.is_some());
             i += 1;
         });
@@ -108,7 +108,7 @@ fn bench_hot_tier_memory_footprint(c: &mut Criterion) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = StorageConfig::dev(dir.path().to_path_buf());
     let engine = Arc::new(EmbeddedStorageEngine::open(config).expect("open"));
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Pre-populate a moderate dataset
     let entry_count = 10_000usize;
@@ -117,7 +117,7 @@ fn bench_hot_tier_memory_footprint(c: &mut Criterion) {
         // ~200 bytes per value to simulate realistic session/user data
         let value = "x".repeat(200);
         engine
-            .put(&tenant, key.as_bytes(), value.as_bytes())
+            .put(&realm, key.as_bytes(), value.as_bytes())
             .expect("put");
     }
 
@@ -126,7 +126,7 @@ fn bench_hot_tier_memory_footprint(c: &mut Criterion) {
             // Read all entries to ensure hot tier population
             for i in 0..100 {
                 let key = format!("user:{i:08}");
-                let _ = engine.get(&tenant, key.as_bytes());
+                let _ = engine.get(&realm, key.as_bytes());
             }
         });
     });

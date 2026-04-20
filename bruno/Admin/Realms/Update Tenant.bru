@@ -1,17 +1,17 @@
 meta {
-  name: Update Tenant
+  name: Update Realm
   type: http
   seq: 4
 }
 
 put {
-  url: {{baseUrl}}/admin/tenants/{{tenantId}}
+  url: {{baseUrl}}/admin/realms/{{realmId}}
   body: json
   auth: bearer
 }
 
 headers {
-  X-Tenant-ID: {{tenantId}}
+  X-Realm-ID: {{realmId}}
   Content-Type: application/json
 }
 

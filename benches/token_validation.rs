@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use hearth::core::{Clock, SystemClock, TenantId};
+use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     verify_token_signature, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig,
     IdentityEngine,
@@ -19,7 +19,7 @@ use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 fn setup_tokens() -> (
     tempfile::TempDir,
     EmbeddedIdentityEngine,
-    TenantId,
+    RealmId,
     String, // access token
 ) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -32,11 +32,11 @@ fn setup_tokens() -> (
         IdentityConfig::default(),
     )
     .expect("engine creation");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let user = engine
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "bench@example.com".to_string(),
                 display_name: "Bench User".to_string(),
@@ -46,28 +46,28 @@ fn setup_tokens() -> (
 
     let session = engine
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
 
     let pair = engine
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     let access_token = pair.access_token().to_string();
 
-    (dir, engine, tenant, access_token)
+    (dir, engine, realm, access_token)
 }
 
 /// Benchmarks token validation via session lookup (internal hot path).
 fn bench_token_validation_session_lookup(c: &mut Criterion) {
-    let (_dir, engine, tenant, token) = setup_tokens();
+    let (_dir, engine, realm, token) = setup_tokens();
 
     c.bench_function("token_validation_session_lookup", |b| {
         b.iter(|| {
-            let result = engine.validate_token(&tenant, &token);
+            let result = engine.validate_token(&realm, &token);
             assert!(result.is_ok());
         });
     });
@@ -75,7 +75,7 @@ fn bench_token_validation_session_lookup(c: &mut Criterion) {
 
 /// Benchmarks token validation via full Ed25519 signature verification.
 fn bench_token_validation_signature(c: &mut Criterion) {
-    let (_dir, engine, _tenant, token) = setup_tokens();
+    let (_dir, engine, _realm, token) = setup_tokens();
     let pub_key = engine.signing_key().public_key_bytes().to_vec();
 
     c.bench_function("token_validation_ed25519_verify", |b| {
@@ -88,12 +88,12 @@ fn bench_token_validation_signature(c: &mut Criterion) {
 
 /// Benchmarks token issuance (create session + issue tokens).
 fn bench_token_issuance(c: &mut Criterion) {
-    let (_dir, engine, tenant, _token) = setup_tokens();
+    let (_dir, engine, realm, _token) = setup_tokens();
 
     // Pre-create a user (reuse across iterations)
     let user = engine
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "bench-issue@example.com".to_string(),
                 display_name: "Issue Bench".to_string(),
@@ -105,12 +105,12 @@ fn bench_token_issuance(c: &mut Criterion) {
         b.iter(|| {
             let session = engine
                 .create_session(
-                    &tenant,
+                    &realm,
                     user.id(),
                     &hearth::identity::SessionContext::default(),
                 )
                 .expect("create session");
-            let result = engine.issue_tokens(&tenant, user.id(), session.id());
+            let result = engine.issue_tokens(&realm, user.id(), session.id());
             assert!(result.is_ok());
         });
     });

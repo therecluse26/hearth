@@ -2,13 +2,13 @@
 //!
 //! This module owns the "session cookie" scheme used by `/ui/*`:
 //!
-//! * **Format:** the cookie value is `<session_id>.<tenant_id>.<mac>`.
-//!   The MAC is HMAC-SHA256 over `session_id|tenant_id` with a 32-byte
+//! * **Format:** the cookie value is `<session_id>.<realm_id>.<mac>`.
+//!   The MAC is HMAC-SHA256 over `session_id|realm_id` with a 32-byte
 //!   random key generated at startup.
-//! * **Why:** Hearth's identity engine is tenant-scoped — every call
-//!   needs both a `SessionId` and a `TenantId`. Binding them in the
+//! * **Why:** Hearth's identity engine is realm-scoped — every call
+//!   needs both a `SessionId` and a `RealmId`. Binding them in the
 //!   cookie keeps the UI stateless (no per-session server lookup to
-//!   resolve the tenant) while making tampering trivially detectable.
+//!   resolve the realm) while making tampering trivially detectable.
 //! * **CSRF:** the second cookie (`hearth_ui_csrf`) is a 32-byte random
 //!   value. The page reads it via JS and echoes it on every mutation
 //!   (form field `_csrf` or `X-CSRF-Token` HTMX header). The extractor
@@ -42,22 +42,22 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use crate::core::{SessionId, TenantId, UserId};
+use crate::core::{RealmId, SessionId, UserId};
 use crate::identity::{IdentityEngine, Session};
 
 use super::handlers_common::ForbiddenTemplate;
 use super::templates::render_status;
 use super::WebState;
 
-/// Name of the server-only cookie carrying the session+tenant binding.
+/// Name of the server-only cookie carrying the session+realm binding.
 pub const SESSION_COOKIE: &str = "hearth_ui_session";
 /// Name of the page-readable cookie carrying the CSRF token.
 pub const CSRF_COOKIE: &str = "hearth_ui_csrf";
 /// Name of the short-lived cookie carrying the pending MFA challenge state.
 ///
 /// Issued after successful password verification when MFA is enabled.
-/// The value is `{user_id}.{tenant_id}.{expires_unix_secs}.{return_to_b64}.{mac}`
-/// where MAC = HMAC-SHA256(secret, `user_id|tenant_id|expires|return_to_b64`).
+/// The value is `{user_id}.{realm_id}.{expires_unix_secs}.{return_to_b64}.{mac}`
+/// where MAC = HMAC-SHA256(secret, `user_id|realm_id|expires|return_to_b64`).
 /// TTL: 5 minutes.
 pub const MFA_PENDING_COOKIE: &str = "hearth_ui_mfa_pending";
 
@@ -108,8 +108,8 @@ impl std::fmt::Debug for CookieSecret {
 pub struct MfaPending {
     /// User who passed the password check.
     pub user_id: UserId,
-    /// Tenant the user belongs to.
-    pub tenant_id: TenantId,
+    /// Realm the user belongs to.
+    pub realm_id: RealmId,
     /// Optional `return_to` path to redirect after MFA completes.
     pub return_to: Option<String>,
 }
@@ -122,7 +122,7 @@ pub struct MfaPending {
 #[must_use]
 pub fn issue_mfa_pending_cookie(
     secret: &CookieSecret,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     user_id: &UserId,
     return_to: Option<&str>,
 ) -> String {
@@ -137,11 +137,11 @@ pub fn issue_mfa_pending_cookie(
         _ => String::new(),
     };
 
-    let mac = compute_mfa_pending_mac(secret, user_id, tenant_id, expires, &return_to_b64);
+    let mac = compute_mfa_pending_mac(secret, user_id, realm_id, expires, &return_to_b64);
     let value = format!(
         "{}.{}.{expires}.{return_to_b64}.{mac}",
         user_id.as_uuid(),
-        tenant_id.as_uuid(),
+        realm_id.as_uuid(),
     );
 
     format!(
@@ -170,10 +170,10 @@ pub fn parse_mfa_pending_cookie(secret: &CookieSecret, value: &str) -> Option<Mf
     let expires: u64 = expires_str.parse().ok()?;
 
     let user_id = UserId::new(uid);
-    let tenant_id = TenantId::new(tid);
+    let realm_id = RealmId::new(tid);
 
     // Verify MAC first (constant-time).
-    let expected = compute_mfa_pending_mac(secret, &user_id, &tenant_id, expires, return_to_b64);
+    let expected = compute_mfa_pending_mac(secret, &user_id, &realm_id, expires, return_to_b64);
     let mac_match: bool = expected.as_bytes().ct_eq(mac_str.as_bytes()).into();
     if !mac_match {
         return None;
@@ -197,7 +197,7 @@ pub fn parse_mfa_pending_cookie(secret: &CookieSecret, value: &str) -> Option<Mf
 
     Some(MfaPending {
         user_id,
-        tenant_id,
+        realm_id,
         return_to,
     })
 }
@@ -212,7 +212,7 @@ pub fn clear_mfa_pending_cookie() -> String {
 fn compute_mfa_pending_mac(
     secret: &CookieSecret,
     user_id: &UserId,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     expires: u64,
     return_to_b64: &str,
 ) -> String {
@@ -220,7 +220,7 @@ fn compute_mfa_pending_mac(
         .expect("HMAC-SHA256 accepts any 32-byte key");
     mac.update(user_id.as_uuid().as_bytes());
     mac.update(b"|");
-    mac.update(tenant_id.as_uuid().as_bytes());
+    mac.update(realm_id.as_uuid().as_bytes());
     mac.update(b"|");
     mac.update(expires.to_string().as_bytes());
     mac.update(b"|");
@@ -266,13 +266,13 @@ pub struct IssuedCookies {
     pub csrf_cookie: String,
 }
 
-/// Computes the HMAC tag for a `session_id|tenant_id` pair.
-fn compute_mac(secret: &CookieSecret, session_id: &SessionId, tenant_id: &TenantId) -> String {
+/// Computes the HMAC tag for a `session_id|realm_id` pair.
+fn compute_mac(secret: &CookieSecret, session_id: &SessionId, realm_id: &RealmId) -> String {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
         .expect("HMAC-SHA256 accepts any 32-byte key");
     mac.update(session_id.as_uuid().as_bytes());
     mac.update(b"|");
-    mac.update(tenant_id.as_uuid().as_bytes());
+    mac.update(realm_id.as_uuid().as_bytes());
     let tag = mac.finalize().into_bytes();
     BASE64URL_NOPAD.encode(&tag)
 }
@@ -281,11 +281,11 @@ fn compute_mac(secret: &CookieSecret, session_id: &SessionId, tenant_id: &Tenant
 #[must_use]
 pub fn issue_auth_cookies(
     secret: &CookieSecret,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     session_id: &SessionId,
 ) -> IssuedCookies {
-    let mac = compute_mac(secret, session_id, tenant_id);
-    let session_value = format!("{}.{}.{mac}", session_id.as_uuid(), tenant_id.as_uuid());
+    let mac = compute_mac(secret, session_id, realm_id);
+    let session_value = format!("{}.{}.{mac}", session_id.as_uuid(), realm_id.as_uuid());
 
     let mut csrf_bytes = [0u8; 32];
     // INVARIANT: see CookieSecret::random().
@@ -343,8 +343,8 @@ fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
 /// Parsed session cookie, validated and ready to use.
 #[derive(Debug, Clone)]
 pub struct UiSession {
-    /// Tenant the session belongs to (extracted from the cookie, MAC-checked).
-    pub tenant_id: TenantId,
+    /// Realm the session belongs to (extracted from the cookie, MAC-checked).
+    pub realm_id: RealmId,
     /// Session id — can be looked up via `IdentityEngine::get_session`.
     pub session_id: SessionId,
     /// Owning user (resolved server-side from the session record).
@@ -362,10 +362,10 @@ pub struct UiSession {
 }
 
 /// Parses and verifies the session cookie. Returns the underlying
-/// `(session_id, tenant_id)` pair on success, or `None` on any
+/// `(session_id, realm_id)` pair on success, or `None` on any
 /// parse / MAC / format failure.
 #[must_use]
-pub fn parse_session_cookie(secret: &CookieSecret, value: &str) -> Option<(SessionId, TenantId)> {
+pub fn parse_session_cookie(secret: &CookieSecret, value: &str) -> Option<(SessionId, RealmId)> {
     let mut parts = value.splitn(3, '.');
     let sid_str = parts.next()?;
     let tid_str = parts.next()?;
@@ -377,12 +377,12 @@ pub fn parse_session_cookie(secret: &CookieSecret, value: &str) -> Option<(Sessi
     let sid_uuid: Uuid = sid_str.parse().ok()?;
     let tid_uuid: Uuid = tid_str.parse().ok()?;
     let session_id = SessionId::new(sid_uuid);
-    let tenant_id = TenantId::new(tid_uuid);
+    let realm_id = RealmId::new(tid_uuid);
 
-    let expected = compute_mac(secret, &session_id, &tenant_id);
+    let expected = compute_mac(secret, &session_id, &realm_id);
     // Constant-time compare.
     if expected.as_bytes().ct_eq(mac_str.as_bytes()).into() {
-        Some((session_id, tenant_id))
+        Some((session_id, realm_id))
     } else {
         None
     }
@@ -402,12 +402,12 @@ where
             return Err(redirect_to_login(parts));
         };
 
-        let Some((session_id, tenant_id)) = parse_session_cookie(&web_state.cookie_secret, raw)
+        let Some((session_id, realm_id)) = parse_session_cookie(&web_state.cookie_secret, raw)
         else {
             return Err(redirect_to_login(parts));
         };
 
-        let session = match web_state.identity.get_session(&tenant_id, &session_id) {
+        let session = match web_state.identity.get_session(&realm_id, &session_id) {
             Ok(Some(s)) => s,
             Ok(None) => return Err(redirect_to_login(parts)),
             Err(e) => {
@@ -416,12 +416,12 @@ where
             }
         };
 
-        let Ok(Some(user)) = web_state.identity.get_user(&tenant_id, session.user_id()) else {
+        let Ok(Some(user)) = web_state.identity.get_user(&realm_id, session.user_id()) else {
             return Err(redirect_to_login(parts));
         };
 
         Ok(UiSession {
-            tenant_id,
+            realm_id,
             session_id: session.id().clone(),
             user_id: session.user_id().clone(),
             user_email: user.email().to_string(),
@@ -437,10 +437,10 @@ where
 #[must_use]
 pub fn resolve_session(
     identity: &dyn IdentityEngine,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     session_id: &SessionId,
 ) -> Option<Session> {
-    identity.get_session(tenant_id, session_id).ok().flatten()
+    identity.get_session(realm_id, session_id).ok().flatten()
 }
 
 /// Like [`UiSession`] but additionally requires the caller has the
@@ -470,7 +470,7 @@ where
 
         let is_admin = web_state
             .authz
-            .check(&session.tenant_id, &object, "admin", &subject, None)
+            .check(&session.realm_id, &object, "admin", &subject, None)
             .unwrap_or(false);
 
         if is_admin {
@@ -642,7 +642,7 @@ mod tests {
     fn mac_tag_matches_round_trip() {
         let secret = CookieSecret::from_bytes([7u8; 32]);
         let sid = SessionId::new(Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888));
-        let tid = TenantId::new(Uuid::from_u128(0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFF_1234_5678));
+        let tid = RealmId::new(Uuid::from_u128(0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFF_1234_5678));
         let mac = compute_mac(&secret, &sid, &tid);
         let value = format!("{}.{}.{mac}", sid.as_uuid(), tid.as_uuid());
         let parsed = parse_session_cookie(&secret, &value).expect("valid cookie");
@@ -651,11 +651,11 @@ mod tests {
     }
 
     #[test]
-    fn mac_tag_detects_tenant_substitution() {
+    fn mac_tag_detects_realm_substitution() {
         let secret = CookieSecret::from_bytes([9u8; 32]);
         let sid = SessionId::generate();
-        let tid = TenantId::generate();
-        let other = TenantId::generate();
+        let tid = RealmId::generate();
+        let other = RealmId::generate();
         let mac = compute_mac(&secret, &sid, &tid);
         let tampered = format!("{}.{}.{mac}", sid.as_uuid(), other.as_uuid());
         assert!(parse_session_cookie(&secret, &tampered).is_none());
@@ -666,7 +666,7 @@ mod tests {
         let secret = CookieSecret::from_bytes([3u8; 32]);
         let sid = SessionId::generate();
         let other = SessionId::generate();
-        let tid = TenantId::generate();
+        let tid = RealmId::generate();
         let mac = compute_mac(&secret, &sid, &tid);
         let tampered = format!("{}.{}.{mac}", other.as_uuid(), tid.as_uuid());
         assert!(parse_session_cookie(&secret, &tampered).is_none());
@@ -677,7 +677,7 @@ mod tests {
         let secret_a = CookieSecret::from_bytes([1u8; 32]);
         let secret_b = CookieSecret::from_bytes([2u8; 32]);
         let sid = SessionId::generate();
-        let tid = TenantId::generate();
+        let tid = RealmId::generate();
         let mac_a = compute_mac(&secret_a, &sid, &tid);
         let value = format!("{}.{}.{mac_a}", sid.as_uuid(), tid.as_uuid());
         assert!(parse_session_cookie(&secret_b, &value).is_none());
@@ -725,7 +725,7 @@ mod tests {
     fn mfa_pending_cookie_round_trip() {
         let secret = CookieSecret::from_bytes([5u8; 32]);
         let uid = UserId::generate();
-        let tid = TenantId::generate();
+        let tid = RealmId::generate();
 
         let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
         // Extract value from `Set-Cookie` header.
@@ -738,7 +738,7 @@ mod tests {
 
         let parsed = parse_mfa_pending_cookie(&secret, value).expect("valid");
         assert_eq!(parsed.user_id, uid);
-        assert_eq!(parsed.tenant_id, tid);
+        assert_eq!(parsed.realm_id, tid);
         assert!(parsed.return_to.is_none());
     }
 
@@ -747,7 +747,7 @@ mod tests {
         let secret = CookieSecret::from_bytes([6u8; 32]);
         let uid = UserId::generate();
         let other = UserId::generate();
-        let tid = TenantId::generate();
+        let tid = RealmId::generate();
 
         let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
         let value = full
@@ -766,11 +766,11 @@ mod tests {
     }
 
     #[test]
-    fn mfa_pending_cookie_detects_tenant_id_tampering() {
+    fn mfa_pending_cookie_detects_realm_id_tampering() {
         let secret = CookieSecret::from_bytes([7u8; 32]);
         let uid = UserId::generate();
-        let tid = TenantId::generate();
-        let other_tid = TenantId::generate();
+        let tid = RealmId::generate();
+        let other_tid = RealmId::generate();
 
         let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
         let value = full
@@ -780,7 +780,7 @@ mod tests {
             .next()
             .expect("value");
 
-        // Replace the tenant_id segment with a different UUID.
+        // Replace the realm_id segment with a different UUID.
         let tampered = value.replacen(
             &tid.as_uuid().to_string(),
             &other_tid.as_uuid().to_string(),
@@ -788,7 +788,7 @@ mod tests {
         );
         assert!(
             parse_mfa_pending_cookie(&secret, &tampered).is_none(),
-            "tampered tenant_id should be rejected"
+            "tampered realm_id should be rejected"
         );
     }
 
@@ -796,7 +796,7 @@ mod tests {
     fn mfa_pending_cookie_rejects_expired() {
         let secret = CookieSecret::from_bytes([8u8; 32]);
         let uid = UserId::generate();
-        let tid = TenantId::generate();
+        let tid = RealmId::generate();
 
         // Manually craft a cookie that expired 10 seconds ago.
         let now = std::time::SystemTime::now()
@@ -822,7 +822,7 @@ mod tests {
     fn mfa_pending_cookie_preserves_return_to() {
         let secret = CookieSecret::from_bytes([9u8; 32]);
         let uid = UserId::generate();
-        let tid = TenantId::generate();
+        let tid = RealmId::generate();
 
         let full = issue_mfa_pending_cookie(&secret, &tid, &uid, Some("/ui/admin/users"));
         let value = full
@@ -834,7 +834,7 @@ mod tests {
 
         let parsed = parse_mfa_pending_cookie(&secret, value).expect("valid");
         assert_eq!(parsed.user_id, uid);
-        assert_eq!(parsed.tenant_id, tid);
+        assert_eq!(parsed.realm_id, tid);
         assert_eq!(parsed.return_to.as_deref(), Some("/ui/admin/users"));
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, SubjectRef};
-use hearth::core::{Clock, SystemClock, TenantId};
+use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::migration::{ImportOptions, KeycloakImporter};
 use hearth::identity::{
     CleartextPassword, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
@@ -69,10 +69,10 @@ async fn imports_minimal_realm_and_reports_correct_counts() {
         .import_realm(&export, None, &ImportOptions::default())
         .expect("import_realm");
 
-    // Tenant id is the Keycloak realm uuid (preserved verbatim).
-    let tenant_id = report.tenant_id.clone().expect("tenant_id in report");
+    // Realm id is the Keycloak realm uuid (preserved verbatim).
+    let realm_id = report.realm_id.clone().expect("realm_id in report");
     assert_eq!(
-        tenant_id.as_uuid().to_string(),
+        realm_id.as_uuid().to_string(),
         "550e8400-e29b-41d4-a716-446655440000"
     );
 
@@ -109,16 +109,16 @@ async fn migrated_pbkdf2_password_verifies_natively() {
     let report = importer
         .import_realm(&export, None, &ImportOptions::default())
         .expect("import_realm");
-    let tenant_id = report.tenant_id.expect("tenant_id");
+    let realm_id = report.realm_id.expect("realm_id");
 
     let alice = identity
-        .get_user_by_email(&tenant_id, "alice@acme.test")
+        .get_user_by_email(&realm_id, "alice@acme.test")
         .expect("lookup alice")
         .expect("alice exists");
 
     let ok = identity
         .verify_password(
-            &tenant_id,
+            &realm_id,
             alice.id(),
             &CleartextPassword::from_string("hunter2".to_string()),
         )
@@ -127,7 +127,7 @@ async fn migrated_pbkdf2_password_verifies_natively() {
 
     let wrong = identity
         .verify_password(
-            &tenant_id,
+            &realm_id,
             alice.id(),
             &CleartextPassword::from_string("not-hunter2".to_string()),
         )
@@ -137,7 +137,7 @@ async fn migrated_pbkdf2_password_verifies_natively() {
 
 // ===== Scenario 3: Role → Zanzibar tuple mapping =====
 //
-// Keycloak realm roles become relations on `realm:<tenant_id>`. A
+// Keycloak realm roles become relations on `realm:<realm_id>`. A
 // `check()` for a user→role assignment must return true; an unassigned
 // user→role must return false.
 
@@ -149,39 +149,39 @@ async fn realm_roles_become_zanzibar_tuples() {
     let report = importer
         .import_realm(&export, None, &ImportOptions::default())
         .expect("import_realm");
-    let tenant_id = report.tenant_id.expect("tenant_id");
+    let realm_id = report.realm_id.expect("realm_id");
 
     let alice = identity
-        .get_user_by_email(&tenant_id, "alice@acme.test")
+        .get_user_by_email(&realm_id, "alice@acme.test")
         .expect("lookup alice")
         .expect("alice exists");
     let bob = identity
-        .get_user_by_email(&tenant_id, "bob@acme.test")
+        .get_user_by_email(&realm_id, "bob@acme.test")
         .expect("lookup bob")
         .expect("bob exists");
 
-    let realm_obj = ObjectRef::new("realm", &tenant_id.as_uuid().to_string()).expect("object");
+    let realm_obj = ObjectRef::new("realm", &realm_id.as_uuid().to_string()).expect("object");
     let alice_subj = SubjectRef::direct("user", &alice.id().as_uuid().to_string()).expect("subj");
     let bob_subj = SubjectRef::direct("user", &bob.id().as_uuid().to_string()).expect("subj");
 
     // alice is admin
     let alice_admin = authz
-        .check(&tenant_id, &realm_obj, "admin", &alice_subj, None)
+        .check(&realm_id, &realm_obj, "admin", &alice_subj, None)
         .expect("check");
     assert!(alice_admin, "alice should have admin role");
 
     // bob is not admin
     let bob_admin = authz
-        .check(&tenant_id, &realm_obj, "admin", &bob_subj, None)
+        .check(&realm_id, &realm_obj, "admin", &bob_subj, None)
         .expect("check");
     assert!(!bob_admin, "bob should NOT have admin role");
 
     // both are members
     let alice_member = authz
-        .check(&tenant_id, &realm_obj, "member", &alice_subj, None)
+        .check(&realm_id, &realm_obj, "member", &alice_subj, None)
         .expect("check");
     let bob_member = authz
-        .check(&tenant_id, &realm_obj, "member", &bob_subj, None)
+        .check(&realm_id, &realm_obj, "member", &bob_subj, None)
         .expect("check");
     assert!(alice_member && bob_member, "both users should be members");
 }
@@ -200,17 +200,17 @@ async fn skipped_credential_user_is_still_imported_without_credential() {
     let report = importer
         .import_realm(&export, None, &ImportOptions::default())
         .expect("import_realm");
-    let tenant_id = report.tenant_id.expect("tenant_id");
+    let realm_id = report.realm_id.expect("realm_id");
 
     let bob = identity
-        .get_user_by_email(&tenant_id, "bob@acme.test")
+        .get_user_by_email(&realm_id, "bob@acme.test")
         .expect("lookup bob")
         .expect("bob exists despite unsupported credential");
 
     // verify_password should return IdentityError::CredentialNotFound
     // (no credential stored) — Result::Err, not Ok(false).
     let result = identity.verify_password(
-        &tenant_id,
+        &realm_id,
         bob.id(),
         &CleartextPassword::from_string("correcthorse".to_string()),
     );
@@ -223,7 +223,7 @@ async fn skipped_credential_user_is_still_imported_without_credential() {
 // ===== Scenario 5: Idempotency =====
 //
 // Running the same import twice against the same engines must not
-// crash; the second run reports per-item warnings (duplicate tenant /
+// crash; the second run reports per-item warnings (duplicate realm /
 // duplicate emails / duplicate client IDs) but does not corrupt state.
 
 #[tokio::test]
@@ -237,26 +237,26 @@ async fn re_running_import_is_safe_and_reports_duplicates() {
         .import_realm(&export, None, &ImportOptions::default())
         .expect("first import");
     assert_eq!(first.users_imported, 2);
-    let tenant_id = first.tenant_id.clone().expect("tenant_id");
+    let realm_id = first.realm_id.clone().expect("realm_id");
 
-    // Second run: `import_tenant` rejects the duplicate. We explicitly
-    // pass the same tenant id so the error surfaces at the tenant stage
+    // Second run: `import_realm` rejects the duplicate. We explicitly
+    // pass the same realm id so the error surfaces at the realm stage
     // (matches the real-world re-run case).
-    let second = importer.import_realm(&export, Some(tenant_id.clone()), &ImportOptions::default());
+    let second = importer.import_realm(&export, Some(realm_id.clone()), &ImportOptions::default());
 
-    // Either: the tenant-level call errors out (expected), or the
+    // Either: the realm-level call errors out (expected), or the
     // importer surfaces per-item warnings for every duplicate user.
     // Both are acceptable; what matters is that the engines remain
     // consistent and alice's password still verifies.
     let _ = second;
 
     let alice = identity
-        .get_user_by_email(&tenant_id, "alice@acme.test")
+        .get_user_by_email(&realm_id, "alice@acme.test")
         .expect("lookup alice")
         .expect("alice still exists after duplicate import");
     let ok = identity
         .verify_password(
-            &tenant_id,
+            &realm_id,
             alice.id(),
             &CleartextPassword::from_string("hunter2".to_string()),
         )
@@ -276,16 +276,16 @@ async fn dry_run_makes_no_changes_to_storage() {
         .import_realm(&export, None, &ImportOptions { dry_run: true })
         .expect("dry-run import");
 
-    let tenant_id = report
-        .tenant_id
+    let realm_id = report
+        .realm_id
         .clone()
-        .expect("dry-run still reports a hinted tenant id");
+        .expect("dry-run still reports a hinted realm id");
 
-    // No tenant was actually created — a get_user_by_email for the
-    // (non-existent) tenant returns a TenantNotFound-style error or
+    // No realm was actually created — a get_user_by_email for the
+    // (non-existent) realm returns a RealmNotFound-style error or
     // None; either way, Alice must not be findable.
     let alice = identity
-        .get_user_by_email(&tenant_id, "alice@acme.test")
+        .get_user_by_email(&realm_id, "alice@acme.test")
         .ok()
         .flatten();
     assert!(alice.is_none(), "dry-run must not create users");
@@ -295,31 +295,31 @@ async fn dry_run_makes_no_changes_to_storage() {
     assert!(report.warnings.iter().any(|w| w.contains("dry-run")));
 }
 
-// ===== Scenario 7: Custom tenant id override =====
+// ===== Scenario 7: Custom realm id override =====
 //
-// Callers can supply their own `TenantId` (e.g. to match an existing
-// pre-provisioned tenant shell) — the importer must honour it.
+// Callers can supply their own `RealmId` (e.g. to match an existing
+// pre-provisioned realm shell) — the importer must honour it.
 
 #[tokio::test]
-async fn custom_tenant_id_is_honoured() {
+async fn custom_realm_id_is_honoured() {
     let (identity, authz, _temp) = build_engines();
     let importer = KeycloakImporter::new(Arc::clone(&identity), Arc::clone(&authz));
     let export = KeycloakImporter::parse(REALM_FIXTURE.as_bytes()).expect("parse fixture");
 
-    let custom = TenantId::new(
+    let custom = RealmId::new(
         "deadbeef-dead-beef-dead-beefdeadbeef"
             .parse()
             .expect("uuid"),
     );
     let report = importer
         .import_realm(&export, Some(custom.clone()), &ImportOptions::default())
-        .expect("import with custom tenant id");
-    assert_eq!(report.tenant_id.as_ref(), Some(&custom));
+        .expect("import with custom realm id");
+    assert_eq!(report.realm_id.as_ref(), Some(&custom));
 
     let alice = identity
         .get_user_by_email(&custom, "alice@acme.test")
         .expect("lookup")
-        .expect("alice found under custom tenant");
+        .expect("alice found under custom realm");
     let ok = identity
         .verify_password(
             &custom,

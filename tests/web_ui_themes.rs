@@ -1,5 +1,5 @@
 //! Integration tests for `/ui/static/theme.css` and
-//! `/ui/static/tenant-theme/{id}` — the dynamic CSS serving routes.
+//! `/ui/static/realm-theme/{id}` — the dynamic CSS serving routes.
 //!
 //! Drives the axum router via `tower::ServiceExt::oneshot`. Covers:
 //!
@@ -8,8 +8,8 @@
 //! * Two requests with the same state return the same `ETag`.
 //! * A request carrying `If-None-Match: <etag>` receives `304 Not Modified`.
 //! * Different CSS produces a different `ETag`.
-//! * Unknown tenant-theme id returns 404.
-//! * Known tenant-theme id returns 200 with the correct CSS.
+//! * Unknown realm-theme id returns 404.
+//! * Known realm-theme id returns 200 with the correct CSS.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,8 +18,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
+use hearth::core::RealmId;
 use hearth::core::SystemClock;
-use hearth::core::TenantId;
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
@@ -47,7 +47,7 @@ fn null_email_service() -> Arc<EmailService> {
 }
 
 /// Builds a minimal `WebState` suitable for static-asset route tests.
-/// No users, tenants, or sessions are created — only the engines are wired.
+/// No users, realms, or sessions are created — only the engines are wired.
 fn minimal_web_state() -> WebState {
     let temp = tempfile::tempdir().expect("tempdir");
     let data_dir = temp.path().to_path_buf();
@@ -260,12 +260,12 @@ async fn theme_css_etag_changes_when_content_changes() {
     assert_ne!(etag_a, etag_b, "ETags should differ for different CSS");
 }
 
-/// Unknown tenant id at `/ui/static/tenant-theme/{id}` returns 404.
+/// Unknown realm id at `/ui/static/realm-theme/{id}` returns 404.
 #[tokio::test]
-async fn tenant_theme_not_found_returns_404() {
+async fn realm_theme_not_found_returns_404() {
     let app = web::router(minimal_web_state());
     let req = Request::builder()
-        .uri("/ui/static/tenant-theme/00000000-0000-0000-0000-000000000000")
+        .uri("/ui/static/realm-theme/00000000-0000-0000-0000-000000000000")
         .body(Body::empty())
         .expect("build request");
     let resp = app.oneshot(req).await.expect("oneshot");
@@ -304,21 +304,21 @@ async fn theme_css_inlined_in_html_page() {
     );
 }
 
-/// Known tenant id returns 200 with the correct CSS content.
+/// Known realm id returns 200 with the correct CSS content.
 #[tokio::test]
-async fn tenant_theme_found_returns_css() {
-    let tenant_id = TenantId::new(Uuid::new_v4());
-    let id_str = tenant_id.as_uuid().to_string();
+async fn realm_theme_found_returns_css() {
+    let realm_id = RealmId::new(Uuid::new_v4());
+    let id_str = realm_id.as_uuid().to_string();
     let css = ":root { --ht-content-brand: 0 200 100; }".to_string();
 
     let mut map = HashMap::new();
     map.insert(id_str.clone(), css.clone());
 
-    let state = minimal_web_state().with_tenant_themes(map);
+    let state = minimal_web_state().with_realm_themes(map);
     let app = web::router(state);
 
     let req = Request::builder()
-        .uri(format!("/ui/static/tenant-theme/{id_str}"))
+        .uri(format!("/ui/static/realm-theme/{id_str}"))
         .body(Body::empty())
         .expect("build request");
     let resp = app.oneshot(req).await.expect("oneshot");
@@ -328,6 +328,6 @@ async fn tenant_theme_found_returns_css() {
     let body_str = std::str::from_utf8(&body).expect("UTF-8");
     assert!(
         body_str.contains("--ht-content-brand: 0 200 100"),
-        "tenant CSS not found in response: {body_str}"
+        "realm CSS not found in response: {body_str}"
     );
 }

@@ -9,7 +9,7 @@
 mod common;
 
 use common::{HarnessMode, TestHarness, TestHarnessError};
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 
 /// Scenario 1: Embedded mode starts with isolated temp dir and stops cleanly.
 #[tokio::test]
@@ -25,14 +25,14 @@ async fn embedded_mode_starts_and_stops_cleanly() {
     );
 
     // Verify storage is functional with a basic round-trip
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
     harness
         .storage()
-        .put(&tenant, b"harness-key", b"harness-value")
+        .put(&realm, b"harness-key", b"harness-value")
         .expect("put should succeed");
     let val = harness
         .storage()
-        .get(&tenant, b"harness-key")
+        .get(&realm, b"harness-key")
         .expect("get should succeed");
     assert_eq!(val, Some(b"harness-value".to_vec()));
 
@@ -57,14 +57,14 @@ async fn server_mode_starts_and_stops_cleanly() {
     );
 
     // Verify storage accessible through server
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
     harness
         .storage()
-        .put(&tenant, b"server-key", b"server-value")
+        .put(&realm, b"server-key", b"server-value")
         .expect("put should succeed");
     let val = harness
         .storage()
-        .get(&tenant, b"server-key")
+        .get(&realm, b"server-key")
         .expect("get should succeed");
     assert_eq!(val, Some(b"server-value".to_vec()));
 
@@ -105,31 +105,31 @@ async fn dual_mode_server() {
 /// the harness is running in embedded or server mode.
 #[allow(clippy::unused_async)]
 async fn run_dual_mode_assertions(harness: TestHarness) {
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Write
     harness
         .storage()
-        .put(&tenant, b"dual-key", b"dual-value")
+        .put(&realm, b"dual-key", b"dual-value")
         .expect("put should succeed in any mode");
 
     // Read back
     let val = harness
         .storage()
-        .get(&tenant, b"dual-key")
+        .get(&realm, b"dual-key")
         .expect("get should succeed in any mode");
     assert_eq!(val, Some(b"dual-value".to_vec()));
 
     // Delete
     harness
         .storage()
-        .delete(&tenant, b"dual-key")
+        .delete(&realm, b"dual-key")
         .expect("delete should succeed in any mode");
 
     // Confirm deleted
     let val = harness
         .storage()
-        .get(&tenant, b"dual-key")
+        .get(&realm, b"dual-key")
         .expect("get after delete should succeed");
     assert_eq!(val, None, "deleted key should return None");
 }

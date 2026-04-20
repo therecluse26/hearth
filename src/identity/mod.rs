@@ -1,4 +1,4 @@
-//! Identity engine: users, credentials, sessions, tenants, and tokens.
+//! Identity engine: users, credentials, sessions, realms, and tokens.
 //!
 //! Domain logic layer that orchestrates authentication flows.
 //! Depends on `storage` (for persistence) and `core` (for shared types).
@@ -42,92 +42,89 @@ pub use tokens::{
 };
 pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
-    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
+    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest,
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
     Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
-    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Session,
-    SessionContext, Tenant, TenantConfig, TenantStatus, UpdateOrganizationRequest,
-    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
+    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Realm, RealmConfig,
+    RealmStatus, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
+    UpdateUserRequest, User, UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
     WebAuthnAuthResult, WebAuthnCredentialInfo,
 };
 
-use crate::core::{InvitationId, OrganizationId, SessionId, TenantId, UserId};
+use crate::core::{InvitationId, OrganizationId, RealmId, SessionId, UserId};
 
 /// Trait defining the identity engine interface.
 ///
 /// Synchronous for Phase 0 — callers should use `spawn_blocking` for async
-/// contexts. All operations require a `TenantId` for multi-tenant isolation.
+/// contexts. All operations require a `RealmId` for multi-realm isolation.
 ///
-/// # Tenant lifecycle
+/// # Realm lifecycle
 ///
-/// Phase 1 adds first-class tenant management. Tenants are stored in a
-/// system namespace and each tenant gets an independent Ed25519 signing
+/// Phase 1 adds first-class realm management. Realms are stored in a
+/// system namespace and each realm gets an independent Ed25519 signing
 /// key for token issuance.
 pub trait IdentityEngine: Send + Sync {
-    // ===== Tenant lifecycle =====
+    // ===== Realm lifecycle =====
 
-    /// Creates a new tenant with the given configuration.
+    /// Creates a new realm with the given configuration.
     ///
-    /// Generates a `TenantId`, creates a per-tenant Ed25519 signing key,
-    /// and persists both the tenant record and key material.
-    fn create_tenant(&self, request: &CreateTenantRequest) -> Result<Tenant, IdentityError>;
+    /// Generates a `RealmId`, creates a per-realm Ed25519 signing key,
+    /// and persists both the realm record and key material.
+    fn create_realm(&self, request: &CreateRealmRequest) -> Result<Realm, IdentityError>;
 
-    /// Retrieves a tenant by ID. Returns `None` if not found.
-    fn get_tenant(&self, tenant_id: &TenantId) -> Result<Option<Tenant>, IdentityError>;
+    /// Retrieves a realm by ID. Returns `None` if not found.
+    fn get_realm(&self, realm_id: &RealmId) -> Result<Option<Realm>, IdentityError>;
 
-    /// Retrieves a tenant by name. Returns `None` if not found.
+    /// Retrieves a realm by name. Returns `None` if not found.
     ///
-    /// Uses the `tenant:name:{name}` index for O(1) lookup.
-    fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>, IdentityError>;
+    /// Uses the `realm:name:{name}` index for O(1) lookup.
+    fn get_realm_by_name(&self, name: &str) -> Result<Option<Realm>, IdentityError>;
 
-    /// Updates an existing tenant's fields.
+    /// Updates an existing realm's fields.
     ///
     /// Only non-`None` fields in the request are applied.
-    fn update_tenant(
+    fn update_realm(
         &self,
-        tenant_id: &TenantId,
-        request: &UpdateTenantRequest,
-    ) -> Result<Tenant, IdentityError>;
+        realm_id: &RealmId,
+        request: &UpdateRealmRequest,
+    ) -> Result<Realm, IdentityError>;
 
-    /// Deletes a tenant and all associated data.
+    /// Deletes a realm and all associated data.
     ///
     /// Cascading deletion removes all users, sessions, credentials,
-    /// authorization tuples, OAuth clients, and the tenant's signing key.
-    fn delete_tenant(&self, tenant_id: &TenantId) -> Result<(), IdentityError>;
+    /// authorization tuples, OAuth clients, and the realm's signing key.
+    fn delete_realm(&self, realm_id: &RealmId) -> Result<(), IdentityError>;
 
-    /// Returns the JWKS document for a specific tenant.
+    /// Returns the JWKS document for a specific realm.
     ///
-    /// Each tenant has its own signing key, so its JWKS document contains
-    /// only that tenant's public key.
-    fn tenant_jwks(&self, tenant_id: &TenantId) -> Result<JwksDocument, IdentityError>;
+    /// Each realm has its own signing key, so its JWKS document contains
+    /// only that realm's public key.
+    fn realm_jwks(&self, realm_id: &RealmId) -> Result<JwksDocument, IdentityError>;
 
-    /// Creates a new user in the given tenant.
+    /// Creates a new user in the given realm.
     ///
     /// Validates input, normalizes the email, checks uniqueness, generates
     /// a `UserId`, and persists the user record with both primary and email
     /// index entries.
     fn create_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &CreateUserRequest,
     ) -> Result<User, IdentityError>;
 
     /// Retrieves a user by ID. Returns `None` if not found.
-    fn get_user(
-        &self,
-        tenant_id: &TenantId,
-        user_id: &UserId,
-    ) -> Result<Option<User>, IdentityError>;
+    fn get_user(&self, realm_id: &RealmId, user_id: &UserId)
+        -> Result<Option<User>, IdentityError>;
 
     /// Retrieves a user by email address. Returns `None` if not found.
     ///
     /// The email is normalized (lowercase, trimmed, NFC) before lookup.
     fn get_user_by_email(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<Option<User>, IdentityError>;
 
@@ -137,7 +134,7 @@ pub trait IdentityEngine: Send + Sync {
     /// the old email index is removed and a new one is created (with uniqueness check).
     fn update_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         request: &UpdateUserRequest,
     ) -> Result<User, IdentityError>;
@@ -145,7 +142,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Deletes a user by ID, removing both primary and email index entries.
     ///
     /// Returns `IdentityError::UserNotFound` if the user does not exist.
-    fn delete_user(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError>;
+    fn delete_user(&self, realm_id: &RealmId, user_id: &UserId) -> Result<(), IdentityError>;
 
     /// Sets (or replaces) the password for a user.
     ///
@@ -153,7 +150,7 @@ pub trait IdentityEngine: Send + Sync {
     /// and stores the credential. The user must exist.
     fn set_password(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<(), IdentityError>;
@@ -168,7 +165,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Argon2id.
     fn verify_password(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<bool, IdentityError>;
@@ -179,7 +176,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns `Err(CredentialNotFound)` if no credential exists.
     fn change_password(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         old_password: &CleartextPassword,
         new_password: &CleartextPassword,
@@ -197,7 +194,7 @@ pub trait IdentityEngine: Send + Sync {
     /// for API-originated or test sessions without browser context.
     fn create_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         context: &SessionContext,
     ) -> Result<Session, IdentityError>;
@@ -209,7 +206,7 @@ pub trait IdentityEngine: Send + Sync {
     /// other cases (enumeration resistance).
     fn get_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<Option<Session>, IdentityError>;
 
@@ -219,7 +216,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns `Err(SessionNotFound)` if the session does not exist.
     fn revoke_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<(), IdentityError>;
 
@@ -229,7 +226,7 @@ pub trait IdentityEngine: Send + Sync {
     /// the session does not exist, is expired, or has been revoked.
     fn refresh_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<Session, IdentityError>;
 
@@ -239,19 +236,19 @@ pub trait IdentityEngine: Send + Sync {
     /// `ses:user:{user_uuid}:{session_uuid}` index.
     fn list_sessions_by_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Session>, IdentityError>;
 
-    /// Lists all sessions in a tenant, with cursor-based pagination.
+    /// Lists all sessions in a realm, with cursor-based pagination.
     ///
     /// Sessions are returned by their UUID ordering in the
     /// `ses:id:{session_uuid}` primary key space.
-    fn list_sessions_by_tenant(
+    fn list_sessions_by_realm(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Session>, IdentityError>;
@@ -262,10 +259,10 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// The user and session must exist and be valid. Tokens are signed
     /// with Ed25519 and contain claims binding the token to the user,
-    /// session, and tenant.
+    /// session, and realm.
     fn issue_tokens(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         session_id: &SessionId,
     ) -> Result<TokenPair, IdentityError>;
@@ -276,11 +273,8 @@ pub trait IdentityEngine: Send + Sync {
     /// signature (Hearth trusts its own tokens). Looks up the session
     /// and checks validity. Returns the decoded claims only if the
     /// session is still active.
-    fn validate_token(
-        &self,
-        tenant_id: &TenantId,
-        token: &str,
-    ) -> Result<TokenClaims, IdentityError>;
+    fn validate_token(&self, realm_id: &RealmId, token: &str)
+        -> Result<TokenClaims, IdentityError>;
 
     /// Refreshes tokens: validates the refresh token, then issues a new pair.
     ///
@@ -288,7 +282,7 @@ pub trait IdentityEngine: Send + Sync {
     /// is also refreshed. Returns a new token pair with updated expiration.
     fn refresh_tokens(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         refresh_token: &str,
     ) -> Result<TokenPair, IdentityError>;
 
@@ -303,7 +297,7 @@ pub trait IdentityEngine: Send + Sync {
     /// and persists the client record.
     fn register_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &RegisterClientRequest,
     ) -> Result<OAuthClient, IdentityError>;
 
@@ -314,7 +308,7 @@ pub trait IdentityEngine: Send + Sync {
     /// (hashed), and returns the code with the echoed state.
     fn authorize(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &AuthorizationRequest,
     ) -> Result<AuthorizationResponse, IdentityError>;
 
@@ -325,7 +319,7 @@ pub trait IdentityEngine: Send + Sync {
     /// the code as used, creates a session, and issues tokens.
     fn exchange_authorization_code(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &TokenExchangeRequest,
     ) -> Result<OidcTokenResponse, IdentityError>;
 
@@ -344,7 +338,7 @@ pub trait IdentityEngine: Send + Sync {
     /// tokens SHOULD NOT be included.
     fn client_credentials_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &ClientCredentialsRequest,
     ) -> Result<ClientCredentialsResponse, IdentityError>;
 
@@ -354,7 +348,7 @@ pub trait IdentityEngine: Send + Sync {
     /// returns the verification URI and polling interval.
     fn device_authorize(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &DeviceAuthorizationRequest,
     ) -> Result<DeviceAuthorizationResponse, IdentityError>;
 
@@ -363,7 +357,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Transitions the device code status from `Pending` to `Approved`.
     fn approve_device(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_code: &str,
         user_id: &UserId,
     ) -> Result<(), IdentityError>;
@@ -374,7 +368,7 @@ pub trait IdentityEngine: Send + Sync {
     /// (`AuthorizationPending`, `SlowDown`, `DeviceCodeExpired`, `DeviceCodeDenied`).
     fn poll_device_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         device_code: &str,
         client_id: &crate::core::ClientId,
     ) -> Result<OidcTokenResponse, IdentityError>;
@@ -385,7 +379,7 @@ pub trait IdentityEngine: Send + Sync {
     /// For refresh tokens: looks up the grant family and marks it revoked.
     fn revoke_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &TokenRevocationRequest,
     ) -> Result<(), IdentityError>;
 
@@ -395,7 +389,7 @@ pub trait IdentityEngine: Send + Sync {
     /// `active: false` for expired, revoked, or invalid tokens.
     fn introspect_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &TokenIntrospectionRequest,
     ) -> Result<IntrospectionResponse, IdentityError>;
 
@@ -408,7 +402,7 @@ pub trait IdentityEngine: Send + Sync {
     /// `verify_totp_enrollment()`.
     fn enroll_totp(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<TotpEnrollment, IdentityError>;
 
@@ -419,7 +413,7 @@ pub trait IdentityEngine: Send + Sync {
     /// for subsequent authentication.
     fn verify_totp_enrollment(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         code: &str,
     ) -> Result<(), IdentityError>;
@@ -430,7 +424,7 @@ pub trait IdentityEngine: Send + Sync {
     /// replay protection (rejects codes for already-used time steps).
     fn verify_totp(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         code: &str,
     ) -> Result<(), IdentityError>;
@@ -440,16 +434,16 @@ pub trait IdentityEngine: Send + Sync {
     /// On success, the code is consumed and cannot be reused.
     fn verify_recovery_code(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         code: &str,
     ) -> Result<(), IdentityError>;
 
     /// Disables MFA for a user, removing all TOTP state.
-    fn disable_mfa(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError>;
+    fn disable_mfa(&self, realm_id: &RealmId, user_id: &UserId) -> Result<(), IdentityError>;
 
     /// Returns whether MFA is currently enabled for a user.
-    fn mfa_enabled(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<bool, IdentityError>;
+    fn mfa_enabled(&self, realm_id: &RealmId, user_id: &UserId) -> Result<bool, IdentityError>;
 
     // ===== WebAuthn / Passkeys (Step 24) =====
 
@@ -459,7 +453,7 @@ pub trait IdentityEngine: Send + Sync {
     /// for use in `complete_webauthn_registration()`.
     fn start_webauthn_registration(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         options: &RegistrationOptions,
     ) -> Result<Vec<u8>, IdentityError>;
@@ -470,7 +464,7 @@ pub trait IdentityEngine: Send + Sync {
     /// stores it. Returns the credential info.
     fn complete_webauthn_registration(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         client_data_json: &[u8],
         attestation_object: &[u8],
@@ -484,7 +478,7 @@ pub trait IdentityEngine: Send + Sync {
     /// discoverable credential (username-less) flow.
     fn start_webauthn_authentication(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: Option<&UserId>,
         options: &AuthenticationOptions,
     ) -> Result<Vec<u8>, IdentityError>;
@@ -495,21 +489,21 @@ pub trait IdentityEngine: Send + Sync {
     /// sign counter, and returns the authentication result.
     fn complete_webauthn_authentication(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         params: &CompleteAuthenticationParams<'_>,
     ) -> Result<WebAuthnAuthResult, IdentityError>;
 
     /// Lists all `WebAuthn` credentials for a user.
     fn list_webauthn_credentials(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<Vec<WebAuthnCredentialInfo>, IdentityError>;
 
     /// Revokes (deletes) a `WebAuthn` credential.
     fn revoke_webauthn_credential(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         credential_id: &[u8],
     ) -> Result<(), IdentityError>;
@@ -527,7 +521,7 @@ pub trait IdentityEngine: Send + Sync {
     /// link is still created — account creation happens at validation time.
     fn request_magic_link(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<MagicLinkResponse, IdentityError>;
 
@@ -540,11 +534,8 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns `Err(MagicLinkTokenInvalid)` if the token is not found,
     /// expired, or already used. The error is intentionally vague for
     /// enumeration resistance.
-    fn validate_magic_link(
-        &self,
-        tenant_id: &TenantId,
-        token: &str,
-    ) -> Result<UserId, IdentityError>;
+    fn validate_magic_link(&self, realm_id: &RealmId, token: &str)
+        -> Result<UserId, IdentityError>;
 
     // ===== Password reset =====
 
@@ -560,7 +551,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Rate-limited per email address (reuses magic link rate tracker).
     fn request_password_reset(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<Option<String>, IdentityError>;
 
@@ -575,7 +566,7 @@ pub trait IdentityEngine: Send + Sync {
     /// resistance.
     fn reset_password_with_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         token: &str,
         new_password: &CleartextPassword,
     ) -> Result<UserId, IdentityError>;
@@ -589,7 +580,7 @@ pub trait IdentityEngine: Send + Sync {
     /// inclusion in a verification URL. The plaintext is never persisted.
     fn issue_email_verification_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<String, IdentityError>;
 
@@ -602,11 +593,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns `Err(VerificationTokenInvalid)` if the token is not found,
     /// expired, or already used. Intentionally vague for enumeration
     /// resistance.
-    fn verify_email_token(
-        &self,
-        tenant_id: &TenantId,
-        token: &str,
-    ) -> Result<UserId, IdentityError>;
+    fn verify_email_token(&self, realm_id: &RealmId, token: &str) -> Result<UserId, IdentityError>;
 
     // ===== UserInfo (OIDC Core §5.3) =====
 
@@ -619,7 +606,7 @@ pub trait IdentityEngine: Send + Sync {
     /// - `email`: `email`, `email_verified`
     fn userinfo(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         access_token: &str,
     ) -> Result<UserInfoResponse, IdentityError>;
 
@@ -631,7 +618,7 @@ pub trait IdentityEngine: Send + Sync {
     /// contains the cursor for the next page.
     fn list_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<User>, IdentityError>;
@@ -642,25 +629,22 @@ pub trait IdentityEngine: Send + Sync {
     /// Query must be at least 2 characters; shorter queries return empty.
     fn search_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         query: &str,
         limit: usize,
     ) -> Result<Vec<User>, IdentityError>;
 
-    /// Lists tenants with cursor-based pagination.
+    /// Lists realms with cursor-based pagination.
     ///
-    /// Tenants are stored under the system tenant namespace, so no
-    /// `tenant_id` parameter is needed for scoping.
-    fn list_tenants(
-        &self,
-        cursor: Option<&str>,
-        limit: usize,
-    ) -> Result<Page<Tenant>, IdentityError>;
+    /// Realms are stored under the system realm namespace, so no
+    /// `realm_id` parameter is needed for scoping.
+    fn list_realms(&self, cursor: Option<&str>, limit: usize)
+        -> Result<Page<Realm>, IdentityError>;
 
     /// Lists OAuth clients with cursor-based pagination.
     fn list_clients(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<OAuthClient>, IdentityError>;
@@ -668,7 +652,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Retrieves a single OAuth client by ID.
     fn get_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<Option<OAuthClient>, IdentityError>;
 
@@ -677,7 +661,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Only non-`None` fields in the request are applied.
     fn update_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
         request: &UpdateClientRequest,
     ) -> Result<OAuthClient, IdentityError>;
@@ -692,14 +676,14 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns `Err(InvalidInput)` if the client is a public client (no secret).
     fn regenerate_client_secret(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<String, IdentityError>;
 
     /// Deletes an OAuth client by ID.
     fn delete_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<(), IdentityError>;
 
@@ -709,7 +693,7 @@ pub trait IdentityEngine: Send + Sync {
     /// abort the batch. Returns a `BulkResult` for each input item.
     fn bulk_create_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         requests: &[CreateUserRequest],
     ) -> Result<Vec<BulkResult<User>>, IdentityError>;
 
@@ -719,33 +703,33 @@ pub trait IdentityEngine: Send + Sync {
     /// abort the batch. Returns a `BulkResult` for each input item.
     fn bulk_disable_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_ids: &[UserId],
     ) -> Result<Vec<BulkResult<()>>, IdentityError>;
 
     // ===== Organizations =====
 
-    /// Creates a new organization within a tenant.
+    /// Creates a new organization within a realm.
     ///
     /// Validates the slug, checks uniqueness, and persists the org record
     /// with primary and slug index entries.
     fn create_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &CreateOrganizationRequest,
     ) -> Result<Organization, IdentityError>;
 
     /// Retrieves an organization by ID. Returns `None` if not found.
     fn get_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
     ) -> Result<Option<Organization>, IdentityError>;
 
     /// Retrieves an organization by slug. Returns `None` if not found.
     fn get_organization_by_slug(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         slug: &str,
     ) -> Result<Option<Organization>, IdentityError>;
 
@@ -754,7 +738,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Only non-`None` fields in the request are applied.
     fn update_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         request: &UpdateOrganizationRequest,
     ) -> Result<Organization, IdentityError>;
@@ -766,14 +750,14 @@ pub trait IdentityEngine: Send + Sync {
     /// tuples, slug index, and the org record. Idempotent.
     fn delete_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
     ) -> Result<(), IdentityError>;
 
-    /// Lists all organizations in a tenant with cursor-based pagination.
+    /// Lists all organizations in a realm with cursor-based pagination.
     fn list_organizations(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Organization>, IdentityError>;
@@ -785,7 +769,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Zanzibar tuples atomically.
     fn add_member(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
         role: OrganizationRole,
@@ -798,7 +782,7 @@ pub trait IdentityEngine: Send + Sync {
     /// any Zanzibar tuples.
     fn remove_member(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
     ) -> Result<(), IdentityError>;
@@ -809,7 +793,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Updates both membership indexes and Zanzibar tuples atomically.
     fn update_member_role(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
         new_role: OrganizationRole,
@@ -818,7 +802,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Retrieves a specific membership. Returns `None` if not a member.
     fn get_membership(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
     ) -> Result<Option<OrganizationMembership>, IdentityError>;
@@ -826,7 +810,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Lists all members of an organization with cursor-based pagination.
     fn list_members(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         cursor: Option<&str>,
         limit: usize,
@@ -835,7 +819,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Lists all organizations a user belongs to with cursor-based pagination.
     fn list_user_organizations(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         cursor: Option<&str>,
         limit: usize,
@@ -848,7 +832,7 @@ pub trait IdentityEngine: Send + Sync {
     /// delivery). The plaintext token is never stored.
     fn create_invitation(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &CreateInvitationRequest,
     ) -> Result<(OrganizationInvitation, String), IdentityError>;
 
@@ -859,21 +843,21 @@ pub trait IdentityEngine: Send + Sync {
     /// and returns the new membership.
     fn accept_invitation(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         token: &str,
     ) -> Result<OrganizationMembership, IdentityError>;
 
     /// Revokes a pending invitation.
     fn revoke_invitation(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         invitation_id: &InvitationId,
     ) -> Result<(), IdentityError>;
 
     /// Lists invitations for an organization with cursor-based pagination.
     fn list_invitations(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         cursor: Option<&str>,
         limit: usize,
@@ -881,16 +865,16 @@ pub trait IdentityEngine: Send + Sync {
 
     // ===== Migration / import (Phase 1 Step 30) =====
 
-    /// Imports a tenant, optionally with a caller-supplied `TenantId`.
+    /// Imports a realm, optionally with a caller-supplied `RealmId`.
     ///
-    /// Unlike `create_tenant`, this allows preserving an external system's
-    /// realm/organization UUID. Returns `DuplicateTenantName` or a
-    /// tenant-id-conflict error if one already exists with the same id.
-    fn import_tenant(
+    /// Unlike `create_realm`, this allows preserving an external system's
+    /// realm/organization UUID. Returns `DuplicateRealmName` or a
+    /// realm-id-conflict error if one already exists with the same id.
+    fn import_realm(
         &self,
-        request: &CreateTenantRequest,
-        requested_id: Option<TenantId>,
-    ) -> Result<Tenant, IdentityError>;
+        request: &CreateRealmRequest,
+        requested_id: Option<RealmId>,
+    ) -> Result<Realm, IdentityError>;
 
     /// Imports a user with a pre-hashed credential from an external system.
     ///
@@ -900,7 +884,7 @@ pub trait IdentityEngine: Send + Sync {
     /// against the imported hash auto-upgrades it in place on first login.
     fn import_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &ImportUserRequest,
     ) -> Result<User, IdentityError>;
 
@@ -912,7 +896,7 @@ pub trait IdentityEngine: Send + Sync {
     /// because Hearth's storage format requires Argon2id.
     fn import_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &ImportClientRequest,
     ) -> Result<OAuthClient, IdentityError>;
 }

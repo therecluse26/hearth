@@ -16,11 +16,11 @@ use hearth::authz::{
 };
 use hearth::core::Clock;
 use hearth::core::SystemClock;
-use hearth::core::{SessionId, TenantId};
+use hearth::core::{RealmId, SessionId};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{
-    CleartextPassword, CreateTenantRequest, CreateUserRequest, CredentialConfig,
+    CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
     EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, RegisterClientRequest,
     UpdateUserRequest, UserStatus,
 };
@@ -50,7 +50,7 @@ struct TestRig {
     identity: Arc<dyn IdentityEngine>,
     #[allow(dead_code)]
     authz: Arc<dyn AuthorizationEngine>,
-    tenant_id: TenantId,
+    realm_id: RealmId,
     #[allow(dead_code)]
     admin_user_id: hearth::core::UserId,
     admin_session_id: SessionId,
@@ -88,17 +88,17 @@ fn build_rig() -> TestRig {
         Arc::clone(&clock),
     )) as Arc<dyn hearth::audit::AuditEngine>;
 
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
             name: "Acme".to_string(),
             config: None,
         })
-        .expect("create tenant");
+        .expect("create realm");
 
     // Admin user.
     let admin_user = identity
         .create_user(
-            tenant.id(),
+            realm.id(),
             &CreateUserRequest {
                 email: "admin@acme.test".to_string(),
                 display_name: "Admin".to_string(),
@@ -107,11 +107,11 @@ fn build_rig() -> TestRig {
         .expect("create admin user");
     let pw = CleartextPassword::from_string("correct-horse-battery-staple".to_string());
     identity
-        .set_password(tenant.id(), admin_user.id(), &pw)
+        .set_password(realm.id(), admin_user.id(), &pw)
         .expect("set admin password");
     identity
         .update_user(
-            tenant.id(),
+            realm.id(),
             admin_user.id(),
             &UpdateUserRequest {
                 email: None,
@@ -122,7 +122,7 @@ fn build_rig() -> TestRig {
         .expect("activate admin");
     let admin_session = identity
         .create_session(
-            tenant.id(),
+            realm.id(),
             admin_user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -133,13 +133,13 @@ fn build_rig() -> TestRig {
     let sub = SubjectRef::direct("user", &admin_user.id().as_uuid().to_string()).expect("sub");
     let tuple = RelationshipTuple::new(obj, "admin", sub).expect("tuple");
     authz
-        .write_tuples(tenant.id(), &[TupleWrite::Touch(tuple)])
+        .write_tuples(realm.id(), &[TupleWrite::Touch(tuple)])
         .expect("write admin tuple");
 
     // Non-admin user.
     let non_admin_user = identity
         .create_user(
-            tenant.id(),
+            realm.id(),
             &CreateUserRequest {
                 email: "bob@acme.test".to_string(),
                 display_name: "Bob".to_string(),
@@ -148,11 +148,11 @@ fn build_rig() -> TestRig {
         .expect("create non-admin user");
     let pw2 = CleartextPassword::from_string("correct-horse-battery-staple".to_string());
     identity
-        .set_password(tenant.id(), non_admin_user.id(), &pw2)
+        .set_password(realm.id(), non_admin_user.id(), &pw2)
         .expect("set non-admin password");
     identity
         .update_user(
-            tenant.id(),
+            realm.id(),
             non_admin_user.id(),
             &UpdateUserRequest {
                 email: None,
@@ -163,7 +163,7 @@ fn build_rig() -> TestRig {
         .expect("activate non-admin");
     let non_admin_session = identity
         .create_session(
-            tenant.id(),
+            realm.id(),
             non_admin_user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -189,7 +189,7 @@ fn build_rig() -> TestRig {
         app,
         identity,
         authz,
-        tenant_id: tenant.id().clone(),
+        realm_id: realm.id().clone(),
         admin_user_id: admin_user.id().clone(),
         admin_session_id: admin_session.id().clone(),
         non_admin_user_id: non_admin_user.id().clone(),
@@ -197,29 +197,29 @@ fn build_rig() -> TestRig {
     }
 }
 
-fn auth_cookie(session_id: &SessionId, tenant_id: &TenantId, csrf: &str) -> String {
+fn auth_cookie(session_id: &SessionId, realm_id: &RealmId, csrf: &str) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     let mut mac = <Hmac<Sha256>>::new_from_slice(&COOKIE_SECRET_BYTES).expect("hmac key");
     mac.update(session_id.as_uuid().as_bytes());
     mac.update(b"|");
-    mac.update(tenant_id.as_uuid().as_bytes());
+    mac.update(realm_id.as_uuid().as_bytes());
     let tag = data_encoding::BASE64URL_NOPAD.encode(&mac.finalize().into_bytes());
     format!(
         "hearth_ui_session={}.{}.{}; hearth_ui_csrf={}",
         session_id.as_uuid(),
-        tenant_id.as_uuid(),
+        realm_id.as_uuid(),
         tag,
         csrf,
     )
 }
 
 fn admin_cookie(rig: &TestRig, csrf: &str) -> String {
-    auth_cookie(&rig.admin_session_id, &rig.tenant_id, csrf)
+    auth_cookie(&rig.admin_session_id, &rig.realm_id, csrf)
 }
 
 fn non_admin_cookie(rig: &TestRig, csrf: &str) -> String {
-    auth_cookie(&rig.non_admin_session_id, &rig.tenant_id, csrf)
+    auth_cookie(&rig.non_admin_session_id, &rig.realm_id, csrf)
 }
 
 // ---------------------------------------------------------------------------
@@ -518,7 +518,7 @@ async fn admin_edit_user_succeeds() {
     // Verify the changes persisted.
     let updated = rig
         .identity
-        .get_user(&rig.tenant_id, &rig.non_admin_user_id)
+        .get_user(&rig.realm_id, &rig.non_admin_user_id)
         .expect("get_user")
         .expect("user exists");
     assert_eq!(updated.email(), "bob-new@acme.test");
@@ -565,17 +565,17 @@ async fn admin_delete_user_succeeds() {
     // User no longer exists.
     assert!(rig
         .identity
-        .get_user(&rig.tenant_id, &rig.non_admin_user_id)
+        .get_user(&rig.realm_id, &rig.non_admin_user_id)
         .expect("get_user")
         .is_none());
 }
 
 // ===========================================================================
-// Tenant tests
+// Realm tests
 // ===========================================================================
 
 #[tokio::test]
-async fn admin_tenant_list_renders() {
+async fn admin_realm_list_renders() {
     let rig = build_rig();
     let cookie = admin_cookie(&rig, "csrf-tlist");
 
@@ -585,7 +585,7 @@ async fn admin_tenant_list_renders() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/tenants")
+                .uri("/ui/admin/realms")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -598,22 +598,22 @@ async fn admin_tenant_list_renders() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("Acme"), "should list the tenant");
+    assert!(body.contains("Acme"), "should list the realm");
     assert!(
         body.contains("hearth.yaml"),
         "should show YAML config notice"
     );
 }
 
-// NOTE: admin_create_tenant_succeeds removed — tenants are now managed
-// via hearth.yaml; the /admin/tenants/new route no longer exists.
+// NOTE: admin_create_realm_succeeds removed — realms are now managed
+// via hearth.yaml; the /admin/realms/new route no longer exists.
 
 #[tokio::test]
-async fn admin_tenant_detail_renders() {
+async fn admin_realm_detail_renders() {
     let rig = build_rig();
     let cookie = admin_cookie(&rig, "csrf-tdetail");
 
-    let uri = format!("/ui/admin/tenants/{}", rig.tenant_id.as_uuid());
+    let uri = format!("/ui/admin/realms/{}", rig.realm_id.as_uuid());
     let response = rig
         .app
         .clone()
@@ -637,25 +637,25 @@ async fn admin_tenant_detail_renders() {
     assert!(body.contains("Active"));
 }
 
-// NOTE: admin_edit_tenant_succeeds removed — tenants are now managed
-// via hearth.yaml; the /admin/tenants/{id}/edit route no longer exists.
+// NOTE: admin_edit_realm_succeeds removed — realms are now managed
+// via hearth.yaml; the /admin/realms/{id}/edit route no longer exists.
 
 #[tokio::test]
-async fn admin_delete_tenant_requires_archived_status() {
+async fn admin_delete_realm_requires_archived_status() {
     let rig = build_rig();
     let csrf = "csrf-tdel";
     let cookie = admin_cookie(&rig, csrf);
 
-    // Create a second tenant for deletion.
+    // Create a second realm for deletion.
     let extra = rig
         .identity
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: "Doomed".to_string(),
             config: None,
         })
-        .expect("create doomed tenant");
+        .expect("create doomed realm");
 
-    // Deleting an Active tenant should be rejected (400).
+    // Deleting an Active realm should be rejected (400).
     let tid = extra.id().as_uuid();
     let form = format!("_csrf={csrf}");
     let response = rig
@@ -664,7 +664,7 @@ async fn admin_delete_tenant_requires_archived_status() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/tenants/{tid}/delete"))
+                .uri(format!("/ui/admin/realms/{tid}/delete"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -676,19 +676,19 @@ async fn admin_delete_tenant_requires_archived_status() {
     assert_eq!(
         response.status(),
         StatusCode::BAD_REQUEST,
-        "should reject deletion of non-archived tenant"
+        "should reject deletion of non-archived realm"
     );
 
-    // Archive the tenant first (simulating what YAML reconciliation does).
+    // Archive the realm first (simulating what YAML reconciliation does).
     rig.identity
-        .update_tenant(
+        .update_realm(
             extra.id(),
-            &hearth::identity::UpdateTenantRequest {
-                status: Some(hearth::identity::TenantStatus::Archived),
+            &hearth::identity::UpdateRealmRequest {
+                status: Some(hearth::identity::RealmStatus::Archived),
                 ..Default::default()
             },
         )
-        .expect("archive tenant");
+        .expect("archive realm");
 
     // Now deletion should succeed.
     let form2 = format!("_csrf={csrf}");
@@ -698,7 +698,7 @@ async fn admin_delete_tenant_requires_archived_status() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/tenants/{tid}/delete"))
+                .uri(format!("/ui/admin/realms/{tid}/delete"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form2))
@@ -713,13 +713,13 @@ async fn admin_delete_tenant_requires_archived_status() {
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
-        Some("/ui/admin/tenants"),
+        Some("/ui/admin/realms"),
     );
 
     assert!(rig
         .identity
-        .get_tenant(extra.id())
-        .expect("get_tenant")
+        .get_realm(extra.id())
+        .expect("get_realm")
         .is_none());
 }
 
@@ -800,7 +800,7 @@ async fn admin_app_detail_renders() {
     let client = rig
         .identity
         .register_client(
-            &rig.tenant_id,
+            &rig.realm_id,
             &RegisterClientRequest {
                 client_name: "DetailApp".to_string(),
                 redirect_uris: vec!["https://example.com/cb".to_string()],
@@ -843,7 +843,7 @@ async fn admin_edit_app_succeeds() {
     let client = rig
         .identity
         .register_client(
-            &rig.tenant_id,
+            &rig.realm_id,
             &RegisterClientRequest {
                 client_name: "EditMe".to_string(),
                 redirect_uris: vec!["https://old.example.com/cb".to_string()],
@@ -876,7 +876,7 @@ async fn admin_edit_app_succeeds() {
 
     let updated = rig
         .identity
-        .get_client(&rig.tenant_id, client.client_id())
+        .get_client(&rig.realm_id, client.client_id())
         .expect("get_client")
         .expect("client exists");
     assert_eq!(updated.client_name(), "Renamed");
@@ -892,7 +892,7 @@ async fn admin_delete_app_succeeds() {
     let client = rig
         .identity
         .register_client(
-            &rig.tenant_id,
+            &rig.realm_id,
             &RegisterClientRequest {
                 client_name: "DeleteMe".to_string(),
                 redirect_uris: vec!["https://example.com/cb".to_string()],
@@ -930,7 +930,7 @@ async fn admin_delete_app_succeeds() {
 
     assert!(rig
         .identity
-        .get_client(&rig.tenant_id, client.client_id())
+        .get_client(&rig.realm_id, client.client_id())
         .expect("get_client")
         .is_none());
 }
@@ -980,7 +980,7 @@ async fn admin_revoke_session_succeeds() {
     let extra_session = rig
         .identity
         .create_session(
-            &rig.tenant_id,
+            &rig.realm_id,
             &rig.non_admin_user_id,
             &hearth::identity::SessionContext::default(),
         )
@@ -1015,7 +1015,7 @@ async fn admin_revoke_session_succeeds() {
     // Session should be gone (revoked → get_session returns None).
     assert!(rig
         .identity
-        .get_session(&rig.tenant_id, extra_session.id())
+        .get_session(&rig.realm_id, extra_session.id())
         .expect("get_session")
         .is_none());
 }

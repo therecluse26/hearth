@@ -11,32 +11,32 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 
-use crate::core::TenantId;
+use crate::core::RealmId;
 use crate::storage::error::StorageError;
 use crate::storage::wal::{WalEntry, WalOperation};
 
-/// Composite key combining tenant identity with a data key.
+/// Composite key combining realm identity with a data key.
 ///
-/// Ordered by tenant UUID bytes first, then by key bytes (lexicographic).
-/// This ensures tenant-scoped ordering and makes cross-tenant reads
-/// structurally impossible without providing a different `TenantId`.
+/// Ordered by realm UUID bytes first, then by key bytes (lexicographic).
+/// This ensures realm-scoped ordering and makes cross-realm reads
+/// structurally impossible without providing a different `RealmId`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct CompositeKey {
-    /// The tenant that owns this key.
-    tenant_id: TenantId,
+    /// The realm that owns this key.
+    realm_id: RealmId,
     /// The raw key bytes.
     key: Vec<u8>,
 }
 
 impl CompositeKey {
-    /// Creates a new composite key from a tenant ID and raw key bytes.
-    pub(crate) fn new(tenant_id: TenantId, key: Vec<u8>) -> Self {
-        Self { tenant_id, key }
+    /// Creates a new composite key from a realm ID and raw key bytes.
+    pub(crate) fn new(realm_id: RealmId, key: Vec<u8>) -> Self {
+        Self { realm_id, key }
     }
 
-    /// Returns a reference to the tenant ID.
-    pub(crate) fn tenant_id(&self) -> &TenantId {
-        &self.tenant_id
+    /// Returns a reference to the realm ID.
+    pub(crate) fn realm_id(&self) -> &RealmId {
+        &self.realm_id
     }
 
     /// Returns a reference to the raw key bytes.
@@ -99,18 +99,18 @@ impl Memtable {
         }
     }
 
-    /// Inserts or updates a key-value pair for the given tenant.
+    /// Inserts or updates a key-value pair for the given realm.
     ///
     /// If the key already exists, its value is overwritten. Size tracking
     /// is updated to reflect the delta.
     pub(crate) fn put(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         key: &[u8],
         value: &[u8],
     ) -> Result<(), StorageError> {
         let composite = CompositeKey {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             key: key.to_vec(),
         };
         let new_value = MemtableValue::Data(value.to_vec());
@@ -140,9 +140,9 @@ impl Memtable {
     ///
     /// Subsequent `get()` calls return `None`. The tombstone is preserved
     /// for SST flush so downstream compaction can remove the key.
-    pub(crate) fn delete(&self, tenant_id: &TenantId, key: &[u8]) -> Result<(), StorageError> {
+    pub(crate) fn delete(&self, realm_id: &RealmId, key: &[u8]) -> Result<(), StorageError> {
         let composite = CompositeKey {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             key: key.to_vec(),
         };
         let new_value = MemtableValue::Tombstone;
@@ -168,11 +168,11 @@ impl Memtable {
         Ok(())
     }
 
-    /// Retrieves a value by tenant and key. Returns `None` for both
+    /// Retrieves a value by realm and key. Returns `None` for both
     /// absent keys and tombstones. This is a lock-free read.
-    pub(crate) fn get(&self, tenant_id: &TenantId, key: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn get(&self, realm_id: &RealmId, key: &[u8]) -> Option<Vec<u8>> {
         let composite = CompositeKey {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             key: key.to_vec(),
         };
         let snapshot = self.data.load();
@@ -192,24 +192,24 @@ impl Memtable {
         self.approximate_size.load(Ordering::Relaxed)
     }
 
-    /// Returns all entries for a given tenant, sorted by key.
+    /// Returns all entries for a given realm, sorted by key.
     ///
     /// Includes tombstones. The returned keys are the raw data keys
-    /// (without the tenant prefix).
-    pub(crate) fn iter_tenant(&self, tenant_id: &TenantId) -> Vec<(Vec<u8>, MemtableValue)> {
+    /// (without the realm prefix).
+    pub(crate) fn iter_realm(&self, realm_id: &RealmId) -> Vec<(Vec<u8>, MemtableValue)> {
         let snapshot = self.data.load();
         let start = CompositeKey {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             key: vec![],
         };
         snapshot
             .range(start..)
-            .take_while(|(k, _)| k.tenant_id == *tenant_id)
+            .take_while(|(k, _)| k.realm_id == *realm_id)
             .map(|(k, v)| (k.key.clone(), v.clone()))
             .collect()
     }
 
-    /// Returns all entries across all tenants, sorted by composite key.
+    /// Returns all entries across all realms, sorted by composite key.
     ///
     /// Used for flushing to SST files. Includes tombstones.
     pub(crate) fn iter_all(&self) -> Vec<(CompositeKey, MemtableValue)> {
@@ -223,8 +223,8 @@ impl Memtable {
     /// Applies a WAL entry to the memtable (for crash recovery replay).
     pub(crate) fn apply_wal_entry(&self, entry: &WalEntry) -> Result<(), StorageError> {
         match entry.operation {
-            WalOperation::Put => self.put(&entry.tenant_id, &entry.key, &entry.value),
-            WalOperation::Delete => self.delete(&entry.tenant_id, &entry.key),
+            WalOperation::Put => self.put(&entry.realm_id, &entry.key, &entry.value),
+            WalOperation::Delete => self.delete(&entry.realm_id, &entry.key),
             WalOperation::Batch => {
                 // The outer record's CRC already guarantees atomicity — a
                 // corrupt or truncated batch is dropped by the reader before
@@ -234,8 +234,8 @@ impl Memtable {
                 let sub_entries = crate::storage::wal::decode_batch_payload(&entry.value)?;
                 for sub in &sub_entries {
                     match sub.operation {
-                        WalOperation::Put => self.put(&entry.tenant_id, &sub.key, &sub.value)?,
-                        WalOperation::Delete => self.delete(&entry.tenant_id, &sub.key)?,
+                        WalOperation::Put => self.put(&entry.realm_id, &sub.key, &sub.value)?,
+                        WalOperation::Delete => self.delete(&entry.realm_id, &sub.key)?,
                         WalOperation::Batch => {
                             return Err(StorageError::DeserializationFailed {
                                 reason: "nested batch in WAL replay".to_string(),
@@ -299,7 +299,7 @@ impl std::fmt::Debug for Memtable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{TenantId, Timestamp};
+    use crate::core::{RealmId, Timestamp};
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::AtomicBool;
 
@@ -309,33 +309,33 @@ mod tests {
     #[test]
     fn insert_and_retrieve_single_key() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", b"value1").expect("put");
+        mt.put(&realm, b"key1", b"value1").expect("put");
 
-        assert_eq!(mt.get(&tenant, b"key1"), Some(b"value1".to_vec()));
+        assert_eq!(mt.get(&realm, b"key1"), Some(b"value1".to_vec()));
     }
 
     #[test]
     fn insert_and_retrieve_multiple_keys() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", b"val1").expect("put 1");
-        mt.put(&tenant, b"key2", b"val2").expect("put 2");
-        mt.put(&tenant, b"key3", b"val3").expect("put 3");
+        mt.put(&realm, b"key1", b"val1").expect("put 1");
+        mt.put(&realm, b"key2", b"val2").expect("put 2");
+        mt.put(&realm, b"key3", b"val3").expect("put 3");
 
-        assert_eq!(mt.get(&tenant, b"key1"), Some(b"val1".to_vec()));
-        assert_eq!(mt.get(&tenant, b"key2"), Some(b"val2".to_vec()));
-        assert_eq!(mt.get(&tenant, b"key3"), Some(b"val3".to_vec()));
+        assert_eq!(mt.get(&realm, b"key1"), Some(b"val1".to_vec()));
+        assert_eq!(mt.get(&realm, b"key2"), Some(b"val2".to_vec()));
+        assert_eq!(mt.get(&realm, b"key3"), Some(b"val3".to_vec()));
     }
 
     #[test]
     fn get_nonexistent_key_returns_none() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        assert_eq!(mt.get(&tenant, b"missing"), None);
+        assert_eq!(mt.get(&realm, b"missing"), None);
     }
 
     // TEST_SCENARIOS.md: "Update existing key overwrites value"
@@ -343,13 +343,13 @@ mod tests {
     #[test]
     fn update_overwrites_value() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", b"original").expect("put 1");
-        assert_eq!(mt.get(&tenant, b"key1"), Some(b"original".to_vec()));
+        mt.put(&realm, b"key1", b"original").expect("put 1");
+        assert_eq!(mt.get(&realm, b"key1"), Some(b"original".to_vec()));
 
-        mt.put(&tenant, b"key1", b"updated").expect("put 2");
-        assert_eq!(mt.get(&tenant, b"key1"), Some(b"updated".to_vec()));
+        mt.put(&realm, b"key1", b"updated").expect("put 2");
+        assert_eq!(mt.get(&realm, b"key1"), Some(b"updated".to_vec()));
     }
 
     // TEST_SCENARIOS.md: "Delete key removes entry; subsequent lookup returns None"
@@ -357,33 +357,33 @@ mod tests {
     #[test]
     fn delete_key_returns_none_on_lookup() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", b"value1").expect("put");
-        assert_eq!(mt.get(&tenant, b"key1"), Some(b"value1".to_vec()));
+        mt.put(&realm, b"key1", b"value1").expect("put");
+        assert_eq!(mt.get(&realm, b"key1"), Some(b"value1".to_vec()));
 
-        mt.delete(&tenant, b"key1").expect("delete");
-        assert_eq!(mt.get(&tenant, b"key1"), None);
+        mt.delete(&realm, b"key1").expect("delete");
+        assert_eq!(mt.get(&realm, b"key1"), None);
     }
 
     #[test]
     fn delete_nonexistent_key_succeeds() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.delete(&tenant, b"missing").expect("delete");
-        assert_eq!(mt.get(&tenant, b"missing"), None);
+        mt.delete(&realm, b"missing").expect("delete");
+        assert_eq!(mt.get(&realm, b"missing"), None);
     }
 
     #[test]
     fn delete_inserts_tombstone_visible_in_iterator() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", b"value1").expect("put");
-        mt.delete(&tenant, b"key1").expect("delete");
+        mt.put(&realm, b"key1", b"value1").expect("put");
+        mt.delete(&realm, b"key1").expect("delete");
 
-        let entries = mt.iter_tenant(&tenant);
+        let entries = mt.iter_realm(&realm);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], (b"key1".to_vec(), MemtableValue::Tombstone));
     }
@@ -396,31 +396,31 @@ mod tests {
             flush_threshold_bytes: 100,
         };
         let mt = Memtable::new(config);
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         assert!(!mt.should_flush());
         assert_eq!(mt.approximate_size(), 0);
 
         // Each entry: 16 (UUID) + key.len() + value.len()
         // First put: 16 + 4 + 32 = 52
-        mt.put(&tenant, b"key1", &[0u8; 32]).expect("put 1");
+        mt.put(&realm, b"key1", &[0u8; 32]).expect("put 1");
         assert!(!mt.should_flush());
 
         // Second put: 16 + 4 + 32 = 52, total ~104 > 100
-        mt.put(&tenant, b"key2", &[0u8; 32]).expect("put 2");
+        mt.put(&realm, b"key2", &[0u8; 32]).expect("put 2");
         assert!(mt.should_flush());
     }
 
     #[test]
     fn size_tracking_accounts_for_updates() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", &[0u8; 100]).expect("put large");
+        mt.put(&realm, b"key1", &[0u8; 100]).expect("put large");
         let size_after_large = mt.approximate_size();
 
         // Overwrite with smaller value — size should decrease
-        mt.put(&tenant, b"key1", &[0u8; 10]).expect("put small");
+        mt.put(&realm, b"key1", &[0u8; 10]).expect("put small");
         let size_after_small = mt.approximate_size();
 
         assert!(
@@ -434,15 +434,15 @@ mod tests {
     #[test]
     fn iterator_returns_sorted_key_order() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         // Insert in non-sorted order
-        mt.put(&tenant, b"charlie", b"3").expect("put");
-        mt.put(&tenant, b"alpha", b"1").expect("put");
-        mt.put(&tenant, b"delta", b"4").expect("put");
-        mt.put(&tenant, b"bravo", b"2").expect("put");
+        mt.put(&realm, b"charlie", b"3").expect("put");
+        mt.put(&realm, b"alpha", b"1").expect("put");
+        mt.put(&realm, b"delta", b"4").expect("put");
+        mt.put(&realm, b"bravo", b"2").expect("put");
 
-        let entries = mt.iter_tenant(&tenant);
+        let entries = mt.iter_realm(&realm);
         let keys: Vec<&[u8]> = entries.iter().map(|(k, _)| k.as_slice()).collect();
         assert_eq!(
             keys,
@@ -458,79 +458,79 @@ mod tests {
     // ===== Supplementary Unit Tests (architecture requirements) =====
 
     #[test]
-    fn tenant_isolation_no_cross_tenant_reads() {
+    fn realm_isolation_no_cross_realm_reads() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant_a = TenantId::generate();
-        let tenant_b = TenantId::generate();
+        let realm_a = RealmId::generate();
+        let realm_b = RealmId::generate();
 
-        mt.put(&tenant_a, b"shared_key", b"value-a").expect("put a");
-        mt.put(&tenant_b, b"shared_key", b"value-b").expect("put b");
-        mt.put(&tenant_a, b"only-a", b"exclusive").expect("put a2");
+        mt.put(&realm_a, b"shared_key", b"value-a").expect("put a");
+        mt.put(&realm_b, b"shared_key", b"value-b").expect("put b");
+        mt.put(&realm_a, b"only-a", b"exclusive").expect("put a2");
 
-        // Each tenant sees only their own data
-        assert_eq!(mt.get(&tenant_a, b"shared_key"), Some(b"value-a".to_vec()));
-        assert_eq!(mt.get(&tenant_b, b"shared_key"), Some(b"value-b".to_vec()));
-        assert_eq!(mt.get(&tenant_b, b"only-a"), None);
+        // Each realm sees only their own data
+        assert_eq!(mt.get(&realm_a, b"shared_key"), Some(b"value-a".to_vec()));
+        assert_eq!(mt.get(&realm_b, b"shared_key"), Some(b"value-b".to_vec()));
+        assert_eq!(mt.get(&realm_b, b"only-a"), None);
 
-        // Tenant iterators are scoped
-        let entries_a = mt.iter_tenant(&tenant_a);
+        // Realm iterators are scoped
+        let entries_a = mt.iter_realm(&realm_a);
         assert_eq!(entries_a.len(), 2);
-        let entries_b = mt.iter_tenant(&tenant_b);
+        let entries_b = mt.iter_realm(&realm_b);
         assert_eq!(entries_b.len(), 1);
     }
 
     #[test]
     fn apply_wal_entry_put_and_delete() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let put_entry = WalEntry {
             timestamp: Timestamp::from_micros(1_000_000),
-            tenant_id: tenant.clone(),
+            realm_id: realm.clone(),
             operation: WalOperation::Put,
             key: b"key1".to_vec(),
             value: b"value1".to_vec(),
         };
         mt.apply_wal_entry(&put_entry).expect("apply put");
-        assert_eq!(mt.get(&tenant, b"key1"), Some(b"value1".to_vec()));
+        assert_eq!(mt.get(&realm, b"key1"), Some(b"value1".to_vec()));
 
         let delete_entry = WalEntry {
             timestamp: Timestamp::from_micros(2_000_000),
-            tenant_id: tenant.clone(),
+            realm_id: realm.clone(),
             operation: WalOperation::Delete,
             key: b"key1".to_vec(),
             value: vec![],
         };
         mt.apply_wal_entry(&delete_entry).expect("apply delete");
-        assert_eq!(mt.get(&tenant, b"key1"), None);
+        assert_eq!(mt.get(&realm, b"key1"), None);
     }
 
     #[test]
     fn clear_resets_data_and_size() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        mt.put(&tenant, b"key1", b"value1").expect("put 1");
-        mt.put(&tenant, b"key2", b"value2").expect("put 2");
+        mt.put(&realm, b"key1", b"value1").expect("put 1");
+        mt.put(&realm, b"key2", b"value2").expect("put 2");
         assert!(mt.approximate_size() > 0);
 
         mt.clear().expect("clear");
 
-        assert_eq!(mt.get(&tenant, b"key1"), None);
-        assert_eq!(mt.get(&tenant, b"key2"), None);
+        assert_eq!(mt.get(&realm, b"key1"), None);
+        assert_eq!(mt.get(&realm, b"key2"), None);
         assert_eq!(mt.approximate_size(), 0);
-        assert!(mt.iter_tenant(&tenant).is_empty());
+        assert!(mt.iter_realm(&realm).is_empty());
         assert!(mt.iter_all().is_empty());
     }
 
     #[test]
-    fn iter_all_returns_entries_across_tenants() {
+    fn iter_all_returns_entries_across_realms() {
         let mt = Memtable::new(MemtableConfig::default());
-        let tenant_a = TenantId::generate();
-        let tenant_b = TenantId::generate();
+        let realm_a = RealmId::generate();
+        let realm_b = RealmId::generate();
 
-        mt.put(&tenant_a, b"a1", b"va1").expect("put");
-        mt.put(&tenant_b, b"b1", b"vb1").expect("put");
+        mt.put(&realm_a, b"a1", b"va1").expect("put");
+        mt.put(&realm_b, b"b1", b"vb1").expect("put");
 
         let all = mt.iter_all();
         assert_eq!(all.len(), 2);
@@ -573,17 +573,17 @@ mod tests {
             ops in prop::collection::vec(arb_test_op(), 1..200)
         ) {
             let mt = Memtable::new(MemtableConfig::default());
-            let tenant = TenantId::generate();
+            let realm = RealmId::generate();
             let mut oracle: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
             for op in &ops {
                 match op {
                     TestOp::Put(key, value) => {
-                        mt.put(&tenant, key, value).expect("put");
+                        mt.put(&realm, key, value).expect("put");
                         oracle.insert(key.clone(), value.clone());
                     }
                     TestOp::Delete(key) => {
-                        mt.delete(&tenant, key).expect("delete");
+                        mt.delete(&realm, key).expect("delete");
                         oracle.remove(key);
                     }
                 }
@@ -591,7 +591,7 @@ mod tests {
 
             // Verify all oracle entries exist in memtable
             for (key, expected) in &oracle {
-                let actual = mt.get(&tenant, key);
+                let actual = mt.get(&realm, key);
                 prop_assert_eq!(
                     actual.as_deref(),
                     Some(expected.as_slice()),
@@ -601,7 +601,7 @@ mod tests {
             }
 
             // Verify memtable has no extra live entries
-            let entries = mt.iter_tenant(&tenant);
+            let entries = mt.iter_realm(&realm);
             let live_entries: Vec<_> = entries
                 .into_iter()
                 .filter(|(_, v)| matches!(v, MemtableValue::Data(_)))
@@ -617,13 +617,13 @@ mod tests {
     #[test]
     fn concurrent_reads_during_writes_see_consistent_snapshots() {
         let mt = Arc::new(Memtable::new(MemtableConfig::default()));
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
         let done = Arc::new(AtomicBool::new(false));
 
         std::thread::scope(|s| {
             // Writer: inserts keys 0..1000
             let mt_w = &mt;
-            let t_w = &tenant;
+            let t_w = &realm;
             let done_w = &done;
             s.spawn(move || {
                 for i in 0u32..1000 {
@@ -636,12 +636,12 @@ mod tests {
             // Readers: continuously snapshot and verify sorted order
             for _ in 0..4 {
                 let mt_r = &mt;
-                let t_r = &tenant;
+                let t_r = &realm;
                 let done_r = &done;
                 s.spawn(move || {
                     let mut iterations = 0u64;
                     while !done_r.load(Ordering::Acquire) {
-                        let entries = mt_r.iter_tenant(t_r);
+                        let entries = mt_r.iter_realm(t_r);
                         // Every snapshot must be sorted
                         for window in entries.windows(2) {
                             assert!(
@@ -660,7 +660,7 @@ mod tests {
         // Final consistency check: all 1000 keys should be present
         for i in 0u32..1000 {
             assert_eq!(
-                mt.get(&tenant, &i.to_be_bytes()),
+                mt.get(&realm, &i.to_be_bytes()),
                 Some(i.to_be_bytes().to_vec()),
                 "key {i} missing after concurrent writes"
             );

@@ -17,9 +17,9 @@ enum AuditAction {
   AUDIT_ACTION_SESSION_REVOKED = 8;
   AUDIT_ACTION_TOKEN_ISSUED = 9;
   AUDIT_ACTION_TOKEN_REFRESHED = 10;
-  AUDIT_ACTION_TENANT_CREATED = 11;
-  AUDIT_ACTION_TENANT_UPDATED = 12;
-  AUDIT_ACTION_TENANT_DELETED = 13;
+  AUDIT_ACTION_REALM_CREATED = 11;
+  AUDIT_ACTION_REALM_UPDATED = 12;
+  AUDIT_ACTION_REALM_DELETED = 13;
   AUDIT_ACTION_CLIENT_REGISTERED = 14;
   AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED = 15;
   AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED = 16;
@@ -37,7 +37,7 @@ enum AuditAction {
 // A recorded audit event in the append-only log.
 message AuditEvent {
   string id = 1;
-  string tenant_id = 2;
+  string realm_id = 2;
   string actor = 3;
   AuditAction action = 4;
   string resource_type = 5;
@@ -50,7 +50,7 @@ message AuditEvent {
 
 // Request to append a new audit event.
 message CreateAuditEvent {
-  string tenant_id = 1;
+  string realm_id = 1;
   string actor = 2;
   AuditAction action = 3;
   string resource_type = 4;
@@ -61,7 +61,7 @@ message CreateAuditEvent {
 
 // Query parameters for filtering audit events.
 message AuditQuery {
-  string tenant_id = 1;
+  string realm_id = 1;
   optional int64 start_time = 2;
   optional int64 end_time = 3;
   optional string actor = 4;

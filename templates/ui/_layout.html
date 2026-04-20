@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;1,9..144,400&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/ui/static/app.css">
   {% if !theme_css.is_empty() %}<style>{{ theme_css|safe }}</style>{% endif %}
-  {% if let Some(css) = tenant_theme_css %}<style>{{ css|safe }}</style>{% endif %}
+  {% if let Some(css) = realm_theme_css %}<style>{{ css|safe }}</style>{% endif %}
   {% match csrf %}
     {% when Some with (token) %}
       <meta name="csrf" content="{{ token }}">
@@ -71,9 +71,9 @@
               </a>
             </li>
             <li>
-              <a href="/ui/admin/tenants" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "tenants" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "tenants" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/realms" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "realms" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "realms" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-                Tenants
+                Realms
               </a>
             </li>
             <li>

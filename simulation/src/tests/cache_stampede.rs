@@ -36,7 +36,7 @@ use hearth::authz::{
     AuthorizationEngine, AuthzConfig, AuthzError, EmbeddedAuthzEngine, ObjectRef,
     RelationshipTuple, SubjectRef, TupleWrite,
 };
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::storage::{
     EmbeddedStorageEngine, ScanEntry, StorageConfig, StorageEngine, StorageError,
 };
@@ -61,17 +61,17 @@ fn open_engine(dir: &std::path::Path) -> (Arc<dyn StorageEngine>, Arc<EmbeddedAu
 }
 
 /// Seeds the tuple `document:design#viewer@user:alice` for the given
-/// tenant. Returns the `(object, relation, subject)` triple used by
+/// realm. Returns the `(object, relation, subject)` triple used by
 /// subsequent checks.
 fn seed_alice_viewer(
     authz: &EmbeddedAuthzEngine,
-    tenant: &TenantId,
+    realm: &RealmId,
 ) -> (ObjectRef, &'static str, SubjectRef) {
     let doc = ObjectRef::new("document", "design").expect("valid obj");
     let alice = SubjectRef::direct("user", "alice").expect("valid subj");
     let tuple = RelationshipTuple::new(doc.clone(), "viewer", alice.clone()).expect("valid tuple");
     authz
-        .write_tuples(tenant, &[TupleWrite::Touch(tuple)])
+        .write_tuples(realm, &[TupleWrite::Touch(tuple)])
         .expect("seed");
     (doc, "viewer", alice)
 }
@@ -80,7 +80,7 @@ fn seed_alice_viewer(
 /// `check()`. Returns the collected outcomes in arrival order.
 fn stampede_check(
     authz: Arc<EmbeddedAuthzEngine>,
-    tenant: &TenantId,
+    realm: &RealmId,
     object: ObjectRef,
     relation: &'static str,
     subject: SubjectRef,
@@ -91,12 +91,12 @@ fn stampede_check(
     for _ in 0..wave {
         let authz = Arc::clone(&authz);
         let barrier = Arc::clone(&barrier);
-        let tenant = tenant.clone();
+        let realm = realm.clone();
         let object = object.clone();
         let subject = subject.clone();
         handles.push(thread::spawn(move || {
             barrier.wait();
-            authz.check(&tenant, &object, relation, &subject, None)
+            authz.check(&realm, &object, relation, &subject, None)
         }));
     }
     handles
@@ -123,8 +123,8 @@ fn stampede_check(
 fn simulation_cache_stampede_coalesces_backend_calls() {
     let dir = tempfile::tempdir().expect("tmpdir");
     let (_storage, authz) = open_engine(dir.path());
-    let tenant = TenantId::generate();
-    let (doc, relation, alice) = seed_alice_viewer(&authz, &tenant);
+    let realm = RealmId::generate();
+    let (doc, relation, alice) = seed_alice_viewer(&authz, &realm);
 
     // Seeding performed one backend call internally (during the implicit
     // first check inside write_tuples? no — writes don't invoke check).
@@ -135,7 +135,7 @@ fn simulation_cache_stampede_coalesces_backend_calls() {
 
     let results = stampede_check(
         Arc::clone(&authz),
-        &tenant,
+        &realm,
         doc.clone(),
         relation,
         alice.clone(),
@@ -162,7 +162,7 @@ fn simulation_cache_stampede_coalesces_backend_calls() {
     let before_warm = authz.backend_call_count();
     let warm = stampede_check(
         Arc::clone(&authz),
-        &tenant,
+        &realm,
         doc,
         relation,
         alice,
@@ -187,7 +187,7 @@ fn simulation_cache_stampede_coalesces_backend_calls() {
 fn simulation_cache_stampede_negative_result_is_cached() {
     let dir = tempfile::tempdir().expect("tmpdir");
     let (_storage, authz) = open_engine(dir.path());
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let doc = ObjectRef::new("document", "design").expect("valid obj");
     let alice = SubjectRef::direct("user", "alice").expect("valid subj");
@@ -195,7 +195,7 @@ fn simulation_cache_stampede_negative_result_is_cached() {
     let before = authz.backend_call_count();
     let results = stampede_check(
         Arc::clone(&authz),
-        &tenant,
+        &realm,
         doc.clone(),
         "viewer",
         alice.clone(),
@@ -218,7 +218,7 @@ fn simulation_cache_stampede_negative_result_is_cached() {
     let before_warm = authz.backend_call_count();
     let warm = stampede_check(
         Arc::clone(&authz),
-        &tenant,
+        &realm,
         doc,
         "viewer",
         alice,
@@ -258,38 +258,38 @@ impl FaultOnceStorage {
 }
 
 impl StorageEngine for FaultOnceStorage {
-    fn get(&self, tenant_id: &TenantId, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+    fn get(&self, realm_id: &RealmId, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         if self.fail_next_get.swap(false, Ordering::SeqCst) {
             return Err(StorageError::Io(std::io::Error::other(
                 "injected storage fault",
             )));
         }
-        self.inner.get(tenant_id, key)
+        self.inner.get(realm_id, key)
     }
 
-    fn put(&self, tenant_id: &TenantId, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
-        self.inner.put(tenant_id, key, value)
+    fn put(&self, realm_id: &RealmId, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
+        self.inner.put(realm_id, key, value)
     }
 
-    fn delete(&self, tenant_id: &TenantId, key: &[u8]) -> Result<(), StorageError> {
-        self.inner.delete(tenant_id, key)
+    fn delete(&self, realm_id: &RealmId, key: &[u8]) -> Result<(), StorageError> {
+        self.inner.delete(realm_id, key)
     }
 
     fn scan(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         start: &[u8],
         end: &[u8],
     ) -> Result<Vec<ScanEntry>, StorageError> {
-        self.inner.scan(tenant_id, start, end)
+        self.inner.scan(realm_id, start, end)
     }
 
     fn put_batch(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         entries: &[(Vec<u8>, Vec<u8>)],
     ) -> Result<(), StorageError> {
-        self.inner.put_batch(tenant_id, entries)
+        self.inner.put_batch(realm_id, entries)
     }
 }
 
@@ -312,14 +312,14 @@ fn simulation_cache_stampede_resolver_error_is_retried() {
         Arc::clone(&fault) as Arc<dyn StorageEngine>,
         AuthzConfig::default(),
     ));
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Seed a real tuple through the raw inner storage path. We bypass
     // FaultOnceStorage for setup so seeding doesn't accidentally consume
     // the armed fault. We do this via a direct EmbeddedAuthzEngine bound
     // to `inner`.
     let seed_authz = EmbeddedAuthzEngine::new(Arc::clone(&inner), AuthzConfig::default());
-    let (doc, relation, alice) = seed_alice_viewer(&seed_authz, &tenant);
+    let (doc, relation, alice) = seed_alice_viewer(&seed_authz, &realm);
 
     // Re-arm the fault in case any prior operation consumed it.
     fault.arm();
@@ -329,7 +329,7 @@ fn simulation_cache_stampede_resolver_error_is_retried() {
     let wave = 64;
     let results = stampede_check(
         Arc::clone(&authz),
-        &tenant,
+        &realm,
         doc.clone(),
         relation,
         alice.clone(),
@@ -352,7 +352,7 @@ fn simulation_cache_stampede_resolver_error_is_retried() {
     // inflight slot had been left behind, this would deadlock on
     // slot.wait() (no leader to publish).
     let second = authz
-        .check(&tenant, &doc, relation, &alice, None)
+        .check(&realm, &doc, relation, &alice, None)
         .expect("post-fault check should succeed");
     assert!(
         second,

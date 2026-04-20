@@ -6,30 +6,30 @@
 
 mod common;
 
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{
-    AuthenticationOptions, CompleteAuthenticationParams, CreateTenantRequest, CreateUserRequest,
+    AuthenticationOptions, CompleteAuthenticationParams, CreateRealmRequest, CreateUserRequest,
     RegistrationOptions, User,
 };
 
-/// Helper: creates a real tenant with a signing key.
-fn create_tenant(harness: &common::TestHarness) -> TenantId {
-    let tenant = harness
+/// Helper: creates a real realm with a signing key.
+fn create_realm(harness: &common::TestHarness) -> RealmId {
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: format!("webauthn-test-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("create tenant");
-    tenant.id().clone()
+        .expect("create realm");
+    realm.id().clone()
 }
 
 /// Helper: creates a user with a unique email.
-fn create_user(harness: &common::TestHarness, tenant: &TenantId) -> User {
+fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
         .identity()
         .create_user(
-            tenant,
+            realm,
             &CreateUserRequest {
                 email: format!("webauthn-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "WebAuthn Test User".to_string(),
@@ -208,7 +208,7 @@ mod webauthn_helper {
 
 // ===== Scenario D1: Full lifecycle via embedded API =====
 //
-// create tenant → user → start registration → complete registration →
+// create realm → user → start registration → complete registration →
 // start authentication → complete authentication → success
 
 #[tokio::test]
@@ -216,8 +216,8 @@ async fn webauthn_full_lifecycle() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = create_tenant(&harness);
-    let user = create_user(&harness, &tenant);
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
     let origin = "https://example.com";
 
     let authenticator = webauthn_helper::TestAuthenticator::new("example.com");
@@ -226,7 +226,7 @@ async fn webauthn_full_lifecycle() {
     let challenge = harness
         .identity()
         .start_webauthn_registration(
-            &tenant,
+            &realm,
             user.id(),
             &RegistrationOptions {
                 rp_id: "example.com".to_string(),
@@ -243,7 +243,7 @@ async fn webauthn_full_lifecycle() {
     let cred_info = harness
         .identity()
         .complete_webauthn_registration(
-            &tenant,
+            &realm,
             user.id(),
             &client_data_json,
             &attestation_object,
@@ -257,7 +257,7 @@ async fn webauthn_full_lifecycle() {
     // Verify credential is listed
     let creds = harness
         .identity()
-        .list_webauthn_credentials(&tenant, user.id())
+        .list_webauthn_credentials(&realm, user.id())
         .expect("list credentials");
     assert_eq!(creds.len(), 1);
     assert_eq!(creds[0].credential_id(), authenticator.credential_id);
@@ -266,7 +266,7 @@ async fn webauthn_full_lifecycle() {
     let auth_challenge = harness
         .identity()
         .start_webauthn_authentication(
-            &tenant,
+            &realm,
             Some(user.id()),
             &AuthenticationOptions {
                 rp_id: "example.com".to_string(),
@@ -282,7 +282,7 @@ async fn webauthn_full_lifecycle() {
     let auth_result = harness
         .identity()
         .complete_webauthn_authentication(
-            &tenant,
+            &realm,
             &CompleteAuthenticationParams {
                 credential_id: &authenticator.credential_id,
                 client_data_json: &auth_cdj,
@@ -309,8 +309,8 @@ async fn webauthn_credential_management() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = create_tenant(&harness);
-    let user = create_user(&harness, &tenant);
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
     let origin = "https://example.com";
 
     let auth1 = webauthn_helper::TestAuthenticator::new("example.com");
@@ -320,7 +320,7 @@ async fn webauthn_credential_management() {
     let challenge1 = harness
         .identity()
         .start_webauthn_registration(
-            &tenant,
+            &realm,
             user.id(),
             &RegistrationOptions {
                 rp_id: "example.com".to_string(),
@@ -332,14 +332,14 @@ async fn webauthn_credential_management() {
     let (cdj1, att1) = auth1.build_registration_response(&challenge1, origin);
     harness
         .identity()
-        .complete_webauthn_registration(&tenant, user.id(), &cdj1, &att1, origin, false)
+        .complete_webauthn_registration(&realm, user.id(), &cdj1, &att1, origin, false)
         .expect("complete reg1");
 
     // Authenticate with key1
     let auth_challenge = harness
         .identity()
         .start_webauthn_authentication(
-            &tenant,
+            &realm,
             Some(user.id()),
             &AuthenticationOptions {
                 rp_id: "example.com".to_string(),
@@ -352,7 +352,7 @@ async fn webauthn_credential_management() {
     harness
         .identity()
         .complete_webauthn_authentication(
-            &tenant,
+            &realm,
             &CompleteAuthenticationParams {
                 credential_id: &auth1.credential_id,
                 client_data_json: &acdj,
@@ -368,7 +368,7 @@ async fn webauthn_credential_management() {
     let challenge2 = harness
         .identity()
         .start_webauthn_registration(
-            &tenant,
+            &realm,
             user.id(),
             &RegistrationOptions {
                 rp_id: "example.com".to_string(),
@@ -380,26 +380,26 @@ async fn webauthn_credential_management() {
     let (cdj2, att2) = auth2.build_registration_response(&challenge2, origin);
     harness
         .identity()
-        .complete_webauthn_registration(&tenant, user.id(), &cdj2, &att2, origin, false)
+        .complete_webauthn_registration(&realm, user.id(), &cdj2, &att2, origin, false)
         .expect("complete reg2");
 
     // Two credentials now
     let creds = harness
         .identity()
-        .list_webauthn_credentials(&tenant, user.id())
+        .list_webauthn_credentials(&realm, user.id())
         .expect("list");
     assert_eq!(creds.len(), 2, "should have 2 credentials");
 
     // Revoke key1
     harness
         .identity()
-        .revoke_webauthn_credential(&tenant, user.id(), &auth1.credential_id)
+        .revoke_webauthn_credential(&realm, user.id(), &auth1.credential_id)
         .expect("revoke key1");
 
     // Only key2 remains
     let creds_after = harness
         .identity()
-        .list_webauthn_credentials(&tenant, user.id())
+        .list_webauthn_credentials(&realm, user.id())
         .expect("list after revoke");
     assert_eq!(
         creds_after.len(),
@@ -416,7 +416,7 @@ async fn webauthn_credential_management() {
     let auth_challenge2 = harness
         .identity()
         .start_webauthn_authentication(
-            &tenant,
+            &realm,
             Some(user.id()),
             &AuthenticationOptions {
                 rp_id: "example.com".to_string(),
@@ -429,7 +429,7 @@ async fn webauthn_credential_management() {
     let result = harness
         .identity()
         .complete_webauthn_authentication(
-            &tenant,
+            &realm,
             &CompleteAuthenticationParams {
                 credential_id: &auth2.credential_id,
                 client_data_json: &acdj2,

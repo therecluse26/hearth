@@ -13,7 +13,7 @@ use hearth::authz::{
     ConsistencyToken, NamespaceConfig, ObjectRef, ObjectTypeConfig, RelationConfig,
     RelationshipTuple, SubjectRef, TupleWrite, WatchFilter,
 };
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 
 /// Scenario 1: Permission check via embedded public API.
 ///
@@ -25,7 +25,7 @@ async fn permission_check_via_embedded_api() {
         .await
         .expect("embedded harness should start");
     let authz = harness.authz();
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Set up: document:design#viewer@group:eng#member, group:eng#member@user:alice
     let doc = ObjectRef::new("document", "design").expect("valid");
@@ -38,7 +38,7 @@ async fn permission_check_via_embedded_api() {
 
     authz
         .write_tuples(
-            &tenant,
+            &realm,
             &[TupleWrite::Touch(tuple1), TupleWrite::Touch(tuple2)],
         )
         .expect("write tuples");
@@ -47,7 +47,7 @@ async fn permission_check_via_embedded_api() {
     let bob = SubjectRef::direct("user", "bob").expect("valid");
     assert!(
         !authz
-            .check(&tenant, &doc, "viewer", &bob, None)
+            .check(&realm, &doc, "viewer", &bob, None)
             .expect("check bob"),
         "bob should not have viewer access"
     );
@@ -55,13 +55,13 @@ async fn permission_check_via_embedded_api() {
     // Transitive check: alice has viewer through group membership
     assert!(
         authz
-            .check(&tenant, &doc, "viewer", &alice, None)
+            .check(&realm, &doc, "viewer", &alice, None)
             .expect("check alice"),
         "alice should have transitive viewer access"
     );
 
     // Expand: should find alice as a reachable viewer
-    let viewers = authz.expand(&tenant, &doc, "viewer", None).expect("expand");
+    let viewers = authz.expand(&realm, &doc, "viewer", None).expect("expand");
     assert!(
         viewers.contains(&alice),
         "expand should include alice, got: {viewers:?}"
@@ -77,7 +77,7 @@ async fn write_check_delete_roundtrip_via_public_api() {
         .await
         .expect("embedded harness should start");
     let authz = harness.authz();
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let doc = ObjectRef::new("folder", "shared").expect("valid");
     let alice = SubjectRef::direct("user", "alice").expect("valid");
@@ -87,16 +87,16 @@ async fn write_check_delete_roundtrip_via_public_api() {
 
     // Initially: no permissions
     assert!(!authz
-        .check(&tenant, &doc, "editor", &alice, None)
+        .check(&realm, &doc, "editor", &alice, None)
         .expect("check"));
     assert!(!authz
-        .check(&tenant, &doc, "editor", &bob, None)
+        .check(&realm, &doc, "editor", &bob, None)
         .expect("check"));
 
     // Write: add both alice and bob as editors
     authz
         .write_tuples(
-            &tenant,
+            &realm,
             &[
                 TupleWrite::Touch(tuple_alice.clone()),
                 TupleWrite::Touch(tuple_bob.clone()),
@@ -106,37 +106,37 @@ async fn write_check_delete_roundtrip_via_public_api() {
 
     // Verify: both have permission
     assert!(authz
-        .check(&tenant, &doc, "editor", &alice, None)
+        .check(&realm, &doc, "editor", &alice, None)
         .expect("check"));
     assert!(authz
-        .check(&tenant, &doc, "editor", &bob, None)
+        .check(&realm, &doc, "editor", &bob, None)
         .expect("check"));
 
     // Expand: should return both
-    let editors = authz.expand(&tenant, &doc, "editor", None).expect("expand");
+    let editors = authz.expand(&realm, &doc, "editor", None).expect("expand");
     assert_eq!(editors.len(), 2, "should have 2 editors, got: {editors:?}");
 
     // Delete: remove alice's permission
     authz
-        .write_tuples(&tenant, &[TupleWrite::Delete(tuple_alice)])
+        .write_tuples(&realm, &[TupleWrite::Delete(tuple_alice)])
         .expect("delete");
 
     // Verify: alice no longer has permission, bob still does
     assert!(
         !authz
-            .check(&tenant, &doc, "editor", &alice, None)
+            .check(&realm, &doc, "editor", &alice, None)
             .expect("check"),
         "alice should no longer be editor after delete"
     );
     assert!(
         authz
-            .check(&tenant, &doc, "editor", &bob, None)
+            .check(&realm, &doc, "editor", &bob, None)
             .expect("check"),
         "bob should still be editor"
     );
 
     // Expand: should return only bob
-    let editors = authz.expand(&tenant, &doc, "editor", None).expect("expand");
+    let editors = authz.expand(&realm, &doc, "editor", None).expect("expand");
     assert_eq!(
         editors.len(),
         1,
@@ -155,7 +155,7 @@ async fn namespace_schema_migration() {
         .await
         .expect("embedded harness should start");
     let authz = harness.authz();
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // 1. Set initial schema: document has viewer with user subject only
     let mut relations = HashMap::new();
@@ -171,7 +171,7 @@ async fn namespace_schema_migration() {
         object_types: object_types.clone(),
     };
     authz
-        .set_namespace(&tenant, &config_v1)
+        .set_namespace(&realm, &config_v1)
         .expect("set namespace v1");
 
     // 2. Write valid tuple
@@ -179,7 +179,7 @@ async fn namespace_schema_migration() {
     let alice = SubjectRef::direct("user", "alice").expect("valid");
     let tuple = RelationshipTuple::new(doc.clone(), "viewer", alice.clone()).expect("valid");
     authz
-        .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+        .write_tuples(&realm, &[TupleWrite::Touch(tuple)])
         .expect("write valid tuple");
 
     // 3. Migrate: add "group" as allowed subject type for viewer
@@ -201,14 +201,14 @@ async fn namespace_schema_migration() {
         object_types: object_types_v2,
     };
     authz
-        .set_namespace(&tenant, &config_v2)
+        .set_namespace(&realm, &config_v2)
         .expect("set namespace v2");
 
     // 4. Now group subjects should be accepted
     let group_subj = SubjectRef::userset("group", "eng", "member").expect("valid");
     let group_tuple = RelationshipTuple::new(doc, "viewer", group_subj).expect("valid");
     authz
-        .write_tuples(&tenant, &[TupleWrite::Touch(group_tuple)])
+        .write_tuples(&realm, &[TupleWrite::Touch(group_tuple)])
         .expect("group subject should now be accepted after migration");
 }
 
@@ -224,12 +224,12 @@ async fn user_deletion_does_not_cascade_authz_tuples() {
         .expect("embedded harness should start");
     let authz = harness.authz();
     let identity = harness.identity();
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Create user
     let user = identity
         .create_user(
-            &tenant,
+            &realm,
             &hearth::identity::CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
@@ -242,23 +242,23 @@ async fn user_deletion_does_not_cascade_authz_tuples() {
     let subj = SubjectRef::direct("user", &user.id().as_uuid().to_string()).expect("valid");
     let tuple = RelationshipTuple::new(doc.clone(), "viewer", subj.clone()).expect("valid");
     authz
-        .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+        .write_tuples(&realm, &[TupleWrite::Touch(tuple)])
         .expect("write tuple");
 
     // Verify permission
     assert!(authz
-        .check(&tenant, &doc, "viewer", &subj, None)
+        .check(&realm, &doc, "viewer", &subj, None)
         .expect("check"));
 
     // Delete user
     identity
-        .delete_user(&tenant, user.id())
+        .delete_user(&realm, user.id())
         .expect("delete user");
 
     // Authz tuple still exists (no cascade — caller is responsible for cleanup)
     assert!(
         authz
-            .check(&tenant, &doc, "viewer", &subj, None)
+            .check(&realm, &doc, "viewer", &subj, None)
             .expect("check"),
         "authz tuple should still exist after user deletion"
     );
@@ -273,14 +273,14 @@ async fn malformed_schema_rejected() {
         .await
         .expect("embedded harness should start");
     let authz = harness.authz();
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Empty schema — no object types defined
     let empty_config = NamespaceConfig {
         object_types: HashMap::new(),
     };
     authz
-        .set_namespace(&tenant, &empty_config)
+        .set_namespace(&realm, &empty_config)
         .expect("set empty namespace");
 
     // Any write should fail since no types are defined
@@ -289,7 +289,7 @@ async fn malformed_schema_rejected() {
     let tuple = RelationshipTuple::new(obj, "viewer", subj).expect("valid");
 
     let err = authz
-        .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+        .write_tuples(&realm, &[TupleWrite::Touch(tuple)])
         .expect_err("should reject with empty schema");
     assert!(
         matches!(err, hearth::authz::AuthzError::InvalidNamespace { .. }),
@@ -306,18 +306,18 @@ async fn watch_end_to_end_live_events() {
         .await
         .expect("embedded harness should start");
     let authz = harness.authz();
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Subscribe before any writes
     let filter = WatchFilter { object_type: None };
-    let mut receiver = authz.watch(&tenant, &filter, None).expect("watch");
+    let mut receiver = authz.watch(&realm, &filter, None).expect("watch");
 
     // Write a tuple
     let doc = ObjectRef::new("document", "readme").expect("valid");
     let alice = SubjectRef::direct("user", "alice").expect("valid");
     let tuple = RelationshipTuple::new(doc, "viewer", alice).expect("valid");
     let token = authz
-        .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+        .write_tuples(&realm, &[TupleWrite::Touch(tuple)])
         .expect("write");
 
     // Should receive the event via broadcast
@@ -340,25 +340,25 @@ async fn watch_replay_delivers_historical_events() {
         .await
         .expect("embedded harness should start");
     let authz = harness.authz();
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Write two batches of tuples
     let doc = ObjectRef::new("document", "readme").expect("valid");
     let alice = SubjectRef::direct("user", "alice").expect("valid");
     let t1 = RelationshipTuple::new(doc.clone(), "viewer", alice).expect("valid");
     let token1 = authz
-        .write_tuples(&tenant, &[TupleWrite::Touch(t1)])
+        .write_tuples(&realm, &[TupleWrite::Touch(t1)])
         .expect("write");
 
     let bob = SubjectRef::direct("user", "bob").expect("valid");
     let t2 = RelationshipTuple::new(doc, "editor", bob).expect("valid");
     let _token2 = authz
-        .write_tuples(&tenant, &[TupleWrite::Touch(t2)])
+        .write_tuples(&realm, &[TupleWrite::Touch(t2)])
         .expect("write");
 
     // Watch from token1 — should replay only events after token1
     let filter = WatchFilter { object_type: None };
-    let mut receiver = authz.watch(&tenant, &filter, Some(&token1)).expect("watch");
+    let mut receiver = authz.watch(&realm, &filter, Some(&token1)).expect("watch");
 
     let event = receiver.drain_replay();
     assert!(event.is_some(), "should have replay event for second write");
@@ -369,38 +369,38 @@ async fn watch_replay_delivers_historical_events() {
 
 // === Adversarial: Watch without auth rejected ===
 
-/// Scenario: Watch subscription validates tenant context.
+/// Scenario: Watch subscription validates realm context.
 /// (In the current single-node implementation, any caller can watch
-/// any tenant — but the API requires a valid `TenantId`. This test
-/// verifies the watch channel is tenant-isolated.)
+/// any realm — but the API requires a valid `RealmId`. This test
+/// verifies the watch channel is realm-isolated.)
 #[tokio::test]
-async fn watch_tenant_isolation() {
+async fn watch_realm_isolation() {
     let harness = TestHarness::embedded()
         .await
         .expect("embedded harness should start");
     let authz = harness.authz();
-    let tenant_a = TenantId::generate();
-    let tenant_b = TenantId::generate();
+    let realm_a = RealmId::generate();
+    let realm_b = RealmId::generate();
 
-    // Subscribe to tenant A
+    // Subscribe to realm A
     let filter = WatchFilter { object_type: None };
-    let _receiver_a = authz.watch(&tenant_a, &filter, None).expect("watch");
+    let _receiver_a = authz.watch(&realm_a, &filter, None).expect("watch");
 
-    // Write to tenant B — should not appear in tenant A's watch
+    // Write to realm B — should not appear in realm A's watch
     let doc = ObjectRef::new("document", "readme").expect("valid");
     let alice = SubjectRef::direct("user", "alice").expect("valid");
     let tuple = RelationshipTuple::new(doc, "viewer", alice).expect("valid");
     authz
-        .write_tuples(&tenant_b, &[TupleWrite::Touch(tuple)])
+        .write_tuples(&realm_b, &[TupleWrite::Touch(tuple)])
         .expect("write");
 
-    // Replay from tenant A should be empty (no events written to tenant A)
+    // Replay from realm A should be empty (no events written to realm A)
     let token_zero = ConsistencyToken::new(0);
     let mut receiver_a = authz
-        .watch(&tenant_a, &filter, Some(&token_zero))
+        .watch(&realm_a, &filter, Some(&token_zero))
         .expect("watch");
     assert!(
         receiver_a.drain_replay().is_none(),
-        "tenant A should have no events from tenant B"
+        "realm A should have no events from realm B"
     );
 }

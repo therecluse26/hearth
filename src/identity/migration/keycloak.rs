@@ -1,6 +1,6 @@
 //! Keycloak realm-export importer.
 //!
-//! Parses a Keycloak "realm export" JSON file and imports its tenant,
+//! Parses a Keycloak "realm export" JSON file and imports its realm,
 //! users, OAuth clients, and realm roles into Hearth via the
 //! `IdentityEngine` and `AuthzEngine` traits.
 //!
@@ -8,7 +8,7 @@
 //!
 //! | Keycloak                         | Hearth                                |
 //! |----------------------------------|---------------------------------------|
-//! | realm (`id`, `realm`)            | tenant                                |
+//! | realm (`id`, `realm`)            | realm                                |
 //! | user (`id`, `email`, …)          | user (id preserved when a valid UUID) |
 //! | user → realmRoles                | authz tuple `realm:<tid>#<role>@user:<uid>` |
 //! | client                           | `OAuthClient`                         |
@@ -26,11 +26,11 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
-use crate::core::{ClientId, TenantId, UserId};
+use crate::core::{ClientId, RealmId, UserId};
 use crate::identity::migration::credentials::{parse_keycloak_credential, KeycloakCredential};
 use crate::identity::migration::error::MigrationError;
 use crate::identity::{
-    CreateTenantRequest, IdentityEngine, ImportClientRequest, ImportUserRequest, MigrationReport,
+    CreateRealmRequest, IdentityEngine, ImportClientRequest, ImportUserRequest, MigrationReport,
     RawCredential, UserStatus,
 };
 
@@ -38,9 +38,9 @@ use crate::identity::{
 /// that this importer consumes. Unknown fields are silently ignored.
 #[derive(Debug, Deserialize)]
 pub struct KeycloakRealmExport {
-    /// Realm UUID, used as the Hearth tenant ID when it parses cleanly.
+    /// Realm UUID, used as the Hearth realm ID when it parses cleanly.
     pub id: Option<String>,
-    /// Realm identifier (short name), used as the tenant display name.
+    /// Realm identifier (short name), used as the realm display name.
     pub realm: String,
     /// Users in the realm. Defaults to empty if absent.
     #[serde(default)]
@@ -169,25 +169,25 @@ impl KeycloakImporter {
     pub fn import_realm(
         &self,
         export: &KeycloakRealmExport,
-        requested_tenant: Option<TenantId>,
+        requested_realm: Option<RealmId>,
         options: &ImportOptions,
     ) -> Result<MigrationReport, MigrationError> {
         let mut report = MigrationReport::default();
 
-        // 1. Resolve/create the tenant. Keycloak's realm `id` is a UUID
+        // 1. Resolve/create the realm. Keycloak's realm `id` is a UUID
         //    in newer exports; fall back to generating one if the field
         //    is absent or malformed. This lets older realm dumps still
         //    import successfully.
-        let tenant_id_hint = requested_tenant.or_else(|| {
+        let realm_id_hint = requested_realm.or_else(|| {
             export
                 .id
                 .as_deref()
                 .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                .map(TenantId::new)
+                .map(RealmId::new)
         });
 
         if options.dry_run {
-            report.tenant_id = tenant_id_hint;
+            report.realm_id = realm_id_hint;
             report.users_imported = export.users.len();
             // Only enabled clients would actually be written; a
             // disabled confidential client is simply skipped in the
@@ -201,15 +201,13 @@ impl KeycloakImporter {
             return Ok(report);
         }
 
-        let tenant_request = CreateTenantRequest {
+        let realm_request = CreateRealmRequest {
             name: export.realm.clone(),
             config: None,
         };
-        let tenant = self
-            .identity
-            .import_tenant(&tenant_request, tenant_id_hint)?;
-        let tenant_id = tenant.id().clone();
-        report.tenant_id = Some(tenant_id.clone());
+        let realm = self.identity.import_realm(&realm_request, realm_id_hint)?;
+        let realm_id = realm.id().clone();
+        report.realm_id = Some(realm_id.clone());
 
         // 2. Import users and remember their Hearth IDs so we can emit
         //    role tuples keyed by the *Hearth* user_id (which may be
@@ -218,7 +216,7 @@ impl KeycloakImporter {
             std::collections::HashMap::new();
 
         for (idx, ku) in export.users.iter().enumerate() {
-            match self.import_single_user(&tenant_id, ku) {
+            match self.import_single_user(&realm_id, ku) {
                 Ok(outcome) => {
                     report.users_imported += 1;
                     if outcome.credential_skipped {
@@ -249,7 +247,7 @@ impl KeycloakImporter {
                     .push(format!("skipped disabled client '{}'", kc.client_id));
                 continue;
             }
-            match self.import_single_client(&tenant_id, kc) {
+            match self.import_single_client(&realm_id, kc) {
                 Ok(()) => report.clients_imported += 1,
                 Err(e) => {
                     report.warnings.push(format!(
@@ -261,7 +259,7 @@ impl KeycloakImporter {
         }
 
         // 4. Emit role tuples and surface reconciliation warnings.
-        self.emit_role_tuples(&tenant_id, export, &user_ids_by_keycloak_key, &mut report)?;
+        self.emit_role_tuples(&realm_id, export, &user_ids_by_keycloak_key, &mut report)?;
         warn_undeclared_roles(export, &mut report);
 
         Ok(report)
@@ -273,12 +271,12 @@ impl KeycloakImporter {
     /// recorded as warnings rather than aborting the import.
     fn emit_role_tuples(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         export: &KeycloakRealmExport,
         user_ids_by_keycloak_key: &std::collections::HashMap<String, UserId>,
         report: &mut MigrationReport,
     ) -> Result<(), MigrationError> {
-        let realm_object_id = tenant_id.as_uuid().to_string();
+        let realm_object_id = realm_id.as_uuid().to_string();
         let mut tuple_writes: Vec<TupleWrite> = Vec::new();
 
         for (idx, ku) in export.users.iter().enumerate() {
@@ -300,7 +298,7 @@ impl KeycloakImporter {
         }
 
         if !tuple_writes.is_empty() {
-            self.authz.write_tuples(tenant_id, &tuple_writes)?;
+            self.authz.write_tuples(realm_id, &tuple_writes)?;
             report.tuples_written = tuple_writes.len();
         }
         Ok(())
@@ -308,7 +306,7 @@ impl KeycloakImporter {
 
     fn import_single_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         ku: &KeycloakUser,
     ) -> Result<UserOutcome, MigrationError> {
         let email = ku
@@ -372,7 +370,7 @@ impl KeycloakImporter {
             credential,
         };
 
-        let user = self.identity.import_user(tenant_id, &request)?;
+        let user = self.identity.import_user(realm_id, &request)?;
         Ok(UserOutcome {
             user_id: user.id().clone(),
             credential_skipped,
@@ -382,7 +380,7 @@ impl KeycloakImporter {
 
     fn import_single_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         kc: &KeycloakClient,
     ) -> Result<(), MigrationError> {
         let id = kc
@@ -413,7 +411,7 @@ impl KeycloakImporter {
             grant_types,
         };
 
-        self.identity.import_client(tenant_id, &request)?;
+        self.identity.import_client(realm_id, &request)?;
         Ok(())
     }
 }

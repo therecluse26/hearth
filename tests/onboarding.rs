@@ -1,12 +1,12 @@
 //! Integration tests for production onboarding (Phase 1.5 / Step 32).
 //!
 //! Covers `TEST_SCENARIOS.md` § Onboarding (Setup + Email Verification):
-//! - First-run detection toggles when the first tenant is created.
+//! - First-run detection toggles when the first realm is created.
 //! - Setup-token lifecycle: generated once, consumed on success, removed
 //!   automatically when the deployment becomes configured.
 //! - Full setup flow: admin (`PendingVerification`) + Zanzibar admin
-//!   tuple + verification token + verification email (tenant comes from
-//!   YAML reconciliation, pre-created in tests via `seed_tenant`).
+//!   tuple + verification token + verification email (realm comes from
+//!   YAML reconciliation, pre-created in tests via `seed_realm`).
 //! - Session creation is gated on `UserStatus::Active`; a
 //!   `PendingVerification` user cannot create sessions.
 //! - Verification-token reuse, expiry, and enumeration-resistance.
@@ -25,8 +25,8 @@ use hearth::identity::onboarding::{
     SETUP_TOKEN_FILENAME,
 };
 use hearth::identity::{
-    CleartextPassword, CreateTenantRequest, CredentialConfig, EmbeddedIdentityEngine,
-    IdentityConfig, IdentityEngine, Tenant, UserStatus,
+    CleartextPassword, CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine,
+    IdentityConfig, IdentityEngine, Realm, UserStatus,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -134,31 +134,31 @@ impl TestEnv {
         self.data_dir().join(SETUP_TOKEN_FILENAME)
     }
 
-    /// Pre-creates a tenant so `complete_setup()` can find it.
-    /// (In production, tenant reconciliation from YAML does this at startup.)
-    fn seed_tenant(&self, name: &str) -> Tenant {
+    /// Pre-creates a realm so `complete_setup()` can find it.
+    /// (In production, realm reconciliation from YAML does this at startup.)
+    fn seed_realm(&self, name: &str) -> Realm {
         self.identity
-            .create_tenant(&CreateTenantRequest {
+            .create_realm(&CreateRealmRequest {
                 name: name.to_string(),
                 config: None,
             })
-            .expect("seed tenant")
+            .expect("seed realm")
     }
 }
 
 // ===== Scenario: first-run lifecycle =====
 
 #[test]
-fn is_first_run_flips_after_first_tenant() {
+fn is_first_run_flips_after_first_realm() {
     let env = TestEnv::new();
     assert!(is_first_run(env.identity.as_ref()).expect("first-run check"));
 
     env.identity
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: "acme".to_string(),
             config: None,
         })
-        .expect("create tenant");
+        .expect("create realm");
 
     assert!(!is_first_run(env.identity.as_ref()).expect("first-run check"));
 }
@@ -193,21 +193,21 @@ fn ensure_setup_token_is_idempotent_on_restart() {
 }
 
 #[test]
-fn ensure_setup_token_preserves_file_when_tenants_exist() {
+fn ensure_setup_token_preserves_file_when_realms_exist() {
     let env = TestEnv::new();
     // Seed a token as if a previous startup generated it, then
-    // reconciliation created a tenant before setup was completed.
+    // reconciliation created a realm before setup was completed.
     std::fs::write(env.setup_token_path(), "existing-token").expect("seed");
 
     env.identity
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: "reconciled".to_string(),
             config: None,
         })
         .expect("create");
 
     // Token file is the source of truth — its presence means setup is
-    // still in progress, regardless of tenant count.
+    // still in progress, regardless of realm count.
     let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token preserved when file exists");
@@ -253,16 +253,16 @@ fn consume_setup_token_rejects_when_file_absent() {
 }
 
 #[test]
-fn consume_setup_token_accepts_when_tenants_exist_and_file_present() {
+fn consume_setup_token_accepts_when_realms_exist_and_file_present() {
     let env = TestEnv::new();
     let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
 
-    // Simulate reconciliation creating a tenant before setup completes.
-    // The token file is the source of truth, not tenant count.
+    // Simulate reconciliation creating a realm before setup completes.
+    // The token file is the source of truth, not realm count.
     env.identity
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: "reconciled-default".to_string(),
             config: None,
         })
@@ -273,24 +273,24 @@ fn consume_setup_token_accepts_when_tenants_exist_and_file_present() {
 }
 
 #[test]
-fn setup_token_survives_tenant_reconciliation() {
+fn setup_token_survives_realm_reconciliation() {
     let env = TestEnv::new();
     // Generate setup token on a fresh instance.
     let token = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token on fresh instance");
 
-    // Simulate reconciliation creating a "default" tenant.
+    // Simulate reconciliation creating a "default" realm.
     env.identity
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: "default".to_string(),
             config: None,
         })
-        .expect("create tenant");
+        .expect("create realm");
 
     // Re-run ensure_setup_token (as happens on server restart). The token
     // file should still be returned — its presence is the source of truth,
-    // not the tenant count.
+    // not the realm count.
     let token2 = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure after reconciliation")
         .expect("token should survive");
@@ -308,11 +308,11 @@ fn setup_token_survives_tenant_reconciliation() {
 fn complete_setup_creates_admin_and_sends_email() {
     let env = TestEnv::new();
     // Mirrors real startup: ensure_setup_token runs first (fresh instance),
-    // then tenant reconciliation creates the tenant from YAML.
+    // then realm reconciliation creates the realm from YAML.
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
-    let seeded = env.seed_tenant("Hearth Prod");
+    let seeded = env.seed_realm("Hearth Prod");
 
     let pw = CleartextPassword::new(b"correct-horse-battery-staple".to_vec());
     let outcome = env
@@ -325,18 +325,18 @@ fn complete_setup_creates_admin_and_sends_email() {
         )
         .expect("complete_setup");
 
-    // Setup used the pre-existing tenant from YAML reconciliation.
-    assert_eq!(outcome.tenant_id, *seeded.id());
-    let tenant = env
+    // Setup used the pre-existing realm from YAML reconciliation.
+    assert_eq!(outcome.realm_id, *seeded.id());
+    let realm = env
         .identity
-        .get_tenant(&outcome.tenant_id)
-        .expect("get_tenant")
-        .expect("tenant exists");
-    assert_eq!(tenant.name(), "Hearth Prod");
+        .get_realm(&outcome.realm_id)
+        .expect("get_realm")
+        .expect("realm exists");
+    assert_eq!(realm.name(), "Hearth Prod");
 
     let user = env
         .identity
-        .get_user(&outcome.tenant_id, &outcome.admin_user_id)
+        .get_user(&outcome.realm_id, &outcome.admin_user_id)
         .expect("get_user")
         .expect("user exists");
     assert_eq!(user.status(), UserStatus::PendingVerification);
@@ -366,7 +366,7 @@ fn complete_setup_creates_admin_and_sends_email() {
     let allowed = env
         .authz
         .check(
-            &outcome.tenant_id,
+            &outcome.realm_id,
             &admin_object,
             "admin",
             &admin_subject,
@@ -386,7 +386,7 @@ fn complete_setup_creates_admin_and_sends_email() {
 fn session_creation_blocked_for_pending_verification_user() {
     let env = TestEnv::new();
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
-    env.seed_tenant("TenantX");
+    env.seed_realm("RealmX");
     let pw = CleartextPassword::new(b"a-password".to_vec());
     let outcome = env
         .service
@@ -401,7 +401,7 @@ fn session_creation_blocked_for_pending_verification_user() {
     let err = env
         .identity
         .create_session(
-            &outcome.tenant_id,
+            &outcome.realm_id,
             &outcome.admin_user_id,
             &hearth::identity::SessionContext::default(),
         )
@@ -418,7 +418,7 @@ fn session_creation_blocked_for_pending_verification_user() {
 fn verify_email_token_activates_user_and_unblocks_session() {
     let env = TestEnv::new();
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
-    env.seed_tenant("TenantY");
+    env.seed_realm("RealmY");
     let pw = CleartextPassword::new(b"another-password".to_vec());
     let outcome = env
         .service
@@ -442,14 +442,14 @@ fn verify_email_token_activates_user_and_unblocks_session() {
 
     let user_id = env
         .identity
-        .verify_email_token(&outcome.tenant_id, &token)
+        .verify_email_token(&outcome.realm_id, &token)
         .expect("verify");
     assert_eq!(user_id, outcome.admin_user_id);
 
     // Status transitioned.
     let user = env
         .identity
-        .get_user(&outcome.tenant_id, &outcome.admin_user_id)
+        .get_user(&outcome.realm_id, &outcome.admin_user_id)
         .expect("get_user")
         .expect("user");
     assert_eq!(user.status(), UserStatus::Active);
@@ -457,7 +457,7 @@ fn verify_email_token_activates_user_and_unblocks_session() {
     // Sessions can now be created.
     env.identity
         .create_session(
-            &outcome.tenant_id,
+            &outcome.realm_id,
             &outcome.admin_user_id,
             &hearth::identity::SessionContext::default(),
         )
@@ -468,7 +468,7 @@ fn verify_email_token_activates_user_and_unblocks_session() {
 fn verify_email_token_rejects_reuse() {
     let env = TestEnv::new();
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None);
-    env.seed_tenant("TenantZ");
+    env.seed_realm("RealmZ");
     let pw = CleartextPassword::new(b"pw".to_vec());
     let outcome = env
         .service
@@ -486,13 +486,13 @@ fn verify_email_token_rejects_reuse() {
 
     // First use succeeds.
     env.identity
-        .verify_email_token(&outcome.tenant_id, &token)
+        .verify_email_token(&outcome.realm_id, &token)
         .expect("first use ok");
 
     // Second use fails with the vague "invalid" error for enumeration resistance.
     let err = env
         .identity
-        .verify_email_token(&outcome.tenant_id, &token)
+        .verify_email_token(&outcome.realm_id, &token)
         .expect_err("reuse blocked");
     assert!(matches!(
         err,
@@ -503,9 +503,9 @@ fn verify_email_token_rejects_reuse() {
 #[test]
 fn verify_email_token_rejects_unknown_token() {
     let env = TestEnv::new();
-    let tenant = env
+    let realm = env
         .identity
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: "other".to_string(),
             config: None,
         })
@@ -513,7 +513,7 @@ fn verify_email_token_rejects_unknown_token() {
 
     let err = env
         .identity
-        .verify_email_token(tenant.id(), "not-a-real-token")
+        .verify_email_token(realm.id(), "not-a-real-token")
         .expect_err("unknown token rejected");
     assert!(matches!(
         err,
@@ -526,7 +526,7 @@ fn verify_email_token_rejects_unknown_token() {
 #[test]
 fn complete_setup_refuses_when_setup_token_absent() {
     let env = TestEnv::new();
-    env.seed_tenant("pre-existing");
+    env.seed_realm("pre-existing");
 
     // No ensure_setup_token call — the token file does not exist,
     // simulating a deployment where setup was already completed.
@@ -541,12 +541,12 @@ fn complete_setup_refuses_when_setup_token_absent() {
     );
 }
 
-// ===== Scenario: complete_setup requires a pre-existing tenant =====
+// ===== Scenario: complete_setup requires a pre-existing realm =====
 
 #[test]
-fn complete_setup_fails_when_no_tenant_exists() {
+fn complete_setup_fails_when_no_realm_exists() {
     let env = TestEnv::new();
-    // Setup token exists but no tenant was created (reconciliation didn't run).
+    // Setup token exists but no realm was created (reconciliation didn't run).
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
@@ -555,13 +555,13 @@ fn complete_setup_fails_when_no_tenant_exists() {
     let err = env
         .service
         .complete_setup("orphan@example.com", "Orphan", &pw, "http://localhost:8420")
-        .expect_err("no tenant");
+        .expect_err("no realm");
     assert!(
         matches!(
             err,
-            OnboardingError::Identity(hearth::identity::IdentityError::TenantNotFound)
+            OnboardingError::Identity(hearth::identity::IdentityError::RealmNotFound)
         ),
-        "expected TenantNotFound, got {err:?}"
+        "expected RealmNotFound, got {err:?}"
     );
 
     // Setup token should still exist so operator can fix config and retry.
@@ -609,18 +609,18 @@ fn complete_setup_surfaces_email_delivery_failure() {
     );
 
     // Seed the setup token first (mirrors real startup: ensure_setup_token
-    // runs before tenant reconciliation).
+    // runs before realm reconciliation).
     let _ = ensure_setup_token(identity.as_ref(), temp.path(), None, None, None)
         .expect("ensure")
         .expect("token");
 
-    // Pre-create a tenant (in production, YAML reconciliation does this).
+    // Pre-create a realm (in production, YAML reconciliation does this).
     identity
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: "T".to_string(),
             config: None,
         })
-        .expect("seed tenant");
+        .expect("seed realm");
 
     let pw = CleartextPassword::new(b"pw".to_vec());
     let err = service

@@ -76,7 +76,7 @@ impl From<&domain::TupleChangeEvent> for pb::TupleChangeEvent {
             object_id: e.object_id.clone(),
             relation: e.relation.clone(),
             subject: e.subject.clone(),
-            tenant_id: e.tenant_id.clone(),
+            realm_id: e.realm_id.clone(),
             timestamp_us: e.timestamp_us,
         }
     }

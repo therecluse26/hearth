@@ -95,7 +95,7 @@ func startServer(t *testing.T) *testServer {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	client := hearth.NewClient(baseURL, bootstrap.TenantID)
+	client := hearth.NewClient(baseURL, bootstrap.RealmID)
 
 	t.Cleanup(func() {
 		cmd.Process.Kill()
@@ -260,49 +260,49 @@ func TestAdminCRUD(t *testing.T) {
 		t.Fatalf("expected 404, got: %v", err)
 	}
 
-	// === Tenant CRUD ===
+	// === Realm CRUD ===
 
 	// Create
-	tenant, err := admin.CreateTenant(ctx, hearth.CreateTenantRequest{
-		Name: "go-test-tenant",
+	realm, err := admin.CreateRealm(ctx, hearth.CreateRealmRequest{
+		Name: "go-test-realm",
 	})
 	if err != nil {
-		t.Fatalf("create tenant: %v", err)
+		t.Fatalf("create realm: %v", err)
 	}
-	if tenant.Name != "go-test-tenant" {
-		t.Fatalf("name mismatch: %q", tenant.Name)
+	if realm.Name != "go-test-realm" {
+		t.Fatalf("name mismatch: %q", realm.Name)
 	}
 
 	// Read
-	fetchedTenant, err := admin.GetTenant(ctx, tenant.ID)
+	fetchedRealm, err := admin.GetRealm(ctx, realm.ID)
 	if err != nil {
-		t.Fatalf("get tenant: %v", err)
+		t.Fatalf("get realm: %v", err)
 	}
-	if fetchedTenant.ID != tenant.ID {
-		t.Fatalf("tenant id mismatch")
+	if fetchedRealm.ID != realm.ID {
+		t.Fatalf("realm id mismatch")
 	}
 
 	// Update
-	newTenantName := "updated-go-tenant"
-	updatedTenant, err := admin.UpdateTenant(ctx, tenant.ID, hearth.UpdateTenantRequest{
-		Name: &newTenantName,
+	newRealmName := "updated-go-realm"
+	updatedRealm, err := admin.UpdateRealm(ctx, realm.ID, hearth.UpdateRealmRequest{
+		Name: &newRealmName,
 	})
 	if err != nil {
-		t.Fatalf("update tenant: %v", err)
+		t.Fatalf("update realm: %v", err)
 	}
-	if updatedTenant.Name != "updated-go-tenant" {
-		t.Fatalf("tenant name mismatch: %q", updatedTenant.Name)
+	if updatedRealm.Name != "updated-go-realm" {
+		t.Fatalf("realm name mismatch: %q", updatedRealm.Name)
 	}
 
 	// Delete
-	if err := admin.DeleteTenant(ctx, tenant.ID); err != nil {
-		t.Fatalf("delete tenant: %v", err)
+	if err := admin.DeleteRealm(ctx, realm.ID); err != nil {
+		t.Fatalf("delete realm: %v", err)
 	}
 
 	// Verify deleted
-	_, err = admin.GetTenant(ctx, tenant.ID)
+	_, err = admin.GetRealm(ctx, realm.ID)
 	if err == nil {
-		t.Fatal("expected error after tenant delete")
+		t.Fatal("expected error after realm delete")
 	}
 }
 

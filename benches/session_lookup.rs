@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use hearth::core::{Clock, SystemClock, TenantId};
+use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -16,7 +16,7 @@ use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 fn setup_session() -> (
     tempfile::TempDir,
     EmbeddedIdentityEngine,
-    TenantId,
+    RealmId,
     hearth::core::SessionId,
     hearth::core::UserId,
 ) {
@@ -30,11 +30,11 @@ fn setup_session() -> (
         IdentityConfig::default(),
     )
     .expect("engine creation");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let user = engine
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "bench-session@example.com".to_string(),
                 display_name: "Bench Session User".to_string(),
@@ -44,25 +44,25 @@ fn setup_session() -> (
 
     let session = engine
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
 
     // Read the session once to ensure it's in the hot tier
-    let _ = engine.get_session(&tenant, session.id());
+    let _ = engine.get_session(&realm, session.id());
 
-    (dir, engine, tenant, session.id().clone(), user.id().clone())
+    (dir, engine, realm, session.id().clone(), user.id().clone())
 }
 
 /// Benchmarks session lookup by ID (hot path).
 fn bench_session_lookup_by_id(c: &mut Criterion) {
-    let (_dir, engine, tenant, session_id, _user_id) = setup_session();
+    let (_dir, engine, realm, session_id, _user_id) = setup_session();
 
     c.bench_function("session_lookup_by_id", |b| {
         b.iter(|| {
-            let result = engine.get_session(&tenant, &session_id).expect("get");
+            let result = engine.get_session(&realm, &session_id).expect("get");
             assert!(result.is_some());
         });
     });
@@ -70,12 +70,12 @@ fn bench_session_lookup_by_id(c: &mut Criterion) {
 
 /// Benchmarks session creation throughput.
 fn bench_session_creation(c: &mut Criterion) {
-    let (_dir, engine, tenant, _session_id, user_id) = setup_session();
+    let (_dir, engine, realm, _session_id, user_id) = setup_session();
 
     c.bench_function("session_creation", |b| {
         b.iter(|| {
             let result = engine.create_session(
-                &tenant,
+                &realm,
                 &user_id,
                 &hearth::identity::SessionContext::default(),
             );

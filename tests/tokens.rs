@@ -6,15 +6,15 @@
 mod common;
 
 use base64::Engine as _;
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{verify_token_signature, CreateUserRequest, User};
 
-/// Helper: creates a user with a unique email in the given tenant.
-fn create_user(harness: &common::TestHarness, tenant: &TenantId) -> User {
+/// Helper: creates a user with a unique email in the given realm.
+fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
         .identity()
         .create_user(
-            tenant,
+            realm,
             &CreateUserRequest {
                 email: format!("user-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "Test User".to_string(),
@@ -30,14 +30,14 @@ async fn token_issuance_and_validation_roundtrip() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     // Create a session
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -46,7 +46,7 @@ async fn token_issuance_and_validation_roundtrip() {
     // Issue tokens
     let pair = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     // Access token should be non-empty
@@ -59,13 +59,13 @@ async fn token_issuance_and_validation_roundtrip() {
     // Validate access token via session lookup (internal hot path)
     let claims = harness
         .identity()
-        .validate_token(&tenant, pair.access_token())
+        .validate_token(&realm, pair.access_token())
         .expect("validate access token");
 
     // Claims should reference the correct user and session
     assert_eq!(claims.sub, user.id().to_string());
     assert_eq!(claims.sid, session.id().to_string());
-    assert_eq!(claims.tid, tenant.to_string());
+    assert_eq!(claims.tid, realm.to_string());
     assert_eq!(claims.token_type, "access");
 
     // JWKS should have the key that signed the token
@@ -89,40 +89,40 @@ async fn token_refresh_flow_end_to_end() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     // Create session and initial tokens
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let original_pair = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     // Validate original access token works
     let original_claims = harness
         .identity()
-        .validate_token(&tenant, original_pair.access_token())
+        .validate_token(&realm, original_pair.access_token())
         .expect("validate original");
     assert_eq!(original_claims.token_type, "access");
 
     // Refresh using the refresh token
     let refreshed_pair = harness
         .identity()
-        .refresh_tokens(&tenant, original_pair.refresh_token())
+        .refresh_tokens(&realm, original_pair.refresh_token())
         .expect("refresh tokens");
 
     // New access token should be valid and bound to same user/session
     let refreshed_claims = harness
         .identity()
-        .validate_token(&tenant, refreshed_pair.access_token())
+        .validate_token(&realm, refreshed_pair.access_token())
         .expect("validate refreshed access token");
     assert_eq!(refreshed_claims.sub, user.id().to_string());
     assert_eq!(refreshed_claims.sid, session.id().to_string());
@@ -138,7 +138,7 @@ async fn token_refresh_flow_end_to_end() {
     // Attempt to use access token as refresh token should fail
     let bad_refresh = harness
         .identity()
-        .refresh_tokens(&tenant, original_pair.access_token());
+        .refresh_tokens(&realm, original_pair.access_token());
     assert!(
         bad_refresh.is_err(),
         "using access token as refresh should fail"
@@ -152,27 +152,27 @@ async fn token_invalid_after_session_revoked() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let pair = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     // Token works before revocation
     assert!(
         harness
             .identity()
-            .validate_token(&tenant, pair.access_token())
+            .validate_token(&realm, pair.access_token())
             .is_ok(),
         "token should be valid before revocation"
     );
@@ -180,50 +180,50 @@ async fn token_invalid_after_session_revoked() {
     // Revoke the session
     harness
         .identity()
-        .revoke_session(&tenant, session.id())
+        .revoke_session(&realm, session.id())
         .expect("revoke session");
 
     // Token should now fail validation (session lookup fails)
     let result = harness
         .identity()
-        .validate_token(&tenant, pair.access_token());
+        .validate_token(&realm, pair.access_token());
     assert!(
         result.is_err(),
         "token should be invalid after session revocation"
     );
 }
 
-// ===== Scenario: Token validation fails for wrong tenant =====
+// ===== Scenario: Token validation fails for wrong realm =====
 
 #[tokio::test]
-async fn token_invalid_for_different_tenant() {
+async fn token_invalid_for_different_realm() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant_a = TenantId::generate();
-    let tenant_b = TenantId::generate();
-    let user = create_user(&harness, &tenant_a);
+    let realm_a = RealmId::generate();
+    let realm_b = RealmId::generate();
+    let user = create_user(&harness, &realm_a);
 
     let session = harness
         .identity()
         .create_session(
-            &tenant_a,
+            &realm_a,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let pair = harness
         .identity()
-        .issue_tokens(&tenant_a, user.id(), session.id())
+        .issue_tokens(&realm_a, user.id(), session.id())
         .expect("issue tokens");
 
-    // Validate with wrong tenant should fail
+    // Validate with wrong realm should fail
     let result = harness
         .identity()
-        .validate_token(&tenant_b, pair.access_token());
+        .validate_token(&realm_b, pair.access_token());
     assert!(
         result.is_err(),
-        "token should be invalid for different tenant"
+        "token should be invalid for different realm"
     );
 }
 
@@ -234,13 +234,13 @@ async fn issue_tokens_fails_nonexistent_user() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -249,12 +249,12 @@ async fn issue_tokens_fails_nonexistent_user() {
     // Delete the user
     harness
         .identity()
-        .delete_user(&tenant, user.id())
+        .delete_user(&realm, user.id())
         .expect("delete user");
 
     // Issue tokens should fail
     let result = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id());
+        .issue_tokens(&realm, user.id(), session.id());
     assert!(result.is_err(), "issue tokens should fail for deleted user");
 }

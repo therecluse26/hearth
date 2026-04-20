@@ -4,7 +4,7 @@
 //! emails. Callers use high-level methods like `send_verification_email`
 //! rather than constructing messages manually.
 //!
-//! The service resolves per-tenant branding, renders templates (compiled
+//! The service resolves per-realm branding, renders templates (compiled
 //! Askama or disk-based Tera), and dispatches to the underlying
 //! [`EmailSender`] transport.
 
@@ -40,7 +40,7 @@ impl EmailService {
     /// [`BrandingConfig`](crate::config::BrandingConfig) and apply to
     /// all outbound emails. `default_branding` provides email-specific
     /// defaults (accent color, support email, footer) that can be
-    /// overridden per-tenant. `default_logo_svg` is the raw SVG markup
+    /// overridden per-realm. `default_logo_svg` is the raw SVG markup
     /// for the built-in logo, inlined when no custom logo URL is set.
     /// If `templates_dir` is set, Tera templates are loaded from disk;
     /// missing templates fall back to the compiled defaults.
@@ -70,17 +70,17 @@ impl EmailService {
         })
     }
 
-    /// Sends a verification email with per-tenant branding.
+    /// Sends a verification email with per-realm branding.
     ///
-    /// Resolves branding (global defaults + tenant overrides), renders
+    /// Resolves branding (global defaults + realm overrides), renders
     /// the verification template, and dispatches to the transport.
     pub fn send_verification_email(
         &self,
         to: &str,
         url: &str,
-        tenant_branding: Option<&EmailBranding>,
+        realm_branding: Option<&EmailBranding>,
     ) -> Result<(), EmailError> {
-        let branding = self.resolve_branding(tenant_branding);
+        let branding = self.resolve_branding(realm_branding);
         let mut msg =
             templates::render_verification(url, &branding, self.custom_templates.as_ref())
                 .or_else(|_| {
@@ -93,7 +93,7 @@ impl EmailService {
 
     /// Sends a first-run setup notification email.
     ///
-    /// Uses global branding only (no tenant exists yet during setup).
+    /// Uses global branding only (no realm exists yet during setup).
     pub fn send_setup_notification(&self, to: &str, url: &str) -> Result<(), EmailError> {
         let branding = self.resolve_branding(None);
         let mut msg = templates::render_setup(url, &branding, self.custom_templates.as_ref())
@@ -102,17 +102,17 @@ impl EmailService {
         self.sender.send(&msg)
     }
 
-    /// Sends a password reset email with per-tenant branding.
+    /// Sends a password reset email with per-realm branding.
     ///
-    /// Resolves branding (global defaults + tenant overrides), renders
+    /// Resolves branding (global defaults + realm overrides), renders
     /// the password reset template, and dispatches to the transport.
     pub fn send_password_reset_email(
         &self,
         to: &str,
         url: &str,
-        tenant_branding: Option<&EmailBranding>,
+        realm_branding: Option<&EmailBranding>,
     ) -> Result<(), EmailError> {
-        let branding = self.resolve_branding(tenant_branding);
+        let branding = self.resolve_branding(realm_branding);
         let mut msg =
             templates::render_password_reset(url, &branding, self.custom_templates.as_ref())
                 .or_else(|_| {
@@ -132,9 +132,9 @@ impl EmailService {
         accept_url: &str,
         org_name: &str,
         inviter_email: &str,
-        tenant_branding: Option<&EmailBranding>,
+        realm_branding: Option<&EmailBranding>,
     ) -> Result<(), EmailError> {
-        let branding = self.resolve_branding(tenant_branding);
+        let branding = self.resolve_branding(realm_branding);
         let mut msg = templates::render_invitation(
             accept_url,
             org_name,
@@ -156,16 +156,16 @@ impl EmailService {
     pub fn send_test_email(
         &self,
         to: &str,
-        tenant_branding: Option<&EmailBranding>,
+        realm_branding: Option<&EmailBranding>,
     ) -> Result<(), EmailError> {
-        let branding = self.resolve_branding(tenant_branding);
+        let branding = self.resolve_branding(realm_branding);
         let mut msg = templates::render_test(&branding, self.custom_templates.as_ref())
             .or_else(|_| templates::render_test(&branding, None))?;
         msg.to = to.to_string();
         self.sender.send(&msg)
     }
 
-    /// Resolves branding by merging global defaults with tenant overrides.
+    /// Resolves branding by merging global defaults with realm overrides.
     ///
     /// Computes `logo_svg_inline` based on the resolved `logo_url`:
     /// - No logo URL → inline the built-in Hearth SVG.
@@ -175,8 +175,8 @@ impl EmailService {
     ///
     /// Local file paths are **always** cleared from `logo_url` — they are never valid
     /// as `<img src>` in emails.
-    fn resolve_branding(&self, tenant: Option<&EmailBranding>) -> ResolvedBranding {
-        let merged = match tenant {
+    fn resolve_branding(&self, realm: Option<&EmailBranding>) -> ResolvedBranding {
+        let merged = match realm {
             Some(t) => EmailBranding::merge(&self.default_branding, t),
             None => self.default_branding.clone(),
         };
@@ -364,16 +364,16 @@ mod tests {
     }
 
     #[test]
-    fn send_verification_with_tenant_branding() {
+    fn send_verification_with_realm_branding() {
         let service = branded_service();
-        let tenant = EmailBranding {
+        let realm = EmailBranding {
             accent_color: Some("#ABCDEF".to_string()),
             ..Default::default()
         };
         let result = service.send_verification_email(
             "alice@example.com",
             "https://auth.example.com/verify?t=abc",
-            Some(&tenant),
+            Some(&realm),
         );
         assert!(result.is_ok(), "send should succeed: {result:?}");
     }
@@ -397,16 +397,16 @@ mod tests {
     }
 
     #[test]
-    fn branding_resolution_tenant_overrides() {
+    fn branding_resolution_realm_overrides() {
         let service = branded_service();
-        let tenant = EmailBranding {
+        let realm = EmailBranding {
             accent_color: Some("#AABBCC".to_string()),
             ..Default::default()
         };
-        let resolved = service.resolve_branding(Some(&tenant));
-        // product_name comes from global BrandingConfig, not tenant EmailBranding
+        let resolved = service.resolve_branding(Some(&realm));
+        // product_name comes from global BrandingConfig, not realm EmailBranding
         assert_eq!(resolved.product_name, "Global Corp");
-        // accent_color overridden by tenant
+        // accent_color overridden by realm
         assert_eq!(resolved.accent_color, "#AABBCC");
     }
 
@@ -422,16 +422,16 @@ mod tests {
     }
 
     #[test]
-    fn send_password_reset_with_tenant_branding() {
+    fn send_password_reset_with_realm_branding() {
         let service = branded_service();
-        let tenant = EmailBranding {
+        let realm = EmailBranding {
             accent_color: Some("#ABCDEF".to_string()),
             ..Default::default()
         };
         let result = service.send_password_reset_email(
             "alice@example.com",
             "https://auth.example.com/reset?t=abc",
-            Some(&tenant),
+            Some(&realm),
         );
         assert!(result.is_ok(), "send should succeed: {result:?}");
     }

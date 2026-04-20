@@ -7,12 +7,12 @@
 //! module closes that window the same way Jenkins does with
 //! `initialAdminPassword`:
 //!
-//! 1. At startup, if the setup-token file exists (or no tenants exist
+//! 1. At startup, if the setup-token file exists (or no realms exist
 //!    and setup hasn't been completed), generate 32 random bytes
 //!    (base64url) and write them to `<data_dir>/.setup_token` with
 //!    `0600` perms. Log the full setup URL at WARN level.
 //! 2. `/ui/setup` requires the token. Mismatch returns 404 (no leaks).
-//! 3. `complete_setup` finds the first tenant (created by YAML
+//! 3. `complete_setup` finds the first realm (created by YAML
 //!    reconciliation or auto-created "default"), creates the admin user
 //!    (`PendingVerification`) + Zanzibar `hearth#admin@user:<uuid>`
 //!    tuple, issues a verification token, and sends the verification
@@ -30,7 +30,7 @@ use base64::Engine;
 use subtle::ConstantTimeEq;
 
 use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
-use crate::core::TenantId;
+use crate::core::RealmId;
 use crate::identity::email::{EmailError, EmailService};
 use crate::identity::{
     CleartextPassword, CreateUserRequest, IdentityEngine, IdentityError, UpdateUserRequest,
@@ -48,7 +48,7 @@ pub const SETUP_TOKEN_FILENAME: &str = ".setup_token";
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OnboardingError {
-    /// An identity-layer call failed (tenant/user creation, password set,
+    /// An identity-layer call failed (realm/user creation, password set,
     /// token issue).
     Identity(IdentityError),
     /// Writing the Zanzibar admin tuple failed.
@@ -72,7 +72,7 @@ impl std::fmt::Display for OnboardingError {
             Self::Email(e) => write!(f, "email error during onboarding: {e}"),
             Self::Io(reason) => write!(f, "setup token I/O error: {reason}"),
             Self::AlreadyConfigured => {
-                write!(f, "setup is not available: a tenant already exists")
+                write!(f, "setup is not available: a realm already exists")
             }
             Self::InvalidSetupToken => write!(f, "invalid setup token"),
         }
@@ -106,25 +106,25 @@ impl From<EmailError> for OnboardingError {
 /// Result of successfully completing first-run setup.
 #[derive(Debug, Clone)]
 pub struct SetupOutcome {
-    /// The newly-created tenant's identifier.
-    pub tenant_id: TenantId,
+    /// The newly-created realm's identifier.
+    pub realm_id: RealmId,
     /// The primary admin user's identifier.
     pub admin_user_id: crate::identity::UserId,
     /// Verification URL the user must visit to activate their account.
     pub verification_url: String,
 }
 
-/// Returns `true` iff no tenants exist yet.
+/// Returns `true` iff no realms exist yet.
 ///
 /// Called both at startup (to decide whether to generate a setup token)
-/// and on every `/ui/setup` request (for race-safety). `list_tenants`
+/// and on every `/ui/setup` request (for race-safety). `list_realms`
 /// with `limit = 1` is cheap enough to poll.
 ///
 /// # Errors
 ///
-/// Returns any error from `list_tenants`.
+/// Returns any error from `list_realms`.
 pub fn is_first_run(engine: &dyn IdentityEngine) -> Result<bool, IdentityError> {
-    let page = engine.list_tenants(None, 1)?;
+    let page = engine.list_realms(None, 1)?;
     Ok(page.items.is_empty())
 }
 
@@ -134,12 +134,12 @@ pub fn is_first_run(engine: &dyn IdentityEngine) -> Result<bool, IdentityError> 
 ///
 /// - File present: reads the existing token, logs the setup URL at WARN
 ///   level, optionally emails it, and returns `Ok(Some(token))`. This
-///   is idempotent across restarts — the token survives even if tenant
-///   reconciliation has already created tenants.
-/// - File absent + no tenants: truly fresh instance. Generates 32 random
+///   is idempotent across restarts — the token survives even if realm
+///   reconciliation has already created realms.
+/// - File absent + no realms: truly fresh instance. Generates 32 random
 ///   bytes (base64url), writes `<data_dir>/.setup_token` with `0600`
 ///   perms (Unix), logs the setup URL, returns `Ok(Some(token))`.
-/// - File absent + tenants exist: setup already completed (or was never
+/// - File absent + realms exist: setup already completed (or was never
 ///   required). Returns `Ok(None)`.
 ///
 /// When `email_service` and `notification_email` are both provided,
@@ -161,14 +161,14 @@ pub fn ensure_setup_token(
 
     // 1. Token file exists → setup is still in progress. Read the
     //    existing token and re-log the URL (idempotent across restarts,
-    //    survives tenant reconciliation creating tenants).
+    //    survives realm reconciliation creating realms).
     if path.exists() {
         let token = read_setup_token_file(&path)?;
         log_and_notify_setup_url(&token, base_url, email_service, notification_email);
         return Ok(Some(token));
     }
 
-    // 2. Token file absent + no tenants → truly fresh instance.
+    // 2. Token file absent + no realms → truly fresh instance.
     if is_first_run(engine)? {
         let token = generate_setup_token()?;
         write_setup_token_file(&path, &token)?;
@@ -176,7 +176,7 @@ pub fn ensure_setup_token(
         return Ok(Some(token));
     }
 
-    // 3. Token file absent + tenants exist → setup already completed.
+    // 3. Token file absent + realms exist → setup already completed.
     Ok(None)
 }
 
@@ -349,11 +349,11 @@ impl OnboardingService {
         }
     }
 
-    /// Returns `true` iff no tenant exists yet.
+    /// Returns `true` iff no realm exists yet.
     ///
     /// # Errors
     ///
-    /// Propagates any error from the underlying `list_tenants` call.
+    /// Propagates any error from the underlying `list_realms` call.
     pub fn is_first_run(&self) -> Result<bool, IdentityError> {
         is_first_run(self.identity.as_ref())
     }
@@ -369,7 +369,7 @@ impl OnboardingService {
 
     /// Executes the full first-run setup:
     ///
-    /// 1. Create tenant.
+    /// 1. Create realm.
     /// 2. Create admin user (status = `PendingVerification`).
     /// 3. Set admin password.
     /// 4. Write Zanzibar `hearth#admin@user:<uuid>` tuple.
@@ -387,8 +387,8 @@ impl OnboardingService {
     /// # Errors
     ///
     /// See [`OnboardingError`]. `AlreadyConfigured` is returned if the
-    /// setup-token file has already been consumed. `TenantNotFound` is
-    /// returned if no tenant exists (YAML reconciliation must run first).
+    /// setup-token file has already been consumed. `RealmNotFound` is
+    /// returned if no realm exists (YAML reconciliation must run first).
     pub fn complete_setup(
         &self,
         admin_email: &str,
@@ -403,20 +403,20 @@ impl OnboardingService {
             return Err(OnboardingError::AlreadyConfigured);
         }
 
-        // 1. Find the first existing tenant (created by YAML reconciliation
-        //    or the auto-created "default"). Tenants are managed exclusively
+        // 1. Find the first existing realm (created by YAML reconciliation
+        //    or the auto-created "default"). Realms are managed exclusively
         //    through hearth.yaml — setup only creates the admin user.
-        let page = self.identity.list_tenants(None, 1)?;
-        let tenant = page
+        let page = self.identity.list_realms(None, 1)?;
+        let realm = page
             .items
             .into_iter()
             .next()
-            .ok_or_else(|| OnboardingError::Identity(IdentityError::TenantNotFound))?;
-        let tenant_id = tenant.id().clone();
+            .ok_or_else(|| OnboardingError::Identity(IdentityError::RealmNotFound))?;
+        let realm_id = realm.id().clone();
 
         // 2. Create admin user.
         let user = self.identity.create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: admin_email.to_string(),
                 display_name: admin_display_name.to_string(),
@@ -428,7 +428,7 @@ impl OnboardingService {
         //    engine default, which is Active). The caller must verify
         //    their email before they can log in.
         self.identity.update_user(
-            &tenant_id,
+            &realm_id,
             &user_id,
             &UpdateUserRequest {
                 email: None,
@@ -439,7 +439,7 @@ impl OnboardingService {
 
         // 4. Set password.
         self.identity
-            .set_password(&tenant_id, &user_id, admin_password)?;
+            .set_password(&realm_id, &user_id, admin_password)?;
 
         // 5. Zanzibar admin tuple: hearth#admin@user:<uuid>.
         //    INVARIANT: "hearth", "admin", "user" are valid short-ASCII
@@ -451,13 +451,13 @@ impl OnboardingService {
         let tuple = RelationshipTuple::new(object, "admin", subject)
             .map_err(|e| OnboardingError::Authz(format!("failed to build admin tuple: {e}")))?;
         self.authz
-            .write_tuples(&tenant_id, &[TupleWrite::Touch(tuple)])
+            .write_tuples(&realm_id, &[TupleWrite::Touch(tuple)])
             .map_err(|e| OnboardingError::Authz(e.to_string()))?;
 
         // 6. Email-verification token.
         let token = self
             .identity
-            .issue_email_verification_token(&tenant_id, &user_id)?;
+            .issue_email_verification_token(&realm_id, &user_id)?;
         let verification_url = format!(
             "{}/ui/verify-email?token={}",
             verification_base_url.trim_end_matches('/'),
@@ -482,7 +482,7 @@ impl OnboardingService {
         remove_setup_token(&self.data_dir);
 
         Ok(SetupOutcome {
-            tenant_id,
+            realm_id,
             admin_user_id: user_id,
             verification_url,
         })
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn onboarding_error_from_identity() {
-        let err: OnboardingError = IdentityError::DuplicateTenantName.into();
+        let err: OnboardingError = IdentityError::DuplicateRealmName.into();
         assert!(matches!(err, OnboardingError::Identity(_)));
     }
 

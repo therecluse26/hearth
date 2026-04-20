@@ -6,8 +6,8 @@
 mod common;
 
 use hearth::audit::{AuditAction, AuditEngine, AuditQuery, CreateAuditEvent};
-use hearth::core::TenantId;
-use hearth::identity::CreateTenantRequest;
+use hearth::core::RealmId;
+use hearth::identity::CreateRealmRequest;
 
 // ===================================================================
 // Integration: Full audit lifecycle (mutations → query → verify trail)
@@ -18,28 +18,28 @@ async fn audit_lifecycle_via_embedded_api() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let audit = harness.audit();
 
-    // Create a tenant to use
+    // Create a realm to use
     let identity = harness.identity();
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
-            name: "audit-test-tenant".to_string(),
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "audit-test-realm".to_string(),
             config: None,
         })
-        .expect("create tenant");
-    let tenant_id = tenant.id().clone();
+        .expect("create realm");
+    let realm_id = realm.id().clone();
 
     // Perform a series of mutations and record audit events
     let events_to_create = vec![
         CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "admin".to_string(),
-            action: AuditAction::TenantCreated,
-            resource_type: "tenant".to_string(),
-            resource_id: tenant_id.to_string(),
+            action: AuditAction::RealmCreated,
+            resource_type: "realm".to_string(),
+            resource_id: realm_id.to_string(),
             metadata: None,
         },
         CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "admin".to_string(),
             action: AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -47,7 +47,7 @@ async fn audit_lifecycle_via_embedded_api() {
             metadata: Some(serde_json::json!({"email": "alice@example.com"})),
         },
         CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "user_001".to_string(),
             action: AuditAction::CredentialSet,
             resource_type: "credential".to_string(),
@@ -55,7 +55,7 @@ async fn audit_lifecycle_via_embedded_api() {
             metadata: None,
         },
         CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "user_001".to_string(),
             action: AuditAction::SessionCreated,
             resource_type: "session".to_string(),
@@ -68,9 +68,9 @@ async fn audit_lifecycle_via_embedded_api() {
         audit.append(request).expect("append event");
     }
 
-    // Query all events for this tenant
+    // Query all events for this realm
     let all_events = audit
-        .query(&AuditQuery::for_tenant(tenant_id.clone()))
+        .query(&AuditQuery::for_realm(realm_id.clone()))
         .expect("query all");
     assert_eq!(
         all_events.len(),
@@ -80,7 +80,7 @@ async fn audit_lifecycle_via_embedded_api() {
     );
 
     // Verify event trail matches creation order
-    assert_eq!(all_events[0].action, AuditAction::TenantCreated);
+    assert_eq!(all_events[0].action, AuditAction::RealmCreated);
     assert_eq!(all_events[1].action, AuditAction::UserCreated);
     assert_eq!(all_events[2].action, AuditAction::CredentialSet);
     assert_eq!(all_events[3].action, AuditAction::SessionCreated);
@@ -95,7 +95,7 @@ async fn audit_lifecycle_via_embedded_api() {
 
     // Verify integrity of the audit chain
     let valid = audit
-        .verify_integrity(&tenant_id, None, None)
+        .verify_integrity(&realm_id, None, None)
         .expect("verify");
     assert!(valid, "audit log integrity should be valid");
 }
@@ -115,7 +115,7 @@ async fn audit_events_persist_across_engine_recreation() {
     use std::sync::Arc;
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let tenant_id = TenantId::generate();
+    let realm_id = RealmId::generate();
 
     // Phase 1: Write events
     {
@@ -126,7 +126,7 @@ async fn audit_events_persist_across_engine_recreation() {
 
         audit
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "admin".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -137,7 +137,7 @@ async fn audit_events_persist_across_engine_recreation() {
 
         audit
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "admin".to_string(),
                 action: AuditAction::CredentialSet,
                 resource_type: "credential".to_string(),
@@ -156,7 +156,7 @@ async fn audit_events_persist_across_engine_recreation() {
         let audit = EmbeddedAuditEngine::new(storage as Arc<dyn StorageEngine>, clock);
 
         let events = audit
-            .query(&AuditQuery::for_tenant(tenant_id.clone()))
+            .query(&AuditQuery::for_realm(realm_id.clone()))
             .expect("query after reopen");
         assert_eq!(
             events.len(),
@@ -168,7 +168,7 @@ async fn audit_events_persist_across_engine_recreation() {
 
         // Integrity chain should still be valid
         let valid = audit
-            .verify_integrity(&tenant_id, None, None)
+            .verify_integrity(&realm_id, None, None)
             .expect("verify after reopen");
         assert!(valid, "integrity chain should survive restart");
     }
@@ -182,7 +182,7 @@ async fn audit_events_persist_across_engine_recreation() {
 async fn compliance_query_auth_events_by_user_and_date() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let audit = harness.audit();
-    let tenant_id = TenantId::generate();
+    let realm_id = RealmId::generate();
 
     // Create a mix of events from different actors and types
     let events = vec![
@@ -200,7 +200,7 @@ async fn compliance_query_auth_events_by_user_and_date() {
     for (actor, action, resource_id) in &events {
         audit
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: (*actor).to_string(),
                 action: action.clone(),
                 resource_type: "user".to_string(),
@@ -213,9 +213,9 @@ async fn compliance_query_auth_events_by_user_and_date() {
     // Compliance query: all events by alice
     let alice_events = audit
         .query(&AuditQuery {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: Some("alice".to_string()),
-            ..AuditQuery::for_tenant(tenant_id.clone())
+            ..AuditQuery::for_realm(realm_id.clone())
         })
         .expect("alice query");
 
@@ -233,9 +233,9 @@ async fn compliance_query_auth_events_by_user_and_date() {
     // Compliance query: only credential verification events
     let auth_events = audit
         .query(&AuditQuery {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             action: Some(AuditAction::CredentialVerified),
-            ..AuditQuery::for_tenant(tenant_id.clone())
+            ..AuditQuery::for_realm(realm_id.clone())
         })
         .expect("auth events query");
 
@@ -255,13 +255,13 @@ async fn tamper_detection_detects_modified_entries() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let audit = harness.audit();
     let storage = harness.storage();
-    let tenant_id = TenantId::generate();
+    let realm_id = RealmId::generate();
 
     // Append several events
     for i in 0..5 {
         audit
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: format!("actor_{i}"),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -273,13 +273,13 @@ async fn tamper_detection_detects_modified_entries() {
 
     // Verify integrity before tampering
     let valid_before = audit
-        .verify_integrity(&tenant_id, None, None)
+        .verify_integrity(&realm_id, None, None)
         .expect("verify before");
     assert!(valid_before, "should be valid before tampering");
 
     // Now tamper: scan for the audit events, modify one in storage directly
     let events = audit
-        .query(&AuditQuery::for_tenant(tenant_id.clone()))
+        .query(&AuditQuery::for_realm(realm_id.clone()))
         .expect("query");
     assert_eq!(events.len(), 5);
 
@@ -296,12 +296,12 @@ async fn tamper_detection_detects_modified_entries() {
         tampered_event.id.as_uuid()
     );
     storage
-        .put(&tenant_id, key.as_bytes(), &tampered_value)
+        .put(&realm_id, key.as_bytes(), &tampered_value)
         .expect("put tampered");
 
     // Verify integrity after tampering — should detect the modification
     let valid_after = audit
-        .verify_integrity(&tenant_id, None, None)
+        .verify_integrity(&realm_id, None, None)
         .expect("verify after");
     assert!(
         !valid_after,
@@ -310,21 +310,21 @@ async fn tamper_detection_detects_modified_entries() {
 }
 
 // ===================================================================
-// Additional: Multi-tenant audit isolation via public API
+// Additional: Multi-realm audit isolation via public API
 // ===================================================================
 
 #[tokio::test]
-async fn multi_tenant_audit_isolation() {
+async fn multi_realm_audit_isolation() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let audit = harness.audit();
 
-    let tenant_a = TenantId::generate();
-    let tenant_b = TenantId::generate();
+    let realm_a = RealmId::generate();
+    let realm_b = RealmId::generate();
 
-    // Write events to both tenants
+    // Write events to both realms
     audit
         .append(&CreateAuditEvent {
-            tenant_id: tenant_a.clone(),
+            realm_id: realm_a.clone(),
             actor: "admin_a".to_string(),
             action: AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -335,7 +335,7 @@ async fn multi_tenant_audit_isolation() {
 
     audit
         .append(&CreateAuditEvent {
-            tenant_id: tenant_b.clone(),
+            realm_id: realm_b.clone(),
             actor: "admin_b".to_string(),
             action: AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -344,25 +344,25 @@ async fn multi_tenant_audit_isolation() {
         })
         .expect("append to B");
 
-    // Each tenant sees only their own events
+    // Each realm sees only their own events
     let events_a = audit
-        .query(&AuditQuery::for_tenant(tenant_a.clone()))
+        .query(&AuditQuery::for_realm(realm_a.clone()))
         .expect("query A");
     assert_eq!(events_a.len(), 1);
     assert_eq!(events_a[0].actor, "admin_a");
 
     let events_b = audit
-        .query(&AuditQuery::for_tenant(tenant_b.clone()))
+        .query(&AuditQuery::for_realm(realm_b.clone()))
         .expect("query B");
     assert_eq!(events_b.len(), 1);
     assert_eq!(events_b[0].actor, "admin_b");
 
     // Integrity chains are independent
     let valid_a = audit
-        .verify_integrity(&tenant_a, None, None)
+        .verify_integrity(&realm_a, None, None)
         .expect("verify A");
     let valid_b = audit
-        .verify_integrity(&tenant_b, None, None)
+        .verify_integrity(&realm_b, None, None)
         .expect("verify B");
     assert!(valid_a);
     assert!(valid_b);

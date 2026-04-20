@@ -1,8 +1,8 @@
 {% extends "ui/_layout.html" %}
-{% block title %}Hearth · {{ tenant.name() }}{% endblock %}
+{% block title %}Hearth · {{ realm.name() }}{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ tenant.name() }}</h1>
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ realm.name() }}</h1>
   <span class="text-sm text-ht-content-muted">Configured in hearth.yaml</span>
 </div>
 
@@ -10,21 +10,21 @@
   <dl class="grid gap-4 sm:grid-cols-2">
     <div>
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">ID</dt>
-      <dd class="mt-1"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ tenant.id().as_uuid() }}</code></dd>
+      <dd class="mt-1"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ realm.id().as_uuid() }}</code></dd>
     </div>
     <div>
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Status</dt>
       <dd class="mt-1">
-        {% if tenant.status()|fmt("{:?}") == "Active" %}
+        {% if realm.status()|fmt("{:?}") == "Active" %}
           <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
-        {% else if tenant.status()|fmt("{:?}") == "Archived" %}
+        {% else if realm.status()|fmt("{:?}") == "Archived" %}
           <span class="inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-xs font-medium text-steel-fg">Archived</span>
         {% else %}
           <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Suspended</span>
         {% endif %}
       </dd>
     </div>
-    {% let config = tenant.config() %}
+    {% let config = realm.config() %}
     {% match config.session_ttl_micros %}
       {% when Some with (ttl) %}
       <div>
@@ -95,7 +95,7 @@
   </dl>
 </div>
 
-{# Auth Policy section — renders all TenantConfig fields not shown above #}
+{# Auth Policy section — renders all RealmConfig fields not shown above #}
 <div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <h2 class="mb-4 text-lg font-semibold text-ht-content-primary">Auth Policy</h2>
   <div class="grid gap-6 sm:grid-cols-2">
@@ -258,11 +258,11 @@
   </div>
 </div>
 
-{# Danger zone — only shown for Archived tenants #}
-{% if tenant.status()|fmt("{:?}") == "Archived" %}
+{# Danger zone — only shown for Archived realms #}
+{% if realm.status()|fmt("{:?}") == "Archived" %}
 <div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">
   <h2 class="text-base font-semibold text-danger-fg">Permanently delete</h2>
-  <p class="mt-1 text-sm text-ht-content-secondary">This tenant was removed from hearth.yaml. You can permanently delete all its data.</p>
+  <p class="mt-1 text-sm text-ht-content-secondary">This realm was removed from hearth.yaml. You can permanently delete all its data.</p>
   <button @click="showDialog = true" type="button"
           class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
     Permanently delete
@@ -270,14 +270,14 @@
 
   <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
     <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
-      <h3 class="text-lg font-semibold text-ht-content-primary">Delete tenant?</h3>
-      <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ tenant.name() }}</strong> and ALL its data. This action cannot be undone.</p>
+      <h3 class="text-lg font-semibold text-ht-content-primary">Delete realm?</h3>
+      <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ realm.name() }}</strong> and ALL its data. This action cannot be undone.</p>
       <div class="mt-6 flex justify-end gap-3">
         <button @click="showDialog = false" type="button"
                 class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
-        <form method="post" action="/ui/admin/tenants/{{ tenant.id().as_uuid() }}/delete">
+        <form method="post" action="/ui/admin/realms/{{ realm.id().as_uuid() }}/delete">
           {% match csrf %}
             {% when Some with (token) %}
               <input type="hidden" name="_csrf" value="{{ token }}">

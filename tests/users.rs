@@ -5,7 +5,7 @@
 
 mod common;
 
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{CreateUserRequest, UpdateUserRequest, UserStatus};
 
 // ===== P0 fast: Full CRUD lifecycle =====
@@ -15,12 +15,12 @@ async fn create_and_read_user_by_id() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let created = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice Smith".to_string(),
@@ -30,7 +30,7 @@ async fn create_and_read_user_by_id() {
 
     let fetched = harness
         .identity()
-        .get_user(&tenant, created.id())
+        .get_user(&realm, created.id())
         .expect("get")
         .expect("should exist");
 
@@ -44,12 +44,12 @@ async fn create_and_read_user_by_email() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let created = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "Bob@Example.COM".to_string(),
                 display_name: "Bob".to_string(),
@@ -60,7 +60,7 @@ async fn create_and_read_user_by_email() {
     // Lookup by original casing — should still find via normalization
     let fetched = harness
         .identity()
-        .get_user_by_email(&tenant, "BOB@EXAMPLE.COM")
+        .get_user_by_email(&realm, "BOB@EXAMPLE.COM")
         .expect("get")
         .expect("should exist");
 
@@ -73,12 +73,12 @@ async fn update_user_fields() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let created = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
@@ -89,7 +89,7 @@ async fn update_user_fields() {
     let updated = harness
         .identity()
         .update_user(
-            &tenant,
+            &realm,
             created.id(),
             &UpdateUserRequest {
                 display_name: Some("Alice Smith".to_string()),
@@ -110,12 +110,12 @@ async fn delete_user_removes_from_both_indexes() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let created = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
@@ -125,17 +125,17 @@ async fn delete_user_removes_from_both_indexes() {
 
     harness
         .identity()
-        .delete_user(&tenant, created.id())
+        .delete_user(&realm, created.id())
         .expect("delete");
 
     assert!(harness
         .identity()
-        .get_user(&tenant, created.id())
+        .get_user(&realm, created.id())
         .expect("get")
         .is_none());
     assert!(harness
         .identity()
-        .get_user_by_email(&tenant, "alice@example.com")
+        .get_user_by_email(&realm, "alice@example.com")
         .expect("get")
         .is_none());
 }
@@ -145,12 +145,12 @@ async fn duplicate_email_rejected() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
@@ -161,7 +161,7 @@ async fn duplicate_email_rejected() {
     let err = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "Alice@Example.COM".to_string(),
                 display_name: "Other".to_string(),
@@ -182,12 +182,12 @@ async fn delete_frees_email_for_reuse() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let first = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice 1".to_string(),
@@ -197,14 +197,14 @@ async fn delete_frees_email_for_reuse() {
 
     harness
         .identity()
-        .delete_user(&tenant, first.id())
+        .delete_user(&realm, first.id())
         .expect("delete");
 
     // Should be able to re-create with same email
     let second = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice 2".to_string(),
@@ -215,45 +215,45 @@ async fn delete_frees_email_for_reuse() {
     assert_ne!(first.id(), second.id());
 }
 
-// ===== Cross-tenant isolation =====
+// ===== Cross-realm isolation =====
 
 #[tokio::test]
-async fn cross_tenant_isolation() {
+async fn cross_realm_isolation() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant_a = TenantId::generate();
-    let tenant_b = TenantId::generate();
+    let realm_a = RealmId::generate();
+    let realm_b = RealmId::generate();
 
     let alice_a = harness
         .identity()
         .create_user(
-            &tenant_a,
+            &realm_a,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice A".to_string(),
             },
         )
-        .expect("create in tenant A");
+        .expect("create in realm A");
 
-    // Same email in different tenant should succeed
+    // Same email in different realm should succeed
     let alice_b = harness
         .identity()
         .create_user(
-            &tenant_b,
+            &realm_b,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice B".to_string(),
             },
         )
-        .expect("create in tenant B should succeed");
+        .expect("create in realm B should succeed");
 
     assert_ne!(alice_a.id(), alice_b.id());
 
-    // Can't see tenant A's user from tenant B
+    // Can't see realm A's user from realm B
     assert!(harness
         .identity()
-        .get_user(&tenant_b, alice_a.id())
+        .get_user(&realm_b, alice_a.id())
         .expect("get")
         .is_none());
 }

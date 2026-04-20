@@ -6,7 +6,7 @@
 //!
 //! Clippy lints are suppressed for generated code that we cannot control.
 
-/// Identity and tenant types.
+/// Identity and realm types.
 pub mod identity {
     /// Version 1 of the identity API.
     #[allow(

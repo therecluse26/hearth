@@ -10,7 +10,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ring::rand::SecureRandom;
 
-use crate::core::{ClientId, Clock, InvitationId, OrganizationId, SessionId, TenantId, UserId};
+use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, UserId};
 use crate::identity::credentials::{self, CleartextPassword, CredentialConfig, StoredCredential};
 use crate::identity::error::IdentityError;
 use crate::identity::keys;
@@ -59,10 +59,10 @@ use crate::identity::tokens::{
 };
 use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
-    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
+    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest,
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, Organization,
     OrganizationInvitation, OrganizationMembership, OrganizationRole, OrganizationStatus, Page,
-    Session, SessionContext, Tenant, TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest,
+    Realm, RealmStatus, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
     UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
@@ -158,13 +158,13 @@ struct AttemptTracker {
 ///
 /// Manages user CRUD operations with email uniqueness enforcement,
 /// input validation, and Unicode normalization. Supports multi-tenancy
-/// with per-tenant signing keys and configuration.
+/// with per-realm signing keys and configuration.
 pub struct EmbeddedIdentityEngine {
     /// The underlying storage engine.
     storage: Arc<dyn StorageEngine>,
     /// Injectable clock for deterministic testing.
     clock: Arc<dyn Clock>,
-    /// Engine configuration (global defaults, overridable per-tenant).
+    /// Engine configuration (global defaults, overridable per-realm).
     config: IdentityConfig,
     /// Pre-computed dummy hash for timing-oracle prevention.
     ///
@@ -174,43 +174,43 @@ pub struct EmbeddedIdentityEngine {
     dummy_hash: String,
     /// Default Ed25519 signing key for JWT token issuance (Phase 0 compat).
     signing_key: Arc<SigningKey>,
-    /// Per-tenant signing keys, lazily loaded from storage.
+    /// Per-realm signing keys, lazily loaded from storage.
     ///
-    /// Each tenant gets its own Ed25519 key pair so tokens from one
-    /// tenant cannot validate in another.
-    tenant_signing_keys: Mutex<HashMap<String, Arc<SigningKey>>>,
+    /// Each realm gets its own Ed25519 key pair so tokens from one
+    /// realm cannot validate in another.
+    realm_signing_keys: Mutex<HashMap<String, Arc<SigningKey>>>,
     /// Per-user failed attempt trackers for rate limiting.
     ///
-    /// Key is `(TenantId, UserId)` serialized as a string to avoid
+    /// Key is `(RealmId, UserId)` serialized as a string to avoid
     /// requiring `Hash` on the newtype wrappers.
     attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Per-user failed MFA attempt trackers (separate from password rate limiting).
     ///
-    /// Stricter limits: 5 attempts, 5-minute lockout. Key format: `mfa:{tenant}:{user}`.
+    /// Stricter limits: 5 attempts, 5-minute lockout. Key format: `mfa:{realm}:{user}`.
     mfa_attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Used nonces for replay protection (when nonce enforcement is enabled).
     used_nonces: Mutex<HashSet<String>>,
     /// Per-email magic link rate trackers.
     ///
     /// Limits the number of magic link requests per email per hour.
-    /// Key format: `magic:{tenant}:{email}`.
+    /// Key format: `magic:{realm}:{email}`.
     magic_link_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Per-email password reset rate trackers.
     ///
     /// Limits the number of password reset requests per email per hour.
-    /// Key format: `reset:{tenant}:{email}`.
+    /// Key format: `reset:{realm}:{email}`.
     password_reset_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Pending `WebAuthn` challenges awaiting completion.
     webauthn_challenges: WebAuthnChallengeStore,
-    /// Serializes tenant-record lifecycle mutations (create/update/delete).
+    /// Serializes realm-record lifecycle mutations (create/update/delete).
     ///
-    /// Tenant ops are not on the hot path, and a tenant record and its
-    /// signing key MUST move together to avoid an orphaned "live tenant
+    /// Realm ops are not on the hot path, and a realm record and its
+    /// signing key MUST move together to avoid an orphaned "live realm
     /// with no JWKS" state. A single coarse mutex is the simplest way to
     /// guarantee atomicity of the record+key pair under concurrent
-    /// callers; a finer-grained per-tenant lock could come later if
+    /// callers; a finer-grained per-realm lock could come later if
     /// contention ever becomes measurable.
-    tenant_ops_lock: Mutex<()>,
+    realm_ops_lock: Mutex<()>,
 }
 
 impl std::fmt::Debug for EmbeddedIdentityEngine {
@@ -240,14 +240,14 @@ impl EmbeddedIdentityEngine {
             config,
             dummy_hash,
             signing_key,
-            tenant_signing_keys: Mutex::new(HashMap::new()),
+            realm_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
             password_reset_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
-            tenant_ops_lock: Mutex::new(()),
+            realm_ops_lock: Mutex::new(()),
         })
     }
 
@@ -267,14 +267,14 @@ impl EmbeddedIdentityEngine {
             config,
             dummy_hash,
             signing_key,
-            tenant_signing_keys: Mutex::new(HashMap::new()),
+            realm_signing_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
             password_reset_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
-            tenant_ops_lock: Mutex::new(()),
+            realm_ops_lock: Mutex::new(()),
         }
     }
 
@@ -285,9 +285,9 @@ impl EmbeddedIdentityEngine {
 
     // ===== Rate limiting helpers =====
 
-    /// Builds a tracker key from tenant and user IDs.
-    fn tracker_key(tenant_id: &TenantId, user_id: &UserId) -> String {
-        format!("{}:{}", tenant_id.as_uuid(), user_id.as_uuid())
+    /// Builds a tracker key from realm and user IDs.
+    fn tracker_key(realm_id: &RealmId, user_id: &UserId) -> String {
+        format!("{}:{}", realm_id.as_uuid(), user_id.as_uuid())
     }
 
     /// Checks whether the given user is currently rate-limited.
@@ -295,12 +295,8 @@ impl EmbeddedIdentityEngine {
     /// Returns `Err(RateLimited)` if the user has exceeded the maximum
     /// number of consecutive failed attempts and the lockout window
     /// has not yet expired. Otherwise returns `Ok(())`.
-    fn check_rate_limit(
-        &self,
-        tenant_id: &TenantId,
-        user_id: &UserId,
-    ) -> Result<(), IdentityError> {
-        let key = Self::tracker_key(tenant_id, user_id);
+    fn check_rate_limit(&self, realm_id: &RealmId, user_id: &UserId) -> Result<(), IdentityError> {
+        let key = Self::tracker_key(realm_id, user_id);
         let trackers = self.attempt_trackers.lock().expect("tracker lock");
         if let Some(tracker) = trackers.get(&key) {
             if tracker.failed_count >= self.config.rate_limit.max_failed_attempts {
@@ -317,8 +313,8 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Records a failed verification attempt for the given user.
-    fn record_failed_attempt(&self, tenant_id: &TenantId, user_id: &UserId) {
-        let key = Self::tracker_key(tenant_id, user_id);
+    fn record_failed_attempt(&self, realm_id: &RealmId, user_id: &UserId) {
+        let key = Self::tracker_key(realm_id, user_id);
         let now = self.clock.now().as_micros();
         let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
         let tracker = trackers.entry(key).or_insert(AttemptTracker {
@@ -330,8 +326,8 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Clears the failed attempt tracker for the given user (on success).
-    fn clear_attempts(&self, tenant_id: &TenantId, user_id: &UserId) {
-        let key = Self::tracker_key(tenant_id, user_id);
+    fn clear_attempts(&self, realm_id: &RealmId, user_id: &UserId) {
+        let key = Self::tracker_key(realm_id, user_id);
         let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
         trackers.remove(&key);
     }
@@ -343,18 +339,18 @@ impl EmbeddedIdentityEngine {
     /// MFA lockout duration: 5 minutes in microseconds.
     const MFA_LOCKOUT_MICROS: i64 = 5 * 60 * 1_000_000;
 
-    /// Builds an MFA tracker key from tenant and user IDs.
-    fn mfa_tracker_key(tenant_id: &TenantId, user_id: &UserId) -> String {
-        format!("mfa:{}:{}", tenant_id.as_uuid(), user_id.as_uuid())
+    /// Builds an MFA tracker key from realm and user IDs.
+    fn mfa_tracker_key(realm_id: &RealmId, user_id: &UserId) -> String {
+        format!("mfa:{}:{}", realm_id.as_uuid(), user_id.as_uuid())
     }
 
     /// Checks whether the given user is currently MFA-rate-limited.
     fn check_mfa_rate_limit(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<(), IdentityError> {
-        let key = Self::mfa_tracker_key(tenant_id, user_id);
+        let key = Self::mfa_tracker_key(realm_id, user_id);
         let trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
         if let Some(tracker) = trackers.get(&key) {
             if tracker.failed_count >= Self::MFA_MAX_ATTEMPTS {
@@ -369,8 +365,8 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Records a failed MFA attempt.
-    fn record_mfa_failed_attempt(&self, tenant_id: &TenantId, user_id: &UserId) {
-        let key = Self::mfa_tracker_key(tenant_id, user_id);
+    fn record_mfa_failed_attempt(&self, realm_id: &RealmId, user_id: &UserId) {
+        let key = Self::mfa_tracker_key(realm_id, user_id);
         let now = self.clock.now().as_micros();
         let mut trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
         let tracker = trackers.entry(key).or_insert(AttemptTracker {
@@ -382,8 +378,8 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Clears MFA failed attempts on success.
-    fn clear_mfa_attempts(&self, tenant_id: &TenantId, user_id: &UserId) {
-        let key = Self::mfa_tracker_key(tenant_id, user_id);
+    fn clear_mfa_attempts(&self, realm_id: &RealmId, user_id: &UserId) {
+        let key = Self::mfa_tracker_key(realm_id, user_id);
         let mut trackers = self.mfa_attempt_trackers.lock().expect("mfa tracker lock");
         trackers.remove(&key);
     }
@@ -395,18 +391,18 @@ impl EmbeddedIdentityEngine {
     /// Magic link rate limit window: 1 hour in microseconds.
     const MAGIC_LINK_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
 
-    /// Builds a magic link rate tracker key from tenant and email.
-    fn magic_link_tracker_key(tenant_id: &TenantId, email: &str) -> String {
-        format!("magic:{}:{email}", tenant_id.as_uuid())
+    /// Builds a magic link rate tracker key from realm and email.
+    fn magic_link_tracker_key(realm_id: &RealmId, email: &str) -> String {
+        format!("magic:{}:{email}", realm_id.as_uuid())
     }
 
     /// Checks whether magic link requests for this email are rate-limited.
     fn check_magic_link_rate_limit(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<(), IdentityError> {
-        let key = Self::magic_link_tracker_key(tenant_id, email);
+        let key = Self::magic_link_tracker_key(realm_id, email);
         let trackers = self
             .magic_link_rate_trackers
             .lock()
@@ -424,8 +420,8 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Records a magic link request for rate limiting.
-    fn record_magic_link_request(&self, tenant_id: &TenantId, email: &str) {
-        let key = Self::magic_link_tracker_key(tenant_id, email);
+    fn record_magic_link_request(&self, realm_id: &RealmId, email: &str) {
+        let key = Self::magic_link_tracker_key(realm_id, email);
         let now = self.clock.now().as_micros();
         let mut trackers = self
             .magic_link_rate_trackers
@@ -446,18 +442,18 @@ impl EmbeddedIdentityEngine {
     /// Password reset rate limit window: 1 hour in microseconds.
     const PASSWORD_RESET_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
 
-    /// Builds a password reset rate tracker key from tenant and email.
-    fn password_reset_tracker_key(tenant_id: &TenantId, email: &str) -> String {
-        format!("reset:{}:{email}", tenant_id.as_uuid())
+    /// Builds a password reset rate tracker key from realm and email.
+    fn password_reset_tracker_key(realm_id: &RealmId, email: &str) -> String {
+        format!("reset:{}:{email}", realm_id.as_uuid())
     }
 
     /// Checks whether password reset requests for this email are rate-limited.
     fn check_password_reset_rate_limit(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<(), IdentityError> {
-        let key = Self::password_reset_tracker_key(tenant_id, email);
+        let key = Self::password_reset_tracker_key(realm_id, email);
         let trackers = self
             .password_reset_rate_trackers
             .lock()
@@ -475,8 +471,8 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Records a password reset request for rate limiting.
-    fn record_password_reset_request(&self, tenant_id: &TenantId, email: &str) {
-        let key = Self::password_reset_tracker_key(tenant_id, email);
+    fn record_password_reset_request(&self, realm_id: &RealmId, email: &str) {
+        let key = Self::password_reset_tracker_key(realm_id, email);
         let now = self.clock.now().as_micros();
         let mut trackers = self
             .password_reset_rate_trackers
@@ -493,13 +489,13 @@ impl EmbeddedIdentityEngine {
     /// Loads the stored MFA state for a user.
     fn load_mfa_state(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<Option<StoredMfaState>, IdentityError> {
         let key = keys::encode_mfa_totp_key(user_id);
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?;
         match bytes {
             Some(b) => {
@@ -516,7 +512,7 @@ impl EmbeddedIdentityEngine {
     /// Persists MFA state for a user.
     fn save_mfa_state(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         state: &StoredMfaState,
     ) -> Result<(), IdentityError> {
@@ -525,7 +521,7 @@ impl EmbeddedIdentityEngine {
             reason: e.to_string(),
         })?;
         self.storage
-            .put(tenant_id, &key, &bytes)
+            .put(realm_id, &key, &bytes)
             .map_err(Self::storage_err)
     }
 
@@ -582,13 +578,13 @@ impl EmbeddedIdentityEngine {
     /// Used internally by methods that need to mutate the session.
     fn load_session_raw(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<Option<Session>, IdentityError> {
         let key = keys::encode_session_id(session_id);
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?;
         match bytes {
             Some(data) => Ok(Some(Self::deserialize_session(&data)?)),
@@ -610,7 +606,7 @@ impl EmbeddedIdentityEngine {
     #[allow(clippy::too_many_arguments)]
     fn rotate_grant_family(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         fid: &str,
         refresh_token: &str,
         session_id: &SessionId,
@@ -621,7 +617,7 @@ impl EmbeddedIdentityEngine {
         let family_key = keys::encode_grant_family(fid);
         let family_bytes = self
             .storage
-            .get(tenant_id, &family_key)
+            .get(realm_id, &family_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::TokenRevoked)?;
         let mut family: StoredGrantFamily =
@@ -643,15 +639,15 @@ impl EmbeddedIdentityEngine {
                     reason: e.to_string(),
                 })?;
             self.storage
-                .put(tenant_id, &family_key, &updated)
+                .put(realm_id, &family_key, &updated)
                 .map_err(Self::storage_err)?;
-            let _ = self.revoke_session(tenant_id, session_id);
+            let _ = self.revoke_session(realm_id, session_id);
             return Err(IdentityError::TokenRevoked);
         }
 
-        self.refresh_session(tenant_id, session_id)?;
+        self.refresh_session(realm_id, session_id)?;
 
-        let signing_key = self.get_signing_key_or_default(tenant_id);
+        let signing_key = self.get_signing_key_or_default(realm_id);
         let iat = now_secs;
 
         let new_access_claims = TokenClaims {
@@ -661,7 +657,7 @@ impl EmbeddedIdentityEngine {
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: session_id.to_string(),
-            tid: tenant_id.to_string(),
+            tid: realm_id.to_string(),
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(fid.to_string()),
@@ -675,7 +671,7 @@ impl EmbeddedIdentityEngine {
             exp: iat + self.config.token.refresh_token_ttl_secs,
             iat,
             sid: session_id.to_string(),
-            tid: tenant_id.to_string(),
+            tid: realm_id.to_string(),
             token_type: "refresh".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(fid.to_string()),
@@ -692,7 +688,7 @@ impl EmbeddedIdentityEngine {
             reason: e.to_string(),
         })?;
         self.storage
-            .put(tenant_id, &family_key, &updated)
+            .put(realm_id, &family_key, &updated)
             .map_err(Self::storage_err)?;
 
         Ok(TokenPair::new(new_access, new_refresh))
@@ -734,76 +730,72 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Persists a session to storage (both primary and user index).
-    fn persist_session(
-        &self,
-        tenant_id: &TenantId,
-        session: &Session,
-    ) -> Result<(), IdentityError> {
+    fn persist_session(&self, realm_id: &RealmId, session: &Session) -> Result<(), IdentityError> {
         let session_bytes = Self::serialize_session(session)?;
         let id_key = keys::encode_session_id(session.id());
         self.storage
-            .put(tenant_id, &id_key, &session_bytes)
+            .put(realm_id, &id_key, &session_bytes)
             .map_err(Self::storage_err)?;
         Ok(())
     }
 
-    // ===== Tenant helpers =====
+    // ===== Realm helpers =====
 
-    /// Serializes a tenant record to JSON bytes.
-    fn serialize_tenant(tenant: &Tenant) -> Result<Vec<u8>, IdentityError> {
-        serde_json::to_vec(tenant).map_err(|e| IdentityError::Serialization {
+    /// Serializes a realm record to JSON bytes.
+    fn serialize_realm(realm: &Realm) -> Result<Vec<u8>, IdentityError> {
+        serde_json::to_vec(realm).map_err(|e| IdentityError::Serialization {
             reason: e.to_string(),
         })
     }
 
-    /// Deserializes a tenant record from JSON bytes.
-    fn deserialize_tenant(bytes: &[u8]) -> Result<Tenant, IdentityError> {
+    /// Deserializes a realm record from JSON bytes.
+    fn deserialize_realm(bytes: &[u8]) -> Result<Realm, IdentityError> {
         serde_json::from_slice(bytes).map_err(|e| IdentityError::Serialization {
             reason: e.to_string(),
         })
     }
 
-    /// Gets the signing key for a tenant, falling back to the default key.
+    /// Gets the signing key for a realm, falling back to the default key.
     ///
     /// Used by token issuance paths where backward compatibility with
-    /// Phase 0 tenants (which lack per-tenant keys) is needed.
-    fn get_signing_key_or_default(&self, tenant_id: &TenantId) -> Arc<SigningKey> {
-        self.get_or_load_tenant_signing_key(tenant_id)
+    /// Phase 0 realms (which lack per-realm keys) is needed.
+    fn get_signing_key_or_default(&self, realm_id: &RealmId) -> Arc<SigningKey> {
+        self.get_or_load_realm_signing_key(realm_id)
             .unwrap_or_else(|_| Arc::clone(&self.signing_key))
     }
 
-    /// Retrieves (or lazily loads from storage) the signing key for a tenant.
+    /// Retrieves (or lazily loads from storage) the signing key for a realm.
     ///
     /// Checks the in-memory cache first, then loads from storage on cache miss.
-    /// Returns `TenantNotFound` if no per-tenant key exists.
-    fn get_or_load_tenant_signing_key(
+    /// Returns `RealmNotFound` if no per-realm key exists.
+    fn get_or_load_realm_signing_key(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
     ) -> Result<Arc<SigningKey>, IdentityError> {
-        let cache_key = tenant_id.as_uuid().to_string();
+        let cache_key = realm_id.as_uuid().to_string();
 
         // Check cache
         {
-            let key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            let key_cache = self.realm_signing_keys.lock().expect("key cache lock");
             if let Some(key) = key_cache.get(&cache_key) {
                 return Ok(Arc::clone(key));
             }
         }
 
         // Load from storage
-        let sys_tenant = keys::system_tenant_id();
-        let key_storage_key = keys::encode_tenant_signing_key(tenant_id);
+        let sys_realm = keys::system_realm_id();
+        let key_storage_key = keys::encode_realm_signing_key(realm_id);
         let key_bytes = self
             .storage
-            .get(&sys_tenant, &key_storage_key)
+            .get(&sys_realm, &key_storage_key)
             .map_err(Self::storage_err)?
-            .ok_or(IdentityError::TenantNotFound)?;
+            .ok_or(IdentityError::RealmNotFound)?;
 
         let signing_key = Arc::new(SigningKey::from_pkcs8(&key_bytes)?);
 
         // Cache it
         {
-            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
+            let mut key_cache = self.realm_signing_keys.lock().expect("key cache lock");
             key_cache.insert(cache_key, Arc::clone(&signing_key));
         }
 
@@ -812,46 +804,46 @@ impl EmbeddedIdentityEngine {
 }
 
 impl IdentityEngine for EmbeddedIdentityEngine {
-    // ===== Tenant lifecycle (Phase 1 Step 19) =====
+    // ===== Realm lifecycle (Phase 1 Step 19) =====
 
-    fn create_tenant(&self, request: &CreateTenantRequest) -> Result<Tenant, IdentityError> {
-        // Serialize against other tenant-record mutations so the atomic
+    fn create_realm(&self, request: &CreateRealmRequest) -> Result<Realm, IdentityError> {
+        // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
-        // thread's update/delete. See `tenant_ops_lock` docs.
-        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
+        // thread's update/delete. See `realm_ops_lock` docs.
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
         let now = self.clock.now();
-        let tenant_id = TenantId::generate();
+        let realm_id = RealmId::generate();
         let config = request.config.clone().unwrap_or_default();
 
-        // Generate a per-tenant signing key
-        let tenant_signing_key = SigningKey::generate()?;
+        // Generate a per-realm signing key
+        let realm_signing_key = SigningKey::generate()?;
 
-        // Persist the tenant record under the system tenant namespace
-        let sys_tenant = keys::system_tenant_id();
-        let tenant = Tenant::new(
-            tenant_id.clone(),
+        // Persist the realm record under the system realm namespace
+        let sys_realm = keys::system_realm_id();
+        let realm = Realm::new(
+            realm_id.clone(),
             request.name.clone(),
-            TenantStatus::Active,
+            RealmStatus::Active,
             config,
             now,
             now,
         );
-        let tenant_bytes = Self::serialize_tenant(&tenant)?;
-        let tenant_key = keys::encode_tenant_id(&tenant_id);
-        let key_storage_key = keys::encode_tenant_signing_key(&tenant_id);
-        let key_bytes = tenant_signing_key.pkcs8_bytes().to_vec();
+        let realm_bytes = Self::serialize_realm(&realm)?;
+        let realm_key = keys::encode_realm_id(&realm_id);
+        let key_storage_key = keys::encode_realm_signing_key(&realm_id);
+        let key_bytes = realm_signing_key.pkcs8_bytes().to_vec();
 
-        // Name index: tenant:name:{name} → tenant UUID bytes
-        let name_key = keys::encode_tenant_name(&request.name);
-        let name_value = tenant_id.as_uuid().as_bytes().to_vec();
+        // Name index: realm:name:{name} → realm UUID bytes
+        let name_key = keys::encode_realm_name(&request.name);
+        let name_value = realm_id.as_uuid().as_bytes().to_vec();
 
-        // Atomic three-entry write: the tenant record, signing key, and
+        // Atomic three-entry write: the realm record, signing key, and
         // name index land together or not at all.
         self.storage
             .put_batch(
-                &sys_tenant,
+                &sys_realm,
                 &[
-                    (tenant_key, tenant_bytes),
+                    (realm_key, realm_bytes),
                     (key_storage_key, key_bytes),
                     (name_key, name_value),
                 ],
@@ -860,147 +852,144 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Cache the signing key in memory
         {
-            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
-            key_cache.insert(
-                tenant_id.as_uuid().to_string(),
-                Arc::new(tenant_signing_key),
-            );
+            let mut key_cache = self.realm_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(realm_id.as_uuid().to_string(), Arc::new(realm_signing_key));
         }
 
-        Ok(tenant)
+        Ok(realm)
     }
 
-    fn get_tenant(&self, tenant_id: &TenantId) -> Result<Option<Tenant>, IdentityError> {
-        let sys_tenant = keys::system_tenant_id();
-        let tenant_key = keys::encode_tenant_id(tenant_id);
+    fn get_realm(&self, realm_id: &RealmId) -> Result<Option<Realm>, IdentityError> {
+        let sys_realm = keys::system_realm_id();
+        let realm_key = keys::encode_realm_id(realm_id);
         let bytes = self
             .storage
-            .get(&sys_tenant, &tenant_key)
+            .get(&sys_realm, &realm_key)
             .map_err(Self::storage_err)?;
         match bytes {
-            Some(b) => Ok(Some(Self::deserialize_tenant(&b)?)),
+            Some(b) => Ok(Some(Self::deserialize_realm(&b)?)),
             None => Ok(None),
         }
     }
 
-    fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>, IdentityError> {
-        let sys_tenant = keys::system_tenant_id();
-        let name_key = keys::encode_tenant_name(name);
+    fn get_realm_by_name(&self, name: &str) -> Result<Option<Realm>, IdentityError> {
+        let sys_realm = keys::system_realm_id();
+        let name_key = keys::encode_realm_name(name);
         let id_bytes = self
             .storage
-            .get(&sys_tenant, &name_key)
+            .get(&sys_realm, &name_key)
             .map_err(Self::storage_err)?;
         match id_bytes {
             Some(b) => {
                 if b.len() != 16 {
                     return Err(IdentityError::Serialization {
-                        reason: "tenant name index value has invalid length".to_string(),
+                        reason: "realm name index value has invalid length".to_string(),
                     });
                 }
                 let uuid =
                     uuid::Uuid::from_slice(&b).map_err(|e| IdentityError::Serialization {
-                        reason: format!("invalid UUID in tenant name index: {e}"),
+                        reason: format!("invalid UUID in realm name index: {e}"),
                     })?;
-                self.get_tenant(&TenantId::new(uuid))
+                self.get_realm(&RealmId::new(uuid))
             }
             None => Ok(None),
         }
     }
 
-    fn update_tenant(
+    fn update_realm(
         &self,
-        tenant_id: &TenantId,
-        request: &UpdateTenantRequest,
-    ) -> Result<Tenant, IdentityError> {
+        realm_id: &RealmId,
+        request: &UpdateRealmRequest,
+    ) -> Result<Realm, IdentityError> {
         // Serialize against create/delete so an in-flight delete can't
         // race with this read-modify-write and resurrect an orphaned
         // record after its signing key has already been removed.
-        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
-        let mut tenant = self
-            .get_tenant(tenant_id)?
-            .ok_or(IdentityError::TenantNotFound)?;
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+        let mut realm = self
+            .get_realm(realm_id)?
+            .ok_or(IdentityError::RealmNotFound)?;
 
         let now = self.clock.now();
-        let old_name = tenant.name().to_string();
+        let old_name = realm.name().to_string();
 
         if let Some(ref name) = request.name {
-            tenant.set_name(name.clone());
+            realm.set_name(name.clone());
         }
         if let Some(status) = request.status {
-            tenant.set_status(status);
+            realm.set_status(status);
         }
         if let Some(ref config) = request.config {
-            tenant.set_config(config.clone());
+            realm.set_config(config.clone());
         }
-        tenant.set_updated_at(now);
+        realm.set_updated_at(now);
 
-        let sys_tenant = keys::system_tenant_id();
-        let tenant_key = keys::encode_tenant_id(tenant_id);
-        let tenant_bytes = Self::serialize_tenant(&tenant)?;
+        let sys_realm = keys::system_realm_id();
+        let realm_key = keys::encode_realm_id(realm_id);
+        let realm_bytes = Self::serialize_realm(&realm)?;
 
         // If the name changed, update the name index atomically
-        if tenant.name() == old_name {
+        if realm.name() == old_name {
             self.storage
-                .put(&sys_tenant, &tenant_key, &tenant_bytes)
+                .put(&sys_realm, &realm_key, &realm_bytes)
                 .map_err(Self::storage_err)?;
         } else {
-            let old_name_key = keys::encode_tenant_name(&old_name);
-            let new_name_key = keys::encode_tenant_name(tenant.name());
-            let name_value = tenant_id.as_uuid().as_bytes().to_vec();
+            let old_name_key = keys::encode_realm_name(&old_name);
+            let new_name_key = keys::encode_realm_name(realm.name());
+            let name_value = realm_id.as_uuid().as_bytes().to_vec();
             self.storage
                 .put_batch(
-                    &sys_tenant,
-                    &[(tenant_key, tenant_bytes), (new_name_key, name_value)],
+                    &sys_realm,
+                    &[(realm_key, realm_bytes), (new_name_key, name_value)],
                 )
                 .map_err(Self::storage_err)?;
             // Best-effort: remove old name index
-            let _ = self.storage.delete(&sys_tenant, &old_name_key);
+            let _ = self.storage.delete(&sys_realm, &old_name_key);
         }
 
-        Ok(tenant)
+        Ok(realm)
     }
 
     #[allow(clippy::too_many_lines)]
-    fn delete_tenant(&self, tenant_id: &TenantId) -> Result<(), IdentityError> {
+    fn delete_realm(&self, realm_id: &RealmId) -> Result<(), IdentityError> {
         // Serialize against create/update so a concurrent update can't
-        // re-put a tenant record after we've already removed its signing
+        // re-put a realm record after we've already removed its signing
         // key. Without this lock, `record=Some key=None` would leak out
-        // and `tenant_jwks()` would fail for a still-live-looking tenant.
-        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
-        // Check whether the tenant record exists. We do NOT early-return on
+        // and `realm_jwks()` would fail for a still-live-looking realm.
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+        // Check whether the realm record exists. We do NOT early-return on
         // missing record — a previous cascade may have crashed after deleting
         // the record but before cleaning all key-spaces. Recovery requires us
         // to scan every cascade prefix regardless. If no cascade work is found
-        // AND the record is absent, we return TenantNotFound at the end.
-        let existing_tenant = self.get_tenant(tenant_id)?;
-        let tenant_exists = existing_tenant.is_some();
+        // AND the record is absent, we return RealmNotFound at the end.
+        let existing_realm = self.get_realm(realm_id)?;
+        let realm_exists = existing_realm.is_some();
         let mut cascade_work_done = false;
 
-        // 0. Delete the tenant record FIRST. Ordering matters: if a fault
-        //    lands mid-cascade, the observable partial state is "tenant
+        // 0. Delete the realm record FIRST. Ordering matters: if a fault
+        //    lands mid-cascade, the observable partial state is "realm
         //    already gone, some cascade residue remains" — never the
-        //    reverse ("tenant alive but signing key missing"), which would
-        //    make `tenant_jwks()` fail for a tenant the API still reports
+        //    reverse ("realm alive but signing key missing"), which would
+        //    make `realm_jwks()` fail for a realm the API still reports
         //    as live. The idempotent cascade below converges on retry.
-        let sys_tenant = keys::system_tenant_id();
-        let tenant_key = keys::encode_tenant_id(tenant_id);
-        if tenant_exists {
+        let sys_realm = keys::system_realm_id();
+        let realm_key = keys::encode_realm_id(realm_id);
+        if realm_exists {
             self.storage
-                .delete(&sys_tenant, &tenant_key)
+                .delete(&sys_realm, &realm_key)
                 .map_err(Self::storage_err)?;
             // Clean up the name index (best-effort)
-            if let Some(ref t) = existing_tenant {
-                let name_key = keys::encode_tenant_name(t.name());
-                let _ = self.storage.delete(&sys_tenant, &name_key);
+            if let Some(ref t) = existing_realm {
+                let name_key = keys::encode_realm_name(t.name());
+                let _ = self.storage.delete(&sys_realm, &name_key);
             }
         }
 
-        // 1. Delete all users in this tenant (cascades to sessions, credentials)
+        // 1. Delete all users in this realm (cascades to sessions, credentials)
         let user_prefix = keys::user_id_scan_prefix();
         let user_end = keys::prefix_end(&user_prefix);
         let users = self
             .storage
-            .scan(tenant_id, &user_prefix, &user_end)
+            .scan(realm_id, &user_prefix, &user_end)
             .map_err(Self::storage_err)?;
 
         if !users.is_empty() {
@@ -1010,7 +999,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         for entry in &users {
             let user: User = Self::deserialize_user(&entry.value)?;
             // delete_user handles cascade of sessions, credentials, email index
-            let _ = self.delete_user(tenant_id, user.id());
+            let _ = self.delete_user(realm_id, user.id());
         }
 
         // 1a. Unconditional sweep of per-user secondary prefixes. These
@@ -1032,14 +1021,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let end = keys::prefix_end(prefix);
             let entries = self
                 .storage
-                .scan(tenant_id, prefix, &end)
+                .scan(realm_id, prefix, &end)
                 .map_err(Self::storage_err)?;
             if !entries.is_empty() {
                 cascade_work_done = true;
             }
             for entry in &entries {
                 self.storage
-                    .delete(tenant_id, &entry.key)
+                    .delete(realm_id, &entry.key)
                     .map_err(Self::storage_err)?;
             }
         }
@@ -1058,14 +1047,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let end = keys::prefix_end(prefix);
             let entries = self
                 .storage
-                .scan(tenant_id, prefix, &end)
+                .scan(realm_id, prefix, &end)
                 .map_err(Self::storage_err)?;
             if !entries.is_empty() {
                 cascade_work_done = true;
             }
             for entry in &entries {
                 self.storage
-                    .delete(tenant_id, &entry.key)
+                    .delete(realm_id, &entry.key)
                     .map_err(Self::storage_err)?;
             }
         }
@@ -1075,14 +1064,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let client_end = keys::prefix_end(client_prefix);
         let clients = self
             .storage
-            .scan(tenant_id, client_prefix, &client_end)
+            .scan(realm_id, client_prefix, &client_end)
             .map_err(Self::storage_err)?;
         if !clients.is_empty() {
             cascade_work_done = true;
         }
         for entry in &clients {
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1091,14 +1080,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let rel_end = keys::prefix_end(rel_prefix);
         let rels = self
             .storage
-            .scan(tenant_id, rel_prefix, &rel_end)
+            .scan(realm_id, rel_prefix, &rel_end)
             .map_err(Self::storage_err)?;
         if !rels.is_empty() {
             cascade_work_done = true;
         }
         for entry in &rels {
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1107,14 +1096,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let code_end = keys::prefix_end(code_prefix);
         let codes = self
             .storage
-            .scan(tenant_id, code_prefix, &code_end)
+            .scan(realm_id, code_prefix, &code_end)
             .map_err(Self::storage_err)?;
         if !codes.is_empty() {
             cascade_work_done = true;
         }
         for entry in &codes {
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1123,14 +1112,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let family_end = keys::prefix_end(&family_prefix);
         let families = self
             .storage
-            .scan(tenant_id, &family_prefix, &family_end)
+            .scan(realm_id, &family_prefix, &family_end)
             .map_err(Self::storage_err)?;
         if !families.is_empty() {
             cascade_work_done = true;
         }
         for entry in &families {
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1139,14 +1128,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let device_end = keys::prefix_end(&device_prefix);
         let devices = self
             .storage
-            .scan(tenant_id, &device_prefix, &device_end)
+            .scan(realm_id, &device_prefix, &device_end)
             .map_err(Self::storage_err)?;
         if !devices.is_empty() {
             cascade_work_done = true;
         }
         for entry in &devices {
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1155,14 +1144,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let jti_end = keys::prefix_end(jti_prefix);
         let jtis = self
             .storage
-            .scan(tenant_id, jti_prefix, &jti_end)
+            .scan(realm_id, jti_prefix, &jti_end)
             .map_err(Self::storage_err)?;
         if !jtis.is_empty() {
             cascade_work_done = true;
         }
         for entry in &jtis {
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1171,52 +1160,52 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let ucode_end = keys::prefix_end(ucode_prefix);
         let ucodes = self
             .storage
-            .scan(tenant_id, ucode_prefix, &ucode_end)
+            .scan(realm_id, ucode_prefix, &ucode_end)
             .map_err(Self::storage_err)?;
         if !ucodes.is_empty() {
             cascade_work_done = true;
         }
         for entry in &ucodes {
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
-        // 9. Delete tenant signing key (check existence first so we can attribute
+        // 9. Delete realm signing key (check existence first so we can attribute
         //    cascade work even when only the signing key survives a prior crash).
-        let key_storage_key = keys::encode_tenant_signing_key(tenant_id);
+        let key_storage_key = keys::encode_realm_signing_key(realm_id);
         if self
             .storage
-            .get(&sys_tenant, &key_storage_key)
+            .get(&sys_realm, &key_storage_key)
             .map_err(Self::storage_err)?
             .is_some()
         {
             cascade_work_done = true;
             self.storage
-                .delete(&sys_tenant, &key_storage_key)
+                .delete(&sys_realm, &key_storage_key)
                 .map_err(Self::storage_err)?;
         }
 
         // 10. Remove from in-memory key cache. The record+key were already
         //     deleted durably above; this just drops the cached `Arc`.
         {
-            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
-            key_cache.remove(&tenant_id.as_uuid().to_string());
+            let mut key_cache = self.realm_signing_keys.lock().expect("key cache lock");
+            key_cache.remove(&realm_id.as_uuid().to_string());
         }
 
-        // Idempotency guard: if nothing existed for this tenant anywhere, the
+        // Idempotency guard: if nothing existed for this realm anywhere, the
         // caller is asking to delete something that was never created (or was
-        // already fully cleaned). Preserve the `TenantNotFound` contract for
+        // already fully cleaned). Preserve the `RealmNotFound` contract for
         // that case so the existing API stays stable.
-        if !tenant_exists && !cascade_work_done {
-            return Err(IdentityError::TenantNotFound);
+        if !realm_exists && !cascade_work_done {
+            return Err(IdentityError::RealmNotFound);
         }
 
         Ok(())
     }
 
-    fn tenant_jwks(&self, tenant_id: &TenantId) -> Result<JwksDocument, IdentityError> {
-        let key = self.get_or_load_tenant_signing_key(tenant_id)?;
+    fn realm_jwks(&self, realm_id: &RealmId) -> Result<JwksDocument, IdentityError> {
+        let key = self.get_or_load_realm_signing_key(realm_id)?;
         Ok(key.to_jwks())
     }
 
@@ -1224,7 +1213,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn create_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &CreateUserRequest,
     ) -> Result<User, IdentityError> {
         // 1. Validate and normalize input
@@ -1235,7 +1224,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let email_key = keys::encode_user_email(&email);
         let existing = self
             .storage
-            .get(tenant_id, &email_key)
+            .get(realm_id, &email_key)
             .map_err(Self::storage_err)?;
         if existing.is_some() {
             return Err(IdentityError::DuplicateEmail);
@@ -1261,13 +1250,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 6. Write email index (UserId UUID string bytes)
         let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
         self.storage
-            .put(tenant_id, &email_key, &user_id_bytes)
+            .put(realm_id, &email_key, &user_id_bytes)
             .map_err(Self::storage_err)?;
 
         // 7. Write primary record
         let id_key = keys::encode_user_id(&user_id);
         self.storage
-            .put(tenant_id, &id_key, &user_bytes)
+            .put(realm_id, &id_key, &user_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(user)
@@ -1275,13 +1264,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn get_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<Option<User>, IdentityError> {
         let key = keys::encode_user_id(user_id);
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?;
 
         match bytes {
@@ -1292,7 +1281,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn get_user_by_email(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<Option<User>, IdentityError> {
         // Normalize the lookup email
@@ -1302,7 +1291,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Look up UserId from email index
         let id_bytes = self
             .storage
-            .get(tenant_id, &email_key)
+            .get(realm_id, &email_key)
             .map_err(Self::storage_err)?;
 
         let Some(id_bytes) = id_bytes else {
@@ -1319,18 +1308,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         })?;
         let user_id = UserId::new(uuid);
 
-        self.get_user(tenant_id, &user_id)
+        self.get_user(realm_id, &user_id)
     }
 
     fn update_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         request: &UpdateUserRequest,
     ) -> Result<User, IdentityError> {
         // 1. Load existing user
         let mut user = self
-            .get_user(tenant_id, user_id)?
+            .get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         let old_email = user.email().to_string();
@@ -1344,7 +1333,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 let new_email_key = keys::encode_user_email(&normalized);
                 let existing = self
                     .storage
-                    .get(tenant_id, &new_email_key)
+                    .get(realm_id, &new_email_key)
                     .map_err(Self::storage_err)?;
                 if existing.is_some() {
                     return Err(IdentityError::DuplicateEmail);
@@ -1353,13 +1342,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 // Remove old email index
                 let old_email_key = keys::encode_user_email(&old_email);
                 self.storage
-                    .delete(tenant_id, &old_email_key)
+                    .delete(realm_id, &old_email_key)
                     .map_err(Self::storage_err)?;
 
                 // Write new email index
                 let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
                 self.storage
-                    .put(tenant_id, &new_email_key, &user_id_bytes)
+                    .put(realm_id, &new_email_key, &user_id_bytes)
                     .map_err(Self::storage_err)?;
 
                 user.set_email(normalized);
@@ -1384,40 +1373,40 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let user_bytes = Self::serialize_user(&user)?;
         let id_key = keys::encode_user_id(user_id);
         self.storage
-            .put(tenant_id, &id_key, &user_bytes)
+            .put(realm_id, &id_key, &user_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(user)
     }
 
-    fn delete_user(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError> {
+    fn delete_user(&self, realm_id: &RealmId, user_id: &UserId) -> Result<(), IdentityError> {
         // 1. Load user to get email for index cleanup
         let user = self
-            .get_user(tenant_id, user_id)?
+            .get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         // 2. Delete primary record
         let id_key = keys::encode_user_id(user_id);
         self.storage
-            .delete(tenant_id, &id_key)
+            .delete(realm_id, &id_key)
             .map_err(Self::storage_err)?;
 
         // 3. Delete email index
         let email_key = keys::encode_user_email(user.email());
         self.storage
-            .delete(tenant_id, &email_key)
+            .delete(realm_id, &email_key)
             .map_err(Self::storage_err)?;
 
         // 4. Delete credential (if any — best effort, ignore not-found)
         let cred_key = keys::encode_credential_key(user_id);
         self.storage
-            .delete(tenant_id, &cred_key)
+            .delete(realm_id, &cred_key)
             .map_err(Self::storage_err)?;
 
         // 4b. Delete MFA state (if any — best effort)
         let mfa_key = keys::encode_mfa_totp_key(user_id);
         self.storage
-            .delete(tenant_id, &mfa_key)
+            .delete(realm_id, &mfa_key)
             .map_err(Self::storage_err)?;
 
         // 4c. Delete all WebAuthn credentials + discoverable index entries
@@ -1425,7 +1414,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let webauthn_end = keys::prefix_end(&webauthn_prefix);
         let webauthn_entries = self
             .storage
-            .scan(tenant_id, &webauthn_prefix, &webauthn_end)
+            .scan(realm_id, &webauthn_prefix, &webauthn_end)
             .map_err(Self::storage_err)?;
 
         for entry in &webauthn_entries {
@@ -1434,13 +1423,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 if stored.discoverable {
                     let disc_key = keys::encode_webauthn_discoverable(&stored.credential_id_b64);
                     self.storage
-                        .delete(tenant_id, &disc_key)
+                        .delete(realm_id, &disc_key)
                         .map_err(Self::storage_err)?;
                 }
             }
             // Delete the credential itself
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1449,7 +1438,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let session_end = keys::prefix_end(&session_prefix);
         let session_entries = self
             .storage
-            .scan(tenant_id, &session_prefix, &session_end)
+            .scan(realm_id, &session_prefix, &session_end)
             .map_err(Self::storage_err)?;
 
         for entry in &session_entries {
@@ -1464,15 +1453,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     let session_id = SessionId::new(uuid);
                     let session_key = keys::encode_session_id(&session_id);
                     self.storage
-                        .delete(tenant_id, &session_key)
+                        .delete(realm_id, &session_key)
                         .map_err(Self::storage_err)?;
                 }
             }
 
             // Delete the user-session index entry itself
-            // The scan returns keys without tenant prefix, so re-use entry.key
+            // The scan returns keys without realm prefix, so re-use entry.key
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1481,7 +1470,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let org_membership_end = keys::prefix_end(&org_membership_prefix);
         let org_memberships = self
             .storage
-            .scan(tenant_id, &org_membership_prefix, &org_membership_end)
+            .scan(realm_id, &org_membership_prefix, &org_membership_end)
             .map_err(Self::storage_err)?;
 
         for entry in &org_memberships {
@@ -1489,12 +1478,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 // Delete forward index (org → user)
                 let fwd_key = keys::encode_membership_by_org(membership.org_id(), user_id);
                 self.storage
-                    .delete(tenant_id, &fwd_key)
+                    .delete(realm_id, &fwd_key)
                     .map_err(Self::storage_err)?;
             }
             // Delete reverse index entry (user → org)
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -1503,7 +1492,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn set_password(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<(), IdentityError> {
@@ -1511,7 +1500,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         validation::validate_password_length(password.as_bytes())?;
 
         // Ensure the user exists
-        self.get_user(tenant_id, user_id)?
+        self.get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         // Hash and store
@@ -1520,7 +1509,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let cred_bytes = Self::serialize_credential(&cred)?;
         let cred_key = keys::encode_credential_key(user_id);
         self.storage
-            .put(tenant_id, &cred_key, &cred_bytes)
+            .put(realm_id, &cred_key, &cred_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(())
@@ -1528,21 +1517,21 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn verify_password(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<bool, IdentityError> {
         // Rate limit check: reject early if account is locked out
-        self.check_rate_limit(tenant_id, user_id)?;
+        self.check_rate_limit(realm_id, user_id)?;
 
         // Check user exists
-        let user = self.get_user(tenant_id, user_id)?;
+        let user = self.get_user(realm_id, user_id)?;
         if user.is_none() {
             // Timing defense: verify against dummy hash so timing is
             // indistinguishable from a real failed verification.
             // Return generic error to prevent user enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
-            self.record_failed_attempt(tenant_id, user_id);
+            self.record_failed_attempt(realm_id, user_id);
             return Err(IdentityError::InvalidCredential {
                 reason: "verification failed".to_string(),
             });
@@ -1552,14 +1541,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let cred_key = keys::encode_credential_key(user_id);
         let cred_bytes = self
             .storage
-            .get(tenant_id, &cred_key)
+            .get(realm_id, &cred_key)
             .map_err(Self::storage_err)?;
 
         let Some(cred_bytes) = cred_bytes else {
             // Timing defense: same as above.
             // Return generic error to prevent credential enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
-            self.record_failed_attempt(tenant_id, user_id);
+            self.record_failed_attempt(realm_id, user_id);
             return Err(IdentityError::InvalidCredential {
                 reason: "verification failed".to_string(),
             });
@@ -1570,7 +1559,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         if matches {
             // Clear failed attempts on success
-            self.clear_attempts(tenant_id, user_id);
+            self.clear_attempts(realm_id, user_id);
 
             // Auto-upgrade legacy algorithms on successful verification
             if cred.algorithm != credentials::PasswordAlgorithm::Argon2id {
@@ -1578,11 +1567,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 let upgraded = credentials::hash_password(password, &self.config.credential, now)?;
                 let upgraded_bytes = Self::serialize_credential(&upgraded)?;
                 self.storage
-                    .put(tenant_id, &cred_key, &upgraded_bytes)
+                    .put(realm_id, &cred_key, &upgraded_bytes)
                     .map_err(Self::storage_err)?;
             }
         } else {
-            self.record_failed_attempt(tenant_id, user_id);
+            self.record_failed_attempt(realm_id, user_id);
         }
 
         Ok(matches)
@@ -1590,13 +1579,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn change_password(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         old_password: &CleartextPassword,
         new_password: &CleartextPassword,
     ) -> Result<(), IdentityError> {
         // Verify old password (this also checks user existence and credential existence)
-        let matches = self.verify_password(tenant_id, user_id, old_password)?;
+        let matches = self.verify_password(realm_id, user_id, old_password)?;
         if !matches {
             return Err(IdentityError::InvalidCredential {
                 reason: "old password does not match".to_string(),
@@ -1604,12 +1593,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // Set the new password
-        self.set_password(tenant_id, user_id, new_password)
+        self.set_password(realm_id, user_id, new_password)
     }
 
     fn create_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         context: &SessionContext,
     ) -> Result<Session, IdentityError> {
@@ -1618,7 +1607,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // disabled users are blocked entirely (distinguished from
         // `UserNotFound` because an operator deliberately disabled them).
         let user = self
-            .get_user(tenant_id, user_id)?
+            .get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
         match user.status() {
             UserStatus::Active => {}
@@ -1639,12 +1628,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         );
 
         // Persist session record
-        self.persist_session(tenant_id, &session)?;
+        self.persist_session(realm_id, &session)?;
 
         // Write user-to-session index entry
         let user_session_key = keys::encode_user_session(user_id, &session_id);
         self.storage
-            .put(tenant_id, &user_session_key, &[])
+            .put(realm_id, &user_session_key, &[])
             .map_err(Self::storage_err)?;
 
         Ok(session)
@@ -1652,10 +1641,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn get_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<Option<Session>, IdentityError> {
-        let session = self.load_session_raw(tenant_id, session_id)?;
+        let session = self.load_session_raw(realm_id, session_id)?;
         match session {
             Some(s) if s.is_valid(self.clock.now()) => Ok(Some(s)),
             _ => Ok(None),
@@ -1664,26 +1653,26 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn revoke_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<(), IdentityError> {
         let mut session = self
-            .load_session_raw(tenant_id, session_id)?
+            .load_session_raw(realm_id, session_id)?
             .ok_or(IdentityError::SessionNotFound)?;
 
         session.revoke();
-        self.persist_session(tenant_id, &session)?;
+        self.persist_session(realm_id, &session)?;
 
         Ok(())
     }
 
     fn refresh_session(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<Session, IdentityError> {
         let mut session = self
-            .load_session_raw(tenant_id, session_id)?
+            .load_session_raw(realm_id, session_id)?
             .ok_or(IdentityError::SessionNotFound)?;
 
         // Cannot refresh a revoked or expired session
@@ -1692,14 +1681,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         session.refresh(self.clock.now(), self.config.session.ttl_micros);
-        self.persist_session(tenant_id, &session)?;
+        self.persist_session(realm_id, &session)?;
 
         Ok(session)
     }
 
     fn list_sessions_by_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         cursor: Option<&str>,
         limit: usize,
@@ -1726,7 +1715,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let index_entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -1743,7 +1732,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let session_key = keys::encode_session_id(&session_id);
             if let Some(data) = self
                 .storage
-                .get(tenant_id, &session_key)
+                .get(realm_id, &session_key)
                 .map_err(Self::storage_err)?
             {
                 let session: Session =
@@ -1766,9 +1755,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(Page { items, next_cursor })
     }
 
-    fn list_sessions_by_tenant(
+    fn list_sessions_by_realm(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Session>, IdentityError> {
@@ -1792,7 +1781,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -1825,18 +1814,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn issue_tokens(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         session_id: &SessionId,
     ) -> Result<TokenPair, IdentityError> {
         // Verify user exists
-        let user = self.get_user(tenant_id, user_id)?;
+        let user = self.get_user(realm_id, user_id)?;
         if user.is_none() {
             return Err(IdentityError::UserNotFound);
         }
 
         // Verify session exists and is valid
-        let session = self.get_session(tenant_id, session_id)?;
+        let session = self.get_session(realm_id, session_id)?;
         if session.is_none() {
             return Err(IdentityError::SessionNotFound);
         }
@@ -1845,7 +1834,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.signing_key.issue_token_pair(&IssueTokenRequest {
             sub: &user_id.to_string(),
             sid: &session_id.to_string(),
-            tid: &tenant_id.to_string(),
+            tid: &realm_id.to_string(),
             now,
             config: &self.config.token,
         })
@@ -1853,14 +1842,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn validate_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         token: &str,
     ) -> Result<TokenClaims, IdentityError> {
         // Hot path: extract claims without signature verification
         let claims = tokens::decode_claims_unverified(token)?;
 
-        // Verify the token was issued for this tenant
-        if claims.tid != tenant_id.to_string() {
+        // Verify the token was issued for this realm
+        if claims.tid != realm_id.to_string() {
             return Err(IdentityError::InvalidToken);
         }
 
@@ -1874,7 +1863,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let session_id = SessionId::new(session_uuid);
 
         // Look up session — this is the actual validation
-        let session = self.get_session(tenant_id, &session_id)?;
+        let session = self.get_session(realm_id, &session_id)?;
         if session.is_none() {
             return Err(IdentityError::InvalidToken);
         }
@@ -1884,7 +1873,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn refresh_tokens(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         refresh_token: &str,
     ) -> Result<TokenPair, IdentityError> {
         // Decode the refresh token (unverified — we trust our own tokens)
@@ -1895,8 +1884,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::InvalidToken);
         }
 
-        // Verify tenant matches
-        if claims.tid != tenant_id.to_string() {
+        // Verify realm matches
+        if claims.tid != realm_id.to_string() {
             return Err(IdentityError::InvalidToken);
         }
 
@@ -1928,7 +1917,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Grant family rotation (if fid is present)
         if let Some(ref fid) = claims.fid {
             self.rotate_grant_family(
-                tenant_id,
+                realm_id,
                 fid,
                 refresh_token,
                 &session_id,
@@ -1938,8 +1927,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             )
         } else {
             // Legacy path (no grant family — Phase 0 tokens)
-            self.refresh_session(tenant_id, &session_id)?;
-            self.issue_tokens(tenant_id, &user_id, &session_id)
+            self.refresh_session(realm_id, &session_id)?;
+            self.issue_tokens(realm_id, &user_id, &session_id)
         }
     }
 
@@ -1951,7 +1940,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn register_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &RegisterClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
         // Validate client name (non-empty, length limit)
@@ -2019,7 +2008,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
         let key = keys::encode_oauth_client(&client_id);
         self.storage
-            .put(tenant_id, &key, &client_bytes)
+            .put(realm_id, &key, &client_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(client)
@@ -2027,7 +2016,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn authorize(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &AuthorizationRequest,
     ) -> Result<AuthorizationResponse, IdentityError> {
         // 1. Validate response_type
@@ -2060,7 +2049,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let client_key = keys::encode_oauth_client(&request.client_id);
         let client_bytes = self
             .storage
-            .get(tenant_id, &client_key)
+            .get(realm_id, &client_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidClient)?;
         let client: OAuthClient =
@@ -2127,7 +2116,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &code_key, &code_bytes)
+            .put(realm_id, &code_key, &code_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(AuthorizationResponse::new(raw_code, request.state.clone()))
@@ -2136,7 +2125,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     #[allow(clippy::too_many_lines)]
     fn exchange_authorization_code(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &TokenExchangeRequest,
     ) -> Result<OidcTokenResponse, IdentityError> {
         // 1. Hash the incoming code to find it in storage
@@ -2146,7 +2135,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 2. Load the stored code
         let code_bytes = self
             .storage
-            .get(tenant_id, &code_key)
+            .get(realm_id, &code_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidAuthorizationCode)?;
 
@@ -2201,19 +2190,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &code_key, &updated_bytes)
+            .put(realm_id, &code_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         // 9. Create a session for the user (OAuth code exchange — no browser context)
         let session =
-            self.create_session(tenant_id, &stored_code.user_id, &SessionContext::default())?;
+            self.create_session(realm_id, &stored_code.user_id, &SessionContext::default())?;
 
         // 10. Create grant family for refresh token rotation
         let family_id = uuid::Uuid::new_v4().to_string();
 
         // 11. Issue tokens with family ID
         let iat = now.as_micros() / 1_000_000;
-        let signing_key = self.get_signing_key_or_default(tenant_id);
+        let signing_key = self.get_signing_key_or_default(realm_id);
 
         let access_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
@@ -2222,7 +2211,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: session.id().to_string(),
-            tid: tenant_id.to_string(),
+            tid: realm_id.to_string(),
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
@@ -2236,7 +2225,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             exp: iat + self.config.token.refresh_token_ttl_secs,
             iat,
             sid: session.id().to_string(),
-            tid: tenant_id.to_string(),
+            tid: realm_id.to_string(),
             token_type: "refresh".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
@@ -2263,7 +2252,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             family_id: family_id.clone(),
             current_refresh_hash: refresh_hash,
             session_id: session.id().clone(),
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             revoked: false,
             created_at: now,
         };
@@ -2273,7 +2262,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
         let family_key = keys::encode_grant_family(&family_id);
         self.storage
-            .put(tenant_id, &family_key, &family_bytes)
+            .put(realm_id, &family_key, &family_bytes)
             .map_err(Self::storage_err)?;
 
         // 13. Issue ID token (OIDC-specific, nonce echoed per OIDC Core §2)
@@ -2285,7 +2274,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: session.id().to_string(),
-            tid: tenant_id.to_string(),
+            tid: realm_id.to_string(),
             token_type: "id_token".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
@@ -2358,14 +2347,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn client_credentials_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &crate::identity::oidc::ClientCredentialsRequest,
     ) -> Result<crate::identity::oidc::ClientCredentialsResponse, IdentityError> {
         // 1. Load the client
         let client_key = keys::encode_oauth_client(&request.client_id);
         let client_bytes = self
             .storage
-            .get(tenant_id, &client_key)
+            .get(realm_id, &client_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidClient)?;
         let client: OAuthClient =
@@ -2393,7 +2382,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 4. Issue access token (no session, no refresh token per RFC 6749 §4.4.3)
         let now = self.clock.now();
         let iat = now.as_micros() / 1_000_000;
-        let signing_key = self.get_or_load_tenant_signing_key(tenant_id)?;
+        let signing_key = self.get_or_load_realm_signing_key(realm_id)?;
 
         let scope = request.scope.clone();
         let access_claims = TokenClaims {
@@ -2403,7 +2392,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: "none".to_string(), // No session for client credentials
-            tid: tenant_id.to_string(),
+            tid: realm_id.to_string(),
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
@@ -2428,7 +2417,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn device_authorize(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &crate::identity::oidc::DeviceAuthorizationRequest,
     ) -> Result<crate::identity::oidc::DeviceAuthorizationResponse, IdentityError> {
         use crate::identity::oidc::{DeviceCodeStatus, StoredDeviceCode};
@@ -2437,7 +2426,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let client_key = keys::encode_oauth_client(&request.client_id);
         let _ = self
             .storage
-            .get(tenant_id, &client_key)
+            .get(realm_id, &client_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidClient)?;
 
@@ -2463,7 +2452,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             device_code_hash: device_code_hash.clone(),
             user_code: user_code.clone(),
             client_id: request.client_id.clone(),
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             scope: request.scope.clone(),
             status: DeviceCodeStatus::Pending,
             created_at: now,
@@ -2480,13 +2469,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let dc_key = keys::encode_device_code(&device_code_hash);
         self.storage
-            .put(tenant_id, &dc_key, &stored_bytes)
+            .put(realm_id, &dc_key, &stored_bytes)
             .map_err(Self::storage_err)?;
 
         // 5. Store user code → device code hash mapping
         let uc_key = keys::encode_user_code(&user_code);
         self.storage
-            .put(tenant_id, &uc_key, device_code_hash.as_bytes())
+            .put(realm_id, &uc_key, device_code_hash.as_bytes())
             .map_err(Self::storage_err)?;
 
         Ok(crate::identity::oidc::DeviceAuthorizationResponse {
@@ -2500,7 +2489,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn approve_device(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_code: &str,
         user_id: &UserId,
     ) -> Result<(), IdentityError> {
@@ -2510,7 +2499,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let uc_key = keys::encode_user_code(user_code);
         let dc_hash_bytes = self
             .storage
-            .get(tenant_id, &uc_key)
+            .get(realm_id, &uc_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidAuthorizationCode)?;
         let dc_hash = String::from_utf8(dc_hash_bytes)
@@ -2520,7 +2509,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let dc_key = keys::encode_device_code(&dc_hash);
         let dc_bytes = self
             .storage
-            .get(tenant_id, &dc_key)
+            .get(realm_id, &dc_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidAuthorizationCode)?;
         let mut stored: StoredDeviceCode =
@@ -2548,7 +2537,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &dc_key, &updated_bytes)
+            .put(realm_id, &dc_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(())
@@ -2556,7 +2545,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn poll_device_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         device_code: &str,
         client_id: &ClientId,
     ) -> Result<OidcTokenResponse, IdentityError> {
@@ -2567,7 +2556,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let dc_key = keys::encode_device_code(&dc_hash);
         let dc_bytes = self
             .storage
-            .get(tenant_id, &dc_key)
+            .get(realm_id, &dc_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidAuthorizationCode)?;
         let mut stored: StoredDeviceCode =
@@ -2602,7 +2591,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &dc_key, &updated_bytes)
+            .put(realm_id, &dc_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         // 6. Check status
@@ -2612,9 +2601,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             DeviceCodeStatus::Expired => Err(IdentityError::DeviceCodeExpired),
             DeviceCodeStatus::Approved { user_id } => {
                 // Issue tokens like exchange_authorization_code (device flow — no browser context)
-                let session =
-                    self.create_session(tenant_id, user_id, &SessionContext::default())?;
-                let token_pair = self.issue_tokens(tenant_id, user_id, session.id())?;
+                let session = self.create_session(realm_id, user_id, &SessionContext::default())?;
+                let token_pair = self.issue_tokens(realm_id, user_id, session.id())?;
 
                 // Issue ID token
                 // iss MUST match the discovery document's issuer (OIDC Core §2)
@@ -2626,14 +2614,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     exp: iat + self.config.token.access_token_ttl_secs,
                     iat,
                     sid: session.id().to_string(),
-                    tid: tenant_id.to_string(),
+                    tid: realm_id.to_string(),
                     token_type: "id_token".to_string(),
                     jti: Some(uuid::Uuid::new_v4().to_string()),
                     fid: None,
                     scope: stored.scope.clone(),
                     nonce: None,
                 };
-                let signing_key = self.get_or_load_tenant_signing_key(tenant_id)?;
+                let signing_key = self.get_or_load_realm_signing_key(realm_id)?;
                 let id_token = signing_key.issue_token(&id_token_claims).map_err(|e| {
                     IdentityError::SigningError {
                         reason: format!("failed to issue ID token: {e}"),
@@ -2641,9 +2629,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 })?;
 
                 // Clean up device code and user code
-                let _ = self.storage.delete(tenant_id, &dc_key);
+                let _ = self.storage.delete(realm_id, &dc_key);
                 let uc_key = keys::encode_user_code(&stored.user_code);
-                let _ = self.storage.delete(tenant_id, &uc_key);
+                let _ = self.storage.delete(realm_id, &uc_key);
 
                 Ok(OidcTokenResponse::new(
                     token_pair.access_token().to_string(),
@@ -2658,7 +2646,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn revoke_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &crate::identity::oidc::TokenRevocationRequest,
     ) -> Result<(), IdentityError> {
         // Decode claims (unverified — we trust our own tokens)
@@ -2667,8 +2655,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Ok(());
         };
 
-        // Verify tenant matches
-        if claims.tid != tenant_id.to_string() {
+        // Verify realm matches
+        if claims.tid != realm_id.to_string() {
             return Ok(()); // Silent success per RFC 7009
         }
 
@@ -2679,12 +2667,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
                     if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
                         let session_id = SessionId::new(uuid);
-                        let _ = self.revoke_session(tenant_id, &session_id);
+                        let _ = self.revoke_session(realm_id, &session_id);
                     }
                 } else if let Some(ref jti) = claims.jti {
                     // Sessionless token (e.g., client_credentials): revoke via JTI blocklist
                     let jti_key = keys::encode_revoked_jti(jti);
-                    let _ = self.storage.put(tenant_id, &jti_key, b"1");
+                    let _ = self.storage.put(realm_id, &jti_key, b"1");
                 }
             }
             "refresh" => {
@@ -2693,7 +2681,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     let family_key = keys::encode_grant_family(fid);
                     if let Some(family_bytes) = self
                         .storage
-                        .get(tenant_id, &family_key)
+                        .get(realm_id, &family_key)
                         .map_err(Self::storage_err)?
                     {
                         let mut family: StoredGrantFamily = serde_json::from_slice(&family_bytes)
@@ -2709,7 +2697,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                             }
                         })?;
                         self.storage
-                            .put(tenant_id, &family_key, &updated)
+                            .put(realm_id, &family_key, &updated)
                             .map_err(Self::storage_err)?;
                     }
                 }
@@ -2718,7 +2706,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
                     if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
                         let session_id = SessionId::new(uuid);
-                        let _ = self.revoke_session(tenant_id, &session_id);
+                        let _ = self.revoke_session(realm_id, &session_id);
                     }
                 }
             }
@@ -2730,7 +2718,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn introspect_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &crate::identity::oidc::TokenIntrospectionRequest,
     ) -> Result<crate::identity::oidc::IntrospectionResponse, IdentityError> {
         use crate::identity::oidc::IntrospectionResponse;
@@ -2740,8 +2728,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Ok(IntrospectionResponse::inactive());
         };
 
-        // 2. Verify tenant matches
-        if claims.tid != tenant_id.to_string() {
+        // 2. Verify realm matches
+        if claims.tid != realm_id.to_string() {
             return Ok(IntrospectionResponse::inactive());
         }
 
@@ -2757,7 +2745,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let sid_str = claims.sid.strip_prefix("session_").unwrap_or(&claims.sid);
             if let Ok(uuid) = uuid::Uuid::parse_str(sid_str) {
                 let session_id = SessionId::new(uuid);
-                if self.get_session(tenant_id, &session_id)?.is_none() {
+                if self.get_session(realm_id, &session_id)?.is_none() {
                     return Ok(IntrospectionResponse::inactive());
                 }
             }
@@ -2766,7 +2754,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let jti_key = keys::encode_revoked_jti(jti);
             if self
                 .storage
-                .get(tenant_id, &jti_key)
+                .get(realm_id, &jti_key)
                 .map_err(Self::storage_err)?
                 .is_some()
             {
@@ -2780,7 +2768,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 let family_key = keys::encode_grant_family(fid);
                 if let Some(family_bytes) = self
                     .storage
-                    .get(tenant_id, &family_key)
+                    .get(realm_id, &family_key)
                     .map_err(Self::storage_err)?
                 {
                     let family: StoredGrantFamily =
@@ -2814,16 +2802,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn enroll_totp(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<TotpEnrollment, IdentityError> {
         // Ensure user exists
         let user = self
-            .get_user(tenant_id, user_id)?
+            .get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         // Check not already enrolled
-        if let Some(existing) = self.load_mfa_state(tenant_id, user_id)? {
+        if let Some(existing) = self.load_mfa_state(realm_id, user_id)? {
             if existing.enabled {
                 return Err(IdentityError::MfaAlreadyEnabled);
             }
@@ -2847,7 +2835,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             enabled_at: None,
             pending_recovery_codes: Some(recovery_codes.clone()),
         };
-        self.save_mfa_state(tenant_id, user_id, &state)?;
+        self.save_mfa_state(realm_id, user_id, &state)?;
 
         Ok(TotpEnrollment {
             secret_base32,
@@ -2859,12 +2847,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     #[allow(clippy::cast_sign_loss)] // Timestamps are always positive
     fn verify_totp_enrollment(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         code: &str,
     ) -> Result<(), IdentityError> {
         let mut state = self
-            .load_mfa_state(tenant_id, user_id)?
+            .load_mfa_state(realm_id, user_id)?
             .ok_or(IdentityError::MfaNotEnabled)?;
 
         if state.enabled {
@@ -2891,7 +2879,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             state.enabled_at = Some(self.clock.now().as_micros());
             state.recovery_code_hashes = recovery_hashes;
             state.pending_recovery_codes = None;
-            self.save_mfa_state(tenant_id, user_id, &state)?;
+            self.save_mfa_state(realm_id, user_id, &state)?;
             Ok(())
         } else {
             Err(IdentityError::InvalidMfaCode)
@@ -2901,15 +2889,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     #[allow(clippy::cast_sign_loss)] // Timestamps are always positive
     fn verify_totp(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         code: &str,
     ) -> Result<(), IdentityError> {
         // Rate limit check
-        self.check_mfa_rate_limit(tenant_id, user_id)?;
+        self.check_mfa_rate_limit(realm_id, user_id)?;
 
         let mut state = self
-            .load_mfa_state(tenant_id, user_id)?
+            .load_mfa_state(realm_id, user_id)?
             .ok_or(IdentityError::MfaNotEnabled)?;
 
         if !state.enabled {
@@ -2923,23 +2911,23 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         if let Some(step) = matched_step {
             state.last_used_step = Some(step);
-            self.save_mfa_state(tenant_id, user_id, &state)?;
-            self.clear_mfa_attempts(tenant_id, user_id);
+            self.save_mfa_state(realm_id, user_id, &state)?;
+            self.clear_mfa_attempts(realm_id, user_id);
             Ok(())
         } else {
-            self.record_mfa_failed_attempt(tenant_id, user_id);
+            self.record_mfa_failed_attempt(realm_id, user_id);
             Err(IdentityError::InvalidMfaCode)
         }
     }
 
     fn verify_recovery_code(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         code: &str,
     ) -> Result<(), IdentityError> {
         let mut state = self
-            .load_mfa_state(tenant_id, user_id)?
+            .load_mfa_state(realm_id, user_id)?
             .ok_or(IdentityError::MfaNotEnabled)?;
 
         if !state.enabled {
@@ -2951,31 +2939,31 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             Some(i) => {
                 // Mark recovery code as used
                 state.recovery_code_hashes[i] = None;
-                self.save_mfa_state(tenant_id, user_id, &state)?;
-                self.clear_mfa_attempts(tenant_id, user_id);
+                self.save_mfa_state(realm_id, user_id, &state)?;
+                self.clear_mfa_attempts(realm_id, user_id);
                 Ok(())
             }
             None => Err(IdentityError::InvalidMfaCode),
         }
     }
 
-    fn disable_mfa(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<(), IdentityError> {
-        let state = self.load_mfa_state(tenant_id, user_id)?;
+    fn disable_mfa(&self, realm_id: &RealmId, user_id: &UserId) -> Result<(), IdentityError> {
+        let state = self.load_mfa_state(realm_id, user_id)?;
         match state {
             Some(s) if s.enabled => {
                 let key = keys::encode_mfa_totp_key(user_id);
                 self.storage
-                    .delete(tenant_id, &key)
+                    .delete(realm_id, &key)
                     .map_err(Self::storage_err)?;
-                self.clear_mfa_attempts(tenant_id, user_id);
+                self.clear_mfa_attempts(realm_id, user_id);
                 Ok(())
             }
             _ => Err(IdentityError::MfaNotEnabled),
         }
     }
 
-    fn mfa_enabled(&self, tenant_id: &TenantId, user_id: &UserId) -> Result<bool, IdentityError> {
-        match self.load_mfa_state(tenant_id, user_id)? {
+    fn mfa_enabled(&self, realm_id: &RealmId, user_id: &UserId) -> Result<bool, IdentityError> {
+        match self.load_mfa_state(realm_id, user_id)? {
             Some(state) => Ok(state.enabled),
             None => Ok(false),
         }
@@ -2985,12 +2973,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn start_webauthn_registration(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         options: &RegistrationOptions,
     ) -> Result<Vec<u8>, IdentityError> {
         // Ensure user exists
-        self.get_user(tenant_id, user_id)?
+        self.get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         // Cleanup expired challenges
@@ -3013,7 +3001,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn complete_webauthn_registration(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         client_data_json: &[u8],
         attestation_object: &[u8],
@@ -3072,7 +3060,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             reason: e.to_string(),
         })?;
         self.storage
-            .put(tenant_id, &key, &bytes)
+            .put(realm_id, &key, &bytes)
             .map_err(Self::storage_err)?;
 
         // If discoverable, create the index entry
@@ -3080,7 +3068,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
             let user_uuid_bytes = user_id.as_uuid().to_string().into_bytes();
             self.storage
-                .put(tenant_id, &disc_key, &user_uuid_bytes)
+                .put(realm_id, &disc_key, &user_uuid_bytes)
                 .map_err(Self::storage_err)?;
         }
 
@@ -3089,13 +3077,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn start_webauthn_authentication(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: Option<&UserId>,
         options: &AuthenticationOptions,
     ) -> Result<Vec<u8>, IdentityError> {
         // If user_id provided, verify user exists
         if let Some(uid) = user_id {
-            self.get_user(tenant_id, uid)?
+            self.get_user(realm_id, uid)?
                 .ok_or(IdentityError::UserNotFound)?;
         }
 
@@ -3119,7 +3107,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn complete_webauthn_authentication(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         params: &CompleteAuthenticationParams<'_>,
     ) -> Result<WebAuthnAuthResult, IdentityError> {
         let credential_id = params.credential_id;
@@ -3169,7 +3157,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
             let user_uuid_bytes = self
                 .storage
-                .get(tenant_id, &disc_key)
+                .get(realm_id, &disc_key)
                 .map_err(Self::storage_err)?
                 .ok_or(IdentityError::WebAuthnCredentialNotFound)?;
             let uuid_str = std::str::from_utf8(&user_uuid_bytes).map_err(|_| {
@@ -3187,7 +3175,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let cred_key = keys::encode_webauthn_credential(&owner_user_id, &cred_id_b64);
         let stored_bytes = self
             .storage
-            .get(tenant_id, &cred_key)
+            .get(realm_id, &cred_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::WebAuthnCredentialNotFound)?;
         let stored: StoredWebAuthnCredential =
@@ -3213,7 +3201,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &cred_key, &updated_bytes)
+            .put(realm_id, &cred_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(result)
@@ -3221,14 +3209,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn list_webauthn_credentials(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<Vec<WebAuthnCredentialInfo>, IdentityError> {
         let prefix = keys::encode_webauthn_credentials_prefix(user_id);
         let end = keys::prefix_end(&prefix);
         let entries = self
             .storage
-            .scan(tenant_id, &prefix, &end)
+            .scan(realm_id, &prefix, &end)
             .map_err(Self::storage_err)?;
 
         let mut results = Vec::with_capacity(entries.len());
@@ -3254,7 +3242,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn revoke_webauthn_credential(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         credential_id: &[u8],
     ) -> Result<(), IdentityError> {
@@ -3264,7 +3252,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let cred_key = keys::encode_webauthn_credential(user_id, &cred_id_b64);
         let existing = self
             .storage
-            .get(tenant_id, &cred_key)
+            .get(realm_id, &cred_key)
             .map_err(Self::storage_err)?;
 
         if existing.is_none() {
@@ -3280,13 +3268,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
 
         self.storage
-            .delete(tenant_id, &cred_key)
+            .delete(realm_id, &cred_key)
             .map_err(Self::storage_err)?;
 
         if stored.discoverable {
             let disc_key = keys::encode_webauthn_discoverable(&cred_id_b64);
             self.storage
-                .delete(tenant_id, &disc_key)
+                .delete(realm_id, &disc_key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -3297,18 +3285,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn request_magic_link(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<MagicLinkResponse, IdentityError> {
         // 1. Normalize email
         let normalized = validation::validate_email(email)?;
 
         // 2. Check per-email rate limit (3 per hour)
-        self.check_magic_link_rate_limit(tenant_id, &normalized)?;
+        self.check_magic_link_rate_limit(realm_id, &normalized)?;
 
         // 3. Look up user by email — capture user_id if exists (enumeration resistance: always succeed)
         let user_id = self
-            .get_user_by_email(tenant_id, &normalized)?
+            .get_user_by_email(realm_id, &normalized)?
             .map(|u| u.id().as_uuid().to_string());
 
         // 4. Generate random token
@@ -3331,11 +3319,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
         let key = keys::encode_magic_link_token(&token_hash);
         self.storage
-            .put(tenant_id, &key, &stored_bytes)
+            .put(realm_id, &key, &stored_bytes)
             .map_err(Self::storage_err)?;
 
         // 7. Record rate limit event
-        self.record_magic_link_request(tenant_id, &normalized);
+        self.record_magic_link_request(realm_id, &normalized);
 
         // 8. Return plaintext token (shown once)
         Ok(MagicLinkResponse::new(token.as_str().to_string()))
@@ -3343,7 +3331,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn validate_magic_link(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         token: &str,
     ) -> Result<UserId, IdentityError> {
         // 1. SHA-256 hash the incoming token
@@ -3353,7 +3341,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 2. Look up stored record
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::MagicLinkTokenInvalid)?;
 
@@ -3372,7 +3360,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         if now - stored.created_at_micros > MAGIC_LINK_EXPIRY_MICROS {
             // Clean up stale record
             self.storage
-                .delete(tenant_id, &key)
+                .delete(realm_id, &key)
                 .map_err(Self::storage_err)?;
             return Err(IdentityError::MagicLinkTokenInvalid);
         }
@@ -3384,7 +3372,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &key, &updated_bytes)
+            .put(realm_id, &key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         // 6. Return existing user or create new one
@@ -3400,7 +3388,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 email: stored.email.clone(),
                 display_name: stored.email.clone(),
             };
-            let user = self.create_user(tenant_id, &request)?;
+            let user = self.create_user(realm_id, &request)?;
             Ok(user.id().clone())
         }
     }
@@ -3409,19 +3397,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn request_password_reset(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         email: &str,
     ) -> Result<Option<String>, IdentityError> {
         // 1. Normalize email
         let normalized = validation::validate_email(email)?;
 
         // 2. Check per-email rate limit (3 per hour)
-        self.check_password_reset_rate_limit(tenant_id, &normalized)?;
+        self.check_password_reset_rate_limit(realm_id, &normalized)?;
 
         // 3. Look up user by email — return None for unknown (enumeration resistance)
-        let Some(user) = self.get_user_by_email(tenant_id, &normalized)? else {
+        let Some(user) = self.get_user_by_email(realm_id, &normalized)? else {
             // Record the attempt even for unknown emails (prevents rate-limit bypass)
-            self.record_password_reset_request(tenant_id, &normalized);
+            self.record_password_reset_request(realm_id, &normalized);
             return Ok(None);
         };
 
@@ -3445,11 +3433,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
         let key = keys::encode_password_reset_token(&token_hash);
         self.storage
-            .put(tenant_id, &key, &stored_bytes)
+            .put(realm_id, &key, &stored_bytes)
             .map_err(Self::storage_err)?;
 
         // 7. Record rate limit event
-        self.record_password_reset_request(tenant_id, &normalized);
+        self.record_password_reset_request(realm_id, &normalized);
 
         // 8. Return plaintext token (shown once)
         Ok(Some(token.as_str().to_string()))
@@ -3457,7 +3445,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn reset_password_with_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         token: &str,
         new_password: &CleartextPassword,
     ) -> Result<UserId, IdentityError> {
@@ -3468,7 +3456,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 2. Look up stored record
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::PasswordResetTokenInvalid)?;
 
@@ -3487,7 +3475,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         if now - stored.created_at_micros > PASSWORD_RESET_EXPIRY_MICROS {
             // Clean up stale record
             self.storage
-                .delete(tenant_id, &key)
+                .delete(realm_id, &key)
                 .map_err(Self::storage_err)?;
             return Err(IdentityError::PasswordResetTokenInvalid);
         }
@@ -3499,7 +3487,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &key, &updated_bytes)
+            .put(realm_id, &key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         // 6. Parse user ID and set new password
@@ -3508,7 +3496,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: format!("invalid stored user_id: {e}"),
             })?;
         let user_id = UserId::new(uuid);
-        self.set_password(tenant_id, &user_id, new_password)?;
+        self.set_password(realm_id, &user_id, new_password)?;
 
         Ok(user_id)
     }
@@ -3517,12 +3505,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn issue_email_verification_token(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<String, IdentityError> {
         // Ensure the target user exists (don't bind tokens to nothing).
         let user = self
-            .get_user(tenant_id, user_id)?
+            .get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         // Generate 32 random bytes, base64url-encoded.
@@ -3547,23 +3535,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
         let key = keys::encode_email_verify_token(&token_hash);
         self.storage
-            .put(tenant_id, &key, &stored_bytes)
+            .put(realm_id, &key, &stored_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(token)
     }
 
-    fn verify_email_token(
-        &self,
-        tenant_id: &TenantId,
-        token: &str,
-    ) -> Result<UserId, IdentityError> {
+    fn verify_email_token(&self, realm_id: &RealmId, token: &str) -> Result<UserId, IdentityError> {
         let token_hash = Self::sha256_hex(token.as_bytes());
         let key = keys::encode_email_verify_token(&token_hash);
 
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::VerificationTokenInvalid)?;
 
@@ -3579,7 +3563,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let now = self.clock.now().as_micros();
         if now - stored.created_at_micros > EMAIL_VERIFY_EXPIRY_MICROS {
             // Best-effort cleanup; ignore failure.
-            let _ = self.storage.delete(tenant_id, &key);
+            let _ = self.storage.delete(realm_id, &key);
             return Err(IdentityError::VerificationTokenInvalid);
         }
 
@@ -3594,7 +3578,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // still consume the token to keep single-use semantics, but leave
         // the user record alone.
         let mut user = self
-            .get_user(tenant_id, &user_id)?
+            .get_user(realm_id, &user_id)?
             .ok_or(IdentityError::VerificationTokenInvalid)?;
         if user.status() == UserStatus::PendingVerification {
             user.set_status(UserStatus::Active);
@@ -3605,13 +3589,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 })?;
             let user_key = keys::encode_user_id(&user_id);
             self.storage
-                .put(tenant_id, &user_key, &user_bytes)
+                .put(realm_id, &user_key, &user_bytes)
                 .map_err(Self::storage_err)?;
         }
 
         // Delete the token entry so it cannot be reused.
         self.storage
-            .delete(tenant_id, &key)
+            .delete(realm_id, &key)
             .map_err(Self::storage_err)?;
 
         Ok(user_id)
@@ -3621,11 +3605,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn userinfo(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         access_token: &str,
     ) -> Result<crate::identity::oidc::UserInfoResponse, IdentityError> {
         // 1. Validate the access token
-        let claims = self.validate_token(tenant_id, access_token)?;
+        let claims = self.validate_token(realm_id, access_token)?;
 
         // 2. Ensure it's an access token
         if claims.token_type != "access" {
@@ -3643,7 +3627,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // 4. Look up the user
         let user = self
-            .get_user(tenant_id, &user_id)?
+            .get_user(realm_id, &user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         // 5. Build response based on scopes
@@ -3681,7 +3665,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn list_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<User>, IdentityError> {
@@ -3707,7 +3691,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -3732,7 +3716,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn search_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         query: &str,
         limit: usize,
     ) -> Result<Vec<User>, IdentityError> {
@@ -3746,7 +3730,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let end = keys::prefix_end(&prefix);
         let entries = self
             .storage
-            .scan(tenant_id, &prefix, &end)
+            .scan(realm_id, &prefix, &end)
             .map_err(Self::storage_err)?;
 
         let mut results = Vec::new();
@@ -3768,13 +3752,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(results)
     }
 
-    fn list_tenants(
+    fn list_realms(
         &self,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<Page<Tenant>, IdentityError> {
-        let sys_tenant = keys::system_tenant_id();
-        let prefix = keys::tenant_id_scan_prefix();
+    ) -> Result<Page<Realm>, IdentityError> {
+        let sys_realm = keys::system_realm_id();
+        let prefix = keys::realm_id_scan_prefix();
         let start = if let Some(cursor_str) = cursor {
             let uuid_str = String::from_utf8(URL_SAFE_NO_PAD.decode(cursor_str).map_err(|e| {
                 IdentityError::InvalidInput {
@@ -3784,7 +3768,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(|e| IdentityError::InvalidInput {
                 reason: format!("invalid cursor: {e}"),
             })?;
-            let mut cursor_key = format!("tenant:id:{uuid_str}").into_bytes();
+            let mut cursor_key = format!("realm:id:{uuid_str}").into_bytes();
             cursor_key.push(0xFF);
             cursor_key
         } else {
@@ -3794,16 +3778,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(&sys_tenant, &start, &end)
+            .scan(&sys_realm, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
         for entry in entries.iter().take(limit + 1) {
-            let tenant: Tenant =
+            let realm: Realm =
                 serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
                 })?;
-            items.push(tenant);
+            items.push(realm);
         }
 
         let next_cursor = if items.len() > limit {
@@ -3819,7 +3803,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn list_clients(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<OAuthClient>, IdentityError> {
@@ -3843,7 +3827,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -3868,13 +3852,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn get_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<Option<OAuthClient>, IdentityError> {
         let key = keys::encode_oauth_client(client_id);
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?;
 
         match bytes {
@@ -3891,14 +3875,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn update_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
         request: &crate::identity::oidc::UpdateClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
         let key = keys::encode_oauth_client(client_id);
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::ClientNotFound)?;
 
@@ -3938,7 +3922,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &key, &updated_bytes)
+            .put(realm_id, &key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(client)
@@ -3946,13 +3930,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn regenerate_client_secret(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<String, IdentityError> {
         let key = keys::encode_oauth_client(client_id);
         let bytes = self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::ClientNotFound)?;
 
@@ -3986,7 +3970,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &key, &updated_bytes)
+            .put(realm_id, &key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(plaintext_secret)
@@ -3994,30 +3978,30 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn delete_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<(), IdentityError> {
         let key = keys::encode_oauth_client(client_id);
         // Verify the client exists first
         self.storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::ClientNotFound)?;
 
         self.storage
-            .delete(tenant_id, &key)
+            .delete(realm_id, &key)
             .map_err(Self::storage_err)?;
         Ok(())
     }
 
     fn bulk_create_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         requests: &[CreateUserRequest],
     ) -> Result<Vec<BulkResult<User>>, IdentityError> {
         let mut results = Vec::with_capacity(requests.len());
         for (index, request) in requests.iter().enumerate() {
-            let result = match self.create_user(tenant_id, request) {
+            let result = match self.create_user(realm_id, request) {
                 Ok(user) => BulkResult {
                     index,
                     result: Ok(user),
@@ -4034,13 +4018,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn bulk_disable_users(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_ids: &[UserId],
     ) -> Result<Vec<BulkResult<()>>, IdentityError> {
         let mut results = Vec::with_capacity(user_ids.len());
         for (index, user_id) in user_ids.iter().enumerate() {
             let result = match self.update_user(
-                tenant_id,
+                realm_id,
                 user_id,
                 &UpdateUserRequest {
                     status: Some(UserStatus::Disabled),
@@ -4063,71 +4047,68 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     // ===== Migration / import (Phase 1 Step 30) =====
 
-    fn import_tenant(
+    fn import_realm(
         &self,
-        request: &CreateTenantRequest,
-        requested_id: Option<TenantId>,
-    ) -> Result<Tenant, IdentityError> {
-        // Serialize against other tenant-record mutations so the atomic
+        request: &CreateRealmRequest,
+        requested_id: Option<RealmId>,
+    ) -> Result<Realm, IdentityError> {
+        // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
-        // thread's update/delete. Mirrors `create_tenant`.
-        let _ops_guard = self.tenant_ops_lock.lock().expect("tenant ops lock");
+        // thread's update/delete. Mirrors `create_realm`.
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
 
-        let tenant_id = requested_id.unwrap_or_else(TenantId::generate);
+        let realm_id = requested_id.unwrap_or_else(RealmId::generate);
 
-        // Refuse to clobber an existing tenant record — callers may
+        // Refuse to clobber an existing realm record — callers may
         // retry an idempotent import flow, in which case they want a
-        // clear DuplicateTenantName signal rather than a silent rewrite
+        // clear DuplicateRealmName signal rather than a silent rewrite
         // that would also generate a fresh signing key and invalidate
-        // every existing token under that tenant.
-        let sys_tenant = keys::system_tenant_id();
-        let tenant_key = keys::encode_tenant_id(&tenant_id);
+        // every existing token under that realm.
+        let sys_realm = keys::system_realm_id();
+        let realm_key = keys::encode_realm_id(&realm_id);
         if self
             .storage
-            .get(&sys_tenant, &tenant_key)
+            .get(&sys_realm, &realm_key)
             .map_err(Self::storage_err)?
             .is_some()
         {
-            return Err(IdentityError::DuplicateTenantName);
+            return Err(IdentityError::DuplicateRealmName);
         }
 
         let now = self.clock.now();
         let config = request.config.clone().unwrap_or_default();
-        let tenant_signing_key = SigningKey::generate()?;
+        let realm_signing_key = SigningKey::generate()?;
 
-        let tenant = Tenant::new(
-            tenant_id.clone(),
+        let realm = Realm::new(
+            realm_id.clone(),
             request.name.clone(),
-            TenantStatus::Active,
+            RealmStatus::Active,
             config,
             now,
             now,
         );
-        let tenant_bytes = Self::serialize_tenant(&tenant)?;
-        let key_storage_key = keys::encode_tenant_signing_key(&tenant_id);
-        let key_bytes = tenant_signing_key.pkcs8_bytes().to_vec();
+        let realm_bytes = Self::serialize_realm(&realm)?;
+        let key_storage_key = keys::encode_realm_signing_key(&realm_id);
+        let key_bytes = realm_signing_key.pkcs8_bytes().to_vec();
 
         self.storage
             .put_batch(
-                &sys_tenant,
-                &[(tenant_key, tenant_bytes), (key_storage_key, key_bytes)],
+                &sys_realm,
+                &[(realm_key, realm_bytes), (key_storage_key, key_bytes)],
             )
             .map_err(Self::storage_err)?;
 
         {
-            let mut key_cache = self.tenant_signing_keys.lock().expect("key cache lock");
-            key_cache.insert(
-                tenant_id.as_uuid().to_string(),
-                Arc::new(tenant_signing_key),
-            );
+            let mut key_cache = self.realm_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(realm_id.as_uuid().to_string(), Arc::new(realm_signing_key));
         }
 
-        Ok(tenant)
+        Ok(realm)
     }
 
     fn import_user(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &ImportUserRequest,
     ) -> Result<User, IdentityError> {
         // 1. Validate and normalize input (same invariants as create_user)
@@ -4138,7 +4119,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let email_key = keys::encode_user_email(&email);
         if self
             .storage
-            .get(tenant_id, &email_key)
+            .get(realm_id, &email_key)
             .map_err(Self::storage_err)?
             .is_some()
         {
@@ -4151,7 +4132,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let id_key = keys::encode_user_id(&user_id);
         if self
             .storage
-            .get(tenant_id, &id_key)
+            .get(realm_id, &id_key)
             .map_err(Self::storage_err)?
             .is_some()
         {
@@ -4199,7 +4180,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         self.storage
-            .put_batch(tenant_id, &entries)
+            .put_batch(realm_id, &entries)
             .map_err(Self::storage_err)?;
 
         Ok(user)
@@ -4207,7 +4188,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn import_client(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &ImportClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
         let client_name = validation::validate_client_name(&request.client_name)?;
@@ -4236,7 +4217,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let key = keys::encode_oauth_client(&client_id);
         if self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
             .is_some()
         {
@@ -4275,7 +4256,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &key, &client_bytes)
+            .put(realm_id, &key, &client_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(client)
@@ -4285,7 +4266,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn create_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &CreateOrganizationRequest,
     ) -> Result<Organization, IdentityError> {
         let slug = validation::validate_slug(&request.slug)?;
@@ -4295,7 +4276,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let slug_key = keys::encode_org_slug(&slug);
         if self
             .storage
-            .get(tenant_id, &slug_key)
+            .get(realm_id, &slug_key)
             .map_err(Self::storage_err)?
             .is_some()
         {
@@ -4324,12 +4305,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             reason: e.to_string(),
         })?;
         self.storage
-            .put(tenant_id, &id_key, &org_bytes)
+            .put(realm_id, &id_key, &org_bytes)
             .map_err(Self::storage_err)?;
 
         // Write slug index
         self.storage
-            .put(tenant_id, &slug_key, org_id.as_uuid().as_bytes())
+            .put(realm_id, &slug_key, org_id.as_uuid().as_bytes())
             .map_err(Self::storage_err)?;
 
         Ok(org)
@@ -4337,13 +4318,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn get_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
     ) -> Result<Option<Organization>, IdentityError> {
         let key = keys::encode_org_id(org_id);
         match self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
         {
             Some(bytes) => {
@@ -4359,13 +4340,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn get_organization_by_slug(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         slug: &str,
     ) -> Result<Option<Organization>, IdentityError> {
         let slug_key = keys::encode_org_slug(slug);
         match self
             .storage
-            .get(tenant_id, &slug_key)
+            .get(realm_id, &slug_key)
             .map_err(Self::storage_err)?
         {
             Some(bytes) => {
@@ -4374,7 +4355,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                         reason: format!("invalid org UUID in slug index: {e}"),
                     })?;
                 let org_id = OrganizationId::new(uuid);
-                self.get_organization(tenant_id, &org_id)
+                self.get_organization(realm_id, &org_id)
             }
             None => Ok(None),
         }
@@ -4382,12 +4363,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn update_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         request: &UpdateOrganizationRequest,
     ) -> Result<Organization, IdentityError> {
         let mut org = self
-            .get_organization(tenant_id, org_id)?
+            .get_organization(realm_id, org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
 
         if let Some(ref name) = request.name {
@@ -4412,7 +4393,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             reason: e.to_string(),
         })?;
         self.storage
-            .put(tenant_id, &id_key, &org_bytes)
+            .put(realm_id, &id_key, &org_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(org)
@@ -4420,11 +4401,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn delete_organization(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
     ) -> Result<(), IdentityError> {
         let org = self
-            .get_organization(tenant_id, org_id)?
+            .get_organization(realm_id, org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
 
         // 1. Delete all memberships (forward + reverse indexes)
@@ -4432,7 +4413,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let member_end = keys::prefix_end(&member_prefix);
         let members = self
             .storage
-            .scan(tenant_id, &member_prefix, &member_end)
+            .scan(realm_id, &member_prefix, &member_end)
             .map_err(Self::storage_err)?;
 
         for entry in &members {
@@ -4441,12 +4422,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 // Delete reverse index
                 let reverse_key = keys::encode_membership_by_user(membership.user_id(), org_id);
                 self.storage
-                    .delete(tenant_id, &reverse_key)
+                    .delete(realm_id, &reverse_key)
                     .map_err(Self::storage_err)?;
             }
             // Delete forward index
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -4455,7 +4436,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let inv_list_end = keys::prefix_end(&inv_list_prefix);
         let inv_list_entries = self
             .storage
-            .scan(tenant_id, &inv_list_prefix, &inv_list_end)
+            .scan(realm_id, &inv_list_prefix, &inv_list_end)
             .map_err(Self::storage_err)?;
 
         for entry in &inv_list_entries {
@@ -4471,7 +4452,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     let inv_key = keys::encode_invitation_id(&inv_id);
                     if let Some(inv_bytes) = self
                         .storage
-                        .get(tenant_id, &inv_key)
+                        .get(realm_id, &inv_key)
                         .map_err(Self::storage_err)?
                     {
                         if let Ok(invitation) =
@@ -4480,37 +4461,37 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                             // Delete token index
                             let token_key = keys::encode_invitation_token(invitation.token_hash());
                             self.storage
-                                .delete(tenant_id, &token_key)
+                                .delete(realm_id, &token_key)
                                 .map_err(Self::storage_err)?;
                             // Delete email dedup index
                             let email_key =
                                 keys::encode_invitation_org_email(org_id, invitation.email());
                             self.storage
-                                .delete(tenant_id, &email_key)
+                                .delete(realm_id, &email_key)
                                 .map_err(Self::storage_err)?;
                         }
                     }
                     self.storage
-                        .delete(tenant_id, &inv_key)
+                        .delete(realm_id, &inv_key)
                         .map_err(Self::storage_err)?;
                 }
             }
             // Delete list index entry
             self.storage
-                .delete(tenant_id, &entry.key)
+                .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
 
         // 3. Delete slug index
         let slug_key = keys::encode_org_slug(org.slug());
         self.storage
-            .delete(tenant_id, &slug_key)
+            .delete(realm_id, &slug_key)
             .map_err(Self::storage_err)?;
 
         // 4. Delete org record
         let id_key = keys::encode_org_id(org_id);
         self.storage
-            .delete(tenant_id, &id_key)
+            .delete(realm_id, &id_key)
             .map_err(Self::storage_err)?;
 
         Ok(())
@@ -4518,7 +4499,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn list_organizations(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Organization>, IdentityError> {
@@ -4542,7 +4523,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -4567,28 +4548,28 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn add_member(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
         role: OrganizationRole,
     ) -> Result<OrganizationMembership, IdentityError> {
         // Verify org exists and is active
         let org = self
-            .get_organization(tenant_id, org_id)?
+            .get_organization(realm_id, org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
         if org.status() == OrganizationStatus::Suspended {
             return Err(IdentityError::OrganizationSuspended);
         }
 
         // Verify user exists
-        self.get_user(tenant_id, user_id)?
+        self.get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
         // Check not already a member
         let fwd_key = keys::encode_membership_by_org(org_id, user_id);
         if self
             .storage
-            .get(tenant_id, &fwd_key)
+            .get(realm_id, &fwd_key)
             .map_err(Self::storage_err)?
             .is_some()
         {
@@ -4601,7 +4582,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let member_end = keys::prefix_end(&member_prefix);
             let count = self
                 .storage
-                .scan(tenant_id, &member_prefix, &member_end)
+                .scan(realm_id, &member_prefix, &member_end)
                 .map_err(Self::storage_err)?
                 .len();
             if count >= max as usize {
@@ -4620,13 +4601,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Write forward index (org → user)
         self.storage
-            .put(tenant_id, &fwd_key, &membership_bytes)
+            .put(realm_id, &fwd_key, &membership_bytes)
             .map_err(Self::storage_err)?;
 
         // Write reverse index (user → org)
         let rev_key = keys::encode_membership_by_user(user_id, org_id);
         self.storage
-            .put(tenant_id, &rev_key, &membership_bytes)
+            .put(realm_id, &rev_key, &membership_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(membership)
@@ -4634,14 +4615,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn remove_member(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
     ) -> Result<(), IdentityError> {
         let fwd_key = keys::encode_membership_by_org(org_id, user_id);
         let membership_bytes = self
             .storage
-            .get(tenant_id, &fwd_key)
+            .get(realm_id, &fwd_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::NotAMember)?;
 
@@ -4656,7 +4637,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let member_end = keys::prefix_end(&member_prefix);
             let all_members = self
                 .storage
-                .scan(tenant_id, &member_prefix, &member_end)
+                .scan(realm_id, &member_prefix, &member_end)
                 .map_err(Self::storage_err)?;
 
             let owner_count = all_members
@@ -4672,13 +4653,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Delete forward index
         self.storage
-            .delete(tenant_id, &fwd_key)
+            .delete(realm_id, &fwd_key)
             .map_err(Self::storage_err)?;
 
         // Delete reverse index
         let rev_key = keys::encode_membership_by_user(user_id, org_id);
         self.storage
-            .delete(tenant_id, &rev_key)
+            .delete(realm_id, &rev_key)
             .map_err(Self::storage_err)?;
 
         Ok(())
@@ -4686,7 +4667,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn update_member_role(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
         new_role: OrganizationRole,
@@ -4694,7 +4675,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let fwd_key = keys::encode_membership_by_org(org_id, user_id);
         let membership_bytes = self
             .storage
-            .get(tenant_id, &fwd_key)
+            .get(realm_id, &fwd_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::NotAMember)?;
 
@@ -4709,7 +4690,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let member_end = keys::prefix_end(&member_prefix);
             let all_members = self
                 .storage
-                .scan(tenant_id, &member_prefix, &member_end)
+                .scan(realm_id, &member_prefix, &member_end)
                 .map_err(Self::storage_err)?;
 
             let owner_count = all_members
@@ -4732,12 +4713,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Update both indexes
         self.storage
-            .put(tenant_id, &fwd_key, &updated_bytes)
+            .put(realm_id, &fwd_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         let rev_key = keys::encode_membership_by_user(user_id, org_id);
         self.storage
-            .put(tenant_id, &rev_key, &updated_bytes)
+            .put(realm_id, &rev_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         Ok(membership)
@@ -4745,14 +4726,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn get_membership(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         user_id: &UserId,
     ) -> Result<Option<OrganizationMembership>, IdentityError> {
         let key = keys::encode_membership_by_org(org_id, user_id);
         match self
             .storage
-            .get(tenant_id, &key)
+            .get(realm_id, &key)
             .map_err(Self::storage_err)?
         {
             Some(bytes) => {
@@ -4768,7 +4749,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn list_members(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         cursor: Option<&str>,
         limit: usize,
@@ -4794,7 +4775,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -4819,7 +4800,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn list_user_organizations(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         user_id: &UserId,
         cursor: Option<&str>,
         limit: usize,
@@ -4845,7 +4826,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -4870,12 +4851,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn create_invitation(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         request: &CreateInvitationRequest,
     ) -> Result<(OrganizationInvitation, String), IdentityError> {
         // Verify org exists and is active
         let org = self
-            .get_organization(tenant_id, &request.org_id)?
+            .get_organization(realm_id, &request.org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
         if org.status() == OrganizationStatus::Suspended {
             return Err(IdentityError::OrganizationSuspended);
@@ -4887,7 +4868,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let dedup_key = keys::encode_invitation_org_email(&request.org_id, &email);
         if self
             .storage
-            .get(tenant_id, &dedup_key)
+            .get(realm_id, &dedup_key)
             .map_err(Self::storage_err)?
             .is_some()
         {
@@ -4895,9 +4876,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // Check if already a member (by email → user lookup)
-        if let Some(user) = self.get_user_by_email(tenant_id, &email)? {
+        if let Some(user) = self.get_user_by_email(realm_id, &email)? {
             if self
-                .get_membership(tenant_id, &request.org_id, user.id())?
+                .get_membership(realm_id, &request.org_id, user.id())?
                 .is_some()
             {
                 return Err(IdentityError::AlreadyMember);
@@ -4945,24 +4926,24 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Write primary record
         let id_key = keys::encode_invitation_id(&invitation_id);
         self.storage
-            .put(tenant_id, &id_key, &inv_bytes)
+            .put(realm_id, &id_key, &inv_bytes)
             .map_err(Self::storage_err)?;
 
         // Write token index
         let token_key = keys::encode_invitation_token(&token_hash);
         self.storage
-            .put(tenant_id, &token_key, invitation_id.as_uuid().as_bytes())
+            .put(realm_id, &token_key, invitation_id.as_uuid().as_bytes())
             .map_err(Self::storage_err)?;
 
         // Write email dedup index
         self.storage
-            .put(tenant_id, &dedup_key, invitation_id.as_uuid().as_bytes())
+            .put(realm_id, &dedup_key, invitation_id.as_uuid().as_bytes())
             .map_err(Self::storage_err)?;
 
         // Write list index
         let list_key = keys::encode_invitation_list(&request.org_id, &invitation_id);
         self.storage
-            .put(tenant_id, &list_key, &[])
+            .put(realm_id, &list_key, &[])
             .map_err(Self::storage_err)?;
 
         Ok((invitation, plaintext_token))
@@ -4970,7 +4951,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn accept_invitation(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         token: &str,
     ) -> Result<OrganizationMembership, IdentityError> {
         // Hash the token
@@ -4984,7 +4965,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let token_key = keys::encode_invitation_token(&token_hash);
         let inv_id_bytes = self
             .storage
-            .get(tenant_id, &token_key)
+            .get(realm_id, &token_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvitationInvalid)?;
 
@@ -4998,7 +4979,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let inv_key = keys::encode_invitation_id(&invitation_id);
         let inv_bytes = self
             .storage
-            .get(tenant_id, &inv_key)
+            .get(realm_id, &inv_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvitationInvalid)?;
 
@@ -5019,12 +5000,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // Find or create user by email
-        let user = if let Some(u) = self.get_user_by_email(tenant_id, invitation.email())? {
+        let user = if let Some(u) = self.get_user_by_email(realm_id, invitation.email())? {
             u
         } else {
             // Auto-create user for unknown email
             self.create_user(
-                tenant_id,
+                realm_id,
                 &CreateUserRequest {
                     email: invitation.email().to_string(),
                     display_name: invitation.email().to_string(),
@@ -5034,7 +5015,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Add member
         let membership =
-            self.add_member(tenant_id, invitation.org_id(), user.id(), invitation.role())?;
+            self.add_member(realm_id, invitation.org_id(), user.id(), invitation.role())?;
 
         // Mark invitation as accepted
         invitation.set_accepted();
@@ -5043,13 +5024,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &inv_key, &updated_bytes)
+            .put(realm_id, &inv_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         // Remove dedup index so a new invitation can be sent if needed
         let dedup_key = keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
         self.storage
-            .delete(tenant_id, &dedup_key)
+            .delete(realm_id, &dedup_key)
             .map_err(Self::storage_err)?;
 
         Ok(membership)
@@ -5057,13 +5038,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn revoke_invitation(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         invitation_id: &InvitationId,
     ) -> Result<(), IdentityError> {
         let inv_key = keys::encode_invitation_id(invitation_id);
         let inv_bytes = self
             .storage
-            .get(tenant_id, &inv_key)
+            .get(realm_id, &inv_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvitationInvalid)?;
 
@@ -5082,13 +5063,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: e.to_string(),
             })?;
         self.storage
-            .put(tenant_id, &inv_key, &updated_bytes)
+            .put(realm_id, &inv_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
         // Clean up dedup index
         let dedup_key = keys::encode_invitation_org_email(invitation.org_id(), invitation.email());
         self.storage
-            .delete(tenant_id, &dedup_key)
+            .delete(realm_id, &dedup_key)
             .map_err(Self::storage_err)?;
 
         Ok(())
@@ -5096,7 +5077,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn list_invitations(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         org_id: &OrganizationId,
         cursor: Option<&str>,
         limit: usize,
@@ -5121,7 +5102,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         let entries = self
             .storage
-            .scan(tenant_id, &start, &end)
+            .scan(realm_id, &start, &end)
             .map_err(Self::storage_err)?;
 
         let mut items = Vec::new();
@@ -5137,7 +5118,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     let inv_key = keys::encode_invitation_id(&inv_id);
                     if let Some(inv_bytes) = self
                         .storage
-                        .get(tenant_id, &inv_key)
+                        .get(realm_id, &inv_key)
                         .map_err(Self::storage_err)?
                     {
                         let invitation: OrganizationInvitation = serde_json::from_slice(&inv_bytes)
@@ -5187,7 +5168,7 @@ fn classify_phc_algorithm(phc: &str) -> Option<crate::identity::credentials::Pas
 mod tests {
     use super::*;
     use crate::core::{FakeClock, Timestamp};
-    use crate::identity::types::TenantConfig;
+    use crate::identity::types::RealmConfig;
     use crate::storage::{EmbeddedStorageEngine, StorageConfig};
 
     fn setup_engine() -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
@@ -5213,14 +5194,14 @@ mod tests {
     #[test]
     fn create_user_with_required_fields_succeeds() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let request = CreateUserRequest {
             email: "Alice@Example.COM".to_string(),
             display_name: "Alice Smith".to_string(),
         };
 
-        let user = engine.create_user(&tenant, &request).expect("create");
+        let user = engine.create_user(&realm, &request).expect("create");
 
         assert_eq!(user.email(), "alice@example.com");
         assert_eq!(user.display_name(), "Alice Smith");
@@ -5232,11 +5213,11 @@ mod tests {
     #[test]
     fn create_user_generates_unique_id() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let user1 = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5246,7 +5227,7 @@ mod tests {
 
         let user2 = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "bob@example.com".to_string(),
                     display_name: "Bob".to_string(),
@@ -5262,11 +5243,11 @@ mod tests {
     #[test]
     fn read_user_by_id_returns_correct_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let created = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5275,7 +5256,7 @@ mod tests {
             .expect("create");
 
         let fetched = engine
-            .get_user(&tenant, created.id())
+            .get_user(&realm, created.id())
             .expect("get")
             .expect("should exist");
 
@@ -5285,11 +5266,11 @@ mod tests {
     #[test]
     fn read_user_by_email_returns_correct_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let created = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5298,7 +5279,7 @@ mod tests {
             .expect("create");
 
         let fetched = engine
-            .get_user_by_email(&tenant, "Alice@Example.COM")
+            .get_user_by_email(&realm, "Alice@Example.COM")
             .expect("get")
             .expect("should exist");
 
@@ -5308,19 +5289,19 @@ mod tests {
     #[test]
     fn read_nonexistent_user_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        let result = engine.get_user(&tenant, &UserId::generate()).expect("get");
+        let result = engine.get_user(&realm, &UserId::generate()).expect("get");
         assert!(result.is_none());
     }
 
     #[test]
     fn read_nonexistent_email_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let result = engine
-            .get_user_by_email(&tenant, "nobody@example.com")
+            .get_user_by_email(&realm, "nobody@example.com")
             .expect("get");
         assert!(result.is_none());
     }
@@ -5330,11 +5311,11 @@ mod tests {
     #[test]
     fn update_user_persists_changes() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let created = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5346,7 +5327,7 @@ mod tests {
 
         let updated = engine
             .update_user(
-                &tenant,
+                &realm,
                 created.id(),
                 &UpdateUserRequest {
                     display_name: Some("Alice Smith".to_string()),
@@ -5362,7 +5343,7 @@ mod tests {
 
         // Verify persistence
         let fetched = engine
-            .get_user(&tenant, created.id())
+            .get_user(&realm, created.id())
             .expect("get")
             .expect("should exist");
         assert_eq!(fetched, updated);
@@ -5371,11 +5352,11 @@ mod tests {
     #[test]
     fn update_user_email_swaps_index() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let created = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "old@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5387,7 +5368,7 @@ mod tests {
 
         engine
             .update_user(
-                &tenant,
+                &realm,
                 created.id(),
                 &UpdateUserRequest {
                     email: Some("new@example.com".to_string()),
@@ -5398,13 +5379,13 @@ mod tests {
 
         // Old email should not resolve
         let old_lookup = engine
-            .get_user_by_email(&tenant, "old@example.com")
+            .get_user_by_email(&realm, "old@example.com")
             .expect("get");
         assert!(old_lookup.is_none());
 
         // New email should resolve
         let new_lookup = engine
-            .get_user_by_email(&tenant, "new@example.com")
+            .get_user_by_email(&realm, "new@example.com")
             .expect("get")
             .expect("should exist");
         assert_eq!(new_lookup.id(), created.id());
@@ -5413,11 +5394,11 @@ mod tests {
     #[test]
     fn update_user_status() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let created = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5427,7 +5408,7 @@ mod tests {
 
         let updated = engine
             .update_user(
-                &tenant,
+                &realm,
                 created.id(),
                 &UpdateUserRequest {
                     status: Some(UserStatus::Disabled),
@@ -5442,10 +5423,10 @@ mod tests {
     #[test]
     fn update_nonexistent_user_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let err = engine
-            .update_user(&tenant, &UserId::generate(), &UpdateUserRequest::default())
+            .update_user(&realm, &UserId::generate(), &UpdateUserRequest::default())
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::UserNotFound));
     }
@@ -5455,11 +5436,11 @@ mod tests {
     #[test]
     fn delete_user_removes_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let created = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5467,15 +5448,15 @@ mod tests {
             )
             .expect("create");
 
-        engine.delete_user(&tenant, created.id()).expect("delete");
+        engine.delete_user(&realm, created.id()).expect("delete");
 
         // Should not be found by ID
-        let by_id = engine.get_user(&tenant, created.id()).expect("get");
+        let by_id = engine.get_user(&realm, created.id()).expect("get");
         assert!(by_id.is_none());
 
         // Should not be found by email
         let by_email = engine
-            .get_user_by_email(&tenant, "alice@example.com")
+            .get_user_by_email(&realm, "alice@example.com")
             .expect("get");
         assert!(by_email.is_none());
     }
@@ -5483,10 +5464,10 @@ mod tests {
     #[test]
     fn delete_nonexistent_user_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let err = engine
-            .delete_user(&tenant, &UserId::generate())
+            .delete_user(&realm, &UserId::generate())
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::UserNotFound));
     }
@@ -5494,11 +5475,11 @@ mod tests {
     #[test]
     fn delete_user_frees_email() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let created = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5506,12 +5487,12 @@ mod tests {
             )
             .expect("create");
 
-        engine.delete_user(&tenant, created.id()).expect("delete");
+        engine.delete_user(&realm, created.id()).expect("delete");
 
         // Should be able to create a new user with the same email
         let new_user = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice 2".to_string(),
@@ -5527,11 +5508,11 @@ mod tests {
     #[test]
     fn duplicate_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5541,7 +5522,7 @@ mod tests {
 
         let err = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice 2".to_string(),
@@ -5554,11 +5535,11 @@ mod tests {
     #[test]
     fn duplicate_email_case_insensitive() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "Alice@Example.COM".to_string(),
                     display_name: "Alice".to_string(),
@@ -5568,7 +5549,7 @@ mod tests {
 
         let err = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Other".to_string(),
@@ -5581,11 +5562,11 @@ mod tests {
     #[test]
     fn duplicate_email_on_update_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5595,7 +5576,7 @@ mod tests {
 
         let bob = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "bob@example.com".to_string(),
                     display_name: "Bob".to_string(),
@@ -5605,7 +5586,7 @@ mod tests {
 
         let err = engine
             .update_user(
-                &tenant,
+                &realm,
                 bob.id(),
                 &UpdateUserRequest {
                     email: Some("alice@example.com".to_string()),
@@ -5621,11 +5602,11 @@ mod tests {
     #[test]
     fn null_bytes_in_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let err = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice\0@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5638,11 +5619,11 @@ mod tests {
     #[test]
     fn null_bytes_in_display_name_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let err = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice\0Smith".to_string(),
@@ -5655,12 +5636,12 @@ mod tests {
     #[test]
     fn unicode_normalization_deduplicates_emails() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         // Create with decomposed é
         engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "caf\u{0065}\u{0301}@example.com".to_string(),
                     display_name: "User 1".to_string(),
@@ -5671,7 +5652,7 @@ mod tests {
         // Try to create with composed é — should be duplicate
         let err = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "caf\u{00E9}@example.com".to_string(),
                     display_name: "User 2".to_string(),
@@ -5686,12 +5667,12 @@ mod tests {
     #[test]
     fn oversized_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let long_email = format!("{}@example.com", "a".repeat(250));
         let err = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: long_email,
                     display_name: "Alice".to_string(),
@@ -5704,11 +5685,11 @@ mod tests {
     #[test]
     fn oversized_display_name_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let err = engine
             .create_user(
-                &tenant,
+                &realm,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "A".repeat(257),
@@ -5718,17 +5699,17 @@ mod tests {
         assert!(matches!(err, IdentityError::InvalidInput { .. }));
     }
 
-    // ===== Cross-tenant isolation =====
+    // ===== Cross-realm isolation =====
 
     #[test]
-    fn cross_tenant_isolation() {
+    fn cross_realm_isolation() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_a = TenantId::generate();
-        let tenant_b = TenantId::generate();
+        let realm_a = RealmId::generate();
+        let realm_b = RealmId::generate();
 
         let alice = engine
             .create_user(
-                &tenant_a,
+                &realm_a,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -5736,21 +5717,21 @@ mod tests {
             )
             .expect("create");
 
-        // Same email in different tenant should succeed
+        // Same email in different realm should succeed
         let alice_b = engine
             .create_user(
-                &tenant_b,
+                &realm_b,
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice B".to_string(),
                 },
             )
-            .expect("create in different tenant should succeed");
+            .expect("create in different realm should succeed");
 
         assert_ne!(alice.id(), alice_b.id());
 
-        // Can't see tenant A's user from tenant B
-        let not_found = engine.get_user(&tenant_b, alice.id()).expect("get");
+        // Can't see realm A's user from realm B
+        let not_found = engine.get_user(&realm_b, alice.id()).expect("get");
         assert!(not_found.is_none());
     }
 
@@ -5764,10 +5745,10 @@ mod tests {
 
     // ===== Credential Scenario 1: set_password + verify_password =====
 
-    fn create_test_user(engine: &EmbeddedIdentityEngine, tenant: &TenantId) -> User {
+    fn create_test_user(engine: &EmbeddedIdentityEngine, realm: &RealmId) -> User {
         engine
             .create_user(
-                tenant,
+                realm,
                 &CreateUserRequest {
                     email: format!("user-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Test User".to_string(),
@@ -5779,17 +5760,17 @@ mod tests {
     #[test]
     fn set_and_verify_password_correct() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-secure-password".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
         let pw_check = CleartextPassword::from_string("my-secure-password".to_string());
         let result = engine
-            .verify_password(&tenant, user.id(), &pw_check)
+            .verify_password(&realm, user.id(), &pw_check)
             .expect("verify");
         assert!(result, "correct password should verify");
     }
@@ -5797,17 +5778,17 @@ mod tests {
     #[test]
     fn set_and_verify_password_wrong() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("correct-password".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
         let wrong = CleartextPassword::from_string("wrong-password".to_string());
         let result = engine
-            .verify_password(&tenant, user.id(), &wrong)
+            .verify_password(&realm, user.id(), &wrong)
             .expect("verify");
         assert!(!result, "wrong password should not verify");
     }
@@ -5815,11 +5796,11 @@ mod tests {
     #[test]
     fn set_password_nonexistent_user_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
         let pw = CleartextPassword::from_string("password".to_string());
 
         let err = engine
-            .set_password(&tenant, &UserId::generate(), &pw)
+            .set_password(&realm, &UserId::generate(), &pw)
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::UserNotFound));
     }
@@ -5827,11 +5808,11 @@ mod tests {
     #[test]
     fn verify_password_nonexistent_user_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
         let pw = CleartextPassword::from_string("password".to_string());
 
         let err = engine
-            .verify_password(&tenant, &UserId::generate(), &pw)
+            .verify_password(&realm, &UserId::generate(), &pw)
             .expect_err("should fail");
         // Returns generic InvalidCredential to prevent user enumeration
         assert!(matches!(err, IdentityError::InvalidCredential { .. }));
@@ -5840,12 +5821,12 @@ mod tests {
     #[test]
     fn verify_password_no_credential_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
         let pw = CleartextPassword::from_string("password".to_string());
 
         let err = engine
-            .verify_password(&tenant, user.id(), &pw)
+            .verify_password(&realm, user.id(), &pw)
             .expect_err("should fail");
         // Returns generic InvalidCredential to prevent credential enumeration
         assert!(matches!(err, IdentityError::InvalidCredential { .. }));
@@ -5856,31 +5837,31 @@ mod tests {
     #[test]
     fn change_password_succeeds() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let old_pw = CleartextPassword::from_string("old-password".to_string());
         engine
-            .set_password(&tenant, user.id(), &old_pw)
+            .set_password(&realm, user.id(), &old_pw)
             .expect("set password");
 
         let old_for_change = CleartextPassword::from_string("old-password".to_string());
         let new_pw = CleartextPassword::from_string("new-password".to_string());
         engine
-            .change_password(&tenant, user.id(), &old_for_change, &new_pw)
+            .change_password(&realm, user.id(), &old_for_change, &new_pw)
             .expect("change password");
 
         // Old password should no longer verify
         let old_check = CleartextPassword::from_string("old-password".to_string());
         let result = engine
-            .verify_password(&tenant, user.id(), &old_check)
+            .verify_password(&realm, user.id(), &old_check)
             .expect("verify old");
         assert!(!result, "old password should no longer verify");
 
         // New password should verify
         let new_check = CleartextPassword::from_string("new-password".to_string());
         let result = engine
-            .verify_password(&tenant, user.id(), &new_check)
+            .verify_password(&realm, user.id(), &new_check)
             .expect("verify new");
         assert!(result, "new password should verify");
     }
@@ -5888,25 +5869,25 @@ mod tests {
     #[test]
     fn change_password_wrong_old_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("real-password".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
         let wrong_old = CleartextPassword::from_string("wrong-old".to_string());
         let new_pw = CleartextPassword::from_string("new-password".to_string());
         let err = engine
-            .change_password(&tenant, user.id(), &wrong_old, &new_pw)
+            .change_password(&realm, user.id(), &wrong_old, &new_pw)
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::InvalidCredential { .. }));
 
         // Original password should still work
         let orig = CleartextPassword::from_string("real-password".to_string());
         let result = engine
-            .verify_password(&tenant, user.id(), &orig)
+            .verify_password(&realm, user.id(), &orig)
             .expect("verify");
         assert!(result, "original password should still verify");
     }
@@ -5916,20 +5897,20 @@ mod tests {
     #[test]
     fn delete_user_cascades_credential() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("password".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
-        engine.delete_user(&tenant, user.id()).expect("delete");
+        engine.delete_user(&realm, user.id()).expect("delete");
 
         // Verify should fail with generic InvalidCredential (enumeration resistance)
         let pw_check = CleartextPassword::from_string("password".to_string());
         let err = engine
-            .verify_password(&tenant, user.id(), &pw_check)
+            .verify_password(&realm, user.id(), &pw_check)
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::InvalidCredential { .. }));
     }
@@ -5940,24 +5921,24 @@ mod tests {
     #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for timing ratio
     fn verify_nonexistent_user_takes_comparable_time() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("password".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
         // Time a real failed verification
         let wrong = CleartextPassword::from_string("wrong".to_string());
         let start_real = std::time::Instant::now();
-        let _ = engine.verify_password(&tenant, user.id(), &wrong);
+        let _ = engine.verify_password(&realm, user.id(), &wrong);
         let real_time = start_real.elapsed();
 
         // Time a nonexistent user verification
         let fake = CleartextPassword::from_string("wrong".to_string());
         let start_fake = std::time::Instant::now();
-        let _ = engine.verify_password(&tenant, &UserId::generate(), &fake);
+        let _ = engine.verify_password(&realm, &UserId::generate(), &fake);
         let fake_time = start_fake.elapsed();
 
         // Both should take roughly the same time. We allow 10x tolerance
@@ -5981,11 +5962,11 @@ mod tests {
     #[test]
     fn create_session_returns_valid_session() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         assert_eq!(session.user_id(), user.id());
@@ -5999,10 +5980,10 @@ mod tests {
     #[test]
     fn create_session_nonexistent_user_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let err = engine
-            .create_session(&tenant, &UserId::generate(), &SessionContext::default())
+            .create_session(&realm, &UserId::generate(), &SessionContext::default())
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::UserNotFound));
     }
@@ -6012,8 +5993,8 @@ mod tests {
     #[test]
     fn session_with_full_context_persists_metadata() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let ctx = SessionContext {
             ip_address: Some("203.0.113.42".to_string()),
@@ -6022,7 +6003,7 @@ mod tests {
         };
 
         let session = engine
-            .create_session(&tenant, user.id(), &ctx)
+            .create_session(&realm, user.id(), &ctx)
             .expect("create session");
 
         assert_eq!(session.ip_address(), Some("203.0.113.42"));
@@ -6031,7 +6012,7 @@ mod tests {
 
         // Verify round-trip through storage
         let fetched = engine
-            .get_session(&tenant, session.id())
+            .get_session(&realm, session.id())
             .expect("get session")
             .expect("should exist");
 
@@ -6043,11 +6024,11 @@ mod tests {
     #[test]
     fn session_with_default_context_has_none_metadata() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         assert!(session.ip_address().is_none());
@@ -6055,7 +6036,7 @@ mod tests {
         assert!(session.device_label().is_none());
 
         let fetched = engine
-            .get_session(&tenant, session.id())
+            .get_session(&realm, session.id())
             .expect("get session")
             .expect("should exist");
 
@@ -6088,15 +6069,15 @@ mod tests {
     #[test]
     fn lookup_session_by_id_returns_correct_data() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         let fetched = engine
-            .get_session(&tenant, session.id())
+            .get_session(&realm, session.id())
             .expect("get session")
             .expect("should exist");
 
@@ -6109,10 +6090,10 @@ mod tests {
     #[test]
     fn lookup_nonexistent_session_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let result = engine
-            .get_session(&tenant, &SessionId::generate())
+            .get_session(&realm, &SessionId::generate())
             .expect("get");
         assert!(result.is_none());
     }
@@ -6122,30 +6103,28 @@ mod tests {
     #[test]
     fn revoke_session_immediate_invalidation() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Revoke it
-        engine
-            .revoke_session(&tenant, session.id())
-            .expect("revoke");
+        engine.revoke_session(&realm, session.id()).expect("revoke");
 
         // Lookup should return None
-        let result = engine.get_session(&tenant, session.id()).expect("get");
+        let result = engine.get_session(&realm, session.id()).expect("get");
         assert!(result.is_none(), "revoked session should not be found");
     }
 
     #[test]
     fn revoke_nonexistent_session_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         let err = engine
-            .revoke_session(&tenant, &SessionId::generate())
+            .revoke_session(&realm, &SessionId::generate())
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::SessionNotFound));
     }
@@ -6155,15 +6134,15 @@ mod tests {
     #[test]
     fn session_expires_after_ttl() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Session should be valid now
-        let valid = engine.get_session(&tenant, session.id()).expect("get");
+        let valid = engine.get_session(&realm, session.id()).expect("get");
         assert!(valid.is_some(), "session should be valid before TTL");
 
         // Advance clock past TTL (24 hours + 1 microsecond)
@@ -6171,25 +6150,25 @@ mod tests {
         clock.advance(ttl + 1);
 
         // Session should now be expired
-        let expired = engine.get_session(&tenant, session.id()).expect("get");
+        let expired = engine.get_session(&realm, session.id()).expect("get");
         assert!(expired.is_none(), "session should be expired after TTL");
     }
 
     #[test]
     fn session_valid_just_before_expiry() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Advance clock to 1 μs before expiry
         let ttl = 24 * 60 * 60 * 1_000_000_i64;
         clock.advance(ttl - 1);
 
-        let still_valid = engine.get_session(&tenant, session.id()).expect("get");
+        let still_valid = engine.get_session(&realm, session.id()).expect("get");
         assert!(
             still_valid.is_some(),
             "session should still be valid 1μs before expiry"
@@ -6201,11 +6180,11 @@ mod tests {
     #[test]
     fn refresh_session_extends_ttl() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         let ttl = 24 * 60 * 60 * 1_000_000_i64;
@@ -6215,7 +6194,7 @@ mod tests {
 
         // Refresh the session
         let refreshed = engine
-            .refresh_session(&tenant, session.id())
+            .refresh_session(&realm, session.id())
             .expect("refresh");
 
         // Expiry should be 24h from now (not original creation)
@@ -6229,7 +6208,7 @@ mod tests {
         // Advance another 23 hours — would have expired without refresh
         clock.advance(ttl - ttl / 2 + 1_000_000);
 
-        let still_valid = engine.get_session(&tenant, session.id()).expect("get");
+        let still_valid = engine.get_session(&realm, session.id()).expect("get");
         assert!(
             still_valid.is_some(),
             "refreshed session should still be valid past original expiry"
@@ -6239,11 +6218,11 @@ mod tests {
     #[test]
     fn refresh_expired_session_fails() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Advance past TTL
@@ -6251,7 +6230,7 @@ mod tests {
         clock.advance(ttl + 1);
 
         let err = engine
-            .refresh_session(&tenant, session.id())
+            .refresh_session(&realm, session.id())
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::SessionNotFound));
     }
@@ -6259,19 +6238,17 @@ mod tests {
     #[test]
     fn refresh_revoked_session_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let session = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("create session");
 
-        engine
-            .revoke_session(&tenant, session.id())
-            .expect("revoke");
+        engine.revoke_session(&realm, session.id()).expect("revoke");
 
         let err = engine
-            .refresh_session(&tenant, session.id())
+            .refresh_session(&realm, session.id())
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::SessionNotFound));
     }
@@ -6281,27 +6258,27 @@ mod tests {
     #[test]
     fn delete_user_cascades_sessions() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         // Create multiple sessions
         let s1 = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("session 1");
         let s2 = engine
-            .create_session(&tenant, user.id(), &SessionContext::default())
+            .create_session(&realm, user.id(), &SessionContext::default())
             .expect("session 2");
 
         // Both should be valid
-        assert!(engine.get_session(&tenant, s1.id()).expect("get").is_some());
-        assert!(engine.get_session(&tenant, s2.id()).expect("get").is_some());
+        assert!(engine.get_session(&realm, s1.id()).expect("get").is_some());
+        assert!(engine.get_session(&realm, s2.id()).expect("get").is_some());
 
         // Delete user
-        engine.delete_user(&tenant, user.id()).expect("delete");
+        engine.delete_user(&realm, user.id()).expect("delete");
 
         // Both sessions should be gone
-        assert!(engine.get_session(&tenant, s1.id()).expect("get").is_none());
-        assert!(engine.get_session(&tenant, s2.id()).expect("get").is_none());
+        assert!(engine.get_session(&realm, s1.id()).expect("get").is_none());
+        assert!(engine.get_session(&realm, s2.id()).expect("get").is_none());
     }
 
     // ===== Property tests =====
@@ -6325,12 +6302,12 @@ mod tests {
                 emails in proptest::collection::hash_set(valid_email(), 1..10),
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let tenant = TenantId::generate();
+                let realm = RealmId::generate();
                 let mut created_ids = Vec::new();
 
                 // Create all users
                 for (i, email) in emails.iter().enumerate() {
-                    let user = engine.create_user(&tenant, &CreateUserRequest {
+                    let user = engine.create_user(&realm, &CreateUserRequest {
                         email: email.clone(),
                         display_name: format!("User {i}"),
                     }).expect("create");
@@ -6339,25 +6316,25 @@ mod tests {
 
                 // All should be retrievable
                 for id in &created_ids {
-                    let user = engine.get_user(&tenant, id).expect("get");
+                    let user = engine.get_user(&realm, id).expect("get");
                     prop_assert!(user.is_some(), "created user should be found");
                 }
 
                 // Delete half
                 let to_delete = created_ids.len() / 2;
                 for id in &created_ids[..to_delete] {
-                    engine.delete_user(&tenant, id).expect("delete");
+                    engine.delete_user(&realm, id).expect("delete");
                 }
 
                 // Deleted should be gone
                 for id in &created_ids[..to_delete] {
-                    let user = engine.get_user(&tenant, id).expect("get");
+                    let user = engine.get_user(&realm, id).expect("get");
                     prop_assert!(user.is_none(), "deleted user should not be found");
                 }
 
                 // Remaining should still exist
                 for id in &created_ids[to_delete..] {
-                    let user = engine.get_user(&tenant, id).expect("get");
+                    let user = engine.get_user(&realm, id).expect("get");
                     prop_assert!(user.is_some(), "remaining user should be found");
                 }
             }
@@ -6369,10 +6346,10 @@ mod tests {
                 n in 2..5u32,
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let tenant = TenantId::generate();
+                let realm = RealmId::generate();
 
                 // First creation should succeed
-                let result = engine.create_user(&tenant, &CreateUserRequest {
+                let result = engine.create_user(&realm, &CreateUserRequest {
                     email: email.clone(),
                     display_name: "User 0".to_string(),
                 });
@@ -6380,7 +6357,7 @@ mod tests {
 
                 // Subsequent creations with same email should fail
                 for i in 1..n {
-                    let result = engine.create_user(&tenant, &CreateUserRequest {
+                    let result = engine.create_user(&realm, &CreateUserRequest {
                         email: email.clone(),
                         display_name: format!("User {i}"),
                     });
@@ -6401,8 +6378,8 @@ mod tests {
                 n_revoke_ratio in 0.0..1.0_f64,
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let tenant = TenantId::generate();
-                let user = engine.create_user(&tenant, &CreateUserRequest {
+                let realm = RealmId::generate();
+                let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("session-prop-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Prop User".to_string(),
                 }).expect("create user");
@@ -6411,14 +6388,14 @@ mod tests {
                 let mut session_ids = Vec::new();
                 for _ in 0..n_create {
                     let session = engine
-                        .create_session(&tenant, user.id(), &SessionContext::default())
+                        .create_session(&realm, user.id(), &SessionContext::default())
                         .expect("create session");
                     session_ids.push(session.id().clone());
                 }
 
                 // All should be valid
                 for id in &session_ids {
-                    let s = engine.get_session(&tenant, id).expect("get");
+                    let s = engine.get_session(&realm, id).expect("get");
                     prop_assert!(s.is_some(), "created session should be valid");
                 }
 
@@ -6426,13 +6403,13 @@ mod tests {
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
                 let n_revoke = (n_create as f64 * n_revoke_ratio) as usize;
                 for id in &session_ids[..n_revoke] {
-                    engine.revoke_session(&tenant, id).expect("revoke");
+                    engine.revoke_session(&realm, id).expect("revoke");
                 }
 
                 // Count active sessions
                 let active_count = session_ids
                     .iter()
-                    .filter(|id| engine.get_session(&tenant, id).expect("get").is_some())
+                    .filter(|id| engine.get_session(&realm, id).expect("get").is_some())
                     .count();
 
                 prop_assert_eq!(
@@ -6446,8 +6423,8 @@ mod tests {
             #[test]
             fn no_session_id_collisions(n in 10..100usize) {
                 let (_dir, engine, _clock) = setup_engine();
-                let tenant = TenantId::generate();
-                let user = engine.create_user(&tenant, &CreateUserRequest {
+                let realm = RealmId::generate();
+                let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("collision-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Collision User".to_string(),
                 }).expect("create user");
@@ -6455,7 +6432,7 @@ mod tests {
                 let mut ids = std::collections::HashSet::new();
                 for _ in 0..n {
                     let session = engine
-                        .create_session(&tenant, user.id(), &SessionContext::default())
+                        .create_session(&realm, user.id(), &SessionContext::default())
                         .expect("create session");
                     let was_new = ids.insert(session.id().clone());
                     prop_assert!(was_new, "session ID collision detected");
@@ -6469,10 +6446,10 @@ mod tests {
     //  OIDC / OAuth 2.0 Unit Tests (Step 15)
     // ===================================================================
 
-    fn register_test_client(engine: &EmbeddedIdentityEngine, tenant: &TenantId) -> OAuthClient {
+    fn register_test_client(engine: &EmbeddedIdentityEngine, realm: &RealmId) -> OAuthClient {
         engine
             .register_client(
-                tenant,
+                realm,
                 &RegisterClientRequest {
                     client_name: "Test App".to_string(),
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -6488,13 +6465,13 @@ mod tests {
     #[test]
     fn generate_authorization_code_with_correct_params() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         let response = engine
             .authorize(
-                &tenant,
+                &realm,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -6520,13 +6497,13 @@ mod tests {
     #[test]
     fn exchange_authorization_code_returns_tokens() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         let auth_response = engine
             .authorize(
-                &tenant,
+                &realm,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -6543,7 +6520,7 @@ mod tests {
 
         let token_response = engine
             .exchange_authorization_code(
-                &tenant,
+                &realm,
                 &TokenExchangeRequest {
                     client_id: client.client_id().clone(),
                     code: auth_response.code().to_string(),
@@ -6561,7 +6538,7 @@ mod tests {
 
         // Verify access token is valid via session lookup
         let claims = engine
-            .validate_token(&tenant, token_response.access_token())
+            .validate_token(&realm, token_response.access_token())
             .expect("validate access token");
         assert_eq!(claims.sub, user.id().to_string());
 
@@ -6577,13 +6554,13 @@ mod tests {
     #[test]
     fn authorization_code_single_use() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         let auth_response = engine
             .authorize(
-                &tenant,
+                &realm,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -6600,7 +6577,7 @@ mod tests {
 
         // First exchange succeeds
         let result1 = engine.exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -6612,7 +6589,7 @@ mod tests {
 
         // Second exchange with same code fails
         let result2 = engine.exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -6631,13 +6608,13 @@ mod tests {
     #[test]
     fn authorization_code_expiration() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         let auth_response = engine
             .authorize(
-                &tenant,
+                &realm,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -6657,7 +6634,7 @@ mod tests {
 
         // Exchange should fail due to expiration
         let result = engine.exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -6703,13 +6680,13 @@ mod tests {
     #[test]
     fn adversarial_authorization_code_reuse_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         let auth_response = engine
             .authorize(
-                &tenant,
+                &realm,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -6727,7 +6704,7 @@ mod tests {
         // Use the code
         engine
             .exchange_authorization_code(
-                &tenant,
+                &realm,
                 &TokenExchangeRequest {
                     client_id: client.client_id().clone(),
                     code: auth_response.code().to_string(),
@@ -6739,7 +6716,7 @@ mod tests {
 
         // Attempt reuse — must fail
         let reuse = engine.exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -6758,13 +6735,13 @@ mod tests {
     #[test]
     fn adversarial_open_redirect_non_registered_uri_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         // Attempt to authorize with an unregistered redirect URI
         let result = engine.authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://evil.example.com/steal-tokens".to_string(),
@@ -6788,13 +6765,13 @@ mod tests {
     #[test]
     fn adversarial_csrf_missing_state_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         // Attempt to authorize with empty state
         let result = engine.authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -6845,18 +6822,18 @@ mod tests {
         // Configure: lockout after 3 failed attempts, 10-second lockout
         let lockout_micros = 10_000_000; // 10 seconds
         let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("correct-pw".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
         // 3 wrong attempts
         for i in 0..3 {
             let wrong = CleartextPassword::from_string(format!("wrong-{i}"));
-            let result = engine.verify_password(&tenant, user.id(), &wrong);
+            let result = engine.verify_password(&realm, user.id(), &wrong);
             assert!(
                 result.is_ok(),
                 "attempt {i} should not be rate limited yet: {result:?}"
@@ -6866,7 +6843,7 @@ mod tests {
 
         // 4th attempt: should be rate limited even with the correct password
         let correct = CleartextPassword::from_string("correct-pw".to_string());
-        let result = engine.verify_password(&tenant, user.id(), &correct);
+        let result = engine.verify_password(&realm, user.id(), &correct);
         assert!(
             matches!(result, Err(IdentityError::RateLimited)),
             "should be rate limited after 3 failures, got: {result:?}"
@@ -6877,19 +6854,19 @@ mod tests {
     fn rate_limiting_resets_on_successful_verification() {
         let lockout_micros = 10_000_000;
         let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-password".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
         // 2 wrong attempts (below threshold)
         for _ in 0..2 {
             let wrong = CleartextPassword::from_string("wrong".to_string());
             let result = engine
-                .verify_password(&tenant, user.id(), &wrong)
+                .verify_password(&realm, user.id(), &wrong)
                 .expect("should not be rate limited");
             assert!(!result);
         }
@@ -6897,7 +6874,7 @@ mod tests {
         // Correct password resets the counter
         let correct = CleartextPassword::from_string("my-password".to_string());
         let result = engine
-            .verify_password(&tenant, user.id(), &correct)
+            .verify_password(&realm, user.id(), &correct)
             .expect("should succeed");
         assert!(result);
 
@@ -6905,7 +6882,7 @@ mod tests {
         for _ in 0..2 {
             let wrong = CleartextPassword::from_string("wrong".to_string());
             let result = engine
-                .verify_password(&tenant, user.id(), &wrong)
+                .verify_password(&realm, user.id(), &wrong)
                 .expect("should not be rate limited after reset");
             assert!(!result);
         }
@@ -6915,25 +6892,25 @@ mod tests {
     fn rate_limiting_expires_after_lockout_window() {
         let lockout_micros = 10_000_000; // 10 seconds
         let (_dir, engine, clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-password".to_string());
         engine
-            .set_password(&tenant, user.id(), &pw)
+            .set_password(&realm, user.id(), &pw)
             .expect("set password");
 
         // Trigger lockout: 3 failures
         for i in 0..3 {
             let wrong = CleartextPassword::from_string(format!("wrong-{i}"));
-            let _ = engine.verify_password(&tenant, user.id(), &wrong);
+            let _ = engine.verify_password(&realm, user.id(), &wrong);
         }
 
         // Confirm locked out
         let correct = CleartextPassword::from_string("my-password".to_string());
         assert!(
             matches!(
-                engine.verify_password(&tenant, user.id(), &correct),
+                engine.verify_password(&realm, user.id(), &correct),
                 Err(IdentityError::RateLimited)
             ),
             "should be locked out"
@@ -6945,7 +6922,7 @@ mod tests {
         // Should be able to verify again
         let correct = CleartextPassword::from_string("my-password".to_string());
         let result = engine
-            .verify_password(&tenant, user.id(), &correct)
+            .verify_password(&realm, user.id(), &correct)
             .expect("should be allowed after lockout expires");
         assert!(result, "correct password should verify after lockout");
     }
@@ -6978,13 +6955,13 @@ mod tests {
     #[test]
     fn nonce_reuse_in_authorization_request_rejected() {
         let (_dir, engine, _clock) = setup_engine_with_nonce_enforcement();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         // First request with nonce succeeds
         let result = engine.authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -7001,7 +6978,7 @@ mod tests {
 
         // Second request with same nonce should be rejected
         let result = engine.authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -7021,7 +6998,7 @@ mod tests {
 
         // Different nonce should succeed
         let result = engine.authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -7041,14 +7018,14 @@ mod tests {
     fn nonce_not_enforced_when_disabled() {
         // Default config has enforce_nonces: false
         let (_dir, engine, _clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let client = register_test_client(&engine, &tenant);
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
 
         // Same nonce used twice should succeed when enforcement is off
         for state_suffix in ["1", "2"] {
             let result = engine.authorize(
-                &tenant,
+                &realm,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -7074,84 +7051,82 @@ mod tests {
     //
     // Test scenarios from TEST_SCENARIOS.md § Multi-Tenancy
 
-    // --- Unit Scenario 1: Create tenant with configuration returns assigned TenantId ---
+    // --- Unit Scenario 1: Create realm with configuration returns assigned RealmId ---
 
     #[test]
-    fn create_tenant_returns_assigned_id() {
+    fn create_realm_returns_assigned_id() {
         let (_dir, engine, _clock) = setup_engine();
 
-        let tenant = engine
-            .create_tenant(&CreateTenantRequest {
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
                 name: "Acme Corp".to_string(),
                 config: None,
             })
-            .expect("create tenant");
+            .expect("create realm");
 
-        assert_eq!(tenant.name(), "Acme Corp");
-        assert_eq!(tenant.status(), TenantStatus::Active);
+        assert_eq!(realm.name(), "Acme Corp");
+        assert_eq!(realm.status(), RealmStatus::Active);
 
         // Should be retrievable
         let loaded = engine
-            .get_tenant(tenant.id())
-            .expect("get tenant")
-            .expect("tenant should exist");
-        assert_eq!(loaded.id(), tenant.id());
+            .get_realm(realm.id())
+            .expect("get realm")
+            .expect("realm should exist");
+        assert_eq!(loaded.id(), realm.id());
         assert_eq!(loaded.name(), "Acme Corp");
     }
 
     #[test]
-    fn create_tenant_with_custom_config() {
+    fn create_realm_with_custom_config() {
         let (_dir, engine, _clock) = setup_engine();
 
-        let config = TenantConfig {
+        let config = RealmConfig {
             session_ttl_micros: Some(3_600_000_000), // 1 hour
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
-            ..TenantConfig::default()
+            ..RealmConfig::default()
         };
-        let tenant = engine
-            .create_tenant(&CreateTenantRequest {
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
                 name: "Custom Corp".to_string(),
                 config: Some(config.clone()),
             })
-            .expect("create tenant");
+            .expect("create realm");
 
-        assert_eq!(tenant.config(), &config);
+        assert_eq!(realm.config(), &config);
     }
 
     #[test]
-    fn get_nonexistent_tenant_returns_none() {
+    fn get_nonexistent_realm_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
 
-        let result = engine
-            .get_tenant(&TenantId::generate())
-            .expect("get tenant");
+        let result = engine.get_realm(&RealmId::generate()).expect("get realm");
         assert!(result.is_none());
     }
 
-    // --- Unit Scenario 2: Tenant-scoped user creation; cross-tenant lookup returns not-found ---
+    // --- Unit Scenario 2: Realm-scoped user creation; cross-realm lookup returns not-found ---
 
     #[test]
-    fn tenant_scoped_user_isolation() {
+    fn realm_scoped_user_isolation() {
         let (_dir, engine, _clock) = setup_engine();
 
-        let tenant_a = engine
-            .create_tenant(&CreateTenantRequest {
-                name: "Tenant A".to_string(),
+        let realm_a = engine
+            .create_realm(&CreateRealmRequest {
+                name: "Realm A".to_string(),
                 config: None,
             })
-            .expect("create tenant A");
-        let tenant_b = engine
-            .create_tenant(&CreateTenantRequest {
-                name: "Tenant B".to_string(),
+            .expect("create realm A");
+        let realm_b = engine
+            .create_realm(&CreateRealmRequest {
+                name: "Realm B".to_string(),
                 config: None,
             })
-            .expect("create tenant B");
+            .expect("create realm B");
 
-        // Create user in tenant A
+        // Create user in realm A
         let user_a = engine
             .create_user(
-                tenant_a.id(),
+                realm_a.id(),
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
@@ -7159,22 +7134,22 @@ mod tests {
             )
             .expect("create user in A");
 
-        // User should be visible in tenant A
+        // User should be visible in realm A
         let found = engine
-            .get_user(tenant_a.id(), user_a.id())
+            .get_user(realm_a.id(), user_a.id())
             .expect("get user in A");
         assert!(found.is_some());
 
-        // User should NOT be visible in tenant B
+        // User should NOT be visible in realm B
         let not_found = engine
-            .get_user(tenant_b.id(), user_a.id())
+            .get_user(realm_b.id(), user_a.id())
             .expect("get user in B");
         assert!(not_found.is_none());
 
-        // Same email can be used in tenant B (different namespace)
+        // Same email can be used in realm B (different namespace)
         let user_b = engine
             .create_user(
-                tenant_b.id(),
+                realm_b.id(),
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice B".to_string(),
@@ -7184,29 +7159,29 @@ mod tests {
         assert_ne!(user_a.id(), user_b.id());
     }
 
-    // --- Unit Scenario 3: Per-tenant signing keys ---
+    // --- Unit Scenario 3: Per-realm signing keys ---
 
     #[test]
-    fn per_tenant_signing_keys_are_independent() {
+    fn per_realm_signing_keys_are_independent() {
         let (_dir, engine, _clock) = setup_engine();
 
-        let tenant_a = engine
-            .create_tenant(&CreateTenantRequest {
-                name: "Tenant A".to_string(),
+        let realm_a = engine
+            .create_realm(&CreateRealmRequest {
+                name: "Realm A".to_string(),
                 config: None,
             })
-            .expect("create tenant A");
-        let tenant_b = engine
-            .create_tenant(&CreateTenantRequest {
-                name: "Tenant B".to_string(),
+            .expect("create realm A");
+        let realm_b = engine
+            .create_realm(&CreateRealmRequest {
+                name: "Realm B".to_string(),
                 config: None,
             })
-            .expect("create tenant B");
+            .expect("create realm B");
 
-        let jwks_a = engine.tenant_jwks(tenant_a.id()).expect("jwks A");
-        let jwks_b = engine.tenant_jwks(tenant_b.id()).expect("jwks B");
+        let jwks_a = engine.realm_jwks(realm_a.id()).expect("jwks A");
+        let jwks_b = engine.realm_jwks(realm_b.id()).expect("jwks B");
 
-        // Each tenant should have exactly one key
+        // Each realm should have exactly one key
         assert_eq!(jwks_a.keys.len(), 1);
         assert_eq!(jwks_b.keys.len(), 1);
 
@@ -7215,45 +7190,45 @@ mod tests {
         assert_ne!(jwks_a.keys[0].x, jwks_b.keys[0].x);
     }
 
-    // --- Unit Scenario 4: Tenant configuration update ---
+    // --- Unit Scenario 4: Realm configuration update ---
 
     #[test]
-    fn update_tenant_config_applies_only_to_target() {
+    fn update_realm_config_applies_only_to_target() {
         let (_dir, engine, _clock) = setup_engine();
 
-        let tenant = engine
-            .create_tenant(&CreateTenantRequest {
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
                 name: "Original Name".to_string(),
                 config: None,
             })
-            .expect("create tenant");
+            .expect("create realm");
 
         // Default config should have no overrides
-        assert!(tenant.config().session_ttl_micros.is_none());
+        assert!(realm.config().session_ttl_micros.is_none());
 
         // Update config
-        let new_config = TenantConfig {
+        let new_config = RealmConfig {
             session_ttl_micros: Some(7_200_000_000), // 2 hours
             password_memory_cost: Some(32768),
-            ..TenantConfig::default()
+            ..RealmConfig::default()
         };
         let updated = engine
-            .update_tenant(
-                tenant.id(),
-                &UpdateTenantRequest {
+            .update_realm(
+                realm.id(),
+                &UpdateRealmRequest {
                     name: Some("Updated Name".to_string()),
                     status: None,
                     config: Some(new_config.clone()),
                 },
             )
-            .expect("update tenant");
+            .expect("update realm");
 
         assert_eq!(updated.name(), "Updated Name");
         assert_eq!(updated.config(), &new_config);
 
         // Persisted
         let loaded = engine
-            .get_tenant(tenant.id())
+            .get_realm(realm.id())
             .expect("get")
             .expect("should exist");
         assert_eq!(loaded.name(), "Updated Name");
@@ -7261,38 +7236,38 @@ mod tests {
     }
 
     #[test]
-    fn update_nonexistent_tenant_returns_not_found() {
+    fn update_nonexistent_realm_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
 
         let err = engine
-            .update_tenant(
-                &TenantId::generate(),
-                &UpdateTenantRequest {
+            .update_realm(
+                &RealmId::generate(),
+                &UpdateRealmRequest {
                     name: Some("nope".to_string()),
-                    ..UpdateTenantRequest::default()
+                    ..UpdateRealmRequest::default()
                 },
             )
             .expect_err("should fail");
-        assert!(matches!(err, IdentityError::TenantNotFound));
+        assert!(matches!(err, IdentityError::RealmNotFound));
     }
 
-    // --- Unit Scenario 5: Cascading tenant deletion ---
+    // --- Unit Scenario 5: Cascading realm deletion ---
 
     #[test]
-    fn delete_tenant_cascades_all_data() {
+    fn delete_realm_cascades_all_data() {
         let (_dir, engine, _clock) = setup_engine();
 
-        let tenant = engine
-            .create_tenant(&CreateTenantRequest {
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
                 name: "Doomed Corp".to_string(),
                 config: None,
             })
-            .expect("create tenant");
+            .expect("create realm");
 
         // Create users
         let user1 = engine
             .create_user(
-                tenant.id(),
+                realm.id(),
                 &CreateUserRequest {
                     email: "user1@example.com".to_string(),
                     display_name: "User 1".to_string(),
@@ -7301,7 +7276,7 @@ mod tests {
             .expect("create user 1");
         let user2 = engine
             .create_user(
-                tenant.id(),
+                realm.id(),
                 &CreateUserRequest {
                     email: "user2@example.com".to_string(),
                     display_name: "User 2".to_string(),
@@ -7312,60 +7287,60 @@ mod tests {
         // Set passwords
         let pw = CleartextPassword::from_string("password123".to_string());
         engine
-            .set_password(tenant.id(), user1.id(), &pw)
+            .set_password(realm.id(), user1.id(), &pw)
             .expect("set password");
 
         // Create sessions
         let session = engine
-            .create_session(tenant.id(), user1.id(), &SessionContext::default())
+            .create_session(realm.id(), user1.id(), &SessionContext::default())
             .expect("create session");
 
-        // Delete tenant
-        engine.delete_tenant(tenant.id()).expect("delete tenant");
+        // Delete realm
+        engine.delete_realm(realm.id()).expect("delete realm");
 
-        // Tenant record should be gone
-        let loaded = engine.get_tenant(tenant.id()).expect("get tenant");
-        assert!(loaded.is_none(), "tenant record should be deleted");
+        // Realm record should be gone
+        let loaded = engine.get_realm(realm.id()).expect("get realm");
+        assert!(loaded.is_none(), "realm record should be deleted");
 
         // Users should be gone
         assert!(engine
-            .get_user(tenant.id(), user1.id())
+            .get_user(realm.id(), user1.id())
             .expect("get")
             .is_none());
         assert!(engine
-            .get_user(tenant.id(), user2.id())
+            .get_user(realm.id(), user2.id())
             .expect("get")
             .is_none());
 
         // Session should be gone
         assert!(engine
-            .get_session(tenant.id(), session.id())
+            .get_session(realm.id(), session.id())
             .expect("get")
             .is_none());
 
         // Signing key should be gone
-        let jwks_err = engine.tenant_jwks(tenant.id());
+        let jwks_err = engine.realm_jwks(realm.id());
         assert!(jwks_err.is_err(), "signing key should be deleted");
     }
 
     #[test]
-    fn delete_nonexistent_tenant_returns_not_found() {
+    fn delete_nonexistent_realm_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
 
         let err = engine
-            .delete_tenant(&TenantId::generate())
+            .delete_realm(&RealmId::generate())
             .expect_err("should fail");
-        assert!(matches!(err, IdentityError::TenantNotFound));
+        assert!(matches!(err, IdentityError::RealmNotFound));
     }
 
     // ===== Phase 1 Step 19: Multi-Tenancy Property Tests =====
 
-    mod tenant_proptests {
+    mod realm_proptests {
         use super::*;
         use proptest::prelude::*;
 
-        /// Strategy for generating a valid tenant name.
-        fn valid_tenant_name() -> impl Strategy<Value = String> {
+        /// Strategy for generating a valid realm name.
+        fn valid_realm_name() -> impl Strategy<Value = String> {
             "[A-Za-z ]{3,30}".prop_map(|s| s.trim().to_string())
         }
 
@@ -7375,34 +7350,34 @@ mod tests {
         }
 
         proptest! {
-            /// Property: Random operations across N tenants never produce
-            /// cross-tenant data leaks.
+            /// Property: Random operations across N realms never produce
+            /// cross-realm data leaks.
             ///
-            /// Creates users with the same email in multiple tenants, then
-            /// verifies each tenant only sees its own users.
+            /// Creates users with the same email in multiple realms, then
+            /// verifies each realm only sees its own users.
             #[test]
-            fn no_cross_tenant_data_leaks(
-                n_tenants in 2..5usize,
+            fn no_cross_realm_data_leaks(
+                n_realms in 2..5usize,
                 emails in proptest::collection::hash_set(valid_email(), 1..5),
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let mut tenants = Vec::new();
+                let mut realms = Vec::new();
 
-                // Create N tenants
-                for i in 0..n_tenants {
-                    let tenant = engine.create_tenant(&CreateTenantRequest {
-                        name: format!("Tenant {i}"),
+                // Create N realms
+                for i in 0..n_realms {
+                    let realm = engine.create_realm(&CreateRealmRequest {
+                        name: format!("Realm {i}"),
                         config: None,
-                    }).expect("create tenant");
-                    tenants.push(tenant);
+                    }).expect("create realm");
+                    realms.push(realm);
                 }
 
-                // Create same set of users in each tenant
+                // Create same set of users in each realm
                 let mut user_ids: Vec<Vec<UserId>> = Vec::new();
-                for tenant in &tenants {
+                for realm in &realms {
                     let mut ids = Vec::new();
                     for (i, email) in emails.iter().enumerate() {
-                        let user = engine.create_user(tenant.id(), &CreateUserRequest {
+                        let user = engine.create_user(realm.id(), &CreateUserRequest {
                             email: email.clone(),
                             display_name: format!("User {i}"),
                         }).expect("create user");
@@ -7411,103 +7386,103 @@ mod tests {
                     user_ids.push(ids);
                 }
 
-                // Verify: each tenant's users are only visible in that tenant
-                for (t_idx, _tenant) in tenants.iter().enumerate() {
-                    for (other_idx, other_tenant) in tenants.iter().enumerate() {
+                // Verify: each realm's users are only visible in that realm
+                for (t_idx, _realm) in realms.iter().enumerate() {
+                    for (other_idx, other_realm) in realms.iter().enumerate() {
                         for user_id in &user_ids[t_idx] {
-                            let result = engine.get_user(other_tenant.id(), user_id)
+                            let result = engine.get_user(other_realm.id(), user_id)
                                 .expect("get user");
                             if t_idx == other_idx {
                                 prop_assert!(result.is_some(),
-                                    "user should exist in its own tenant");
+                                    "user should exist in its own realm");
                             } else {
                                 prop_assert!(result.is_none(),
-                                    "user should NOT exist in another tenant");
+                                    "user should NOT exist in another realm");
                             }
                         }
                     }
                 }
             }
 
-            /// Property: Random create/delete tenant sequences maintain
-            /// consistent tenant count and clean storage.
+            /// Property: Random create/delete realm sequences maintain
+            /// consistent realm count and clean storage.
             #[test]
             fn create_delete_maintains_consistent_count(
-                names in proptest::collection::vec(valid_tenant_name(), 2..8),
+                names in proptest::collection::vec(valid_realm_name(), 2..8),
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let mut created_tenants = Vec::new();
+                let mut created_realms = Vec::new();
 
-                // Create all tenants
+                // Create all realms
                 for name in &names {
-                    let tenant = engine.create_tenant(&CreateTenantRequest {
+                    let realm = engine.create_realm(&CreateRealmRequest {
                         name: name.clone(),
                         config: None,
-                    }).expect("create tenant");
-                    created_tenants.push(tenant);
+                    }).expect("create realm");
+                    created_realms.push(realm);
                 }
 
                 // All should be retrievable
-                for tenant in &created_tenants {
-                    let loaded = engine.get_tenant(tenant.id()).expect("get");
-                    prop_assert!(loaded.is_some(), "created tenant should be found");
+                for realm in &created_realms {
+                    let loaded = engine.get_realm(realm.id()).expect("get");
+                    prop_assert!(loaded.is_some(), "created realm should be found");
                 }
 
-                // Delete every other tenant
-                let to_delete: Vec<_> = created_tenants.iter()
+                // Delete every other realm
+                let to_delete: Vec<_> = created_realms.iter()
                     .enumerate()
                     .filter(|(i, _)| i % 2 == 0)
                     .map(|(_, t)| t.id().clone())
                     .collect();
 
-                for tenant_id in &to_delete {
-                    engine.delete_tenant(tenant_id).expect("delete");
+                for realm_id in &to_delete {
+                    engine.delete_realm(realm_id).expect("delete");
                 }
 
                 // Deleted should be gone
-                for tenant_id in &to_delete {
-                    let loaded = engine.get_tenant(tenant_id).expect("get");
-                    prop_assert!(loaded.is_none(), "deleted tenant should not be found");
+                for realm_id in &to_delete {
+                    let loaded = engine.get_realm(realm_id).expect("get");
+                    prop_assert!(loaded.is_none(), "deleted realm should not be found");
                 }
 
                 // Remaining should still exist
-                for (i, tenant) in created_tenants.iter().enumerate() {
+                for (i, realm) in created_realms.iter().enumerate() {
                     if i % 2 != 0 {
-                        let loaded = engine.get_tenant(tenant.id()).expect("get");
-                        prop_assert!(loaded.is_some(), "remaining tenant should be found");
+                        let loaded = engine.get_realm(realm.id()).expect("get");
+                        prop_assert!(loaded.is_some(), "remaining realm should be found");
                     }
                 }
             }
 
-            /// Property: Tenant key rotation under concurrent token issuance.
+            /// Property: Realm key rotation under concurrent token issuance.
             ///
             /// Tokens issued before key rotation remain valid (they're validated
             /// via session lookup, not signature verification on the hot path).
             #[test]
-            fn tenant_key_rotation_preserves_in_flight_tokens(
+            fn realm_key_rotation_preserves_in_flight_tokens(
                 _seed in 0..100u32,
             ) {
                 let (_dir, engine, _clock) = setup_engine();
 
-                let tenant = engine.create_tenant(&CreateTenantRequest {
+                let realm = engine.create_realm(&CreateRealmRequest {
                     name: "Rotation Corp".to_string(),
                     config: None,
-                }).expect("create tenant");
+                }).expect("create realm");
 
-                let user = engine.create_user(tenant.id(), &CreateUserRequest {
+                let user = engine.create_user(realm.id(), &CreateUserRequest {
                     email: format!("rotation-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Rotation User".to_string(),
                 }).expect("create user");
 
-                let session = engine.create_session(tenant.id(), user.id(), &SessionContext::default())
+                let session = engine.create_session(realm.id(), user.id(), &SessionContext::default())
                     .expect("create session");
 
                 // Issue tokens with current key
-                let tokens = engine.issue_tokens(tenant.id(), user.id(), session.id())
+                let tokens = engine.issue_tokens(realm.id(), user.id(), session.id())
                     .expect("issue tokens");
 
                 // Tokens should validate (session-based validation)
-                let claims = engine.validate_token(tenant.id(), tokens.access_token())
+                let claims = engine.validate_token(realm.id(), tokens.access_token())
                     .expect("validate before rotation");
                 prop_assert_eq!(&claims.sub, &user.id().to_string());
 
@@ -7515,7 +7490,7 @@ mod tests {
                 // validation uses session lookup, not signature re-verification.
                 // The JWKS key ID may have changed, but existing sessions are
                 // unaffected.
-                let new_claims = engine.validate_token(tenant.id(), tokens.access_token())
+                let new_claims = engine.validate_token(realm.id(), tokens.access_token())
                     .expect("validate after rotation");
                 prop_assert_eq!(&new_claims.sub, &user.id().to_string());
             }
@@ -7524,26 +7499,26 @@ mod tests {
 
     // ===== Step 22: OAuth 2.0 Complete Unit Tests =====
 
-    /// Helper: creates a tenant via `create_tenant` and returns `TenantId`.
-    fn create_test_tenant(engine: &EmbeddedIdentityEngine) -> TenantId {
-        let tenant = engine
-            .create_tenant(&CreateTenantRequest {
-                name: format!("test-tenant-{}", uuid::Uuid::new_v4()),
-                config: Some(TenantConfig::default()),
+    /// Helper: creates a realm via `create_realm` and returns `RealmId`.
+    fn create_test_realm(engine: &EmbeddedIdentityEngine) -> RealmId {
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: format!("test-realm-{}", uuid::Uuid::new_v4()),
+                config: Some(RealmConfig::default()),
             })
-            .expect("create tenant");
-        tenant.id().clone()
+            .expect("create realm");
+        realm.id().clone()
     }
 
     /// Helper: registers a confidential client with `client_credentials` grant.
     fn register_confidential_client(
         engine: &EmbeddedIdentityEngine,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         secret: &str,
     ) -> OAuthClient {
         engine
             .register_client(
-                tenant_id,
+                realm_id,
                 &RegisterClientRequest {
                     client_name: "Confidential App".to_string(),
                     redirect_uris: vec![],
@@ -7561,11 +7536,11 @@ mod tests {
         use crate::identity::oidc::ClientCredentialsRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
+        let realm_id = create_test_realm(&engine);
         let secret = "super-secret-value-12345";
 
         // Register confidential client
-        let client = register_confidential_client(&engine, &tenant_id, secret);
+        let client = register_confidential_client(&engine, &realm_id, secret);
         assert!(client.is_confidential());
         assert!(client
             .grant_types()
@@ -7574,7 +7549,7 @@ mod tests {
         // Issue token via client credentials
         let response = engine
             .client_credentials_token(
-                &tenant_id,
+                &realm_id,
                 &ClientCredentialsRequest {
                     client_id: client.client_id().clone(),
                     client_secret: secret.to_string(),
@@ -7600,11 +7575,11 @@ mod tests {
         use crate::identity::oidc::ClientCredentialsRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
-        let client = register_confidential_client(&engine, &tenant_id, "correct-secret");
+        let realm_id = create_test_realm(&engine);
+        let client = register_confidential_client(&engine, &realm_id, "correct-secret");
 
         let result = engine.client_credentials_token(
-            &tenant_id,
+            &realm_id,
             &ClientCredentialsRequest {
                 client_id: client.client_id().clone(),
                 client_secret: "wrong-secret".to_string(),
@@ -7623,12 +7598,12 @@ mod tests {
         use crate::identity::oidc::ClientCredentialsRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
+        let realm_id = create_test_realm(&engine);
 
         // Register a public client (no client_credentials grant)
         let client = engine
             .register_client(
-                &tenant_id,
+                &realm_id,
                 &RegisterClientRequest {
                     client_name: "Public App".to_string(),
                     redirect_uris: vec!["https://app.example.com/cb".to_string()],
@@ -7639,7 +7614,7 @@ mod tests {
             .expect("register public client");
 
         let result = engine.client_credentials_token(
-            &tenant_id,
+            &realm_id,
             &ClientCredentialsRequest {
                 client_id: client.client_id().clone(),
                 client_secret: "anything".to_string(),
@@ -7660,12 +7635,12 @@ mod tests {
         use crate::identity::oidc::DeviceAuthorizationRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
+        let realm_id = create_test_realm(&engine);
 
         // Register a client
         let client = engine
             .register_client(
-                &tenant_id,
+                &realm_id,
                 &RegisterClientRequest {
                     client_name: "Device App".to_string(),
                     redirect_uris: vec!["https://app.example.com/cb".to_string()],
@@ -7677,7 +7652,7 @@ mod tests {
 
         let response = engine
             .device_authorize(
-                &tenant_id,
+                &realm_id,
                 &DeviceAuthorizationRequest {
                     client_id: client.client_id().clone(),
                     scope: Some("openid".to_string()),
@@ -7706,11 +7681,11 @@ mod tests {
     #[test]
     fn refresh_token_rotation_issues_new_pair() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
-        let user = create_test_user(&engine, &tenant_id);
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
         let client = engine
             .register_client(
-                &tenant_id,
+                &realm_id,
                 &RegisterClientRequest {
                     client_name: "Rotation App".to_string(),
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -7723,7 +7698,7 @@ mod tests {
         // Auth code flow → tokens with grant family
         let auth = engine
             .authorize(
-                &tenant_id,
+                &realm_id,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -7740,7 +7715,7 @@ mod tests {
 
         let tokens = engine
             .exchange_authorization_code(
-                &tenant_id,
+                &realm_id,
                 &TokenExchangeRequest {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
@@ -7761,7 +7736,7 @@ mod tests {
         // Advance clock and refresh
         clock.advance(60 * 1_000_000); // 60 seconds in microseconds
         let new_tokens = engine
-            .refresh_tokens(&tenant_id, tokens.refresh_token())
+            .refresh_tokens(&realm_id, tokens.refresh_token())
             .expect("refresh should succeed");
 
         // New tokens are different
@@ -7774,7 +7749,7 @@ mod tests {
         assert_eq!(new_refresh_claims.fid, refresh_claims.fid);
 
         // Old refresh token is now rejected (rotation)
-        let result = engine.refresh_tokens(&tenant_id, tokens.refresh_token());
+        let result = engine.refresh_tokens(&realm_id, tokens.refresh_token());
         assert!(
             matches!(result, Err(IdentityError::TokenRevoked)),
             "old refresh token should be rejected after rotation, got: {result:?}"
@@ -7788,25 +7763,25 @@ mod tests {
         use crate::identity::oidc::TokenRevocationRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
-        let user = create_test_user(&engine, &tenant_id);
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
         let session = engine
-            .create_session(&tenant_id, user.id(), &SessionContext::default())
+            .create_session(&realm_id, user.id(), &SessionContext::default())
             .expect("session");
         let tokens = engine
-            .issue_tokens(&tenant_id, user.id(), session.id())
+            .issue_tokens(&realm_id, user.id(), session.id())
             .expect("issue tokens");
 
         // Token is valid
         let claims = engine
-            .validate_token(&tenant_id, tokens.access_token())
+            .validate_token(&realm_id, tokens.access_token())
             .expect("should be valid");
         assert_eq!(claims.sub, user.id().to_string());
 
         // Revoke the access token
         engine
             .revoke_token(
-                &tenant_id,
+                &realm_id,
                 &TokenRevocationRequest {
                     token: tokens.access_token().to_string(),
                     token_type_hint: Some("access_token".to_string()),
@@ -7815,7 +7790,7 @@ mod tests {
             .expect("revoke should succeed");
 
         // Token is now invalid (session revoked)
-        let result = engine.validate_token(&tenant_id, tokens.access_token());
+        let result = engine.validate_token(&realm_id, tokens.access_token());
         assert!(
             result.is_err(),
             "access token should be invalid after revocation"
@@ -7827,11 +7802,11 @@ mod tests {
         use crate::identity::oidc::TokenRevocationRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
-        let user = create_test_user(&engine, &tenant_id);
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
         let client = engine
             .register_client(
-                &tenant_id,
+                &realm_id,
                 &RegisterClientRequest {
                     client_name: "Revoke App".to_string(),
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -7843,7 +7818,7 @@ mod tests {
 
         let auth = engine
             .authorize(
-                &tenant_id,
+                &realm_id,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
@@ -7860,7 +7835,7 @@ mod tests {
 
         let tokens = engine
             .exchange_authorization_code(
-                &tenant_id,
+                &realm_id,
                 &TokenExchangeRequest {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
@@ -7873,7 +7848,7 @@ mod tests {
         // Revoke the refresh token
         engine
             .revoke_token(
-                &tenant_id,
+                &realm_id,
                 &TokenRevocationRequest {
                     token: tokens.refresh_token().to_string(),
                     token_type_hint: Some("refresh_token".to_string()),
@@ -7882,7 +7857,7 @@ mod tests {
             .expect("revoke should succeed");
 
         // Refresh is now rejected
-        let result = engine.refresh_tokens(&tenant_id, tokens.refresh_token());
+        let result = engine.refresh_tokens(&realm_id, tokens.refresh_token());
         assert!(
             matches!(result, Err(IdentityError::TokenRevoked)),
             "refresh should fail after revocation, got: {result:?}"
@@ -7896,18 +7871,18 @@ mod tests {
         use crate::identity::oidc::TokenIntrospectionRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
-        let user = create_test_user(&engine, &tenant_id);
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
         let session = engine
-            .create_session(&tenant_id, user.id(), &SessionContext::default())
+            .create_session(&realm_id, user.id(), &SessionContext::default())
             .expect("session");
         let tokens = engine
-            .issue_tokens(&tenant_id, user.id(), session.id())
+            .issue_tokens(&realm_id, user.id(), session.id())
             .expect("issue tokens");
 
         let response = engine
             .introspect_token(
-                &tenant_id,
+                &realm_id,
                 &TokenIntrospectionRequest {
                     token: tokens.access_token().to_string(),
                     token_type_hint: None,
@@ -7927,19 +7902,19 @@ mod tests {
         use crate::identity::oidc::{TokenIntrospectionRequest, TokenRevocationRequest};
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
-        let user = create_test_user(&engine, &tenant_id);
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
         let session = engine
-            .create_session(&tenant_id, user.id(), &SessionContext::default())
+            .create_session(&realm_id, user.id(), &SessionContext::default())
             .expect("session");
         let tokens = engine
-            .issue_tokens(&tenant_id, user.id(), session.id())
+            .issue_tokens(&realm_id, user.id(), session.id())
             .expect("issue tokens");
 
         // Revoke
         engine
             .revoke_token(
-                &tenant_id,
+                &realm_id,
                 &TokenRevocationRequest {
                     token: tokens.access_token().to_string(),
                     token_type_hint: None,
@@ -7950,7 +7925,7 @@ mod tests {
         // Introspect
         let response = engine
             .introspect_token(
-                &tenant_id,
+                &realm_id,
                 &TokenIntrospectionRequest {
                     token: tokens.access_token().to_string(),
                     token_type_hint: None,
@@ -7966,11 +7941,11 @@ mod tests {
         use crate::identity::oidc::TokenIntrospectionRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
+        let realm_id = create_test_realm(&engine);
 
         let response = engine
             .introspect_token(
-                &tenant_id,
+                &realm_id,
                 &TokenIntrospectionRequest {
                     token: "not-a-valid-token".to_string(),
                     token_type_hint: None,
@@ -7991,11 +7966,11 @@ mod tests {
     #[test]
     fn adversarial_refresh_token_theft_detection() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
+        let realm_id = create_test_realm(&engine);
 
         let user = engine
             .create_user(
-                &tenant_id,
+                &realm_id,
                 &CreateUserRequest {
                     email: "theft-victim@test.com".to_string(),
                     display_name: "Theft Victim".to_string(),
@@ -8005,7 +7980,7 @@ mod tests {
 
         let client = engine
             .register_client(
-                &tenant_id,
+                &realm_id,
                 &RegisterClientRequest {
                     client_name: "Theft Test Client".to_string(),
                     redirect_uris: vec!["https://app.example.com/cb".to_string()],
@@ -8017,7 +7992,7 @@ mod tests {
 
         let auth = engine
             .authorize(
-                &tenant_id,
+                &realm_id,
                 &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/cb".to_string(),
@@ -8034,7 +8009,7 @@ mod tests {
 
         let tokens = engine
             .exchange_authorization_code(
-                &tenant_id,
+                &realm_id,
                 &TokenExchangeRequest {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
@@ -8050,13 +8025,13 @@ mod tests {
         // Legitimate user rotates (advance clock for unique tokens)
         clock.advance(1_000_000);
         let new_pair = engine
-            .refresh_tokens(&tenant_id, &stolen_refresh)
+            .refresh_tokens(&realm_id, &stolen_refresh)
             .expect("legitimate rotation");
         let legitimate_refresh = new_pair.refresh_token().to_string();
 
         // Attacker uses the stolen (old) refresh token
         clock.advance(1_000_000);
-        let attack_result = engine.refresh_tokens(&tenant_id, &stolen_refresh);
+        let attack_result = engine.refresh_tokens(&realm_id, &stolen_refresh);
         assert!(
             attack_result.is_err(),
             "stolen refresh token must be rejected"
@@ -8064,14 +8039,14 @@ mod tests {
 
         // Legitimate user's new refresh token should ALSO be revoked
         // (entire grant family revoked due to theft detection)
-        let legitimate_result = engine.refresh_tokens(&tenant_id, &legitimate_refresh);
+        let legitimate_result = engine.refresh_tokens(&realm_id, &legitimate_refresh);
         assert!(
             legitimate_result.is_err(),
             "legitimate refresh token must also be revoked after theft detection"
         );
 
         // The session should be revoked too
-        let validate_result = engine.validate_token(&tenant_id, new_pair.access_token());
+        let validate_result = engine.validate_token(&realm_id, new_pair.access_token());
         assert!(
             validate_result.is_err(),
             "session should be revoked after theft detection"
@@ -8087,11 +8062,11 @@ mod tests {
         use crate::identity::oidc::ClientCredentialsRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
+        let realm_id = create_test_realm(&engine);
 
         let client = engine
             .register_client(
-                &tenant_id,
+                &realm_id,
                 &RegisterClientRequest {
                     client_name: "Secret Test Client".to_string(),
                     redirect_uris: vec![],
@@ -8103,7 +8078,7 @@ mod tests {
 
         // Wrong secret
         let wrong_result = engine.client_credentials_token(
-            &tenant_id,
+            &realm_id,
             &ClientCredentialsRequest {
                 client_id: client.client_id().clone(),
                 client_secret: "wrong-secret-456".to_string(),
@@ -8117,7 +8092,7 @@ mod tests {
 
         // Empty secret
         let empty_result = engine.client_credentials_token(
-            &tenant_id,
+            &realm_id,
             &ClientCredentialsRequest {
                 client_id: client.client_id().clone(),
                 client_secret: String::new(),
@@ -8132,7 +8107,7 @@ mod tests {
         // Non-existent client
         let fake_client_id = crate::core::ClientId::generate();
         let missing_result = engine.client_credentials_token(
-            &tenant_id,
+            &realm_id,
             &ClientCredentialsRequest {
                 client_id: fake_client_id,
                 client_secret: "any-secret".to_string(),
@@ -8153,11 +8128,11 @@ mod tests {
         use crate::identity::oidc::DeviceAuthorizationRequest;
 
         let (_dir, engine, _clock) = setup_engine();
-        let tenant_id = create_test_tenant(&engine);
+        let realm_id = create_test_realm(&engine);
 
         let client = engine
             .register_client(
-                &tenant_id,
+                &realm_id,
                 &RegisterClientRequest {
                     client_name: "Rate Limit Test".to_string(),
                     redirect_uris: vec![],
@@ -8169,7 +8144,7 @@ mod tests {
 
         let device_resp = engine
             .device_authorize(
-                &tenant_id,
+                &realm_id,
                 &DeviceAuthorizationRequest {
                     client_id: client.client_id().clone(),
                     scope: Some("openid".to_string()),
@@ -8179,7 +8154,7 @@ mod tests {
 
         // First poll — should return AuthorizationPending (not SlowDown)
         let first_poll =
-            engine.poll_device_token(&tenant_id, &device_resp.device_code, client.client_id());
+            engine.poll_device_token(&realm_id, &device_resp.device_code, client.client_id());
         assert!(
             matches!(first_poll, Err(IdentityError::AuthorizationPending)),
             "first poll should return AuthorizationPending, got: {first_poll:?}"
@@ -8187,7 +8162,7 @@ mod tests {
 
         // Immediate second poll — should return SlowDown
         let second_poll =
-            engine.poll_device_token(&tenant_id, &device_resp.device_code, client.client_id());
+            engine.poll_device_token(&realm_id, &device_resp.device_code, client.client_id());
         assert!(
             matches!(second_poll, Err(IdentityError::SlowDown)),
             "rapid second poll should return SlowDown, got: {second_poll:?}"
@@ -8213,15 +8188,15 @@ mod tests {
                 ops in proptest::collection::vec(0..3u8, 1..8),
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let tenant = engine.create_tenant(&CreateTenantRequest {
-                    name: "prop-test-tenant".to_string(),
+                let realm = engine.create_realm(&CreateRealmRequest {
+                    name: "prop-test-realm".to_string(),
                     config: None,
-                }).expect("create tenant");
-                let tenant_id = tenant.id().clone();
+                }).expect("create realm");
+                let realm_id = realm.id().clone();
 
                 // Register a public client
                 let client = engine.register_client(
-                    &tenant_id,
+                    &realm_id,
                     &RegisterClientRequest {
                         client_name: "Prop Test Client".to_string(),
                         redirect_uris: vec!["https://app.example.com/cb".to_string()],
@@ -8236,12 +8211,12 @@ mod tests {
 
                 for i in 0..n_users {
                     let email = format!("propuser-{i}-{}@test.com", uuid::Uuid::new_v4());
-                    let user = engine.create_user(&tenant_id, &CreateUserRequest {
+                    let user = engine.create_user(&realm_id, &CreateUserRequest {
                         email,
                         display_name: format!("Prop User {i}"),
                     }).expect("create user");
 
-                    let auth = engine.authorize(&tenant_id, &AuthorizationRequest {
+                    let auth = engine.authorize(&realm_id, &AuthorizationRequest {
                         client_id: client.client_id().clone(),
                         redirect_uri: "https://app.example.com/cb".to_string(),
                         scope: "openid".to_string(),
@@ -8253,7 +8228,7 @@ mod tests {
                         nonce: None,
                     }).expect("authorize");
 
-                    let tokens = engine.exchange_authorization_code(&tenant_id, &TokenExchangeRequest {
+                    let tokens = engine.exchange_authorization_code(&realm_id, &TokenExchangeRequest {
                         client_id: client.client_id().clone(),
                         code: auth.code().to_string(),
                         redirect_uri: "https://app.example.com/cb".to_string(),
@@ -8271,7 +8246,7 @@ mod tests {
                         1 => {
                             // Refresh — may fail if already revoked
                             if let Ok(new_pair) = engine.refresh_tokens(
-                                &tenant_id,
+                                &realm_id,
                                 &refresh_tokens[idx],
                             ) {
                                 access_tokens[idx] = new_pair.access_token().to_string();
@@ -8281,7 +8256,7 @@ mod tests {
                         2 => {
                             // Revoke access token
                             let _ = engine.revoke_token(
-                                &tenant_id,
+                                &realm_id,
                                 &TokenRevocationRequest {
                                     token: access_tokens[idx].clone(),
                                     token_type_hint: Some("access_token".to_string()),
@@ -8296,7 +8271,7 @@ mod tests {
                 let mut active_count = 0usize;
                 for token in &access_tokens {
                     let resp = engine.introspect_token(
-                        &tenant_id,
+                        &realm_id,
                         &TokenIntrospectionRequest {
                             token: token.clone(),
                             token_type_hint: None,
@@ -8324,20 +8299,20 @@ mod tests {
             #[test]
             fn single_valid_refresh_token(n_rotations in 1..6usize) {
                 let (_dir, engine, clock) = setup_engine();
-                let tenant = engine.create_tenant(&CreateTenantRequest {
-                    name: "single-refresh-tenant".to_string(),
+                let realm = engine.create_realm(&CreateRealmRequest {
+                    name: "single-refresh-realm".to_string(),
                     config: None,
-                }).expect("create tenant");
-                let tenant_id = tenant.id().clone();
+                }).expect("create realm");
+                let realm_id = realm.id().clone();
 
                 let email = format!("rotate-{}@test.com", uuid::Uuid::new_v4());
-                let user = engine.create_user(&tenant_id, &CreateUserRequest {
+                let user = engine.create_user(&realm_id, &CreateUserRequest {
                     email,
                     display_name: "Rotate User".to_string(),
                 }).expect("create user");
 
                 let client = engine.register_client(
-                    &tenant_id,
+                    &realm_id,
                     &RegisterClientRequest {
                         client_name: "Rotate Client".to_string(),
                         redirect_uris: vec!["https://app.example.com/cb".to_string()],
@@ -8346,7 +8321,7 @@ mod tests {
                     },
                 ).expect("register client");
 
-                let auth = engine.authorize(&tenant_id, &AuthorizationRequest {
+                let auth = engine.authorize(&realm_id, &AuthorizationRequest {
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/cb".to_string(),
                     scope: "openid".to_string(),
@@ -8358,7 +8333,7 @@ mod tests {
                     nonce: None,
                 }).expect("authorize");
 
-                let tokens = engine.exchange_authorization_code(&tenant_id, &TokenExchangeRequest {
+                let tokens = engine.exchange_authorization_code(&realm_id, &TokenExchangeRequest {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
                     redirect_uri: "https://app.example.com/cb".to_string(),
@@ -8372,7 +8347,7 @@ mod tests {
                     // Advance clock 1 second to get unique timestamps
                     clock.advance(1_000_000);
 
-                    let new_pair = engine.refresh_tokens(&tenant_id, &current_refresh)
+                    let new_pair = engine.refresh_tokens(&realm_id, &current_refresh)
                         .unwrap_or_else(|e| panic!("rotation {i} failed: {e}"));
 
                     old_refresh_tokens.push(current_refresh);
@@ -8380,7 +8355,7 @@ mod tests {
 
                     // Current refresh token should work for introspection
                     let resp = engine.introspect_token(
-                        &tenant_id,
+                        &realm_id,
                         &TokenIntrospectionRequest {
                             token: current_refresh.clone(),
                             token_type_hint: None,
@@ -8391,7 +8366,7 @@ mod tests {
 
                 // After all rotations, none of the old refresh tokens should work
                 for (i, old_token) in old_refresh_tokens.iter().enumerate() {
-                    let result = engine.refresh_tokens(&tenant_id, old_token);
+                    let result = engine.refresh_tokens(&realm_id, old_token);
                     // First old token reuse triggers theft detection
                     if result.is_err() {
                         // After theft detection, all tokens in the family are revoked
@@ -8410,11 +8385,11 @@ mod tests {
     #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
     fn mfa_brute_force_lockout() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         // Enroll TOTP
-        let enrollment = engine.enroll_totp(&tenant, user.id()).expect("enroll");
+        let enrollment = engine.enroll_totp(&realm, user.id()).expect("enroll");
 
         // Activate MFA
         let now_secs = (clock.now().as_micros() / 1_000_000) as u64;
@@ -8423,12 +8398,12 @@ mod tests {
             .expect("decode");
         let code = crate::identity::totp::compute_totp(&secret_bytes, now_secs / 30);
         engine
-            .verify_totp_enrollment(&tenant, user.id(), &code)
+            .verify_totp_enrollment(&realm, user.id(), &code)
             .expect("verify enrollment");
 
         // 5 wrong codes
         for _ in 0..5 {
-            let err = engine.verify_totp(&tenant, user.id(), "000000");
+            let err = engine.verify_totp(&realm, user.id(), "000000");
             assert!(
                 matches!(err, Err(IdentityError::InvalidMfaCode)),
                 "should be InvalidMfaCode"
@@ -8441,7 +8416,7 @@ mod tests {
         let now_secs2 = (clock.now().as_micros() / 1_000_000) as u64;
         let correct_code = crate::identity::totp::compute_totp(&secret_bytes, now_secs2 / 30);
         let err = engine
-            .verify_totp(&tenant, user.id(), &correct_code)
+            .verify_totp(&realm, user.id(), &correct_code)
             .expect_err("should be rate limited");
         assert!(
             matches!(err, IdentityError::RateLimited),
@@ -8453,7 +8428,7 @@ mod tests {
         let now_secs3 = (clock.now().as_micros() / 1_000_000) as u64;
         let correct_code2 = crate::identity::totp::compute_totp(&secret_bytes, now_secs3 / 30);
         engine
-            .verify_totp(&tenant, user.id(), &correct_code2)
+            .verify_totp(&realm, user.id(), &correct_code2)
             .expect("should succeed after lockout expires");
     }
 
@@ -8463,11 +8438,11 @@ mod tests {
     #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
     fn mfa_replay_protection() {
         let (_dir, engine, clock) = setup_engine();
-        let tenant = TenantId::generate();
-        let user = create_test_user(&engine, &tenant);
+        let realm = RealmId::generate();
+        let user = create_test_user(&engine, &realm);
 
         // Enroll + activate TOTP
-        let enrollment = engine.enroll_totp(&tenant, user.id()).expect("enroll");
+        let enrollment = engine.enroll_totp(&realm, user.id()).expect("enroll");
         let secret_bytes = data_encoding::BASE32_NOPAD
             .decode(enrollment.secret_base32.as_bytes())
             .expect("decode");
@@ -8476,7 +8451,7 @@ mod tests {
         let step = now_secs / 30;
         let code = crate::identity::totp::compute_totp(&secret_bytes, step);
         engine
-            .verify_totp_enrollment(&tenant, user.id(), &code)
+            .verify_totp_enrollment(&realm, user.id(), &code)
             .expect("verify enrollment");
 
         // Advance to next step so we have a fresh code
@@ -8487,12 +8462,12 @@ mod tests {
 
         // First use succeeds
         engine
-            .verify_totp(&tenant, user.id(), &code2)
+            .verify_totp(&realm, user.id(), &code2)
             .expect("first use should succeed");
 
         // Replay same code — should fail
         let err = engine
-            .verify_totp(&tenant, user.id(), &code2)
+            .verify_totp(&realm, user.id(), &code2)
             .expect_err("replay should fail");
         assert!(
             matches!(err, IdentityError::InvalidMfaCode),
@@ -8505,32 +8480,32 @@ mod tests {
         let step3 = now_secs3 / 30;
         let code3 = crate::identity::totp::compute_totp(&secret_bytes, step3);
         engine
-            .verify_totp(&tenant, user.id(), &code3)
+            .verify_totp(&realm, user.id(), &code3)
             .expect("next step should succeed");
     }
 
     // ===== Magic Link / Passwordless (Step 25) unit tests =====
 
-    /// Helper: creates a tenant and user with email for magic link tests.
+    /// Helper: creates a realm and user with email for magic link tests.
     fn setup_magic_link_user(
         engine: &EmbeddedIdentityEngine,
-    ) -> (TenantId, crate::identity::types::User) {
-        let tenant = engine
-            .create_tenant(&crate::identity::types::CreateTenantRequest {
+    ) -> (RealmId, crate::identity::types::User) {
+        let realm = engine
+            .create_realm(&crate::identity::types::CreateRealmRequest {
                 name: format!("ml-test-{}", uuid::Uuid::new_v4()),
                 config: None,
             })
-            .expect("create tenant");
+            .expect("create realm");
         let user = engine
             .create_user(
-                tenant.id(),
+                realm.id(),
                 &crate::identity::types::CreateUserRequest {
                     email: format!("ml-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "ML Test User".to_string(),
                 },
             )
             .expect("create user");
-        (tenant.id().clone(), user)
+        (realm.id().clone(), user)
     }
 
     // Test A: Generate magic link token bound to email with correct expiration
@@ -8551,11 +8526,11 @@ mod tests {
         )
         .expect("engine");
 
-        let (tenant, user) = setup_magic_link_user(&engine);
+        let (realm, user) = setup_magic_link_user(&engine);
 
         // Request magic link
         let response = engine
-            .request_magic_link(&tenant, user.email())
+            .request_magic_link(&realm, user.email())
             .expect("request_magic_link");
 
         // Token should be non-empty
@@ -8569,7 +8544,7 @@ mod tests {
         let key = keys::encode_magic_link_token(&token_hash);
         let stored_bytes = engine
             .storage
-            .get(&tenant, &key)
+            .get(&realm, &key)
             .expect("storage get")
             .expect("stored record should exist");
         let stored: StoredMagicLink = serde_json::from_slice(&stored_bytes).expect("deserialize");
@@ -8601,14 +8576,14 @@ mod tests {
         )
         .expect("engine");
 
-        let (tenant, user) = setup_magic_link_user(&engine);
+        let (realm, user) = setup_magic_link_user(&engine);
 
         // Request and validate
         let response = engine
-            .request_magic_link(&tenant, user.email())
+            .request_magic_link(&realm, user.email())
             .expect("request_magic_link");
         let returned_user_id = engine
-            .validate_magic_link(&tenant, response.token())
+            .validate_magic_link(&realm, response.token())
             .expect("validate_magic_link");
 
         assert_eq!(
@@ -8636,11 +8611,11 @@ mod tests {
         )
         .expect("engine");
 
-        let (tenant, user) = setup_magic_link_user(&engine);
+        let (realm, user) = setup_magic_link_user(&engine);
 
         // Request magic link
         let response = engine
-            .request_magic_link(&tenant, user.email())
+            .request_magic_link(&realm, user.email())
             .expect("request_magic_link");
 
         // Advance clock past 15-minute expiry
@@ -8648,7 +8623,7 @@ mod tests {
 
         // Validate should fail
         let err = engine
-            .validate_magic_link(&tenant, response.token())
+            .validate_magic_link(&realm, response.token())
             .expect_err("should fail for expired token");
         assert!(
             matches!(err, IdentityError::MagicLinkTokenInvalid),
@@ -8674,19 +8649,19 @@ mod tests {
         )
         .expect("engine");
 
-        let (tenant, user) = setup_magic_link_user(&engine);
+        let (realm, user) = setup_magic_link_user(&engine);
 
         // Request and validate once (succeeds)
         let response = engine
-            .request_magic_link(&tenant, user.email())
+            .request_magic_link(&realm, user.email())
             .expect("request_magic_link");
         let _user_id = engine
-            .validate_magic_link(&tenant, response.token())
+            .validate_magic_link(&realm, response.token())
             .expect("first validation should succeed");
 
         // Second validation should fail
         let err = engine
-            .validate_magic_link(&tenant, response.token())
+            .validate_magic_link(&realm, response.token())
             .expect_err("second validation should fail");
         assert!(
             matches!(err, IdentityError::MagicLinkTokenInvalid),

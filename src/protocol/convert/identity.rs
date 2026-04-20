@@ -64,49 +64,49 @@ impl From<pb::UpdateUserRequest> for domain::UpdateUserRequest {
     }
 }
 
-// ==================== Tenant ====================
+// ==================== Realm ====================
 
-impl From<&domain::Tenant> for pb::Tenant {
-    fn from(t: &domain::Tenant) -> Self {
+impl From<&domain::Realm> for pb::Realm {
+    fn from(t: &domain::Realm) -> Self {
         Self {
             id: t.id().as_uuid().to_string(),
             name: t.name().to_string(),
-            status: domain_tenant_status_to_proto(t.status()).into(),
-            config: Some(pb::TenantConfig::from(t.config())),
+            status: domain_realm_status_to_proto(t.status()).into(),
+            config: Some(pb::RealmConfig::from(t.config())),
             created_at: t.created_at().as_micros(),
             updated_at: t.updated_at().as_micros(),
         }
     }
 }
 
-// ==================== TenantStatus ====================
+// ==================== RealmStatus ====================
 
-/// Converts domain `TenantStatus` to proto enum value.
-pub(crate) fn domain_tenant_status_to_proto(s: domain::TenantStatus) -> pb::TenantStatus {
+/// Converts domain `RealmStatus` to proto enum value.
+pub(crate) fn domain_realm_status_to_proto(s: domain::RealmStatus) -> pb::RealmStatus {
     match s {
-        domain::TenantStatus::Active => pb::TenantStatus::Active,
+        domain::RealmStatus::Active => pb::RealmStatus::Active,
         // Archived behaves like Suspended on the wire (no proto value yet).
-        domain::TenantStatus::Suspended | domain::TenantStatus::Archived => {
-            pb::TenantStatus::Suspended
+        domain::RealmStatus::Suspended | domain::RealmStatus::Archived => {
+            pb::RealmStatus::Suspended
         }
     }
 }
 
-/// Converts proto `TenantStatus` i32 to domain `TenantStatus`.
+/// Converts proto `RealmStatus` i32 to domain `RealmStatus`.
 ///
 /// Returns `None` for `UNSPECIFIED` or unknown values.
-pub(crate) fn proto_tenant_status_to_domain(v: i32) -> Option<domain::TenantStatus> {
-    match pb::TenantStatus::try_from(v).ok()? {
-        pb::TenantStatus::Unspecified => None,
-        pb::TenantStatus::Active => Some(domain::TenantStatus::Active),
-        pb::TenantStatus::Suspended => Some(domain::TenantStatus::Suspended),
+pub(crate) fn proto_realm_status_to_domain(v: i32) -> Option<domain::RealmStatus> {
+    match pb::RealmStatus::try_from(v).ok()? {
+        pb::RealmStatus::Unspecified => None,
+        pb::RealmStatus::Active => Some(domain::RealmStatus::Active),
+        pb::RealmStatus::Suspended => Some(domain::RealmStatus::Suspended),
     }
 }
 
-// ==================== TenantConfig ====================
+// ==================== RealmConfig ====================
 
-impl From<&domain::TenantConfig> for pb::TenantConfig {
-    fn from(c: &domain::TenantConfig) -> Self {
+impl From<&domain::RealmConfig> for pb::RealmConfig {
+    fn from(c: &domain::RealmConfig) -> Self {
         Self {
             session_ttl_micros: c.session_ttl_micros,
             password_memory_cost: c.password_memory_cost,
@@ -115,8 +115,8 @@ impl From<&domain::TenantConfig> for pb::TenantConfig {
     }
 }
 
-impl From<pb::TenantConfig> for domain::TenantConfig {
-    fn from(c: pb::TenantConfig) -> Self {
+impl From<pb::RealmConfig> for domain::RealmConfig {
+    fn from(c: pb::RealmConfig) -> Self {
         Self {
             session_ttl_micros: c.session_ttl_micros,
             password_memory_cost: c.password_memory_cost,
@@ -126,25 +126,25 @@ impl From<pb::TenantConfig> for domain::TenantConfig {
     }
 }
 
-// ==================== CreateTenantRequest ====================
+// ==================== CreateRealmRequest ====================
 
-impl From<pb::CreateTenantRequest> for domain::CreateTenantRequest {
-    fn from(r: pb::CreateTenantRequest) -> Self {
+impl From<pb::CreateRealmRequest> for domain::CreateRealmRequest {
+    fn from(r: pb::CreateRealmRequest) -> Self {
         Self {
             name: r.name,
-            config: r.config.map(domain::TenantConfig::from),
+            config: r.config.map(domain::RealmConfig::from),
         }
     }
 }
 
-// ==================== UpdateTenantRequest ====================
+// ==================== UpdateRealmRequest ====================
 
-impl From<pb::UpdateTenantRequest> for domain::UpdateTenantRequest {
-    fn from(r: pb::UpdateTenantRequest) -> Self {
+impl From<pb::UpdateRealmRequest> for domain::UpdateRealmRequest {
+    fn from(r: pb::UpdateRealmRequest) -> Self {
         Self {
             name: r.name,
-            status: r.status.and_then(proto_tenant_status_to_domain),
-            config: r.config.map(domain::TenantConfig::from),
+            status: r.status.and_then(proto_realm_status_to_domain),
+            config: r.config.map(domain::RealmConfig::from),
         }
     }
 }
@@ -159,10 +159,10 @@ pub(crate) fn user_page_to_proto(page: &domain::Page<domain::User>) -> pb::UserP
     }
 }
 
-/// Converts a domain `Page<Tenant>` to a proto `TenantPage`.
-pub(crate) fn tenant_page_to_proto(page: &domain::Page<domain::Tenant>) -> pb::TenantPage {
-    pb::TenantPage {
-        items: page.items.iter().map(pb::Tenant::from).collect(),
+/// Converts a domain `Page<Realm>` to a proto `RealmPage`.
+pub(crate) fn realm_page_to_proto(page: &domain::Page<domain::Realm>) -> pb::RealmPage {
+    pb::RealmPage {
+        items: page.items.iter().map(pb::Realm::from).collect(),
         next_cursor: page.next_cursor.clone(),
     }
 }
@@ -214,7 +214,7 @@ pub(crate) fn void_bulk_result_to_proto(r: &domain::BulkResult<()>) -> pb::BulkR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{TenantId, Timestamp, UserId};
+    use crate::core::{RealmId, Timestamp, UserId};
 
     #[test]
     fn user_domain_to_proto_round_trip() {
@@ -265,23 +265,23 @@ mod tests {
     }
 
     #[test]
-    fn tenant_domain_to_proto_round_trip() {
-        let tenant = domain::Tenant::new(
-            TenantId::generate(),
+    fn realm_domain_to_proto_round_trip() {
+        let realm = domain::Realm::new(
+            RealmId::generate(),
             "Acme Corp".to_string(),
-            domain::TenantStatus::Active,
-            domain::TenantConfig {
+            domain::RealmStatus::Active,
+            domain::RealmConfig {
                 session_ttl_micros: Some(3_600_000_000),
-                ..domain::TenantConfig::default()
+                ..domain::RealmConfig::default()
             },
             Timestamp::from_micros(1_000_000),
             Timestamp::from_micros(2_000_000),
         );
 
-        let proto = pb::Tenant::from(&tenant);
-        assert_eq!(proto.id, tenant.id().as_uuid().to_string());
+        let proto = pb::Realm::from(&realm);
+        assert_eq!(proto.id, realm.id().as_uuid().to_string());
         assert_eq!(proto.name, "Acme Corp");
-        assert_eq!(proto.status, pb::TenantStatus::Active as i32);
+        assert_eq!(proto.status, pb::RealmStatus::Active as i32);
         assert_eq!(
             proto
                 .config
@@ -293,7 +293,7 @@ mod tests {
 
         // Verify JSON serialization
         let json: serde_json::Value = serde_json::to_value(&proto).expect("serialize");
-        assert_eq!(json["status"], "TENANT_STATUS_ACTIVE");
+        assert_eq!(json["status"], "REALM_STATUS_ACTIVE");
     }
 
     #[test]
@@ -321,15 +321,15 @@ mod tests {
     }
 
     #[test]
-    fn tenant_config_round_trip() {
-        let domain_cfg = domain::TenantConfig {
+    fn realm_config_round_trip() {
+        let domain_cfg = domain::RealmConfig {
             session_ttl_micros: Some(7_200_000_000),
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
-            ..domain::TenantConfig::default()
+            ..domain::RealmConfig::default()
         };
-        let proto_cfg = pb::TenantConfig::from(&domain_cfg);
-        let back = domain::TenantConfig::from(proto_cfg);
+        let proto_cfg = pb::RealmConfig::from(&domain_cfg);
+        let back = domain::RealmConfig::from(proto_cfg);
         assert_eq!(domain_cfg, back);
     }
 

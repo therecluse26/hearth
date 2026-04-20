@@ -5,7 +5,7 @@
 //!
 //! 1. MFA enrollment + login (password + TOTP → session → tokens)
 //! 2. Passkey-only authentication (`WebAuthn` registration → auth → session → tokens)
-//! 3. Multi-tenant isolation round-trip (two tenants stay fully isolated)
+//! 3. Multi-realm isolation round-trip (two realms stay fully isolated)
 //!
 //! Inline helpers for TOTP and `WebAuthn` mirror `tests/mfa.rs` and
 //! `tests/webauthn.rs` respectively — duplicated rather than extracted
@@ -13,9 +13,9 @@
 
 mod common;
 
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{
-    AuthenticationOptions, CleartextPassword, CompleteAuthenticationParams, CreateTenantRequest,
+    AuthenticationOptions, CleartextPassword, CompleteAuthenticationParams, CreateRealmRequest,
     CreateUserRequest, RegistrationOptions,
 };
 
@@ -221,21 +221,21 @@ async fn mfa_enrollment_plus_login() {
         .await
         .expect("harness setup");
 
-    // 1. Create tenant with real signing key.
-    let tenant_rec = harness
+    // 1. Create realm with real signing key.
+    let realm_rec = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: format!("e2e-mfa-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("create tenant");
-    let tenant = tenant_rec.id().clone();
+        .expect("create realm");
+    let realm = realm_rec.id().clone();
 
     // 2. Create user with password.
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "e2e-mfa@example.com".to_string(),
                 display_name: "E2E MFA User".to_string(),
@@ -246,13 +246,13 @@ async fn mfa_enrollment_plus_login() {
     let password = CleartextPassword::from_string("E2ePassw0rd!".to_string());
     harness
         .identity()
-        .set_password(&tenant, user.id(), &password)
+        .set_password(&realm, user.id(), &password)
         .expect("set password");
 
     // 3. Enroll TOTP and activate via initial code.
     let enrollment = harness
         .identity()
-        .enroll_totp(&tenant, user.id())
+        .enroll_totp(&realm, user.id())
         .expect("enroll_totp");
     assert_eq!(enrollment.recovery_codes.len(), 8);
 
@@ -264,17 +264,17 @@ async fn mfa_enrollment_plus_login() {
 
     harness
         .identity()
-        .verify_totp_enrollment(&tenant, user.id(), &code)
+        .verify_totp_enrollment(&realm, user.id(), &code)
         .expect("verify_totp_enrollment");
     assert!(harness
         .identity()
-        .mfa_enabled(&tenant, user.id())
+        .mfa_enabled(&realm, user.id())
         .expect("mfa_enabled"));
 
     // 4. Authenticate: password + TOTP.
     let pw_ok = harness
         .identity()
-        .verify_password(&tenant, user.id(), &password)
+        .verify_password(&realm, user.id(), &password)
         .expect("verify_password");
     assert!(pw_ok, "password must verify");
 
@@ -284,13 +284,13 @@ async fn mfa_enrollment_plus_login() {
         .expect("time")
         .as_secs();
     let code2 = compute_totp_code(&enrollment.secret_base32, now2);
-    let verify = harness.identity().verify_totp(&tenant, user.id(), &code2);
+    let verify = harness.identity().verify_totp(&realm, user.id(), &code2);
     if verify.is_err() {
         // Step already used — advance one window.
         let code3 = compute_totp_code(&enrollment.secret_base32, now2 + 30);
         harness
             .identity()
-            .verify_totp(&tenant, user.id(), &code3)
+            .verify_totp(&realm, user.id(), &code3)
             .expect("verify_totp with next step");
     }
 
@@ -298,24 +298,24 @@ async fn mfa_enrollment_plus_login() {
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let tokens = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
-    // 6. Token validates and claims match user/session/tenant.
+    // 6. Token validates and claims match user/session/realm.
     let claims = harness
         .identity()
-        .validate_token(&tenant, tokens.access_token())
+        .validate_token(&realm, tokens.access_token())
         .expect("validate token");
     assert_eq!(claims.sub, user.id().to_string());
     assert_eq!(claims.sid, session.id().to_string());
-    assert_eq!(claims.tid, tenant.to_string());
+    assert_eq!(claims.tid, realm.to_string());
 }
 
 // ============================================================================
@@ -332,20 +332,20 @@ async fn passkey_only_authentication() {
         .await
         .expect("harness setup");
 
-    let tenant_rec = harness
+    let realm_rec = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: format!("e2e-passkey-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("create tenant");
-    let tenant = tenant_rec.id().clone();
+        .expect("create realm");
+    let realm = realm_rec.id().clone();
 
     // User WITHOUT password — passkey-only.
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "e2e-passkey@example.com".to_string(),
                 display_name: "E2E Passkey User".to_string(),
@@ -361,7 +361,7 @@ async fn passkey_only_authentication() {
     let reg_challenge = harness
         .identity()
         .start_webauthn_registration(
-            &tenant,
+            &realm,
             user.id(),
             &RegistrationOptions {
                 rp_id: rp_id.to_string(),
@@ -376,7 +376,7 @@ async fn passkey_only_authentication() {
     let cred_info = harness
         .identity()
         .complete_webauthn_registration(
-            &tenant,
+            &realm,
             user.id(),
             &client_data_json,
             &att_obj,
@@ -390,7 +390,7 @@ async fn passkey_only_authentication() {
     let auth_challenge = harness
         .identity()
         .start_webauthn_authentication(
-            &tenant,
+            &realm,
             Some(user.id()),
             &AuthenticationOptions {
                 rp_id: rp_id.to_string(),
@@ -404,7 +404,7 @@ async fn passkey_only_authentication() {
     let auth_result = harness
         .identity()
         .complete_webauthn_authentication(
-            &tenant,
+            &realm,
             &CompleteAuthenticationParams {
                 credential_id: &authenticator.credential_id,
                 client_data_json: &auth_cdj,
@@ -421,63 +421,63 @@ async fn passkey_only_authentication() {
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let tokens = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     let claims = harness
         .identity()
-        .validate_token(&tenant, tokens.access_token())
+        .validate_token(&realm, tokens.access_token())
         .expect("validate token");
     assert_eq!(claims.sub, user.id().to_string());
-    assert_eq!(claims.tid, tenant.to_string());
+    assert_eq!(claims.tid, realm.to_string());
 }
 
 // ============================================================================
-// Scenario: Multi-tenant isolation round-trip
+// Scenario: Multi-realm isolation round-trip
 // ============================================================================
 
-/// Two tenants remain fully isolated: foreign tokens fail, foreign user
-/// lookups return `None`, JWKS differ, and deleting tenant A leaves B intact.
+/// Two realms remain fully isolated: foreign tokens fail, foreign user
+/// lookups return `None`, JWKS differ, and deleting realm A leaves B intact.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn multi_tenant_isolation_roundtrip() {
+async fn multi_realm_isolation_roundtrip() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
 
-    // Create two independent tenants.
-    let tenant_a = harness
+    // Create two independent realms.
+    let realm_a = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
-            name: format!("tenant-a-{}", uuid::Uuid::new_v4()),
+        .create_realm(&CreateRealmRequest {
+            name: format!("realm-a-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("tenant A");
-    let a = tenant_a.id().clone();
+        .expect("realm A");
+    let a = realm_a.id().clone();
 
-    let tenant_b = harness
+    let realm_b = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
-            name: format!("tenant-b-{}", uuid::Uuid::new_v4()),
+        .create_realm(&CreateRealmRequest {
+            name: format!("realm-b-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("tenant B");
-    let b = tenant_b.id().clone();
+        .expect("realm B");
+    let b = realm_b.id().clone();
 
-    // Users + tokens in each tenant.
+    // Users + tokens in each realm.
     let user_a = harness
         .identity()
         .create_user(
             &a,
             &CreateUserRequest {
-                email: "alice@tenant-a.example".to_string(),
+                email: "alice@realm-a.example".to_string(),
                 display_name: "Alice A".to_string(),
             },
         )
@@ -488,7 +488,7 @@ async fn multi_tenant_isolation_roundtrip() {
         .create_user(
             &b,
             &CreateUserRequest {
-                email: "bob@tenant-b.example".to_string(),
+                email: "bob@realm-b.example".to_string(),
                 display_name: "Bob B".to_string(),
             },
         )
@@ -520,13 +520,13 @@ async fn multi_tenant_isolation_roundtrip() {
         .issue_tokens(&b, user_b.id(), session_b.id())
         .expect("tokens B");
 
-    // --- Isolation assertion 1: token from A fails under tenant B context. ---
+    // --- Isolation assertion 1: token from A fails under realm B context. ---
     let a_under_b = harness
         .identity()
         .validate_token(&b, tokens_a.access_token());
     assert!(
         a_under_b.is_err(),
-        "tenant A token must not validate under tenant B"
+        "realm A token must not validate under realm B"
     );
 
     // Same direction: B under A.
@@ -535,71 +535,71 @@ async fn multi_tenant_isolation_roundtrip() {
         .validate_token(&a, tokens_b.access_token());
     assert!(
         b_under_a.is_err(),
-        "tenant B token must not validate under tenant A"
+        "realm B token must not validate under realm A"
     );
 
-    // --- Isolation assertion 2: user A not visible in tenant B scope. ---
+    // --- Isolation assertion 2: user A not visible in realm B scope. ---
     let cross = harness
         .identity()
         .get_user(&b, user_a.id())
-        .expect("get_user cross-tenant must not error");
+        .expect("get_user cross-realm must not error");
     assert!(
         cross.is_none(),
-        "user from tenant A must not be visible in tenant B"
+        "user from realm A must not be visible in realm B"
     );
 
-    // --- Isolation assertion 3: JWKS per tenant differ. ---
-    let jwks_a = harness.identity().tenant_jwks(&a).expect("jwks A");
-    let jwks_b = harness.identity().tenant_jwks(&b).expect("jwks B");
-    assert!(!jwks_a.keys.is_empty(), "tenant A JWKS must have a key");
-    assert!(!jwks_b.keys.is_empty(), "tenant B JWKS must have a key");
+    // --- Isolation assertion 3: JWKS per realm differ. ---
+    let jwks_a = harness.identity().realm_jwks(&a).expect("jwks A");
+    let jwks_b = harness.identity().realm_jwks(&b).expect("jwks B");
+    assert!(!jwks_a.keys.is_empty(), "realm A JWKS must have a key");
+    assert!(!jwks_b.keys.is_empty(), "realm B JWKS must have a key");
     let a_kids: Vec<&str> = jwks_a.keys.iter().map(|k| k.kid.as_str()).collect();
     let b_kids: Vec<&str> = jwks_b.keys.iter().map(|k| k.kid.as_str()).collect();
     for kid in &a_kids {
         assert!(
             !b_kids.contains(kid),
-            "tenant JWKS kids must not overlap: {kid}"
+            "realm JWKS kids must not overlap: {kid}"
         );
     }
 
-    // --- Isolation assertion 4: deleting tenant A leaves tenant B intact. ---
-    harness.identity().delete_tenant(&a).expect("delete A");
+    // --- Isolation assertion 4: deleting realm A leaves realm B intact. ---
+    harness.identity().delete_realm(&a).expect("delete A");
 
-    // Tenant A data is gone.
-    let a_tenant_gone = harness
+    // Realm A data is gone.
+    let a_realm_gone = harness
         .identity()
-        .get_tenant(&a)
-        .expect("get_tenant A post-delete");
-    assert!(a_tenant_gone.is_none(), "tenant A should be deleted");
+        .get_realm(&a)
+        .expect("get_realm A post-delete");
+    assert!(a_realm_gone.is_none(), "realm A should be deleted");
 
-    // Tenant B user still exists.
+    // Realm B user still exists.
     let b_user_still_there = harness
         .identity()
         .get_user(&b, user_b.id())
         .expect("get user B post-delete");
     assert!(
         b_user_still_there.is_some(),
-        "tenant B user must survive tenant A deletion"
+        "realm B user must survive realm A deletion"
     );
 
-    // Tenant B session still valid.
+    // Realm B session still valid.
     let b_session_still_there = harness
         .identity()
         .get_session(&b, session_b.id())
         .expect("get session B post-delete");
     assert!(
         b_session_still_there.is_some(),
-        "tenant B session must survive tenant A deletion"
+        "realm B session must survive realm A deletion"
     );
 
-    // Tenant B token still validates.
+    // Realm B token still validates.
     let b_claims = harness
         .identity()
         .validate_token(&b, tokens_b.access_token())
-        .expect("tenant B token must validate after tenant A deletion");
+        .expect("realm B token must validate after realm A deletion");
     assert_eq!(b_claims.sub, user_b.id().to_string());
     assert_eq!(b_claims.tid, b.to_string());
 
-    // Silence unused warning for TenantId imports.
-    let _ = TenantId::generate();
+    // Silence unused warning for RealmId imports.
+    let _ = RealmId::generate();
 }

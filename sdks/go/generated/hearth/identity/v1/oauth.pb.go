@@ -1457,7 +1457,7 @@ func (x *JwksDocument) GetKeys() []*JsonWebKey {
 // Response from the dev bootstrap endpoint.
 type BootstrapResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	RealmId       string                 `protobuf:"bytes,1,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
 	UserId        string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	AccessToken   string                 `protobuf:"bytes,3,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
 	RefreshToken  string                 `protobuf:"bytes,4,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
@@ -1495,9 +1495,9 @@ func (*BootstrapResponse) Descriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_oauth_proto_rawDescGZIP(), []int{19}
 }
 
-func (x *BootstrapResponse) GetTenantId() string {
+func (x *BootstrapResponse) GetRealmId() string {
 	if x != nil {
-		return x.TenantId
+		return x.RealmId
 	}
 	return ""
 }
@@ -1682,9 +1682,9 @@ const file_hearth_identity_v1_oauth_proto_rawDesc = "" +
 	"\x03use\x18\x05 \x01(\tR\x03use\x12\x10\n" +
 	"\x03alg\x18\x06 \x01(\tR\x03alg\"B\n" +
 	"\fJwksDocument\x122\n" +
-	"\x04keys\x18\x01 \x03(\v2\x1e.hearth.identity.v1.JsonWebKeyR\x04keys\"\x91\x01\n" +
-	"\x11BootstrapResponse\x12\x1b\n" +
-	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x17\n" +
+	"\x04keys\x18\x01 \x03(\v2\x1e.hearth.identity.v1.JsonWebKeyR\x04keys\"\x8f\x01\n" +
+	"\x11BootstrapResponse\x12\x19\n" +
+	"\brealm_id\x18\x01 \x01(\tR\arealmId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12!\n" +
 	"\faccess_token\x18\x03 \x01(\tR\vaccessToken\x12#\n" +
 	"\rrefresh_token\x18\x04 \x01(\tR\frefreshTokenBEZCgithub.com/hearthdb/hearth/sdks/go/generated/identity/v1;identityv1b\x06proto3"

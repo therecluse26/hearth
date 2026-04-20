@@ -24,9 +24,9 @@ Hearth is organized into five architectural layers plus a shared core module:
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
-| **Core** | `src/core/` | Shared types (`UserId`, `TenantId`, `SessionId`, `Timestamp`), error traits, the `Clock` trait, and other foundational types used by every layer. Contains only types and traits — no logic, no state, no I/O. |
+| **Core** | `src/core/` | Shared types (`UserId`, `RealmId`, `SessionId`, `Timestamp`), error traits, the `Clock` trait, and other foundational types used by every layer. Contains only types and traits — no logic, no state, no I/O. |
 | **Protocol** | `src/protocol/` | Wire format translation: HTTP REST, gRPC, OIDC, OAuth 2.0, SAML, SCIM, WebAuthn. Thin adapters that translate wire requests into Identity Engine calls and serialize responses. Stateless. |
-| **Identity Engine** | `src/identity/` | Domain logic: users, credentials, sessions, tenants, tokens, audit. Orchestrates authentication flows. Enforces the opinionated decisions about supported flows. |
+| **Identity Engine** | `src/identity/` | Domain logic: users, credentials, sessions, realms, tokens, audit. Orchestrates authentication flows. Enforces the opinionated decisions about supported flows. |
 | **Authorization Engine** | `src/authz/` | Zanzibar-style relationship tuples: `check()`, `expand()`, `write_tuples()`, `watch()`. Graph traversal. Permission evaluation. |
 | **Cluster** | `src/cluster/` | Raft consensus via `openraft`, log replication, leader election, membership changes, snapshots. Wraps the storage engine — in clustered mode, writes go through Raft before reaching storage. Skipped entirely in single-node mode. |
 | **Storage Engine** | `src/storage/` | WAL, memtable, SSTs, hot/cold tiered storage, indexes, encryption at rest. The leaf layer. Pure data persistence with no knowledge of identity, auth, or authorization concepts. |
@@ -208,7 +208,7 @@ All API contracts MUST be defined in `.proto` files. Protobuf is the single sour
 
 ### 6.3 Encryption at Rest
 
-- Credentials and sensitive fields MUST be encrypted at rest using per-tenant keys.
+- Credentials and sensitive fields MUST be encrypted at rest using per-realm keys.
 - Encryption keys MUST NOT appear in log output, error messages, or debug dumps.
 - The storage engine MUST support key rotation without downtime.
 
@@ -218,7 +218,7 @@ All API contracts MUST be defined in `.proto` files. Protobuf is the single sour
 
 **Key rotation**: Key rotation MUST re-wrap DEKs with the new KEK. Data sections MUST NOT be re-encrypted during rotation — only the wrapped DEK in each file header changes. This makes rotation O(number of files), not O(data size).
 
-**WAL encryption**: The WAL MUST use the same envelope encryption pattern, with a per-segment DEK. Each WAL segment has its own random DEK, wrapped by the tenant's KEK.
+**WAL encryption**: The WAL MUST use the same envelope encryption pattern, with a per-segment DEK. Each WAL segment has its own random DEK, wrapped by the realm's KEK.
 
 ### 6.4 Format Versioning
 
@@ -229,28 +229,28 @@ All API contracts MUST be defined in `.proto` files. Protobuf is the single sour
 
 ## 7. Multi-Tenancy
 
-Hearth uses **logical isolation** with type-system-enforced tenant scoping. This is a MUST-level invariant — the highest enforcement tier.
+Hearth uses **logical isolation** with type-system-enforced realm scoping. This is a MUST-level invariant — the highest enforcement tier.
 
 ### 7.1 Isolation Rules
 
-1. **Type-system enforcement.** Every storage operation MUST require a `TenantId` parameter (a newtype, not a raw string). The storage API MUST make it impossible to construct a query without a tenant context. This is enforced at compile time.
-2. **Key prefix encoding.** The storage engine MUST prefix all keys with the tenant ID. There is no code path to construct a storage key without a `TenantId`.
-3. **Bounded scans.** All scan operations MUST be bounded to a single tenant's key space. The storage engine MUST NOT return results spanning multiple tenants from a single query.
-4. **No cross-tenant API.** The standard storage API MUST NOT expose operations that query across tenants. Cross-tenant operations (admin, migration) MUST use a separate, explicitly privileged API path.
+1. **Type-system enforcement.** Every storage operation MUST require a `RealmId` parameter (a newtype, not a raw string). The storage API MUST make it impossible to construct a query without a realm context. This is enforced at compile time.
+2. **Key prefix encoding.** The storage engine MUST prefix all keys with the realm ID. There is no code path to construct a storage key without a `RealmId`.
+3. **Bounded scans.** All scan operations MUST be bounded to a single realm's key space. The storage engine MUST NOT return results spanning multiple realms from a single query.
+4. **No cross-realm API.** The standard storage API MUST NOT expose operations that query across realms. Cross-realm operations (admin, migration) MUST use a separate, explicitly privileged API path.
 
 ### 7.2 Verification
 
-Tenant isolation MUST be verified by:
+Realm isolation MUST be verified by:
 
-- **Property-based tests**: Random sequences of operations across random tenants, asserting that data written under tenant A is never readable under tenant B. 10,000+ cases in CI.
-- **Adversarial tests**: Write data under tenant A, attempt every read operation under tenant B, assert zero results. Concurrent writes across tenants asserting no cross-contamination. Tenant deletion followed by recreation with the same ID asserting no ghost data.
-- **Debug-mode runtime assertions**: In debug builds, every value returned from the storage engine is checked — does this record's tenant ID match the requested tenant ID? A redundant tripwire on top of the key prefix guarantee.
+- **Property-based tests**: Random sequences of operations across random realms, asserting that data written under realm A is never readable under realm B. 10,000+ cases in CI.
+- **Adversarial tests**: Write data under realm A, attempt every read operation under realm B, assert zero results. Concurrent writes across realms asserting no cross-contamination. Realm deletion followed by recreation with the same ID asserting no ghost data.
+- **Debug-mode runtime assertions**: In debug builds, every value returned from the storage engine is checked — does this record's realm ID match the requested realm ID? A redundant tripwire on top of the key prefix guarantee.
 
-### 7.3 Tenant Lifecycle
+### 7.3 Realm Lifecycle
 
-- **Creation**: Write a tenant record. No special constraints beyond standard storage operations.
-- **Suspension**: Tenant records MUST include a `status` field (`Active`, `Suspended`). The identity layer MUST check tenant status before processing any request. Suspended tenants MUST reject all authentication and authorization operations. Data is preserved.
-- **Deletion**: Tenant deletion MUST write tombstones for all tenant-prefixed keys. Compaction removes the data physically. Logical deletion (no reads return data) is immediate. Physical deletion occurs during compaction.
+- **Creation**: Write a realm record. No special constraints beyond standard storage operations.
+- **Suspension**: Realm records MUST include a `status` field (`Active`, `Suspended`). The identity layer MUST check realm status before processing any request. Suspended realms MUST reject all authentication and authorization operations. Data is preserved.
+- **Deletion**: Realm deletion MUST write tombstones for all realm-prefixed keys. Compaction removes the data physically. Logical deletion (no reads return data) is immediate. Physical deletion occurs during compaction.
 
 ---
 
@@ -287,12 +287,12 @@ Hearth's internal hot path validates tokens via **session lookup**, not signatur
 Each layer validates what it is responsible for. **Each layer MUST validate its own invariants and MUST NOT assume upstream validation occurred.**
 
 - **Protocol layer**: Wire-level validation. Max request size, content type, required fields present, string length limits, null byte rejection, Unicode NFC normalization on usernames and email addresses.
-- **Identity layer**: Domain validation. Email format, password policy, username rules, tenant existence, session not expired.
-- **Storage layer**: Structural validation. Key fits in index, value within size bounds, tenant ID present.
+- **Identity layer**: Domain validation. Email format, password policy, username rules, realm existence, session not expired.
+- **Storage layer**: Structural validation. Key fits in index, value within size bounds, realm ID present.
 
 ### 8.5 Audit Trail
 
-- Security-critical mutations MUST emit structured `tracing` events at `info` level with sufficient context for forensic investigation: actor, action, target entity, tenant, result (success/failure). This provides real-time breach detection via log alerting from Phase 0.
+- Security-critical mutations MUST emit structured `tracing` events at `info` level with sufficient context for forensic investigation: actor, action, target entity, realm, result (success/failure). This provides real-time breach detection via log alerting from Phase 0.
 - The WAL is the authoritative durable record of all mutations.
 - An audit trail MAY be materialized asynchronously from the WAL as a background process in Phase 1+. This background job tails the WAL, extracts mutation events, and writes them into a separate append-only, queryable audit store. The write path MUST NOT block on audit trail materialization.
 - The WAL MUST NOT be truncated past the audit materialization job's read cursor.
@@ -391,7 +391,7 @@ The configuration file covers these categories:
 
 ### 12.1 Newtype IDs
 
-All entity IDs MUST be distinct newtypes: `struct UserId(Uuid)`, `struct SessionId(Uuid)`, `struct TenantId(Uuid)`, etc.
+All entity IDs MUST be distinct newtypes: `struct UserId(Uuid)`, `struct SessionId(Uuid)`, `struct RealmId(Uuid)`, etc.
 
 - Newtypes MUST NOT implement `Deref` to their inner type.
 - Access to the inner value is via an explicit method (e.g., `.as_uuid()`, `.as_bytes()`).
@@ -460,7 +460,7 @@ src/storage/
 - Use `tracing` exclusively. No `println!`, `eprintln!`, or the `log` crate.
 - **Log levels**: `error` (system is degraded), `warn` (unexpected but recoverable), `info` (significant events — startup, shutdown, config changes, security-critical mutations), `debug` (internal state for troubleshooting), `trace` (hot path tracing, disabled by default).
 - Hot path code MUST NOT log at `info` level or above in the steady state.
-- Use structured fields: user IDs, tenant IDs, operation names. MUST NOT log passwords, tokens, keys, or PII.
+- Use structured fields: user IDs, realm IDs, operation names. MUST NOT log passwords, tokens, keys, or PII.
 - Default output format is human-readable text. JSON format MUST be available via config for production log aggregation.
 
 ### 14.2 Metrics
@@ -558,7 +558,7 @@ hearth/
 ├── proto/                      # Protobuf contract definitions (single source of truth)
 │   ├── buf.yaml
 │   ├── hearth/
-│   │   ├── identity/v1/        # User, session, tenant contracts
+│   │   ├── identity/v1/        # User, session, realm contracts
 │   │   ├── authz/v1/           # Permission check, tuple contracts
 │   │   ├── admin/v1/           # Admin API contracts
 │   │   └── events/v1/          # Event schemas
@@ -568,7 +568,7 @@ hearth/
 │   ├── main.rs                 # Binary entry point
 │   ├── core/                   # Shared types, traits, error foundations
 │   ├── protocol/               # Wire format adapters (REST, gRPC, OIDC, SAML, SCIM)
-│   ├── identity/               # Domain logic (users, credentials, sessions, tenants)
+│   ├── identity/               # Domain logic (users, credentials, sessions, realms)
 │   ├── authz/                  # Zanzibar authorization engine
 │   ├── cluster/                # Raft consensus (openraft)
 │   └── storage/                # WAL, memtable, SSTs, tiered storage
@@ -615,7 +615,7 @@ Key architectural decisions codified in this document, with rationale:
 | Token validation (hot path) | Session lookup, not signature re-verification | Sub-microsecond vs 5-50μs, instant revocation, smaller key exposure surface |
 | Signing algorithm | Ed25519 (asymmetric only) | No HS256 eliminates token forgery from compromised verification keys |
 | Password hashing | Argon2id, OWASP parameters | Security over latency — hashing is off the hot path |
-| Multi-tenancy | Logical isolation, type-enforced | Cross-tenant users are inherent to identity systems; physical isolation makes this painful |
+| Multi-tenancy | Logical isolation, type-enforced | Cross-realm users are inherent to identity systems; physical isolation makes this painful |
 | Cluster consensus | `openraft` | Proven library, not custom — Raft is subtle and `openraft` is battle-tested |
 | Config format | YAML | Operators manage infrastructure with YAML; Hearth targets ops engineers, not Rust developers |
 | Config lifecycle | Immutable after startup | Simplifies concurrency model — config loaded once into `Arc<Config>`, no synchronization |
@@ -632,5 +632,5 @@ Key architectural decisions codified in this document, with rationale:
 | Rate limiting | Per-IP in protocol, per-account in identity | Different concerns at different layers. IP limits are wire-level; account lockout is domain logic. |
 | Backpressure | Request queue + timeout (Tower) | Prevents cascading failure under load. Tower provides both primitives. |
 | Graceful shutdown | Drain with timeout + Raft leadership transfer | Zero-downtime deployments require clean shutdown. Leadership transfer prevents cluster disruption. |
-| Tenant lifecycle | Status field + tombstone deletion | Suspension is reversible (non-payment, investigation). Tombstone deletion is consistent with LSM-tree architecture. |
+| Realm lifecycle | Status field + tombstone deletion | Suspension is reversible (non-payment, investigation). Tombstone deletion is consistent with LSM-tree architecture. |
 | Backup mechanism | Admin API + scheduled config | CLI impractical in containerized deployments. API-driven backups work with any orchestration tool. |

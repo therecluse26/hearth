@@ -1,10 +1,10 @@
 import { HearthError } from "./client.js";
 import type {
-  CreateTenantParams,
+  CreateRealmParams,
   CreateUserParams,
   PageResponse,
-  Tenant,
-  UpdateTenantParams,
+  Realm,
+  UpdateRealmParams,
   UpdateUserParams,
   User,
 } from "./types.js";
@@ -18,7 +18,7 @@ import type {
 export class AdminClient {
   constructor(
     private readonly baseUrl: string,
-    private readonly tenantId: string,
+    private readonly realmId: string,
     private readonly accessToken: string,
   ) {}
 
@@ -68,47 +68,47 @@ export class AdminClient {
     }
   }
 
-  // === Tenants ===
+  // === Realms ===
 
-  /** POST /admin/tenants — create a tenant. */
-  async createTenant(params: CreateTenantParams): Promise<Tenant> {
-    return this.post("/admin/tenants", {
+  /** POST /admin/realms — create a realm. */
+  async createRealm(params: CreateRealmParams): Promise<Realm> {
+    return this.post("/admin/realms", {
       name: params.name,
       config: params.config,
     });
   }
 
-  /** GET /admin/tenants — list tenants with pagination. */
-  async listTenants(options?: {
+  /** GET /admin/realms — list realms with pagination. */
+  async listRealms(options?: {
     limit?: number;
     cursor?: string;
-  }): Promise<PageResponse<Tenant>> {
+  }): Promise<PageResponse<Realm>> {
     const q = new URLSearchParams();
     if (options?.limit) q.set("limit", String(options.limit));
     if (options?.cursor) q.set("cursor", options.cursor);
-    return this.get(`/admin/tenants?${q}`);
+    return this.get(`/admin/realms?${q}`);
   }
 
-  /** GET /admin/tenants/:id — get a tenant by ID. */
-  async getTenant(tenantId: string): Promise<Tenant> {
-    return this.get(`/admin/tenants/${tenantId}`);
+  /** GET /admin/realms/:id — get a realm by ID. */
+  async getRealm(realmId: string): Promise<Realm> {
+    return this.get(`/admin/realms/${realmId}`);
   }
 
-  /** PUT /admin/tenants/:id — update a tenant. */
-  async updateTenant(
-    tenantId: string,
-    params: UpdateTenantParams,
-  ): Promise<Tenant> {
-    return this.request("PUT", `/admin/tenants/${tenantId}`, {
+  /** PUT /admin/realms/:id — update a realm. */
+  async updateRealm(
+    realmId: string,
+    params: UpdateRealmParams,
+  ): Promise<Realm> {
+    return this.request("PUT", `/admin/realms/${realmId}`, {
       name: params.name,
       status: params.status,
       config: params.config,
     });
   }
 
-  /** DELETE /admin/tenants/:id — delete a tenant. */
-  async deleteTenant(tenantId: string): Promise<void> {
-    const resp = await fetch(`${this.baseUrl}/admin/tenants/${tenantId}`, {
+  /** DELETE /admin/realms/:id — delete a realm. */
+  async deleteRealm(realmId: string): Promise<void> {
+    const resp = await fetch(`${this.baseUrl}/admin/realms/${realmId}`, {
       method: "DELETE",
       headers: this.headers(),
     });
@@ -119,7 +119,7 @@ export class AdminClient {
 
   private headers(): Record<string, string> {
     return {
-      "X-Tenant-ID": this.tenantId,
+      "X-Realm-ID": this.realmId,
       Authorization: `Bearer ${this.accessToken}`,
       "Content-Type": "application/json",
     };

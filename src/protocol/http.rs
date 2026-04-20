@@ -23,10 +23,10 @@ use tracing::{debug, error, info};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
-use crate::core::{ClientId, TenantId, UserId};
+use crate::core::{ClientId, RealmId, UserId};
 use crate::identity::IdentityEngine;
 use crate::protocol::convert::identity::{
-    proto_user_status_to_domain, tenant_page_to_proto, user_bulk_result_to_proto,
+    proto_user_status_to_domain, realm_page_to_proto, user_bulk_result_to_proto,
     user_page_to_proto, void_bulk_result_to_proto,
 };
 use crate::protocol::convert::oauth::{
@@ -51,7 +51,7 @@ const ADMIN_RATE_WINDOW_MICROS: i64 = 60 * 1_000_000;
 
 /// Default maximum request body size (1 MiB).
 ///
-/// Covers normal JSON payloads (user/tenant CRUD, OAuth token exchange).
+/// Covers normal JSON payloads (user/realm CRUD, OAuth token exchange).
 /// Larger payloads are rejected with HTTP 413 (Payload Too Large) before
 /// hitting any handler.
 const BODY_LIMIT_DEFAULT: usize = 1024 * 1024;
@@ -117,17 +117,17 @@ impl AppState {
 
 /// Authenticated admin context extracted from request headers.
 ///
-/// Contains the tenant and user that passed both token validation
+/// Contains the realm and user that passed both token validation
 /// and Zanzibar admin role check.
 #[derive(Debug, Clone)]
 struct AdminAuth {
-    tenant_id: TenantId,
+    realm_id: RealmId,
     user_id: UserId,
 }
 
 /// Extracts and validates admin authentication from request headers.
 ///
-/// 1. Extracts `Authorization: Bearer <token>` and `X-Tenant-ID`
+/// 1. Extracts `Authorization: Bearer <token>` and `X-Realm-ID`
 /// 2. Validates the token via `identity.validate_token()`
 /// 3. Checks admin role via `authz.check(hearth#admin@user:uuid)`
 /// 4. Checks rate limit (100 req/min per admin user)
@@ -135,7 +135,7 @@ fn extract_admin_auth(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<AdminAuth, (StatusCode, Json<serde_json::Value>)> {
-    let tenant_id = extract_tenant_id(headers)?;
+    let realm_id = extract_realm_id(headers)?;
 
     // Extract bearer token
     let auth_header = headers
@@ -164,7 +164,7 @@ fn extract_admin_auth(
     // Validate token
     let claims = state
         .identity
-        .validate_token(&tenant_id, token)
+        .validate_token(&realm_id, token)
         .map_err(|_| {
             (
                 StatusCode::UNAUTHORIZED,
@@ -190,7 +190,7 @@ fn extract_admin_auth(
     let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
     let is_admin = state
         .authz
-        .check(&tenant_id, &object, "admin", &subject, None)
+        .check(&realm_id, &object, "admin", &subject, None)
         .unwrap_or(false);
 
     if !is_admin {
@@ -203,7 +203,7 @@ fn extract_admin_auth(
     // Rate limiting
     check_admin_rate_limit(state, &user_id)?;
 
-    Ok(AdminAuth { tenant_id, user_id })
+    Ok(AdminAuth { realm_id, user_id })
 }
 
 /// Checks the admin API rate limit for a user.
@@ -265,14 +265,14 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .delete(admin_delete_user),
         )
         .route(
-            "/tenants",
-            axum::routing::get(admin_list_tenants).post(admin_create_tenant),
+            "/realms",
+            axum::routing::get(admin_list_realms).post(admin_create_realm),
         )
         .route(
-            "/tenants/{id}",
-            axum::routing::get(admin_get_tenant)
-                .put(admin_update_tenant)
-                .delete(admin_delete_tenant),
+            "/realms/{id}",
+            axum::routing::get(admin_get_realm)
+                .put(admin_update_realm)
+                .delete(admin_delete_realm),
         )
         .route(
             "/applications",
@@ -567,20 +567,20 @@ async fn jwks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 /// Create a new user.
 ///
-/// Requires `X-Tenant-ID` header. Returns the created user record.
+/// Requires `X-Realm-ID` header. Returns the created user record.
 async fn create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<pb::CreateUserRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
     let request = crate::identity::CreateUserRequest::from(body);
 
-    match state.identity.create_user(&tenant_id, &request) {
+    match state.identity.create_user(&realm_id, &request) {
         Ok(user) => (
             StatusCode::CREATED,
             Json(proto_to_rest_json(&pb::User::from(&user))),
@@ -619,36 +619,34 @@ struct HttpTokenRequest {
     device_code: Option<String>,
 }
 
-/// Extracts a `TenantId` from the `X-Tenant-ID` header.
+/// Extracts a `RealmId` from the `X-Realm-ID` header.
 ///
 /// Returns a `(StatusCode, Json)` error if the header is missing or invalid.
-fn extract_tenant_id(
-    headers: &HeaderMap,
-) -> Result<TenantId, (StatusCode, Json<serde_json::Value>)> {
+fn extract_realm_id(headers: &HeaderMap) -> Result<RealmId, (StatusCode, Json<serde_json::Value>)> {
     let header_value = headers
-        .get("x-tenant-id")
+        .get("x-realm-id")
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing X-Tenant-ID header"})),
+                Json(serde_json::json!({"error": "missing X-Realm-ID header"})),
             )
         })?
         .to_str()
         .map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid X-Tenant-ID header"})),
+                Json(serde_json::json!({"error": "invalid X-Realm-ID header"})),
             )
         })?;
 
     let uuid: uuid::Uuid = header_value.parse().map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "X-Tenant-ID must be a valid UUID"})),
+            Json(serde_json::json!({"error": "X-Realm-ID must be a valid UUID"})),
         )
     })?;
 
-    Ok(TenantId::new(uuid))
+    Ok(RealmId::new(uuid))
 }
 
 /// Maps an `IdentityError` to an HTTP status code and safe error message.
@@ -661,11 +659,11 @@ fn identity_error_to_response(
     use crate::identity::IdentityError;
 
     let (status, message) = match err {
-        IdentityError::TenantNotFound | IdentityError::UserNotFound => {
+        IdentityError::RealmNotFound | IdentityError::UserNotFound => {
             (StatusCode::NOT_FOUND, "not found")
         }
-        IdentityError::TenantSuspended => (StatusCode::FORBIDDEN, "tenant suspended"),
-        IdentityError::DuplicateTenantName => (StatusCode::CONFLICT, "duplicate tenant name"),
+        IdentityError::RealmSuspended => (StatusCode::FORBIDDEN, "realm suspended"),
+        IdentityError::DuplicateRealmName => (StatusCode::CONFLICT, "duplicate realm name"),
         IdentityError::DuplicateEmail => (StatusCode::CONFLICT, "duplicate email"),
         IdentityError::InvalidInput { .. } => (StatusCode::BAD_REQUEST, "invalid input"),
         IdentityError::CredentialNotFound => (StatusCode::NOT_FOUND, "credential not found"),
@@ -739,13 +737,13 @@ fn identity_error_to_response(
 
 /// Register an OAuth 2.0 client.
 ///
-/// Requires `X-Tenant-ID` header. Returns the created client record.
+/// Requires `X-Realm-ID` header. Returns the created client record.
 async fn register_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<pb::RegisterClientRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -753,7 +751,7 @@ async fn register_client(
     let mut request = crate::identity::RegisterClientRequest::from(body);
     request.client_secret = None;
 
-    match state.identity.register_client(&tenant_id, &request) {
+    match state.identity.register_client(&realm_id, &request) {
         Ok(client) => (
             StatusCode::CREATED,
             Json(proto_to_rest_json(&pb::OAuthClient::from(&client))),
@@ -765,13 +763,13 @@ async fn register_client(
 
 /// Initiate an OAuth 2.0 authorization code flow.
 ///
-/// Requires `X-Tenant-ID` header. Returns an authorization code and state.
+/// Requires `X-Realm-ID` header. Returns an authorization code and state.
 async fn authorize(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<pb::AuthorizationRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -787,7 +785,7 @@ async fn authorize(
         }
     };
 
-    match state.identity.authorize(&tenant_id, &request) {
+    match state.identity.authorize(&realm_id, &request) {
         Ok(response) => (
             StatusCode::OK,
             Json(proto_to_rest_json(&pb::AuthorizationResponse::from(
@@ -801,7 +799,7 @@ async fn authorize(
 
 /// Exchange an authorization code or refresh token for tokens.
 ///
-/// Requires `X-Tenant-ID` header.
+/// Requires `X-Realm-ID` header.
 ///
 /// Supports multiple grant types:
 /// - `authorization_code` (default): exchange a code for access, ID, and refresh tokens
@@ -814,7 +812,7 @@ async fn token_exchange(
     headers: HeaderMap,
     Json(body): Json<HttpTokenRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -851,7 +849,7 @@ async fn token_exchange(
 
             match state
                 .identity
-                .exchange_authorization_code(&tenant_id, &request)
+                .exchange_authorization_code(&realm_id, &request)
             {
                 Ok(response) => (
                     StatusCode::OK,
@@ -870,7 +868,7 @@ async fn token_exchange(
                     .into_response();
             };
 
-            match state.identity.refresh_tokens(&tenant_id, &refresh_token) {
+            match state.identity.refresh_tokens(&realm_id, &refresh_token) {
                 Ok(tokens) => {
                     let resp = pb::OidcTokenResponse {
                         access_token: tokens.access_token().to_string(),
@@ -902,10 +900,7 @@ async fn token_exchange(
                 }
             };
 
-            match state
-                .identity
-                .client_credentials_token(&tenant_id, &request)
-            {
+            match state.identity.client_credentials_token(&realm_id, &request) {
                 Ok(response) => (
                     StatusCode::OK,
                     Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(
@@ -940,7 +935,7 @@ async fn token_exchange(
 
             match state
                 .identity
-                .poll_device_token(&tenant_id, &device_code, &client_id)
+                .poll_device_token(&realm_id, &device_code, &client_id)
             {
                 Ok(response) => (
                     StatusCode::OK,
@@ -969,14 +964,14 @@ async fn token_revocation(
     headers: HeaderMap,
     Json(body): Json<pb::TokenRevocationRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
     let request = crate::identity::TokenRevocationRequest::from(body);
 
-    match state.identity.revoke_token(&tenant_id, &request) {
+    match state.identity.revoke_token(&realm_id, &request) {
         Ok(()) | Err(crate::identity::IdentityError::InvalidToken) => {
             // RFC 7009: always return 200 OK
             StatusCode::OK.into_response()
@@ -995,14 +990,14 @@ async fn token_introspection(
     headers: HeaderMap,
     Json(body): Json<pb::TokenIntrospectionRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
     let request = crate::identity::TokenIntrospectionRequest::from(body);
 
-    match state.identity.introspect_token(&tenant_id, &request) {
+    match state.identity.introspect_token(&realm_id, &request) {
         Ok(response) => (
             StatusCode::OK,
             Json(proto_to_rest_json(&pb::IntrospectionResponse::from(
@@ -1024,7 +1019,7 @@ async fn device_authorization(
     headers: HeaderMap,
     Json(body): Json<pb::DeviceAuthorizationRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -1045,7 +1040,7 @@ async fn device_authorization(
         scope: body.scope,
     };
 
-    match state.identity.device_authorize(&tenant_id, &request) {
+    match state.identity.device_authorize(&realm_id, &request) {
         Ok(response) => (
             StatusCode::OK,
             Json(proto_to_rest_json(&pb::DeviceAuthorizationResponse::from(
@@ -1061,7 +1056,7 @@ async fn device_authorization(
 
 /// GET /userinfo — returns claims about the authenticated user.
 async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -1079,7 +1074,7 @@ async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
             .into_response();
     };
 
-    match state.identity.userinfo(&tenant_id, token) {
+    match state.identity.userinfo(&realm_id, token) {
         Ok(info) => (
             StatusCode::OK,
             Json(proto_to_rest_json(&pb::UserInfoResponse::from(&info))),
@@ -1110,7 +1105,7 @@ async fn dynamic_register_client(
     headers: HeaderMap,
     Json(body): Json<HttpDynamicRegisterRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
+    let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
@@ -1124,7 +1119,7 @@ async fn dynamic_register_client(
             .unwrap_or_else(|| vec!["authorization_code".to_string()]),
     };
 
-    match state.identity.register_client(&tenant_id, &request) {
+    match state.identity.register_client(&realm_id, &request) {
         Ok(client) => {
             // RFC 7591 response includes registration_client_uri, not in proto
             let mut resp = proto_to_rest_json(&pb::OAuthClient::from(&client));
@@ -1171,7 +1166,7 @@ async fn admin_list_users(
     };
 
     match state.identity.list_users(
-        &auth.tenant_id,
+        &auth.realm_id,
         params.cursor.as_deref(),
         params.effective_limit(),
     ) {
@@ -1197,10 +1192,10 @@ async fn admin_create_user(
 
     let request = crate::identity::CreateUserRequest::from(body);
 
-    match state.identity.create_user(&auth.tenant_id, &request) {
+    match state.identity.create_user(&auth.realm_id, &request) {
         Ok(user) => {
             let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
+                realm_id: auth.realm_id.clone(),
                 actor: auth.user_id.as_uuid().to_string(),
                 action: crate::audit::AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -1241,7 +1236,7 @@ async fn admin_get_user(
 
     match state
         .identity
-        .get_user(&auth.tenant_id, &UserId::new(user_uuid))
+        .get_user(&auth.realm_id, &UserId::new(user_uuid))
     {
         Ok(Some(user)) => (
             StatusCode::OK,
@@ -1294,10 +1289,10 @@ async fn admin_update_user(
     let request = crate::identity::UpdateUserRequest::from(body);
     let uid = UserId::new(user_uuid);
 
-    match state.identity.update_user(&auth.tenant_id, &uid, &request) {
+    match state.identity.update_user(&auth.realm_id, &uid, &request) {
         Ok(user) => {
             let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
+                realm_id: auth.realm_id.clone(),
                 actor: auth.user_id.as_uuid().to_string(),
                 action: crate::audit::AuditAction::UserUpdated,
                 resource_type: "user".to_string(),
@@ -1338,11 +1333,11 @@ async fn admin_delete_user(
 
     match state
         .identity
-        .delete_user(&auth.tenant_id, &UserId::new(user_uuid))
+        .delete_user(&auth.realm_id, &UserId::new(user_uuid))
     {
         Ok(()) => {
             let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
+                realm_id: auth.realm_id.clone(),
                 actor: auth.user_id.as_uuid().to_string(),
                 action: crate::audit::AuditAction::UserDeleted,
                 resource_type: "user".to_string(),
@@ -1385,10 +1380,10 @@ async fn admin_bulk_users(
                 .map(crate::identity::CreateUserRequest::from)
                 .collect();
 
-            match state.identity.bulk_create_users(&auth.tenant_id, &requests) {
+            match state.identity.bulk_create_users(&auth.realm_id, &requests) {
                 Ok(results) => {
                     let _ = state.audit.append(&CreateAuditEvent {
-                        tenant_id: auth.tenant_id.clone(),
+                        realm_id: auth.realm_id.clone(),
                         actor: auth.user_id.as_uuid().to_string(),
                         action: crate::audit::AuditAction::BulkUsersCreated,
                         resource_type: "user".to_string(),
@@ -1425,13 +1420,10 @@ async fn admin_bulk_users(
                 }
             }
 
-            match state
-                .identity
-                .bulk_disable_users(&auth.tenant_id, &user_ids)
-            {
+            match state.identity.bulk_disable_users(&auth.realm_id, &user_ids) {
                 Ok(results) => {
                     let _ = state.audit.append(&CreateAuditEvent {
-                        tenant_id: auth.tenant_id.clone(),
+                        realm_id: auth.realm_id.clone(),
                         actor: auth.user_id.as_uuid().to_string(),
                         action: crate::audit::AuditAction::BulkUsersDisabled,
                         resource_type: "user".to_string(),
@@ -1461,8 +1453,8 @@ async fn admin_bulk_users(
     }
 }
 
-/// Admin: list tenants (paginated).
-async fn admin_list_tenants(
+/// Admin: list realms (paginated).
+async fn admin_list_realms(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(params): Query<PaginationParams>,
@@ -1474,30 +1466,30 @@ async fn admin_list_tenants(
 
     match state
         .identity
-        .list_tenants(params.cursor.as_deref(), params.effective_limit())
+        .list_realms(params.cursor.as_deref(), params.effective_limit())
     {
         Ok(page) => (
             StatusCode::OK,
-            Json(proto_to_rest_json(&tenant_page_to_proto(&page))),
+            Json(proto_to_rest_json(&realm_page_to_proto(&page))),
         )
             .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
 
-/// Admin: create tenant — disabled; tenants are managed via `hearth.yaml`.
-async fn admin_create_tenant() -> impl IntoResponse {
+/// Admin: create realm — disabled; realms are managed via `hearth.yaml`.
+async fn admin_create_realm() -> impl IntoResponse {
     (
         StatusCode::METHOD_NOT_ALLOWED,
         Json(serde_json::json!({
             "error": "method_not_allowed",
-            "message": "Tenants are managed via hearth.yaml. Remove this endpoint from your client."
+            "message": "Realms are managed via hearth.yaml. Remove this endpoint from your client."
         })),
     )
 }
 
-/// Admin: get tenant by ID.
-async fn admin_get_tenant(
+/// Admin: get realm by ID.
+async fn admin_get_realm(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -1507,21 +1499,21 @@ async fn admin_get_tenant(
         Err(e) => return e.into_response(),
     };
 
-    let tenant_uuid: uuid::Uuid = match id.parse() {
+    let realm_uuid: uuid::Uuid = match id.parse() {
         Ok(u) => u,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid tenant ID"})),
+                Json(serde_json::json!({"error": "invalid realm ID"})),
             )
                 .into_response()
         }
     };
 
-    match state.identity.get_tenant(&TenantId::new(tenant_uuid)) {
-        Ok(Some(tenant)) => (
+    match state.identity.get_realm(&RealmId::new(realm_uuid)) {
+        Ok(Some(realm)) => (
             StatusCode::OK,
-            Json(proto_to_rest_json(&pb::Tenant::from(&tenant))),
+            Json(proto_to_rest_json(&pb::Realm::from(&realm))),
         )
             .into_response(),
         Ok(None) => (
@@ -1533,23 +1525,23 @@ async fn admin_get_tenant(
     }
 }
 
-/// Admin: update tenant — disabled; tenants are managed via `hearth.yaml`.
-async fn admin_update_tenant(Path(_id): Path<String>) -> impl IntoResponse {
+/// Admin: update realm — disabled; realms are managed via `hearth.yaml`.
+async fn admin_update_realm(Path(_id): Path<String>) -> impl IntoResponse {
     (
         StatusCode::METHOD_NOT_ALLOWED,
         Json(serde_json::json!({
             "error": "method_not_allowed",
-            "message": "Tenants are managed via hearth.yaml. Remove this endpoint from your client."
+            "message": "Realms are managed via hearth.yaml. Remove this endpoint from your client."
         })),
     )
 }
 
-/// Admin: delete tenant by ID.
+/// Admin: delete realm by ID.
 ///
-/// Only allows permanent deletion of tenants with `Archived` status.
-/// Active or Suspended tenants must first be removed from `hearth.yaml`
+/// Only allows permanent deletion of realms with `Archived` status.
+/// Active or Suspended realms must first be removed from `hearth.yaml`
 /// and the server restarted (which archives them via reconciliation).
-async fn admin_delete_tenant(
+async fn admin_delete_realm(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -1559,32 +1551,32 @@ async fn admin_delete_tenant(
         Err(e) => return e.into_response(),
     };
 
-    let tenant_uuid: uuid::Uuid = match id.parse() {
+    let realm_uuid: uuid::Uuid = match id.parse() {
         Ok(u) => u,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid tenant ID"})),
+                Json(serde_json::json!({"error": "invalid realm ID"})),
             )
                 .into_response()
         }
     };
 
-    let tid = TenantId::new(tenant_uuid);
+    let tid = RealmId::new(realm_uuid);
 
-    // Check tenant status — only Archived tenants can be permanently deleted.
-    match state.identity.get_tenant(&tid) {
-        Ok(Some(tenant))
-            if tenant.status() == crate::identity::TenantStatus::Archived =>
+    // Check realm status — only Archived realms can be permanently deleted.
+    match state.identity.get_realm(&tid) {
+        Ok(Some(realm))
+            if realm.status() == crate::identity::RealmStatus::Archived =>
         {
-            match state.identity.delete_tenant(&tid) {
+            match state.identity.delete_realm(&tid) {
                 Ok(()) => {
                     let _ = state.audit.append(&CreateAuditEvent {
-                        tenant_id: auth.tenant_id.clone(),
+                        realm_id: auth.realm_id.clone(),
                         actor: auth.user_id.as_uuid().to_string(),
-                        action: crate::audit::AuditAction::TenantDeleted,
-                        resource_type: "tenant".to_string(),
-                        resource_id: tenant_uuid.to_string(),
+                        action: crate::audit::AuditAction::RealmDeleted,
+                        resource_type: "realm".to_string(),
+                        resource_id: realm_uuid.to_string(),
                         metadata: Some(serde_json::json!({"via": "admin_api"})),
                     });
                     StatusCode::NO_CONTENT.into_response()
@@ -1596,7 +1588,7 @@ async fn admin_delete_tenant(
             StatusCode::CONFLICT,
             Json(serde_json::json!({
                 "error": "conflict",
-                "message": "Only archived tenants can be permanently deleted. Remove the tenant from hearth.yaml and restart to archive it first."
+                "message": "Only archived realms can be permanently deleted. Remove the realm from hearth.yaml and restart to archive it first."
             })),
         )
             .into_response(),
@@ -1621,7 +1613,7 @@ async fn admin_list_clients(
     };
 
     match state.identity.list_clients(
-        &auth.tenant_id,
+        &auth.realm_id,
         params.cursor.as_deref(),
         params.effective_limit(),
     ) {
@@ -1648,10 +1640,10 @@ async fn admin_register_client(
     let mut request = crate::identity::RegisterClientRequest::from(body);
     request.client_secret = None;
 
-    match state.identity.register_client(&auth.tenant_id, &request) {
+    match state.identity.register_client(&auth.realm_id, &request) {
         Ok(client) => {
             let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
+                realm_id: auth.realm_id.clone(),
                 actor: auth.user_id.as_uuid().to_string(),
                 action: crate::audit::AuditAction::ClientRegistered,
                 resource_type: "client".to_string(),
@@ -1692,7 +1684,7 @@ async fn admin_get_client(
 
     match state
         .identity
-        .get_client(&auth.tenant_id, &ClientId::new(client_uuid))
+        .get_client(&auth.realm_id, &ClientId::new(client_uuid))
     {
         Ok(Some(client)) => (
             StatusCode::OK,
@@ -1735,11 +1727,11 @@ async fn admin_update_client(
 
     match state
         .identity
-        .update_client(&auth.tenant_id, &ClientId::new(client_uuid), &request)
+        .update_client(&auth.realm_id, &ClientId::new(client_uuid), &request)
     {
         Ok(client) => {
             let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
+                realm_id: auth.realm_id.clone(),
                 actor: auth.user_id.as_uuid().to_string(),
                 action: crate::audit::AuditAction::ClientUpdated,
                 resource_type: "client".to_string(),
@@ -1780,11 +1772,11 @@ async fn admin_delete_client(
 
     match state
         .identity
-        .delete_client(&auth.tenant_id, &ClientId::new(client_uuid))
+        .delete_client(&auth.realm_id, &ClientId::new(client_uuid))
     {
         Ok(()) => {
             let _ = state.audit.append(&CreateAuditEvent {
-                tenant_id: auth.tenant_id.clone(),
+                realm_id: auth.realm_id.clone(),
                 actor: auth.user_id.as_uuid().to_string(),
                 action: crate::audit::AuditAction::ClientDeleted,
                 resource_type: "client".to_string(),
@@ -1831,7 +1823,7 @@ async fn admin_list_audit(
         .and_then(|s| s.parse::<crate::audit::AuditAction>().ok());
 
     let query = crate::audit::AuditQuery {
-        tenant_id: auth.tenant_id.clone(),
+        realm_id: auth.realm_id.clone(),
         start_time: params.start_time.map(crate::core::Timestamp::from_micros),
         end_time: params.end_time.map(crate::core::Timestamp::from_micros),
         actor: params.actor,
@@ -1858,7 +1850,7 @@ async fn admin_list_audit(
 
 // === Dev Bootstrap Endpoint ===
 
-/// POST /admin/bootstrap — creates a tenant, admin user, session, Zanzibar
+/// POST /admin/bootstrap — creates a realm, admin user, session, Zanzibar
 /// admin tuple, and issues tokens. Returns everything needed for SDK tests.
 ///
 /// Only available when `AppState.dev_mode` is `true` (i.e., `--dev` flag).
@@ -1872,22 +1864,22 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
             .into_response();
     }
 
-    // Create tenant
-    let tenant = match state
+    // Create realm
+    let realm = match state
         .identity
-        .create_tenant(&crate::identity::CreateTenantRequest {
-            name: "dev-tenant".to_string(),
+        .create_realm(&crate::identity::CreateRealmRequest {
+            name: "dev-realm".to_string(),
             config: None,
         }) {
         Ok(t) => t,
         Err(e) => return identity_error_to_response(&e).into_response(),
     };
 
-    let tenant_id = tenant.id().clone();
+    let realm_id = realm.id().clone();
 
     // Create admin user
     let user = match state.identity.create_user(
-        &tenant_id,
+        &realm_id,
         &crate::identity::CreateUserRequest {
             email: "admin@dev.local".to_string(),
             display_name: "Dev Admin".to_string(),
@@ -1901,7 +1893,7 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     // Create session (API-initiated — no browser context)
     let session = match state.identity.create_session(
-        &tenant_id,
+        &realm_id,
         &user_id,
         &crate::identity::SessionContext::default(),
     ) {
@@ -1912,7 +1904,7 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
     // Issue tokens
     let tokens = match state
         .identity
-        .issue_tokens(&tenant_id, &user_id, session.id())
+        .issue_tokens(&realm_id, &user_id, session.id())
     {
         Ok(t) => t,
         Err(e) => return identity_error_to_response(&e).into_response(),
@@ -1929,7 +1921,7 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     if let Err(e) = state
         .authz
-        .write_tuples(&tenant_id, &[TupleWrite::Touch(tuple)])
+        .write_tuples(&realm_id, &[TupleWrite::Touch(tuple)])
     {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1941,7 +1933,7 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
     (
         StatusCode::OK,
         Json(pb::BootstrapResponse {
-            tenant_id: tenant_id.as_uuid().to_string(),
+            realm_id: realm_id.as_uuid().to_string(),
             user_id: user_id.as_uuid().to_string(),
             access_token: tokens.access_token().to_string(),
             refresh_token: tokens.refresh_token().to_string(),
@@ -2075,14 +2067,14 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
 
         // Verify all expected fields are present
-        assert!(json.get("tenant_id").is_some(), "missing tenant_id");
+        assert!(json.get("realm_id").is_some(), "missing realm_id");
         assert!(json.get("user_id").is_some(), "missing user_id");
         assert!(json.get("access_token").is_some(), "missing access_token");
         assert!(json.get("refresh_token").is_some(), "missing refresh_token");
 
-        // Verify tenant_id and user_id are valid UUIDs
-        let tenant_str = json["tenant_id"].as_str().expect("tenant_id string");
-        let _: uuid::Uuid = tenant_str.parse().expect("valid tenant UUID");
+        // Verify realm_id and user_id are valid UUIDs
+        let realm_str = json["realm_id"].as_str().expect("realm_id string");
+        let _: uuid::Uuid = realm_str.parse().expect("valid realm UUID");
         let user_str = json["user_id"].as_str().expect("user_id string");
         let _: uuid::Uuid = user_str.parse().expect("valid user UUID");
 

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Tier transitions preserve all data under concurrent read/write load.
@@ -17,7 +17,7 @@ fn simulation_tier_transitions_concurrent() {
     let _ = seed;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let config = StorageConfig::dev(dir.path().to_path_buf());
     let engine = Arc::new(EmbeddedStorageEngine::open(config).expect("open"));
@@ -25,9 +25,7 @@ fn simulation_tier_transitions_concurrent() {
     // Pre-populate 50 entries
     for i in 0u32..50 {
         let key = format!("conc-{i:04}");
-        engine
-            .put(&tenant, key.as_bytes(), b"initial")
-            .expect("put");
+        engine.put(&realm, key.as_bytes(), b"initial").expect("put");
     }
 
     // Concurrent operations from multiple threads
@@ -36,7 +34,7 @@ fn simulation_tier_transitions_concurrent() {
     // Reader threads
     for _ in 0..4 {
         let engine = Arc::clone(&engine);
-        let t = tenant.clone();
+        let t = realm.clone();
         handles.push(std::thread::spawn(move || {
             for i in 0u32..50 {
                 let key = format!("conc-{i:04}");
@@ -54,7 +52,7 @@ fn simulation_tier_transitions_concurrent() {
     // Writer threads
     for batch in 0u32..4 {
         let engine = Arc::clone(&engine);
-        let t = tenant.clone();
+        let t = realm.clone();
         handles.push(std::thread::spawn(move || {
             for i in 0u32..10 {
                 let key = format!("conc-{:04}", batch * 10 + i);
@@ -70,7 +68,7 @@ fn simulation_tier_transitions_concurrent() {
     // Verify all data is accessible
     for i in 0u32..50 {
         let key = format!("conc-{i:04}");
-        let val = engine.get(&tenant, key.as_bytes()).expect("get");
+        let val = engine.get(&realm, key.as_bytes()).expect("get");
         assert!(
             val.is_some(),
             "key {key} must be accessible after concurrent ops (seed={seed})"
@@ -87,7 +85,7 @@ fn simulation_crash_during_promotion() {
     let _ = seed;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Phase 1: Write data and access it
     {
@@ -97,14 +95,14 @@ fn simulation_crash_during_promotion() {
         for i in 0u32..10 {
             let key = format!("hot-{i:04}");
             engine
-                .put(&tenant, key.as_bytes(), b"hot-value")
+                .put(&realm, key.as_bytes(), b"hot-value")
                 .expect("put");
         }
 
         // Read to promote into hot tier
         for i in 0u32..10 {
             let key = format!("hot-{i:04}");
-            let val = engine.get(&tenant, key.as_bytes()).expect("get");
+            let val = engine.get(&realm, key.as_bytes()).expect("get");
             assert_eq!(val, Some(b"hot-value".to_vec()));
         }
     }
@@ -116,7 +114,7 @@ fn simulation_crash_during_promotion() {
 
         for i in 0u32..10 {
             let key = format!("hot-{i:04}");
-            let val = engine.get(&tenant, key.as_bytes()).expect("get");
+            let val = engine.get(&realm, key.as_bytes()).expect("get");
             assert_eq!(
                 val,
                 Some(b"hot-value".to_vec()),

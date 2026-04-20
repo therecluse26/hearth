@@ -175,7 +175,7 @@ message JwksDocument {
 
 // Response from the dev bootstrap endpoint.
 message BootstrapResponse {
-  string tenant_id = 1;
+  string realm_id = 1;
   string user_id = 2;
   string access_token = 3;
   string refresh_token = 4;

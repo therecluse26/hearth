@@ -1,6 +1,6 @@
 //! Storage key encoding and decoding for authorization tuples.
 //!
-//! Two indexes are maintained, both tenant-scoped via `StorageEngine`:
+//! Two indexes are maintained, both realm-scoped via `StorageEngine`:
 //!
 //! - **Forward**: `fwd:{type}:{id}#{relation}@{subject}` — for `check()` and `expand()`
 //! - **Reverse**: `rev:{subject}@{type}:{id}#{relation}` — for reverse lookups and `watch()`

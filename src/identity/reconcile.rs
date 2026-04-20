@@ -1,17 +1,17 @@
-//! Tenant reconciliation: syncs YAML-declared tenants with storage.
+//! Realm reconciliation: syncs YAML-declared realms with storage.
 //!
-//! Called once at startup. Compares the `tenants:` map in `hearth.yaml`
-//! against the tenant records in storage and creates, updates, or
-//! archives tenants to match the declared state.
+//! Called once at startup. Compares the `realms:` map in `hearth.yaml`
+//! against the realm records in storage and creates, updates, or
+//! archives realms to match the declared state.
 //!
 //! # Rules
 //!
-//! 1. `config.tenants == None` AND no tenants in storage → create "default"
-//! 2. `config.tenants == None` AND tenants exist → skip (backward compat)
-//! 3. `config.tenants == Some(map)` →
+//! 1. `config.realms == None` AND no realms in storage → create "default"
+//! 2. `config.realms == None` AND realms exist → skip (backward compat)
+//! 3. `config.realms == Some(map)` →
 //!    - YAML entry not in storage → create
 //!    - YAML entry in storage → update config if changed, un-archive if Archived
-//!    - Storage tenant not in YAML → set status to Archived
+//!    - Storage realm not in YAML → set status to Archived
 
 use std::collections::HashMap;
 
@@ -19,38 +19,38 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::config::{
-    ApplicationYamlConfig, AuthConfig, Config, OrganizationYamlConfig, TenantYamlConfig,
+    ApplicationYamlConfig, AuthConfig, Config, OrganizationYamlConfig, RealmYamlConfig,
 };
-use crate::core::{ClientId, TenantId};
+use crate::core::{ClientId, RealmId};
 use crate::identity::error::IdentityError;
 use crate::identity::oidc::UpdateClientRequest;
 use crate::identity::{
-    CreateOrganizationRequest, CreateTenantRequest, IdentityEngine, ImportClientRequest,
-    OrganizationConfig, TenantConfig, TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest,
+    CreateOrganizationRequest, CreateRealmRequest, IdentityEngine, ImportClientRequest,
+    OrganizationConfig, RealmConfig, RealmStatus, UpdateOrganizationRequest, UpdateRealmRequest,
 };
 
-/// Report of what tenant reconciliation did.
+/// Report of what realm reconciliation did.
 #[derive(Debug, Default)]
 pub struct ReconcileReport {
-    /// Names of tenants created from YAML.
+    /// Names of realms created from YAML.
     pub created: Vec<String>,
-    /// Names of tenants whose config was updated from YAML.
+    /// Names of realms whose config was updated from YAML.
     pub updated: Vec<String>,
-    /// Names of tenants archived (removed from YAML).
+    /// Names of realms archived (removed from YAML).
     pub archived: Vec<String>,
-    /// Names of tenants un-archived (reappeared in YAML).
+    /// Names of realms un-archived (reappeared in YAML).
     pub unarchived: Vec<String>,
-    /// Application reconciliation results per tenant.
+    /// Application reconciliation results per realm.
     pub applications: Vec<AppReconcileEntry>,
-    /// Organization reconciliation results per tenant.
+    /// Organization reconciliation results per realm.
     pub organizations: Vec<OrgReconcileEntry>,
 }
 
 /// Reconciliation result for a single application.
 #[derive(Debug)]
 pub struct AppReconcileEntry {
-    /// Tenant name.
-    pub tenant: String,
+    /// Realm name.
+    pub realm: String,
     /// Application YAML key.
     pub app_key: String,
     /// What happened.
@@ -71,8 +71,8 @@ pub enum AppReconcileAction {
 /// Reconciliation result for a single organization.
 #[derive(Debug)]
 pub struct OrgReconcileEntry {
-    /// Tenant name.
-    pub tenant: String,
+    /// Realm name.
+    pub realm: String,
     /// Organization slug (YAML key).
     pub slug: String,
     /// What happened.
@@ -88,82 +88,82 @@ pub enum OrgReconcileAction {
     Updated,
 }
 
-/// Reconciles YAML-declared tenants with storage.
+/// Reconciles YAML-declared realms with storage.
 ///
 /// # Errors
 ///
 /// Returns `Err` if any storage operation fails. Partial reconciliation
-/// (some tenants created before a failure) is not rolled back — the
+/// (some realms created before a failure) is not rolled back — the
 /// caller should retry on next startup.
-pub fn reconcile_tenants(
+pub fn reconcile_realms(
     engine: &dyn IdentityEngine,
     config: &Config,
 ) -> Result<ReconcileReport, IdentityError> {
     let mut report = ReconcileReport::default();
 
-    match &config.tenants {
+    match &config.realms {
         None => {
-            // Check if any tenants exist
-            let page = engine.list_tenants(None, 1)?;
+            // Check if any realms exist
+            let page = engine.list_realms(None, 1)?;
             if page.items.is_empty() {
-                // No tenants and no YAML config → create "default"
-                let tenant_config = default_tenant_config(&config.auth, config);
-                engine.create_tenant(&CreateTenantRequest {
+                // No realms and no YAML config → create "default"
+                let realm_config = default_realm_config(&config.auth, config);
+                engine.create_realm(&CreateRealmRequest {
                     name: "default".to_string(),
-                    config: Some(tenant_config),
+                    config: Some(realm_config),
                 })?;
                 report.created.push("default".to_string());
             }
-            // If tenants exist, skip reconciliation (backward compat)
+            // If realms exist, skip reconciliation (backward compat)
         }
-        Some(yaml_tenants) => {
-            reconcile_declared_tenants(engine, yaml_tenants, config, &mut report)?;
+        Some(yaml_realms) => {
+            reconcile_declared_realms(engine, yaml_realms, config, &mut report)?;
         }
     }
 
     Ok(report)
 }
 
-/// Reconciles a declared `tenants:` map.
-fn reconcile_declared_tenants(
+/// Reconciles a declared `realms:` map.
+fn reconcile_declared_realms(
     engine: &dyn IdentityEngine,
-    yaml_tenants: &HashMap<String, TenantYamlConfig>,
+    yaml_realms: &HashMap<String, RealmYamlConfig>,
     config: &Config,
     report: &mut ReconcileReport,
 ) -> Result<(), IdentityError> {
-    // Build a set of YAML tenant names for archive detection
+    // Build a set of YAML realm names for archive detection
     let yaml_names: std::collections::HashSet<&str> =
-        yaml_tenants.keys().map(String::as_str).collect();
+        yaml_realms.keys().map(String::as_str).collect();
 
     // Process each YAML entry
-    for (name, yaml_cfg) in yaml_tenants {
-        let tenant_config = yaml_cfg.to_tenant_config(&config.auth, config.email.branding.as_ref());
+    for (name, yaml_cfg) in yaml_realms {
+        let realm_config = yaml_cfg.to_realm_config(&config.auth, config.email.branding.as_ref());
 
-        let tenant_id = match engine.get_tenant_by_name(name)? {
+        let realm_id = match engine.get_realm_by_name(name)? {
             None => {
-                // Create new tenant
-                let tenant = engine.create_tenant(&CreateTenantRequest {
+                // Create new realm
+                let realm = engine.create_realm(&CreateRealmRequest {
                     name: name.clone(),
-                    config: Some(tenant_config),
+                    config: Some(realm_config),
                 })?;
                 report.created.push(name.clone());
-                tenant.id().clone()
+                realm.id().clone()
             }
             Some(existing) => {
                 // Update if config changed or status needs un-archiving
-                let needs_config_update = existing.config() != &tenant_config;
-                let needs_unarchive = existing.status() == TenantStatus::Archived;
+                let needs_config_update = existing.config() != &realm_config;
+                let needs_unarchive = existing.status() == RealmStatus::Archived;
 
                 if needs_config_update || needs_unarchive {
-                    let mut update = UpdateTenantRequest::default();
+                    let mut update = UpdateRealmRequest::default();
                     if needs_config_update {
-                        update.config = Some(tenant_config);
+                        update.config = Some(realm_config);
                     }
                     if needs_unarchive {
-                        update.status = Some(TenantStatus::Active);
+                        update.status = Some(RealmStatus::Active);
                         report.unarchived.push(name.clone());
                     }
-                    engine.update_tenant(existing.id(), &update)?;
+                    engine.update_realm(existing.id(), &update)?;
                     if needs_config_update && !needs_unarchive {
                         report.updated.push(name.clone());
                     }
@@ -172,31 +172,31 @@ fn reconcile_declared_tenants(
             }
         };
 
-        // Reconcile applications declared under this tenant
+        // Reconcile applications declared under this realm
         if let Some(apps) = &yaml_cfg.applications {
-            reconcile_applications(engine, &tenant_id, name, apps, report)?;
+            reconcile_applications(engine, &realm_id, name, apps, report)?;
         }
 
-        // Reconcile organizations declared under this tenant
+        // Reconcile organizations declared under this realm
         if let Some(orgs) = &yaml_cfg.organizations {
-            reconcile_organizations(engine, &tenant_id, name, orgs, report)?;
+            reconcile_organizations(engine, &realm_id, name, orgs, report)?;
         }
     }
 
-    // Archive storage tenants not in YAML
+    // Archive storage realms not in YAML
     let mut cursor = None;
     loop {
-        let page = engine.list_tenants(cursor.as_deref(), 100)?;
-        for tenant in &page.items {
-            if !yaml_names.contains(tenant.name()) && tenant.status() != TenantStatus::Archived {
-                engine.update_tenant(
-                    tenant.id(),
-                    &UpdateTenantRequest {
-                        status: Some(TenantStatus::Archived),
+        let page = engine.list_realms(cursor.as_deref(), 100)?;
+        for realm in &page.items {
+            if !yaml_names.contains(realm.name()) && realm.status() != RealmStatus::Archived {
+                engine.update_realm(
+                    realm.id(),
+                    &UpdateRealmRequest {
+                        status: Some(RealmStatus::Archived),
                         ..Default::default()
                     },
                 )?;
-                report.archived.push(tenant.name().to_string());
+                report.archived.push(realm.name().to_string());
             }
         }
         match page.next_cursor {
@@ -208,10 +208,10 @@ fn reconcile_declared_tenants(
     Ok(())
 }
 
-/// Builds a `TenantConfig` from global auth defaults (used for the auto-created "default" tenant).
-fn default_tenant_config(auth: &AuthConfig, config: &Config) -> TenantConfig {
-    let yaml = TenantYamlConfig::default();
-    yaml.to_tenant_config(auth, config.email.branding.as_ref())
+/// Builds a `RealmConfig` from global auth defaults (used for the auto-created "default" realm).
+fn default_realm_config(auth: &AuthConfig, config: &Config) -> RealmConfig {
+    let yaml = RealmYamlConfig::default();
+    yaml.to_realm_config(auth, config.email.branding.as_ref())
 }
 
 /// UUID v5 namespace for deterministic application client IDs.
@@ -223,36 +223,36 @@ const APP_NAMESPACE: Uuid = Uuid::from_bytes([
     0x8b, 0x07, 0x4e, 0x8c, 0x3e, 0x6a, 0x5a, 0x8e, 0x96, 0x1d, 0x8f, 0x2b, 0xaa, 0xe7, 0x1b, 0xf4,
 ]);
 
-/// Generates a deterministic `ClientId` from tenant name and application key.
+/// Generates a deterministic `ClientId` from realm name and application key.
 ///
-/// Uses UUID v5 (SHA-1 + namespace) so the same `(tenant, app)` pair always
+/// Uses UUID v5 (SHA-1 + namespace) so the same `(realm, app)` pair always
 /// produces the same ID across server restarts.
-fn deterministic_client_id(tenant_name: &str, app_key: &str) -> ClientId {
-    let input = format!("{tenant_name}/{app_key}");
+fn deterministic_client_id(realm_name: &str, app_key: &str) -> ClientId {
+    let input = format!("{realm_name}/{app_key}");
     let id = Uuid::new_v5(&APP_NAMESPACE, input.as_bytes());
     ClientId::new(id)
 }
 
-/// Reconciles application declarations for a single tenant.
+/// Reconciles application declarations for a single realm.
 ///
-/// Called after the tenant itself has been reconciled (so `tenant_id` is valid).
+/// Called after the realm itself has been reconciled (so `realm_id` is valid).
 pub(crate) fn reconcile_applications(
     engine: &dyn IdentityEngine,
-    tenant_id: &TenantId,
-    tenant_name: &str,
+    realm_id: &RealmId,
+    realm_name: &str,
     apps: &HashMap<String, ApplicationYamlConfig>,
     report: &mut ReconcileReport,
 ) -> Result<(), IdentityError> {
     // Process each YAML application
     for (app_key, app_cfg) in apps {
-        let client_id = deterministic_client_id(tenant_name, app_key);
+        let client_id = deterministic_client_id(realm_name, app_key);
         let grant_types = app_cfg
             .grant_types
             .clone()
             .unwrap_or_else(|| vec!["authorization_code".to_string()]);
         let redirect_uris = app_cfg.redirect_uris.clone().unwrap_or_default();
 
-        match engine.get_client(tenant_id, &client_id) {
+        match engine.get_client(realm_id, &client_id) {
             Ok(Some(existing)) => {
                 // Client exists — update if changed
                 let name_changed = existing.client_name() != app_cfg.name;
@@ -261,7 +261,7 @@ pub(crate) fn reconcile_applications(
 
                 if name_changed || uris_changed || grants_changed {
                     engine.update_client(
-                        tenant_id,
+                        realm_id,
                         &client_id,
                         &UpdateClientRequest {
                             client_name: if name_changed {
@@ -282,12 +282,12 @@ pub(crate) fn reconcile_applications(
                         },
                     )?;
                     info!(
-                        tenant = tenant_name,
+                        realm = realm_name,
                         app = app_key,
                         "updated application from YAML"
                     );
                     report.applications.push(AppReconcileEntry {
-                        tenant: tenant_name.to_string(),
+                        realm: realm_name.to_string(),
                         app_key: app_key.clone(),
                         action: AppReconcileAction::Updated,
                     });
@@ -302,7 +302,7 @@ pub(crate) fn reconcile_applications(
                 };
 
                 engine.import_client(
-                    tenant_id,
+                    realm_id,
                     &ImportClientRequest {
                         id: Some(client_id),
                         client_name: app_cfg.name.clone(),
@@ -312,12 +312,12 @@ pub(crate) fn reconcile_applications(
                     },
                 )?;
                 info!(
-                    tenant = tenant_name,
+                    realm = realm_name,
                     app = app_key,
                     "created application from YAML"
                 );
                 report.applications.push(AppReconcileEntry {
-                    tenant: tenant_name.to_string(),
+                    realm: realm_name.to_string(),
                     app_key: app_key.clone(),
                     action: AppReconcileAction::Created,
                 });
@@ -326,7 +326,7 @@ pub(crate) fn reconcile_applications(
         }
     }
 
-    // Note: unlike tenants, applications removed from YAML are NOT
+    // Note: unlike realms, applications removed from YAML are NOT
     // automatically deleted. Deterministic UUIDs prevent us from reliably
     // distinguishing reconciliation-managed clients from manually-created
     // ones. Admins can delete orphaned clients via the Admin UI.
@@ -334,15 +334,15 @@ pub(crate) fn reconcile_applications(
     Ok(())
 }
 
-/// Reconciles organization declarations for a single tenant.
+/// Reconciles organization declarations for a single realm.
 ///
 /// The YAML key is used as the slug. Organizations are created if missing or
 /// updated if their name, description, or config have changed. Members and
 /// invitations are runtime-only and not managed by reconciliation.
 pub(crate) fn reconcile_organizations(
     engine: &dyn IdentityEngine,
-    tenant_id: &TenantId,
-    tenant_name: &str,
+    realm_id: &RealmId,
+    realm_name: &str,
     orgs: &HashMap<String, OrganizationYamlConfig>,
     report: &mut ReconcileReport,
 ) -> Result<(), IdentityError> {
@@ -352,7 +352,7 @@ pub(crate) fn reconcile_organizations(
         };
         let description = org_cfg.description.clone().unwrap_or_default();
 
-        if let Some(existing) = engine.get_organization_by_slug(tenant_id, slug)? {
+        if let Some(existing) = engine.get_organization_by_slug(realm_id, slug)? {
             // Update if name, description, or config changed
             let name_changed = existing.name() != org_cfg.name;
             let desc_changed = existing.description() != description;
@@ -360,7 +360,7 @@ pub(crate) fn reconcile_organizations(
 
             if name_changed || desc_changed || config_changed {
                 engine.update_organization(
-                    tenant_id,
+                    realm_id,
                     existing.id(),
                     &UpdateOrganizationRequest {
                         name: if name_changed {
@@ -382,12 +382,12 @@ pub(crate) fn reconcile_organizations(
                     },
                 )?;
                 info!(
-                    tenant = tenant_name,
+                    realm = realm_name,
                     org = slug,
                     "updated organization from YAML"
                 );
                 report.organizations.push(OrgReconcileEntry {
-                    tenant: tenant_name.to_string(),
+                    realm: realm_name.to_string(),
                     slug: slug.clone(),
                     action: OrgReconcileAction::Updated,
                 });
@@ -395,7 +395,7 @@ pub(crate) fn reconcile_organizations(
         } else {
             // Create new organization
             engine.create_organization(
-                tenant_id,
+                realm_id,
                 &CreateOrganizationRequest {
                     name: org_cfg.name.clone(),
                     slug: slug.clone(),
@@ -404,12 +404,12 @@ pub(crate) fn reconcile_organizations(
                 },
             )?;
             info!(
-                tenant = tenant_name,
+                realm = realm_name,
                 org = slug,
                 "created organization from YAML"
             );
             report.organizations.push(OrgReconcileEntry {
-                tenant: tenant_name.to_string(),
+                realm: realm_name.to_string(),
                 slug: slug.clone(),
                 action: OrgReconcileAction::Created,
             });

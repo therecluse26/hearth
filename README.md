@@ -20,16 +20,16 @@ Hearth is **one binary, one port, one config file, zero external dependencies**.
 
 A generic database has to serve every workload; an identity engine only has to serve one, and the shape of that workload is known. Hearth's storage engine is a hybrid built around those shapes:
 
-- **User profiles and credentials** — B-tree-like structures indexed by email, username, external ID, and tenant for point lookups.
+- **User profiles and credentials** — B-tree-like structures indexed by email, username, external ID, and realm for point lookups.
 - **Sessions** — time-partitioned, tuned for TTL-based expiration and recent-window scans.
 - **Zanzibar relationship tuples** — adjacency-list layout tuned for the exact traversal pattern of `Check` and `Expand`.
-- **Audit log** — append-only with a SHA-256 hash chain per tenant.
+- **Audit log** — append-only with a SHA-256 hash chain per realm.
 
 A **hot/cold tier** serves the working set from memory-mapped, cache-line-aligned structures and transparently demotes inactive records to on-disk SSTs, so a single node can manage datasets far larger than RAM without paying for it on every request.
 
 ### In-process authorization, not a network hop
 
-Because Zanzibar tuples live in the same storage engine as users, tenants, and sessions, **permission checks are in-process function calls, not network requests**. A `check()` does not serialize a payload, does not cross a socket, does not wait on a connection pool — it's a memory read against an adjacency list. This is the structural reason Hearth targets a sub-millisecond hot path: not runtime tuning, but one fewer network hop per permission decision. It's also why creating a user and assigning their initial roles is a single atomic storage write instead of a dual-write across two services.
+Because Zanzibar tuples live in the same storage engine as users, realms, and sessions, **permission checks are in-process function calls, not network requests**. A `check()` does not serialize a payload, does not cross a socket, does not wait on a connection pool — it's a memory read against an adjacency list. This is the structural reason Hearth targets a sub-millisecond hot path: not runtime tuning, but one fewer network hop per permission decision. It's also why creating a user and assigning their initial roles is a single atomic storage write instead of a dual-write across two services.
 
 ### Your data, your rules
 
@@ -51,8 +51,8 @@ Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home t
 - `check`, `expand`, `write_tuples`, `watch` with consistency tokens
 
 **Multi-tenancy**
-- Tenant-isolated keyspace (every key prefixed with `TenantId`)
-- Per-tenant Ed25519 signing keys with JWKS rotation
+- Realm-isolated keyspace (every key prefixed with `RealmId`)
+- Per-realm Ed25519 signing keys with JWKS rotation
 - Cascading deletion across users, sessions, credentials, OAuth clients, authz tuples, device codes, signing keys
 
 **Protocols**
@@ -64,7 +64,7 @@ Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home t
 - Single static binary
 - Embedded WAL + memtable + SST storage with hot/cold tiering
 - TLS 1.3 + mTLS, SIGHUP cert hot-reload, HTTP→HTTPS redirect
-- Audit log with SHA-256 hash chain and per-tenant integrity verification
+- Audit log with SHA-256 hash chain and per-realm integrity verification
 
 **Migration**
 - Keycloak realm-export import (`hearth migrate keycloak`) — users, clients, realm roles, and PBKDF2-SHA256 credentials imported natively so existing passwords keep working without a forced reset
@@ -79,7 +79,7 @@ Identity infrastructure has zero tolerance for data loss and low tolerance for i
 2. **Integration / black box** — a `TestHarness` runs the same suite in embedded *and* HTTP server modes.
 3. **Property** — `proptest`, 256 cases locally, 10,000+ in CI.
 4. **Fuzz** — `cargo-fuzz` against wire parsers (CBOR, protobuf, JWT, authenticator data).
-5. **Deterministic simulation** — `madsim` replays disk faults, WAL-tail corruption, network partitions, and clock skew from fixed seeds: [`tenant_crash`](simulation/src/tests/tenant_crash.rs), [`audit_crash`](simulation/src/tests/audit_crash.rs), [`watch_partition`](simulation/src/tests/watch_partition.rs), [`cache_stampede`](simulation/src/tests/cache_stampede.rs), [`tenant_concurrent_io`](simulation/src/tests/tenant_concurrent_io.rs).
+5. **Deterministic simulation** — `madsim` replays disk faults, WAL-tail corruption, network partitions, and clock skew from fixed seeds: [`realm_crash`](simulation/src/tests/realm_crash.rs), [`audit_crash`](simulation/src/tests/audit_crash.rs), [`watch_partition`](simulation/src/tests/watch_partition.rs), [`cache_stampede`](simulation/src/tests/cache_stampede.rs), [`realm_concurrent_io`](simulation/src/tests/realm_concurrent_io.rs).
 6. **Adversarial** — timing attacks, brute-force lockout, enumeration resistance, TLS downgrade, privilege escalation.
 7. **Conformance** — OIDC Core 1.0, Discovery 1.0, Dynamic Client Registration, WebAuthn Level 2 ceremony.
 8. **Benchmarks** — `criterion`, with regression gating in CI.
@@ -125,7 +125,7 @@ curl -fsS http://127.0.0.1:8420/.well-known/openid-configuration | head
 
 ## Bootstrap an Admin (dev mode only)
 
-Dev mode exposes a convenience endpoint that creates a tenant, an admin user, a session, the Zanzibar `hearth#admin` tuple, and issues tokens — everything you need to try the OAuth flow locally:
+Dev mode exposes a convenience endpoint that creates a realm, an admin user, a session, the Zanzibar `hearth#admin` tuple, and issues tokens — everything you need to try the OAuth flow locally:
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:8420/admin/bootstrap
@@ -135,7 +135,7 @@ Response (JSON):
 
 ```json
 {
-  "tenant_id":    "<uuid>",
+  "realm_id":    "<uuid>",
   "user_id":      "<uuid>",
   "access_token": "<jwt>",
   "refresh_token":"<opaque>"
@@ -226,19 +226,19 @@ branding:
   custom_css: /etc/hearth/brand.css
 ```
 
-### Per-tenant themes
+### Per-realm themes
 
-Each tenant can override the global theme independently:
+Each realm can override the global theme independently:
 
 ```yaml
-tenants:
+realms:
   acme:
     web:
       theme: cloud
-      custom_css: /etc/hearth/tenants/acme.css
+      custom_css: /etc/hearth/realms/acme.css
 ```
 
-The per-tenant theme CSS is served from `GET /ui/static/tenant-theme/{tenant_id}` and is cached with `ETag` support.
+The per-realm theme CSS is served from `GET /ui/static/realm-theme/{realm_id}` and is cached with `ETag` support.
 
 ### CSS custom property API
 
@@ -285,13 +285,13 @@ Container config lives in [`deploy/hearth.docker.yaml`](deploy/hearth.docker.yam
 
 ```text
 hearth serve [--dev] [-c, --config <path>] [--port <u16>] [--bind <addr>]
-hearth tenant create
-hearth app create --server <url> --tenant_id <uuid> --name <name> --redirect_uri <url>
-hearth migrate keycloak --file <export.json> [--data-dir <path>] [--tenant <uuid>] [--dry-run]
+hearth realm create
+hearth app create --server <url> --realm_id <uuid> --name <name> --redirect_uri <url>
+hearth migrate keycloak --file <export.json> [--data-dir <path>] [--realm <uuid>] [--dry-run]
 ```
 
 - **`serve`** starts the HTTP(S) server. `--dev` implies in-memory storage, relaxed validation, and the bootstrap endpoint.
-- **`tenant create`** prints `{"tenant_id": "<uuid>"}` on stdout. It's a pure UUID generator and does not require a running server.
+- **`realm create`** prints `{"realm_id": "<uuid>"}` on stdout. It's a pure UUID generator and does not require a running server.
 - **`app create`** registers an OAuth 2.0 client by POSTing to `/clients` on a running Hearth server. The server URL must be reachable over HTTP.
 - **`migrate keycloak`** imports a Keycloak realm export directly into the embedded store. Operates on the data directory offline (no running server needed) — see [Migrating from Keycloak](#migrating-from-keycloak).
 
@@ -299,22 +299,22 @@ hearth migrate keycloak --file <export.json> [--data-dir <path>] [--tenant <uuid
 
 ## Integrating: Authorization Code Flow (end-to-end)
 
-Every step below uses live HTTP endpoints. Multi-tenancy is header-based: every request carries `X-Tenant-ID: <tenant_uuid>`.
+Every step below uses live HTTP endpoints. Multi-tenancy is header-based: every request carries `X-Realm-ID: <realm_uuid>`.
 
-### 1. Create a tenant
+### 1. Create a realm
 
 ```bash
-TENANT_ID=$(./target/release/hearth tenant create | jq -r .tenant_id)
+REALM_ID=$(./target/release/hearth realm create | jq -r .realm_id)
 ```
 
-(In dev mode you can skip this and use the tenant from `/admin/bootstrap`.)
+(In dev mode you can skip this and use the realm from `/admin/bootstrap`.)
 
 ### 2. Register a client
 
 ```bash
 ./target/release/hearth app create \
   --server http://127.0.0.1:8420 \
-  --tenant_id "$TENANT_ID" \
+  --realm_id "$REALM_ID" \
   --name "my-app" \
   --redirect_uri "https://myapp.example.com/callback"
 ```
@@ -325,7 +325,7 @@ Response includes `client_id` and `client_secret`. Save both.
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:8420/authorize \
-  -H "X-Tenant-ID: $TENANT_ID" \
+  -H "X-Realm-ID: $REALM_ID" \
   -H "Content-Type: application/json" \
   -d '{
     "client_id":            "<client_id>",
@@ -345,7 +345,7 @@ Returns an authorization `code`.
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:8420/token \
-  -H "X-Tenant-ID: $TENANT_ID" \
+  -H "X-Realm-ID: $REALM_ID" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=authorization_code&code=<code>&client_id=<cid>&client_secret=<secret>&redirect_uri=https://myapp.example.com/callback&code_verifier=<verifier>"
 ```
@@ -356,7 +356,7 @@ Returns `access_token`, `id_token`, `refresh_token`, `expires_in`, `token_type=B
 
 ```bash
 curl -fsS http://127.0.0.1:8420/userinfo \
-  -H "X-Tenant-ID: $TENANT_ID" \
+  -H "X-Realm-ID: $REALM_ID" \
   -H "Authorization: Bearer <access_token>"
 ```
 
@@ -366,7 +366,7 @@ Returns OIDC claims filtered by the granted scopes (`sub` always; `profile` → 
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:8420/token \
-  -H "X-Tenant-ID: $TENANT_ID" \
+  -H "X-Realm-ID: $REALM_ID" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=refresh_token&refresh_token=<rt>&client_id=<cid>&client_secret=<secret>"
 ```
@@ -381,7 +381,7 @@ Refresh tokens rotate on use. Presenting an already-rotated refresh token trigge
 |---|---|---|---|
 | Discovery | `GET` | `/health` | Liveness probe |
 | Discovery | `GET` | `/.well-known/openid-configuration` | OIDC Discovery 1.0 metadata |
-| Discovery | `GET` | `/jwks` | Per-tenant public signing keys |
+| Discovery | `GET` | `/jwks` | Per-realm public signing keys |
 | OAuth/OIDC | `POST` | `/authorize` | Authorization request |
 | OAuth/OIDC | `POST` | `/token` | Token exchange (code / refresh / client_credentials / device_code) |
 | OAuth/OIDC | `POST` | `/revoke` | RFC 7009 revocation |
@@ -393,13 +393,13 @@ Refresh tokens rotate on use. Presenting an already-rotated refresh token trigge
 | Admin | `GET`/`POST` | `/admin/users` | List / create users |
 | Admin | `POST` | `/admin/users/bulk` | Bulk user creation |
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/users/{id}` | CRUD a user |
-| Admin | `GET`/`POST` | `/admin/tenants` | List / create tenants |
-| Admin | `GET`/`PUT`/`DELETE` | `/admin/tenants/{id}` | CRUD a tenant |
+| Admin | `GET`/`POST` | `/admin/realms` | List / create realms |
+| Admin | `GET`/`PUT`/`DELETE` | `/admin/realms/{id}` | CRUD a realm |
 | Admin | `GET`/`POST` | `/admin/applications` | List / register OAuth clients |
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/applications/{id}` | CRUD a client |
 | Admin | `POST` | `/admin/bootstrap` | Dev-only bootstrap (404 in prod) |
 
-All `/admin/*` routes require a bearer token whose subject has the Zanzibar tuple `hearth#admin@user:<uuid>` for the target tenant.
+All `/admin/*` routes require a bearer token whose subject has the Zanzibar tuple `hearth#admin@user:<uuid>` for the target realm.
 
 ---
 
@@ -411,14 +411,14 @@ Two first-party SDKs live under [`sdks/`](sdks):
 
 ```ts
 import { HearthClient } from "@hearth/sdk";
-const hearth = new HearthClient({ baseUrl: "https://auth.example.com", tenantId });
+const hearth = new HearthClient({ baseUrl: "https://auth.example.com", realmId });
 ```
 
 **Go** — [`sdks/go/`](sdks/go) (module `github.com/anthropics/hearth/sdks/go`)
 
 ```go
 import "github.com/anthropics/hearth/sdks/go/hearth"
-client := hearth.NewClient("https://auth.example.com", tenantID)
+client := hearth.NewClient("https://auth.example.com", realmID)
 ```
 
 Dedicated SDK READMEs with full API docs are planned.
@@ -465,13 +465,13 @@ Drop `--dry-run` and point `--data-dir` at the directory `hearth serve` will lat
   --data-dir ./data
 ```
 
-Optionally pass `--tenant <uuid>` to force a specific Hearth `TenantId` (defaults to the realm's own UUID from the export).
+Optionally pass `--realm <uuid>` to force a specific Hearth `RealmId` (defaults to the realm's own UUID from the export).
 
 ### What gets imported
 
 | Keycloak                     | Hearth                                                     |
 |------------------------------|------------------------------------------------------------|
-| realm (`id`, `realm`)        | tenant                                                     |
+| realm (`id`, `realm`)        | realm                                                     |
 | user (`id`, `email`, …)      | user (Keycloak UUID preserved when valid)                  |
 | user → `realmRoles`          | Zanzibar tuple `realm:<tid>#<role>@user:<uid>`             |
 | client + `secret`            | `OAuthClient` (secret re-hashed with Argon2id on import)   |
@@ -490,7 +490,7 @@ Groups, composite roles, client roles, federated identity providers, and require
 |---|---|---|
 | Core | `src/core/` | Shared types and traits only. No logic, no state. |
 | Protocol | `src/protocol/` | Stateless wire adapters (REST, gRPC, OIDC, SAML, SCIM). |
-| Identity | `src/identity/` | Users, credentials, sessions, tenants, tokens. |
+| Identity | `src/identity/` | Users, credentials, sessions, realms, tokens. |
 | Authorization | `src/authz/` | Zanzibar tuples: `check`, `expand`, `write_tuples`, `watch`. |
 | Cluster | `src/cluster/` | Raft consensus (`openraft`). Invisible in single-node mode. |
 | Storage | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |

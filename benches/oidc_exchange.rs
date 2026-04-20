@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use hearth::core::{Clock, SystemClock, TenantId};
+use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     AuthorizationRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig,
     IdentityEngine, RegisterClientRequest, TokenExchangeRequest,
@@ -18,7 +18,7 @@ use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 fn setup_oidc() -> (
     tempfile::TempDir,
     EmbeddedIdentityEngine,
-    TenantId,
+    RealmId,
     hearth::core::ClientId,
     hearth::core::UserId,
 ) {
@@ -32,11 +32,11 @@ fn setup_oidc() -> (
         IdentityConfig::default(),
     )
     .expect("engine creation");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let client = engine
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "Bench App".to_string(),
                 redirect_uris: vec!["https://bench.example.com/callback".to_string()],
@@ -48,7 +48,7 @@ fn setup_oidc() -> (
 
     let user = engine
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "bench-oidc@example.com".to_string(),
                 display_name: "Bench OIDC User".to_string(),
@@ -59,7 +59,7 @@ fn setup_oidc() -> (
     (
         dir,
         engine,
-        tenant,
+        realm,
         client.client_id().clone(),
         user.id().clone(),
     )
@@ -67,14 +67,14 @@ fn setup_oidc() -> (
 
 /// Benchmarks the full authorize + exchange flow.
 fn bench_auth_code_exchange(c: &mut Criterion) {
-    let (_dir, engine, tenant, client_id, user_id) = setup_oidc();
+    let (_dir, engine, realm, client_id, user_id) = setup_oidc();
 
     c.bench_function("oidc_auth_code_exchange", |b| {
         b.iter(|| {
             // Authorize: generate code
             let auth = engine
                 .authorize(
-                    &tenant,
+                    &realm,
                     &AuthorizationRequest {
                         client_id: client_id.clone(),
                         redirect_uri: "https://bench.example.com/callback".to_string(),
@@ -91,7 +91,7 @@ fn bench_auth_code_exchange(c: &mut Criterion) {
 
             // Exchange: trade code for tokens
             let result = engine.exchange_authorization_code(
-                &tenant,
+                &realm,
                 &TokenExchangeRequest {
                     client_id: client_id.clone(),
                     code: auth.code().to_string(),

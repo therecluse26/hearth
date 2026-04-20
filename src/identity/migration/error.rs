@@ -28,7 +28,7 @@ pub enum MigrationError {
         /// Algorithm name as reported by the source system.
         algorithm: String,
     },
-    /// Underlying identity-engine error while writing a tenant, user, or
+    /// Underlying identity-engine error while writing a realm, user, or
     /// client.
     Identity(IdentityError),
     /// Underlying authorization-engine error while writing role tuples.

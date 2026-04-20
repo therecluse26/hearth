@@ -62,7 +62,7 @@ struct AccountIndexTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// A row in the passkey credentials table on the account page.
@@ -103,7 +103,7 @@ impl AccountIndexTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -112,7 +112,7 @@ impl AccountIndexTemplate {
 pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSession) -> Response {
     let mfa_enabled = state
         .identity
-        .mfa_enabled(&session.tenant_id, &session.user_id)
+        .mfa_enabled(&session.realm_id, &session.user_id)
         .unwrap_or(false);
     let passkey_credentials = load_passkey_rows(&state, &session);
     let admin = super::handlers::is_admin(&state, &session);
@@ -127,7 +127,7 @@ pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSessio
         state.logo_url.clone(),
     );
     tmpl.theme_css.clone_from(&state.theme_css);
-    tmpl.tenant_theme_css = state.tenant_theme_css();
+    tmpl.realm_theme_css = state.realm_theme_css();
     render(&tmpl)
 }
 
@@ -180,7 +180,7 @@ pub async fn account_change_password(
 
     match state
         .identity
-        .change_password(&session.tenant_id, &session.user_id, &current, &new_pw)
+        .change_password(&session.realm_id, &session.user_id, &current, &new_pw)
     {
         Ok(()) => {
             // Audit the change (best-effort — never block the response).
@@ -218,7 +218,7 @@ fn redirect_to_account() -> Response {
 fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> Response {
     let mfa_enabled = state
         .identity
-        .mfa_enabled(&session.tenant_id, &session.user_id)
+        .mfa_enabled(&session.realm_id, &session.user_id)
         .unwrap_or(false);
     let passkey_credentials = load_passkey_rows(state, session);
     let admin = super::handlers::is_admin(state, session);
@@ -233,7 +233,7 @@ fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &
         state.logo_url.clone(),
     );
     tmpl.theme_css.clone_from(&state.theme_css);
-    tmpl.tenant_theme_css = state.tenant_theme_css();
+    tmpl.realm_theme_css = state.realm_theme_css();
     render(&tmpl)
 }
 
@@ -241,7 +241,7 @@ fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &
 fn render_with_flash(state: &Arc<WebState>, session: &UiSession, flash: Flash) -> Response {
     let mfa_enabled = state
         .identity
-        .mfa_enabled(&session.tenant_id, &session.user_id)
+        .mfa_enabled(&session.realm_id, &session.user_id)
         .unwrap_or(false);
     let passkey_credentials = load_passkey_rows(state, session);
     let admin = super::handlers::is_admin(state, session);
@@ -256,7 +256,7 @@ fn render_with_flash(state: &Arc<WebState>, session: &UiSession, flash: Flash) -
         state.logo_url.clone(),
     );
     tmpl.theme_css.clone_from(&state.theme_css);
-    tmpl.tenant_theme_css = state.tenant_theme_css();
+    tmpl.realm_theme_css = state.realm_theme_css();
     render(&tmpl)
 }
 
@@ -268,7 +268,7 @@ fn audit_password_changed(
 ) -> Result<(), crate::audit::AuditError> {
     use crate::audit::{AuditAction, CreateAuditEvent};
     state.audit.append(&CreateAuditEvent {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action: AuditAction::CredentialChanged,
         resource_type: "user".to_string(),
@@ -342,7 +342,7 @@ struct TotpEnrollTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 impl TotpEnrollTemplate {
@@ -376,7 +376,7 @@ impl TotpEnrollTemplate {
             product_name,
             logo_url,
             theme_css: String::new(),
-            tenant_theme_css: None,
+            realm_theme_css: None,
         }
     }
 }
@@ -392,7 +392,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
     let admin = super::handlers::is_admin(&state, &session);
     let enabled = state
         .identity
-        .mfa_enabled(&session.tenant_id, &session.user_id)
+        .mfa_enabled(&session.realm_id, &session.user_id)
         .unwrap_or(false);
 
     if enabled {
@@ -409,15 +409,15 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
             state.logo_url.clone(),
         );
         tmpl.theme_css.clone_from(&state.theme_css);
-        tmpl.tenant_theme_css = state.tenant_theme_css();
+        tmpl.realm_theme_css = state.realm_theme_css();
         return render(&tmpl);
     }
 
-    let tenant_id = session.tenant_id.clone();
+    let realm_id = session.realm_id.clone();
     let user_id = session.user_id.clone();
     let identity = state.identity.clone();
     let enroll_result =
-        tokio::task::spawn_blocking(move || identity.enroll_totp(&tenant_id, &user_id)).await;
+        tokio::task::spawn_blocking(move || identity.enroll_totp(&realm_id, &user_id)).await;
 
     let enroll_result = match enroll_result {
         Ok(r) => r,
@@ -443,7 +443,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 state.logo_url.clone(),
             );
             tmpl.theme_css.clone_from(&state.theme_css);
-            tmpl.tenant_theme_css = state.tenant_theme_css();
+            tmpl.realm_theme_css = state.realm_theme_css();
             render(&tmpl)
         }
         Err(IdentityError::MfaAlreadyEnabled) => {
@@ -460,7 +460,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 state.logo_url.clone(),
             );
             tmpl.theme_css.clone_from(&state.theme_css);
-            tmpl.tenant_theme_css = state.tenant_theme_css();
+            tmpl.realm_theme_css = state.realm_theme_css();
             render(&tmpl)
         }
         Err(e) => {
@@ -478,7 +478,7 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
                 state.logo_url.clone(),
             );
             tmpl.theme_css.clone_from(&state.theme_css);
-            tmpl.tenant_theme_css = state.tenant_theme_css();
+            tmpl.realm_theme_css = state.realm_theme_css();
             render(&tmpl)
         }
     }
@@ -505,12 +505,12 @@ pub async fn totp_activate(
         return resp;
     }
 
-    let tenant_id = session.tenant_id.clone();
+    let realm_id = session.realm_id.clone();
     let user_id = session.user_id.clone();
     let code = form.code.trim().to_string();
     let identity = state.identity.clone();
     let verify_result = tokio::task::spawn_blocking(move || {
-        identity.verify_totp_enrollment(&tenant_id, &user_id, &code)
+        identity.verify_totp_enrollment(&realm_id, &user_id, &code)
     })
     .await;
 
@@ -565,7 +565,7 @@ pub async fn totp_disable(
 
     match state
         .identity
-        .disable_mfa(&session.tenant_id, &session.user_id)
+        .disable_mfa(&session.realm_id, &session.user_id)
     {
         Ok(()) | Err(IdentityError::MfaNotEnabled) => {
             if let Err(e) = audit_mfa_event(&state, &session, "mfa_disable") {
@@ -587,7 +587,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
     let admin = super::handlers::is_admin(state, session);
     let enabled = state
         .identity
-        .mfa_enabled(&session.tenant_id, &session.user_id)
+        .mfa_enabled(&session.realm_id, &session.user_id)
         .unwrap_or(false);
 
     // When enabled = true the activation form is not shown; in that
@@ -607,7 +607,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
             state.logo_url.clone(),
         );
         tmpl.theme_css.clone_from(&state.theme_css);
-        tmpl.tenant_theme_css = state.tenant_theme_css();
+        tmpl.realm_theme_css = state.realm_theme_css();
         return render(&tmpl);
     }
 
@@ -627,7 +627,7 @@ fn render_totp_error(state: &Arc<WebState>, session: &UiSession, msg: &str) -> R
         state.logo_url.clone(),
     );
     tmpl.theme_css.clone_from(&state.theme_css);
-    tmpl.tenant_theme_css = state.tenant_theme_css();
+    tmpl.realm_theme_css = state.realm_theme_css();
     render(&tmpl)
 }
 
@@ -640,7 +640,7 @@ fn audit_mfa_event(
 ) -> Result<(), crate::audit::AuditError> {
     use crate::audit::{AuditAction, CreateAuditEvent};
     state.audit.append(&CreateAuditEvent {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action: AuditAction::CredentialChanged,
         resource_type: "user".to_string(),
@@ -658,7 +658,7 @@ fn audit_mfa_event(
 fn load_passkey_rows(state: &Arc<WebState>, session: &UiSession) -> Vec<PasskeyRow> {
     state
         .identity
-        .list_webauthn_credentials(&session.tenant_id, &session.user_id)
+        .list_webauthn_credentials(&session.realm_id, &session.user_id)
         .unwrap_or_default()
         .iter()
         .map(|c| {
@@ -707,7 +707,7 @@ pub async fn passkey_register_begin(
 
     match state
         .identity
-        .start_webauthn_registration(&session.tenant_id, &session.user_id, &options)
+        .start_webauthn_registration(&session.realm_id, &session.user_id, &options)
     {
         Ok(challenge) => {
             let challenge_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge);
@@ -788,7 +788,7 @@ pub async fn passkey_register_complete(
     let origin = format!("{scheme}://{host_str}");
 
     match state.identity.complete_webauthn_registration(
-        &session.tenant_id,
+        &session.realm_id,
         &session.user_id,
         &client_data_json,
         &attestation_object,
@@ -836,7 +836,7 @@ pub async fn passkey_delete(
     };
 
     match state.identity.revoke_webauthn_credential(
-        &session.tenant_id,
+        &session.realm_id,
         &session.user_id,
         &cred_id_bytes,
     ) {

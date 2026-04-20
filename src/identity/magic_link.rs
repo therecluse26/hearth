@@ -28,7 +28,7 @@ pub(crate) const MAGIC_LINK_TOKEN_BYTES: usize = 32;
 
 /// Stored state for a pending magic link.
 ///
-/// Persisted under `magic:link:{sha256_hex_of_token}` within the tenant's
+/// Persisted under `magic:link:{sha256_hex_of_token}` within the realm's
 /// key space. The plaintext token is never stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StoredMagicLink {
@@ -45,7 +45,7 @@ pub(crate) struct StoredMagicLink {
 
 /// Stored state for a pending password reset token.
 ///
-/// Persisted under `rst:token:{sha256_hex_of_token}` within the tenant's
+/// Persisted under `rst:token:{sha256_hex_of_token}` within the realm's
 /// key space. The plaintext token is never stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StoredPasswordReset {

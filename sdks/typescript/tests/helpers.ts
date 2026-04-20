@@ -78,7 +78,7 @@ export async function startServer(): Promise<TestServer> {
   const bootstrap = await HearthClient.bootstrap(baseUrl);
   const client = new HearthClient({
     baseUrl,
-    tenantId: bootstrap.tenant_id,
+    realmId: bootstrap.realm_id,
   });
 
   return { port, baseUrl, process: proc, bootstrap, client };

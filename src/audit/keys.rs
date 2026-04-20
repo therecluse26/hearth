@@ -1,7 +1,7 @@
 //! Storage key encoding for audit log records.
 //!
 //! Audit events are stored with time-ordered keys for efficient range scans.
-//! All keys are tenant-scoped via the `StorageEngine`'s `TenantId` requirement.
+//! All keys are realm-scoped via the `StorageEngine`'s `RealmId` requirement.
 //!
 //! Indexes maintained:
 //!

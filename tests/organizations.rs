@@ -7,19 +7,19 @@ mod common;
 
 use hearth::core::OrganizationId;
 use hearth::identity::{
-    CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest, CreateUserRequest,
+    CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest,
     IdentityEngine, OrganizationConfig, OrganizationRole, OrganizationStatus,
     UpdateOrganizationRequest,
 };
 
-/// Helper: creates a tenant and returns its ID for org tests.
-fn setup_tenant(identity: &dyn IdentityEngine) -> hearth::core::TenantId {
+/// Helper: creates a realm and returns its ID for org tests.
+fn setup_realm(identity: &dyn IdentityEngine) -> hearth::core::RealmId {
     identity
-        .create_tenant(&CreateTenantRequest {
-            name: "Org Test Tenant".to_string(),
+        .create_realm(&CreateRealmRequest {
+            name: "Org Test Realm".to_string(),
             config: None,
         })
-        .expect("create tenant")
+        .expect("create realm")
         .id()
         .clone()
 }
@@ -30,12 +30,12 @@ fn setup_tenant(identity: &dyn IdentityEngine) -> hearth::core::TenantId {
 async fn full_organization_lifecycle() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     // 1. Create organization
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Acme Corp".to_string(),
                 slug: "acme-corp".to_string(),
@@ -55,14 +55,14 @@ async fn full_organization_lifecycle() {
 
     // 2. Get by ID
     let fetched = identity
-        .get_organization(&tenant_id, org.id())
+        .get_organization(&realm_id, org.id())
         .expect("get org")
         .expect("org should exist");
     assert_eq!(fetched.name(), "Acme Corp");
 
     // 3. Get by slug
     let by_slug = identity
-        .get_organization_by_slug(&tenant_id, "acme-corp")
+        .get_organization_by_slug(&realm_id, "acme-corp")
         .expect("get by slug")
         .expect("org should exist");
     assert_eq!(by_slug.id(), org.id());
@@ -70,7 +70,7 @@ async fn full_organization_lifecycle() {
     // 4. Update
     let updated = identity
         .update_organization(
-            &tenant_id,
+            &realm_id,
             org.id(),
             &UpdateOrganizationRequest {
                 name: Some("Acme Corporation".to_string()),
@@ -84,27 +84,27 @@ async fn full_organization_lifecycle() {
 
     // 5. List organizations
     let page = identity
-        .list_organizations(&tenant_id, None, 10)
+        .list_organizations(&realm_id, None, 10)
         .expect("list orgs");
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].id(), org.id());
 
     // 6. Delete
     identity
-        .delete_organization(&tenant_id, org.id())
+        .delete_organization(&realm_id, org.id())
         .expect("delete org");
 
     // 7. Verify cleanup
     assert!(
         identity
-            .get_organization(&tenant_id, org.id())
+            .get_organization(&realm_id, org.id())
             .expect("get")
             .is_none(),
         "org should be gone"
     );
     assert!(
         identity
-            .get_organization_by_slug(&tenant_id, "acme-corp")
+            .get_organization_by_slug(&realm_id, "acme-corp")
             .expect("get by slug")
             .is_none(),
         "slug index should be gone"
@@ -117,12 +117,12 @@ async fn full_organization_lifecycle() {
 async fn membership_lifecycle() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     // Create org
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Membership Org".to_string(),
                 slug: "membership-org".to_string(),
@@ -135,7 +135,7 @@ async fn membership_lifecycle() {
     // Create users
     let alice = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "alice@test.com".to_string(),
                 display_name: "Alice".to_string(),
@@ -145,7 +145,7 @@ async fn membership_lifecycle() {
 
     let bob = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "bob@test.com".to_string(),
                 display_name: "Bob".to_string(),
@@ -155,51 +155,51 @@ async fn membership_lifecycle() {
 
     // Add alice as Owner
     let alice_membership = identity
-        .add_member(&tenant_id, org.id(), alice.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), alice.id(), OrganizationRole::Owner)
         .expect("add alice");
     assert_eq!(alice_membership.role(), OrganizationRole::Owner);
 
     // Add bob as Member
     let bob_membership = identity
-        .add_member(&tenant_id, org.id(), bob.id(), OrganizationRole::Member)
+        .add_member(&realm_id, org.id(), bob.id(), OrganizationRole::Member)
         .expect("add bob");
     assert_eq!(bob_membership.role(), OrganizationRole::Member);
 
     // List members
     let members = identity
-        .list_members(&tenant_id, org.id(), None, 10)
+        .list_members(&realm_id, org.id(), None, 10)
         .expect("list members");
     assert_eq!(members.items.len(), 2);
 
     // List user's organizations
     let alice_orgs = identity
-        .list_user_organizations(&tenant_id, alice.id(), None, 10)
+        .list_user_organizations(&realm_id, alice.id(), None, 10)
         .expect("list alice orgs");
     assert_eq!(alice_orgs.items.len(), 1);
     assert_eq!(alice_orgs.items[0].org_id(), org.id());
 
     // Update bob's role to Admin
     let updated = identity
-        .update_member_role(&tenant_id, org.id(), bob.id(), OrganizationRole::Admin)
+        .update_member_role(&realm_id, org.id(), bob.id(), OrganizationRole::Admin)
         .expect("update bob role");
     assert_eq!(updated.role(), OrganizationRole::Admin);
 
     // Get specific membership
     let membership = identity
-        .get_membership(&tenant_id, org.id(), bob.id())
+        .get_membership(&realm_id, org.id(), bob.id())
         .expect("get membership")
         .expect("membership should exist");
     assert_eq!(membership.role(), OrganizationRole::Admin);
 
     // Remove bob
     identity
-        .remove_member(&tenant_id, org.id(), bob.id())
+        .remove_member(&realm_id, org.id(), bob.id())
         .expect("remove bob");
 
     // Verify bob is gone
     assert!(
         identity
-            .get_membership(&tenant_id, org.id(), bob.id())
+            .get_membership(&realm_id, org.id(), bob.id())
             .expect("get")
             .is_none(),
         "bob membership should be gone"
@@ -207,7 +207,7 @@ async fn membership_lifecycle() {
 
     // Verify reverse index is also cleaned
     let bob_orgs = identity
-        .list_user_organizations(&tenant_id, bob.id(), None, 10)
+        .list_user_organizations(&realm_id, bob.id(), None, 10)
         .expect("list bob orgs");
     assert_eq!(bob_orgs.items.len(), 0);
 }
@@ -218,12 +218,12 @@ async fn membership_lifecycle() {
 async fn invitation_e2e_flow() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     // Setup: org + admin user
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Invitation Org".to_string(),
                 slug: "invitation-org".to_string(),
@@ -235,7 +235,7 @@ async fn invitation_e2e_flow() {
 
     let admin = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "admin@test.com".to_string(),
                 display_name: "Admin".to_string(),
@@ -244,13 +244,13 @@ async fn invitation_e2e_flow() {
         .expect("create admin");
 
     identity
-        .add_member(&tenant_id, org.id(), admin.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), admin.id(), OrganizationRole::Owner)
         .expect("add admin");
 
     // 1. Create invitation
     let (invitation, token) = identity
         .create_invitation(
-            &tenant_id,
+            &realm_id,
             &CreateInvitationRequest {
                 org_id: org.id().clone(),
                 email: "newuser@test.com".to_string(),
@@ -266,33 +266,33 @@ async fn invitation_e2e_flow() {
 
     // 2. List invitations
     let invitations = identity
-        .list_invitations(&tenant_id, org.id(), None, 10)
+        .list_invitations(&realm_id, org.id(), None, 10)
         .expect("list invitations");
     assert_eq!(invitations.items.len(), 1);
 
     // 3. Accept invitation (auto-creates user)
     let membership = identity
-        .accept_invitation(&tenant_id, &token)
+        .accept_invitation(&realm_id, &token)
         .expect("accept invitation");
     assert_eq!(membership.org_id(), org.id());
     assert_eq!(membership.role(), OrganizationRole::Member);
 
     // 4. Verify user was created
     let new_user = identity
-        .get_user_by_email(&tenant_id, "newuser@test.com")
+        .get_user_by_email(&realm_id, "newuser@test.com")
         .expect("get user")
         .expect("user should exist");
     assert_eq!(new_user.email(), "newuser@test.com");
 
     // 5. Verify membership exists
     let m = identity
-        .get_membership(&tenant_id, org.id(), new_user.id())
+        .get_membership(&realm_id, org.id(), new_user.id())
         .expect("get")
         .expect("membership should exist");
     assert_eq!(m.role(), OrganizationRole::Member);
 
     // 6. Verify token can't be reused
-    let reuse_result = identity.accept_invitation(&tenant_id, &token);
+    let reuse_result = identity.accept_invitation(&realm_id, &token);
     assert!(
         reuse_result.is_err(),
         "token should not be reusable (already accepted)"
@@ -305,11 +305,11 @@ async fn invitation_e2e_flow() {
 async fn cascading_delete_org_cleans_memberships_and_invitations() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Cascade Org".to_string(),
                 slug: "cascade-org".to_string(),
@@ -321,7 +321,7 @@ async fn cascading_delete_org_cleans_memberships_and_invitations() {
 
     let user = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "cascade@test.com".to_string(),
                 display_name: "Cascade User".to_string(),
@@ -331,13 +331,13 @@ async fn cascading_delete_org_cleans_memberships_and_invitations() {
 
     // Add member
     identity
-        .add_member(&tenant_id, org.id(), user.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), user.id(), OrganizationRole::Owner)
         .expect("add member");
 
     // Create invitation
     let (_inv, _token) = identity
         .create_invitation(
-            &tenant_id,
+            &realm_id,
             &CreateInvitationRequest {
                 org_id: org.id().clone(),
                 email: "pending@test.com".to_string(),
@@ -349,19 +349,19 @@ async fn cascading_delete_org_cleans_memberships_and_invitations() {
 
     // Delete org
     identity
-        .delete_organization(&tenant_id, org.id())
+        .delete_organization(&realm_id, org.id())
         .expect("delete org");
 
     // Verify membership cleaned up
     let user_orgs = identity
-        .list_user_organizations(&tenant_id, user.id(), None, 10)
+        .list_user_organizations(&realm_id, user.id(), None, 10)
         .expect("list user orgs");
     assert_eq!(user_orgs.items.len(), 0, "membership should be cleaned up");
 
     // Verify org is gone
     assert!(
         identity
-            .get_organization(&tenant_id, org.id())
+            .get_organization(&realm_id, org.id())
             .expect("get")
             .is_none(),
         "org should be gone"
@@ -374,11 +374,11 @@ async fn cascading_delete_org_cleans_memberships_and_invitations() {
 async fn last_owner_cannot_be_removed_or_downgraded() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Owner Org".to_string(),
                 slug: "owner-org".to_string(),
@@ -390,7 +390,7 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
 
     let owner = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "owner@test.com".to_string(),
                 display_name: "Owner".to_string(),
@@ -399,11 +399,11 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
         .expect("create owner");
 
     identity
-        .add_member(&tenant_id, org.id(), owner.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), owner.id(), OrganizationRole::Owner)
         .expect("add owner");
 
     // Cannot remove last owner
-    let remove_result = identity.remove_member(&tenant_id, org.id(), owner.id());
+    let remove_result = identity.remove_member(&realm_id, org.id(), owner.id());
     assert!(
         matches!(
             remove_result,
@@ -414,7 +414,7 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
 
     // Cannot downgrade last owner
     let downgrade_result =
-        identity.update_member_role(&tenant_id, org.id(), owner.id(), OrganizationRole::Admin);
+        identity.update_member_role(&realm_id, org.id(), owner.id(), OrganizationRole::Admin);
     assert!(
         matches!(
             downgrade_result,
@@ -426,7 +426,7 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
     // Add second owner, then first can be removed
     let owner2 = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "owner2@test.com".to_string(),
                 display_name: "Owner 2".to_string(),
@@ -435,12 +435,12 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
         .expect("create owner2");
 
     identity
-        .add_member(&tenant_id, org.id(), owner2.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), owner2.id(), OrganizationRole::Owner)
         .expect("add owner2");
 
     // Now the first owner can be removed
     identity
-        .remove_member(&tenant_id, org.id(), owner.id())
+        .remove_member(&realm_id, org.id(), owner.id())
         .expect("remove owner should now succeed");
 }
 
@@ -450,11 +450,11 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
 async fn duplicate_slug_rejected() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "First Org".to_string(),
                 slug: "unique-slug".to_string(),
@@ -465,7 +465,7 @@ async fn duplicate_slug_rejected() {
         .expect("create first org");
 
     let result = identity.create_organization(
-        &tenant_id,
+        &realm_id,
         &CreateOrganizationRequest {
             name: "Second Org".to_string(),
             slug: "unique-slug".to_string(),
@@ -489,11 +489,11 @@ async fn duplicate_slug_rejected() {
 async fn member_limit_enforced() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Limited Org".to_string(),
                 slug: "limited-org".to_string(),
@@ -507,7 +507,7 @@ async fn member_limit_enforced() {
 
     let user1 = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "user1@test.com".to_string(),
                 display_name: "User 1".to_string(),
@@ -517,7 +517,7 @@ async fn member_limit_enforced() {
 
     let user2 = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "user2@test.com".to_string(),
                 display_name: "User 2".to_string(),
@@ -527,11 +527,11 @@ async fn member_limit_enforced() {
 
     // First member succeeds
     identity
-        .add_member(&tenant_id, org.id(), user1.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), user1.id(), OrganizationRole::Owner)
         .expect("add first member");
 
     // Second member fails (limit reached)
-    let result = identity.add_member(&tenant_id, org.id(), user2.id(), OrganizationRole::Member);
+    let result = identity.add_member(&realm_id, org.id(), user2.id(), OrganizationRole::Member);
     assert!(
         matches!(
             result,
@@ -547,11 +547,11 @@ async fn member_limit_enforced() {
 async fn delete_user_cascades_org_memberships() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "User Cascade Org".to_string(),
                 slug: "user-cascade".to_string(),
@@ -563,7 +563,7 @@ async fn delete_user_cascades_org_memberships() {
 
     let user = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "deleteme@test.com".to_string(),
                 display_name: "Delete Me".to_string(),
@@ -574,7 +574,7 @@ async fn delete_user_cascades_org_memberships() {
     // Need a second owner so delete_user doesn't fail on LastOwner
     let owner = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "stayowner@test.com".to_string(),
                 display_name: "Stay Owner".to_string(),
@@ -583,20 +583,20 @@ async fn delete_user_cascades_org_memberships() {
         .expect("create owner");
 
     identity
-        .add_member(&tenant_id, org.id(), owner.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), owner.id(), OrganizationRole::Owner)
         .expect("add owner");
     identity
-        .add_member(&tenant_id, org.id(), user.id(), OrganizationRole::Member)
+        .add_member(&realm_id, org.id(), user.id(), OrganizationRole::Member)
         .expect("add member");
 
     // Delete user
     identity
-        .delete_user(&tenant_id, user.id())
+        .delete_user(&realm_id, user.id())
         .expect("delete user");
 
     // Verify membership cleaned from org's perspective
     let members = identity
-        .list_members(&tenant_id, org.id(), None, 10)
+        .list_members(&realm_id, org.id(), None, 10)
         .expect("list members");
     assert_eq!(
         members.items.len(),
@@ -612,11 +612,11 @@ async fn delete_user_cascades_org_memberships() {
 async fn invitation_revocation() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Revoke Org".to_string(),
                 slug: "revoke-org".to_string(),
@@ -628,7 +628,7 @@ async fn invitation_revocation() {
 
     let admin = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "admin-revoke@test.com".to_string(),
                 display_name: "Admin".to_string(),
@@ -638,7 +638,7 @@ async fn invitation_revocation() {
 
     let (invitation, token) = identity
         .create_invitation(
-            &tenant_id,
+            &realm_id,
             &CreateInvitationRequest {
                 org_id: org.id().clone(),
                 email: "revokee@test.com".to_string(),
@@ -650,11 +650,11 @@ async fn invitation_revocation() {
 
     // Revoke it
     identity
-        .revoke_invitation(&tenant_id, invitation.id())
+        .revoke_invitation(&realm_id, invitation.id())
         .expect("revoke invitation");
 
     // Try to accept — should fail
-    let result = identity.accept_invitation(&tenant_id, &token);
+    let result = identity.accept_invitation(&realm_id, &token);
     assert!(result.is_err(), "revoked invitation should not be accepted");
 }
 
@@ -664,20 +664,20 @@ async fn invitation_revocation() {
 async fn operations_on_nonexistent_org_fail() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let fake_org_id = OrganizationId::generate();
 
     // Get returns None
     assert!(identity
-        .get_organization(&tenant_id, &fake_org_id)
+        .get_organization(&realm_id, &fake_org_id)
         .expect("get")
         .is_none());
 
     // Update returns error
     assert!(matches!(
         identity.update_organization(
-            &tenant_id,
+            &realm_id,
             &fake_org_id,
             &UpdateOrganizationRequest::default()
         ),
@@ -686,7 +686,7 @@ async fn operations_on_nonexistent_org_fail() {
 
     // Delete returns error
     assert!(matches!(
-        identity.delete_organization(&tenant_id, &fake_org_id),
+        identity.delete_organization(&realm_id, &fake_org_id),
         Err(hearth::identity::IdentityError::OrganizationNotFound)
     ));
 }
@@ -719,10 +719,10 @@ mod proptests {
         fn slug_roundtrip_through_engine(slug in valid_slug()) {
             let harness = make_harness();
             let identity = harness.identity();
-            let tenant_id = setup_tenant(identity);
+            let realm_id = setup_realm(identity);
 
             let result = identity.create_organization(
-                &tenant_id,
+                &realm_id,
                 &CreateOrganizationRequest {
                     name: format!("Org for {slug}"),
                     slug: slug.clone(),
@@ -735,7 +735,7 @@ mod proptests {
                 prop_assert_eq!(org.slug(), slug.as_str());
 
                 let by_slug = identity
-                    .get_organization_by_slug(&tenant_id, &slug)
+                    .get_organization_by_slug(&realm_id, &slug)
                     .expect("get by slug")
                     .expect("org should exist");
                 prop_assert_eq!(by_slug.id(), org.id());
@@ -749,11 +749,11 @@ mod proptests {
         fn membership_index_symmetry(member_count in 1u32..5) {
             let harness = make_harness();
             let identity = harness.identity();
-            let tenant_id = setup_tenant(identity);
+            let realm_id = setup_realm(identity);
 
             let org = identity
                 .create_organization(
-                    &tenant_id,
+                    &realm_id,
                     &CreateOrganizationRequest {
                         name: format!("Sym Org {member_count}"),
                         slug: format!("sym-org-{member_count}"),
@@ -767,7 +767,7 @@ mod proptests {
             for i in 0..member_count {
                 let user = identity
                     .create_user(
-                        &tenant_id,
+                        &realm_id,
                         &CreateUserRequest {
                             email: format!("sym-{i}-{member_count}@test.com"),
                             display_name: format!("User {i}"),
@@ -776,20 +776,20 @@ mod proptests {
                     .expect("create user");
 
                 let role = if i == 0 { OrganizationRole::Owner } else { OrganizationRole::Member };
-                identity.add_member(&tenant_id, org.id(), user.id(), role).expect("add member");
+                identity.add_member(&realm_id, org.id(), user.id(), role).expect("add member");
                 user_ids.push(user.id().clone());
             }
 
             // Check forward: list_members contains all users
             let members = identity
-                .list_members(&tenant_id, org.id(), None, 100)
+                .list_members(&realm_id, org.id(), None, 100)
                 .expect("list members");
             prop_assert_eq!(members.items.len(), member_count as usize);
 
             // Check reverse: each user's org list contains the org
             for uid in &user_ids {
                 let orgs = identity
-                    .list_user_organizations(&tenant_id, uid, None, 100)
+                    .list_user_organizations(&realm_id, uid, None, 100)
                     .expect("list user orgs");
                 prop_assert!(
                     orgs.items.iter().any(|m| m.org_id() == org.id()),
@@ -809,13 +809,13 @@ mod proptests {
         ) {
             let harness = make_harness();
             let identity = harness.identity();
-            let tenant_id = setup_tenant(identity);
+            let realm_id = setup_realm(identity);
 
             let mut org_ids = Vec::new();
             for i in 0..create_count {
                 let org = identity
                     .create_organization(
-                        &tenant_id,
+                        &realm_id,
                         &CreateOrganizationRequest {
                             name: format!("Count Org {i}"),
                             slug: format!("count-org-{i}-{create_count}"),
@@ -831,12 +831,12 @@ mod proptests {
             let delete_count = (f64::from(create_count) * delete_fraction).floor() as u32;
             for i in 0..delete_count {
                 identity
-                    .delete_organization(&tenant_id, &org_ids[i as usize])
+                    .delete_organization(&realm_id, &org_ids[i as usize])
                     .expect("delete org");
             }
 
             let remaining = identity
-                .list_organizations(&tenant_id, None, 100)
+                .list_organizations(&realm_id, None, 100)
                 .expect("list orgs");
             let expected = create_count - delete_count;
             prop_assert_eq!(
@@ -861,11 +861,11 @@ mod proptests {
 async fn token_enumeration_resistance() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     // Attempt to accept a completely fake token
     let fake_token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    let result = identity.accept_invitation(&tenant_id, fake_token);
+    let result = identity.accept_invitation(&realm_id, fake_token);
     assert!(
         matches!(
             result,
@@ -875,7 +875,7 @@ async fn token_enumeration_resistance() {
     );
 
     // Attempt with empty token
-    let result = identity.accept_invitation(&tenant_id, "");
+    let result = identity.accept_invitation(&realm_id, "");
     assert!(
         matches!(
             result,
@@ -886,7 +886,7 @@ async fn token_enumeration_resistance() {
 
     // Attempt with very long token (1 KiB of random characters)
     let long_token = "a".repeat(1024);
-    let result = identity.accept_invitation(&tenant_id, &long_token);
+    let result = identity.accept_invitation(&realm_id, &long_token);
     assert!(
         matches!(
             result,
@@ -904,11 +904,11 @@ async fn token_enumeration_resistance() {
 async fn role_escalation_prevention() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let org = identity
         .create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Escalation Org".to_string(),
                 slug: "escalation-org".to_string(),
@@ -920,7 +920,7 @@ async fn role_escalation_prevention() {
 
     let owner = identity
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "sole-owner@test.com".to_string(),
                 display_name: "Sole Owner".to_string(),
@@ -929,24 +929,24 @@ async fn role_escalation_prevention() {
         .expect("create owner");
 
     identity
-        .add_member(&tenant_id, org.id(), owner.id(), OrganizationRole::Owner)
+        .add_member(&realm_id, org.id(), owner.id(), OrganizationRole::Owner)
         .expect("add owner");
 
     // Cannot demote the sole owner to Member
     assert!(matches!(
-        identity.update_member_role(&tenant_id, org.id(), owner.id(), OrganizationRole::Member),
+        identity.update_member_role(&realm_id, org.id(), owner.id(), OrganizationRole::Member),
         Err(hearth::identity::IdentityError::LastOwner)
     ));
 
     // Cannot demote the sole owner to Admin
     assert!(matches!(
-        identity.update_member_role(&tenant_id, org.id(), owner.id(), OrganizationRole::Admin),
+        identity.update_member_role(&realm_id, org.id(), owner.id(), OrganizationRole::Admin),
         Err(hearth::identity::IdentityError::LastOwner)
     ));
 
     // Cannot remove the sole owner
     assert!(matches!(
-        identity.remove_member(&tenant_id, org.id(), owner.id()),
+        identity.remove_member(&realm_id, org.id(), owner.id()),
         Err(hearth::identity::IdentityError::LastOwner)
     ));
 }
@@ -957,7 +957,7 @@ async fn role_escalation_prevention() {
 async fn slug_injection_rejected() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tenant_id = setup_tenant(identity);
+    let realm_id = setup_realm(identity);
 
     let malicious_slugs = [
         "../etc/passwd",
@@ -975,7 +975,7 @@ async fn slug_injection_rejected() {
 
     for slug in &malicious_slugs {
         let result = identity.create_organization(
-            &tenant_id,
+            &realm_id,
             &CreateOrganizationRequest {
                 name: "Injection Test".to_string(),
                 slug: (*slug).to_string(),

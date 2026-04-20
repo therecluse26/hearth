@@ -1,6 +1,6 @@
 //! Storage key encoding for identity records.
 //!
-//! Indexes maintained, all tenant-scoped via `StorageEngine`:
+//! Indexes maintained, all realm-scoped via `StorageEngine`:
 //!
 //! - **User primary**: `usr:id:{uuid}` → JSON-serialized `User`
 //! - **User email index**: `usr:email:{normalized_email}` → `UserId` UUID bytes
@@ -9,12 +9,12 @@
 //! - **Credential**: `cred:user:{uuid}` → JSON-serialized `StoredCredential`
 //! - **OAuth client**: `oauth:client:{uuid}` → JSON-serialized `OAuthClient`
 //! - **OAuth code**: `oauth:code:{sha256_hex}` → JSON-serialized code
-//! - **Tenant primary**: `tenant:id:{uuid}` → JSON-serialized `Tenant` (system tenant scope)
-//! - **Tenant signing key**: `tenant:key:{uuid}` → PKCS#8 DER bytes (system tenant scope)
+//! - **Realm primary**: `realm:id:{uuid}` → JSON-serialized `Realm` (system realm scope)
+//! - **Realm signing key**: `realm:key:{uuid}` → PKCS#8 DER bytes (system realm scope)
 //!
-//! Scan prefix `usr:id:` enables listing all users in a tenant.
+//! Scan prefix `usr:id:` enables listing all users in a realm.
 
-use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId, UserId};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
 
 /// Prefix for user primary keys.
 const USER_ID_PREFIX: &str = "usr:id:";
@@ -31,14 +31,14 @@ const OAUTH_CLIENT_PREFIX: &str = "oauth:client:";
 /// Prefix for OAuth authorization code keys (stored by hash).
 const OAUTH_CODE_PREFIX: &str = "oauth:code:";
 
-/// Prefix for tenant primary keys (stored under system tenant).
-const TENANT_ID_PREFIX: &str = "tenant:id:";
+/// Prefix for realm primary keys (stored under system realm).
+const REALM_ID_PREFIX: &str = "realm:id:";
 
-/// Prefix for tenant signing key storage (stored under system tenant).
-const TENANT_KEY_PREFIX: &str = "tenant:key:";
+/// Prefix for realm signing key storage (stored under system realm).
+const REALM_KEY_PREFIX: &str = "realm:key:";
 
-/// Prefix for tenant name index (stored under system tenant).
-const TENANT_NAME_PREFIX: &str = "tenant:name:";
+/// Prefix for realm name index (stored under system realm).
+const REALM_NAME_PREFIX: &str = "realm:name:";
 
 /// Prefix for grant family storage (refresh token rotation).
 const GRANT_FAMILY_PREFIX: &str = "oauth:family:";
@@ -160,7 +160,7 @@ pub(crate) fn encode_user_sessions_prefix(user_id: &UserId) -> Vec<u8> {
     format!("{SESSION_USER_PREFIX}{}:", user_id.as_uuid()).into_bytes()
 }
 
-/// Returns the scan prefix for listing all sessions in a tenant.
+/// Returns the scan prefix for listing all sessions in a realm.
 ///
 /// Format: `ses:id:`
 pub(crate) fn session_id_scan_prefix() -> Vec<u8> {
@@ -201,50 +201,50 @@ pub(crate) fn encode_oauth_code(code_hash: &str) -> Vec<u8> {
     format!("{OAUTH_CODE_PREFIX}{code_hash}").into_bytes()
 }
 
-// ===== Tenant key encoding =====
+// ===== Realm key encoding =====
 
-/// The well-known system `TenantId` used for storing tenant metadata.
+/// The well-known system `RealmId` used for storing realm metadata.
 ///
 /// Uses the nil UUID (`00000000-0000-0000-0000-000000000000`) as a
-/// reserved namespace. Real tenants use random v4 UUIDs and will
+/// reserved namespace. Real realms use random v4 UUIDs and will
 /// never collide with this.
-pub(crate) fn system_tenant_id() -> TenantId {
-    TenantId::new(uuid::Uuid::nil())
+pub(crate) fn system_realm_id() -> RealmId {
+    RealmId::new(uuid::Uuid::nil())
 }
 
-/// Encodes the primary key for a tenant record.
+/// Encodes the primary key for a realm record.
 ///
-/// Format: `tenant:id:{uuid}`
+/// Format: `realm:id:{uuid}`
 ///
-/// Stored under the system tenant namespace.
-pub(crate) fn encode_tenant_id(tenant_id: &TenantId) -> Vec<u8> {
-    format!("{TENANT_ID_PREFIX}{}", tenant_id.as_uuid()).into_bytes()
+/// Stored under the system realm namespace.
+pub(crate) fn encode_realm_id(realm_id: &RealmId) -> Vec<u8> {
+    format!("{REALM_ID_PREFIX}{}", realm_id.as_uuid()).into_bytes()
 }
 
-/// Returns the scan prefix for listing all tenant records.
+/// Returns the scan prefix for listing all realm records.
 ///
-/// Format: `tenant:id:`
+/// Format: `realm:id:`
 #[allow(dead_code)]
-pub(crate) fn tenant_id_scan_prefix() -> Vec<u8> {
-    TENANT_ID_PREFIX.as_bytes().to_vec()
+pub(crate) fn realm_id_scan_prefix() -> Vec<u8> {
+    REALM_ID_PREFIX.as_bytes().to_vec()
 }
 
-/// Encodes the name index key for a tenant.
+/// Encodes the name index key for a realm.
 ///
-/// Format: `tenant:name:{name}`
+/// Format: `realm:name:{name}`
 ///
-/// Stored under the system tenant namespace.
-pub(crate) fn encode_tenant_name(name: &str) -> Vec<u8> {
-    format!("{TENANT_NAME_PREFIX}{name}").into_bytes()
+/// Stored under the system realm namespace.
+pub(crate) fn encode_realm_name(name: &str) -> Vec<u8> {
+    format!("{REALM_NAME_PREFIX}{name}").into_bytes()
 }
 
-/// Encodes the storage key for a tenant's signing key material.
+/// Encodes the storage key for a realm's signing key material.
 ///
-/// Format: `tenant:key:{uuid}`
+/// Format: `realm:key:{uuid}`
 ///
-/// Stored under the system tenant namespace.
-pub(crate) fn encode_tenant_signing_key(tenant_id: &TenantId) -> Vec<u8> {
-    format!("{TENANT_KEY_PREFIX}{}", tenant_id.as_uuid()).into_bytes()
+/// Stored under the system realm namespace.
+pub(crate) fn encode_realm_signing_key(realm_id: &RealmId) -> Vec<u8> {
+    format!("{REALM_KEY_PREFIX}{}", realm_id.as_uuid()).into_bytes()
 }
 
 /// Encodes the storage key for a grant family (refresh token rotation).
@@ -445,7 +445,7 @@ pub(crate) fn membership_by_user_prefix(user_id: &UserId) -> Vec<u8> {
     format!("{ORGM_USER_PREFIX}{}:", user_id.as_uuid()).into_bytes()
 }
 
-/// Returns the scan prefix for all membership-by-org entries (tenant-wide).
+/// Returns the scan prefix for all membership-by-org entries (realm-wide).
 ///
 /// Format: `orgm:org:`
 #[allow(dead_code)]
@@ -453,7 +453,7 @@ pub(crate) fn membership_org_scan_prefix() -> Vec<u8> {
     ORGM_ORG_PREFIX.as_bytes().to_vec()
 }
 
-/// Returns the scan prefix for all membership-by-user entries (tenant-wide).
+/// Returns the scan prefix for all membership-by-user entries (realm-wide).
 ///
 /// Format: `orgm:user:`
 #[allow(dead_code)]
@@ -508,7 +508,7 @@ pub(crate) fn invitation_org_prefix(org_id: &OrganizationId) -> Vec<u8> {
     format!("{ORGI_ORG_PREFIX}{}:", org_id.as_uuid()).into_bytes()
 }
 
-/// Returns the scan prefix for all invitation org entries (tenant-wide).
+/// Returns the scan prefix for all invitation org entries (realm-wide).
 ///
 /// Format: `orgi:org:`
 #[allow(dead_code)]
@@ -538,7 +538,7 @@ pub(crate) fn invitation_list_prefix(org_id: &OrganizationId) -> Vec<u8> {
     format!("{ORGI_LIST_PREFIX}{}:", org_id.as_uuid()).into_bytes()
 }
 
-/// Returns the scan prefix for all invitation list entries (tenant-wide).
+/// Returns the scan prefix for all invitation list entries (realm-wide).
 ///
 /// Format: `orgi:list:`
 #[allow(dead_code)]
@@ -549,7 +549,7 @@ pub(crate) fn invitation_list_scan_prefix() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId};
+    use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId};
     use uuid::Uuid;
 
     #[test]
@@ -695,43 +695,43 @@ mod tests {
         assert_ne!(key1, key2);
     }
 
-    // ===== Tenant key tests =====
+    // ===== Realm key tests =====
 
     #[test]
-    fn system_tenant_id_is_nil_uuid() {
-        let sys = system_tenant_id();
+    fn system_realm_id_is_nil_uuid() {
+        let sys = system_realm_id();
         assert_eq!(*sys.as_uuid(), Uuid::nil());
     }
 
     #[test]
-    fn system_tenant_id_is_stable() {
-        assert_eq!(system_tenant_id(), system_tenant_id());
+    fn system_realm_id_is_stable() {
+        assert_eq!(system_realm_id(), system_realm_id());
     }
 
     #[test]
-    fn encode_tenant_id_format() {
+    fn encode_realm_id_format() {
         let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
-        let tenant_id = TenantId::new(uuid);
-        let key = encode_tenant_id(&tenant_id);
+        let realm_id = RealmId::new(uuid);
+        let key = encode_realm_id(&realm_id);
         let key_str = std::str::from_utf8(&key).expect("utf8");
-        assert_eq!(key_str, "tenant:id:550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(key_str, "realm:id:550e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]
-    fn tenant_id_key_starts_with_scan_prefix() {
-        let tenant_id = TenantId::generate();
-        let key = encode_tenant_id(&tenant_id);
-        let prefix = tenant_id_scan_prefix();
+    fn realm_id_key_starts_with_scan_prefix() {
+        let realm_id = RealmId::generate();
+        let key = encode_realm_id(&realm_id);
+        let prefix = realm_id_scan_prefix();
         assert!(key.starts_with(&prefix));
     }
 
     #[test]
-    fn encode_tenant_signing_key_format() {
+    fn encode_realm_signing_key_format() {
         let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
-        let tenant_id = TenantId::new(uuid);
-        let key = encode_tenant_signing_key(&tenant_id);
+        let realm_id = RealmId::new(uuid);
+        let key = encode_realm_signing_key(&realm_id);
         let key_str = std::str::from_utf8(&key).expect("utf8");
-        assert_eq!(key_str, "tenant:key:550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(key_str, "realm:key:550e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]
@@ -771,13 +771,13 @@ mod tests {
     }
 
     #[test]
-    fn different_tenants_produce_different_keys() {
-        let id1 = TenantId::generate();
-        let id2 = TenantId::generate();
-        assert_ne!(encode_tenant_id(&id1), encode_tenant_id(&id2));
+    fn different_realms_produce_different_keys() {
+        let id1 = RealmId::generate();
+        let id2 = RealmId::generate();
+        assert_ne!(encode_realm_id(&id1), encode_realm_id(&id2));
         assert_ne!(
-            encode_tenant_signing_key(&id1),
-            encode_tenant_signing_key(&id2)
+            encode_realm_signing_key(&id1),
+            encode_realm_signing_key(&id2)
         );
     }
 

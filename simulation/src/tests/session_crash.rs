@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use hearth::core::{Clock, FakeClock, TenantId, Timestamp};
+use hearth::core::{Clock, FakeClock, RealmId, Timestamp};
 use hearth::identity::{
     CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
     SessionContext,
@@ -20,7 +20,7 @@ fn simulation_crash_recovery_sessions() {
     let _ = seed;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
     let mut session_ids = Vec::new();
 
     // Phase 1: Create users and sessions, then drop (crash)
@@ -42,7 +42,7 @@ fn simulation_crash_recovery_sessions() {
         for i in 0..5 {
             let user = engine
                 .create_user(
-                    &tenant,
+                    &realm,
                     &CreateUserRequest {
                         email: format!("crash-{i}@example.com"),
                         display_name: format!("Crash User {i}"),
@@ -51,7 +51,7 @@ fn simulation_crash_recovery_sessions() {
                 .expect("create user");
 
             let session = engine
-                .create_session(&tenant, user.id(), &SessionContext::default())
+                .create_session(&realm, user.id(), &SessionContext::default())
                 .expect("create session");
             session_ids.push((session.id().clone(), user.id().clone()));
         }
@@ -75,7 +75,7 @@ fn simulation_crash_recovery_sessions() {
 
         for (session_id, user_id) in &session_ids {
             let recovered = engine
-                .get_session(&tenant, session_id)
+                .get_session(&realm, session_id)
                 .expect("get session after recovery");
             assert!(
                 recovered.is_some(),
@@ -100,7 +100,7 @@ fn simulation_ttl_clock_skew() {
     let _ = seed;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let config = StorageConfig::dev(dir.path().to_path_buf());
     let storage = EmbeddedStorageEngine::open(config).expect("open");
@@ -118,7 +118,7 @@ fn simulation_ttl_clock_skew() {
 
     let user = engine
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "skew@example.com".to_string(),
                 display_name: "Clock Skew User".to_string(),
@@ -127,14 +127,14 @@ fn simulation_ttl_clock_skew() {
         .expect("create user");
 
     let session = engine
-        .create_session(&tenant, user.id(), &SessionContext::default())
+        .create_session(&realm, user.id(), &SessionContext::default())
         .expect("create session");
     let ttl = identity_config.session.ttl_micros;
 
     // 1. Session is valid at creation time
     assert!(
         engine
-            .get_session(&tenant, session.id())
+            .get_session(&realm, session.id())
             .expect("get")
             .is_some(),
         "session must be valid at creation (seed={seed})"
@@ -144,7 +144,7 @@ fn simulation_ttl_clock_skew() {
     clock.advance(ttl + 1);
     assert!(
         engine
-            .get_session(&tenant, session.id())
+            .get_session(&realm, session.id())
             .expect("get")
             .is_none(),
         "session must expire after TTL (seed={seed})"
@@ -153,7 +153,7 @@ fn simulation_ttl_clock_skew() {
     // 3. Clock jumps BACKWARD (simulating NTP correction)
     clock.set(Timestamp::from_micros(1_000_000 + ttl / 2));
     let after_backward = engine
-        .get_session(&tenant, session.id())
+        .get_session(&realm, session.id())
         .expect("get after backward drift");
     assert!(
         after_backward.is_some(),
@@ -162,13 +162,13 @@ fn simulation_ttl_clock_skew() {
 
     // 4. Create a new session, refresh it, verify new TTL baseline
     let session2 = engine
-        .create_session(&tenant, user.id(), &SessionContext::default())
+        .create_session(&realm, user.id(), &SessionContext::default())
         .expect("create session 2");
 
     clock.advance(ttl / 2);
 
     let refreshed = engine
-        .refresh_session(&tenant, session2.id())
+        .refresh_session(&realm, session2.id())
         .expect("refresh");
     let refreshed_expires = refreshed.expires_at();
 
@@ -176,7 +176,7 @@ fn simulation_ttl_clock_skew() {
 
     assert!(
         engine
-            .get_session(&tenant, session2.id())
+            .get_session(&realm, session2.id())
             .expect("get")
             .is_some(),
         "refreshed session must be valid past original expiry (seed={seed})"
@@ -186,7 +186,7 @@ fn simulation_ttl_clock_skew() {
     clock.advance(remaining + 1);
     assert!(
         engine
-            .get_session(&tenant, session2.id())
+            .get_session(&realm, session2.id())
             .expect("get")
             .is_none(),
         "refreshed session must expire after new TTL (seed={seed})"

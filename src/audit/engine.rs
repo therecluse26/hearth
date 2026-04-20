@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use ring::digest;
 
-use crate::core::{AuditEventId, Clock, TenantId, Timestamp};
+use crate::core::{AuditEventId, Clock, RealmId, Timestamp};
 use crate::storage::StorageEngine;
 
 use super::error::AuditError;
@@ -16,13 +16,13 @@ use super::keys;
 use super::types::{AuditAction, AuditEvent, AuditQuery, CreateAuditEvent};
 use super::AuditEngine;
 
-/// The genesis hash used as the "previous hash" for the first event in a tenant.
+/// The genesis hash used as the "previous hash" for the first event in a realm.
 const GENESIS_HASH: &str = "genesis";
 
 /// Embedded audit engine backed by the storage layer.
 ///
 /// Thread-safe via the underlying `StorageEngine`. Hash-chain correctness
-/// requires that appends within a single tenant be serialized; a per-tenant
+/// requires that appends within a single realm be serialized; a per-realm
 /// mutex ensures each `append` observes the previous event's hash before
 /// computing its own. The hash chain is inherently sequential, so this is
 /// correctness, not just a performance cache.
@@ -31,10 +31,10 @@ pub struct EmbeddedAuditEngine {
     storage: Arc<dyn StorageEngine>,
     /// Clock for timestamps.
     clock: Arc<dyn Clock>,
-    /// Per-tenant serialization of the hash-chain read-modify-write cycle,
+    /// Per-realm serialization of the hash-chain read-modify-write cycle,
     /// with an optional cached last hash to avoid the `O(n)` scan on every
     /// append after the first.
-    chain_locks: Mutex<HashMap<TenantId, Arc<Mutex<Option<String>>>>>,
+    chain_locks: Mutex<HashMap<RealmId, Arc<Mutex<Option<String>>>>>,
 }
 
 impl EmbeddedAuditEngine {
@@ -47,14 +47,14 @@ impl EmbeddedAuditEngine {
         }
     }
 
-    /// Returns the per-tenant chain lock, creating it on first access.
-    fn tenant_chain_lock(&self, tenant_id: &TenantId) -> Arc<Mutex<Option<String>>> {
+    /// Returns the per-realm chain lock, creating it on first access.
+    fn realm_chain_lock(&self, realm_id: &RealmId) -> Arc<Mutex<Option<String>>> {
         let mut map = self.chain_locks.lock().expect("chain_locks mutex poisoned");
-        if let Some(lock) = map.get(tenant_id) {
+        if let Some(lock) = map.get(realm_id) {
             Arc::clone(lock)
         } else {
             let lock = Arc::new(Mutex::new(None));
-            map.insert(tenant_id.clone(), Arc::clone(&lock));
+            map.insert(realm_id.clone(), Arc::clone(&lock));
             lock
         }
     }
@@ -67,7 +67,7 @@ impl EmbeddedAuditEngine {
         // Serialize the event without the integrity_hash for hashing
         let hashable = serde_json::json!({
             "id": event.id,
-            "tenant_id": event.tenant_id,
+            "realm_id": event.realm_id,
             "actor": event.actor,
             "action": event.action,
             "resource_type": event.resource_type,
@@ -85,11 +85,11 @@ impl EmbeddedAuditEngine {
         hex_encode(hash.as_ref())
     }
 
-    /// Gets the last event's integrity hash for a tenant, or `GENESIS_HASH` if none.
-    fn get_last_hash(&self, tenant_id: &TenantId) -> Result<String, AuditError> {
+    /// Gets the last event's integrity hash for a realm, or `GENESIS_HASH` if none.
+    fn get_last_hash(&self, realm_id: &RealmId) -> Result<String, AuditError> {
         let prefix = keys::event_scan_prefix();
         let end = keys::prefix_end(&prefix);
-        let entries = self.storage.scan(tenant_id, &prefix, &end)?;
+        let entries = self.storage.scan(realm_id, &prefix, &end)?;
 
         if let Some(last_entry) = entries.last() {
             let event: AuditEvent = serde_json::from_slice(&last_entry.value).map_err(|e| {
@@ -106,18 +106,18 @@ impl EmbeddedAuditEngine {
 
 impl AuditEngine for EmbeddedAuditEngine {
     fn append(&self, request: &CreateAuditEvent) -> Result<AuditEvent, AuditError> {
-        // Acquire the per-tenant chain lock BEFORE reading the last hash. The
+        // Acquire the per-realm chain lock BEFORE reading the last hash. The
         // chain's integrity guarantee ("every event's prev_hash is the
         // previous event's integrity_hash") is only preserved if no other
         // append can interleave between our read of last_hash and our
         // storage write. The lock doubles as a cache for the last hash
         // to avoid a full O(n) scan per append after the first.
-        let chain_lock = self.tenant_chain_lock(&request.tenant_id);
-        let mut cached = chain_lock.lock().expect("tenant chain lock poisoned");
+        let chain_lock = self.realm_chain_lock(&request.realm_id);
+        let mut cached = chain_lock.lock().expect("realm chain lock poisoned");
 
         let prev_hash = match cached.as_ref() {
             Some(h) => h.clone(),
-            None => self.get_last_hash(&request.tenant_id)?,
+            None => self.get_last_hash(&request.realm_id)?,
         };
 
         let event_id = AuditEventId::generate();
@@ -126,7 +126,7 @@ impl AuditEngine for EmbeddedAuditEngine {
         // Build the event (integrity_hash will be filled after computation)
         let mut event = AuditEvent {
             id: event_id,
-            tenant_id: request.tenant_id.clone(),
+            realm_id: request.realm_id.clone(),
             actor: request.actor.clone(),
             action: request.action.clone(),
             resource_type: request.resource_type.clone(),
@@ -154,7 +154,7 @@ impl AuditEngine for EmbeddedAuditEngine {
         let actor_key = keys::encode_actor_index(&request.actor, timestamp, &event.id);
         let action_key = keys::encode_action_index(request.action.as_str(), timestamp, &event.id);
         self.storage.put_batch(
-            &request.tenant_id,
+            &request.realm_id,
             &[
                 (primary_key.clone(), value),
                 (actor_key, primary_key.clone()),
@@ -190,7 +190,7 @@ impl AuditEngine for EmbeddedAuditEngine {
             None => keys::prefix_end(&keys::event_scan_prefix()),
         };
 
-        let entries = self.storage.scan(&query.tenant_id, &start, &end)?;
+        let entries = self.storage.scan(&query.realm_id, &start, &end)?;
         let mut events = Vec::new();
 
         for entry in entries {
@@ -212,7 +212,7 @@ impl AuditEngine for EmbeddedAuditEngine {
 
     fn verify_integrity(
         &self,
-        tenant_id: &TenantId,
+        realm_id: &RealmId,
         start: Option<Timestamp>,
         end: Option<Timestamp>,
     ) -> Result<bool, AuditError> {
@@ -225,7 +225,7 @@ impl AuditEngine for EmbeddedAuditEngine {
             None => keys::prefix_end(&keys::event_scan_prefix()),
         };
 
-        let entries = self.storage.scan(tenant_id, &scan_start, &scan_end)?;
+        let entries = self.storage.scan(realm_id, &scan_start, &scan_end)?;
 
         // If verifying from the beginning, use genesis hash; otherwise get
         // the hash of the event immediately before the start
@@ -234,7 +234,7 @@ impl AuditEngine for EmbeddedAuditEngine {
         } else {
             // Need to find the event before start to get its hash
             let all_start = keys::event_scan_prefix();
-            let all_entries = self.storage.scan(tenant_id, &all_start, &scan_start)?;
+            let all_entries = self.storage.scan(realm_id, &all_start, &scan_start)?;
             if let Some(last) = all_entries.last() {
                 let event: AuditEvent =
                     serde_json::from_slice(&last.value).map_err(|e| AuditError::Serialization {
@@ -272,12 +272,12 @@ impl EmbeddedAuditEngine {
     ) -> Result<Vec<AuditEvent>, AuditError> {
         let prefix = keys::actor_scan_prefix(actor);
         let end = keys::prefix_end(&prefix);
-        let index_entries = self.storage.scan(&query.tenant_id, &prefix, &end)?;
+        let index_entries = self.storage.scan(&query.realm_id, &prefix, &end)?;
 
         let mut events = Vec::new();
         for index_entry in index_entries {
             // The index value is the primary event key
-            let event_value = self.storage.get(&query.tenant_id, &index_entry.value)?;
+            let event_value = self.storage.get(&query.realm_id, &index_entry.value)?;
 
             if let Some(value) = event_value {
                 let event: AuditEvent =
@@ -318,11 +318,11 @@ impl EmbeddedAuditEngine {
     ) -> Result<Vec<AuditEvent>, AuditError> {
         let prefix = keys::action_scan_prefix(action.as_str());
         let end = keys::prefix_end(&prefix);
-        let index_entries = self.storage.scan(&query.tenant_id, &prefix, &end)?;
+        let index_entries = self.storage.scan(&query.realm_id, &prefix, &end)?;
 
         let mut events = Vec::new();
         for index_entry in index_entries {
-            let event_value = self.storage.get(&query.tenant_id, &index_entry.value)?;
+            let event_value = self.storage.get(&query.realm_id, &index_entry.value)?;
 
             if let Some(value) = event_value {
                 let event: AuditEvent =
@@ -369,11 +369,11 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FakeClock, TenantId, Timestamp};
+    use crate::core::{FakeClock, RealmId, Timestamp};
     use crate::storage::{EmbeddedStorageEngine, StorageConfig};
     use std::sync::Arc;
 
-    fn setup() -> (EmbeddedAuditEngine, TenantId) {
+    fn setup() -> (EmbeddedAuditEngine, RealmId) {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config = StorageConfig::dev(temp_dir.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(config).expect("storage"));
@@ -381,11 +381,11 @@ mod tests {
 
         let engine =
             EmbeddedAuditEngine::new(storage as Arc<dyn StorageEngine>, clock as Arc<dyn Clock>);
-        let tenant_id = TenantId::generate();
-        (engine, tenant_id)
+        let realm_id = RealmId::generate();
+        (engine, realm_id)
     }
 
-    fn setup_with_clock() -> (EmbeddedAuditEngine, TenantId, Arc<FakeClock>) {
+    fn setup_with_clock() -> (EmbeddedAuditEngine, RealmId, Arc<FakeClock>) {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config = StorageConfig::dev(temp_dir.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(config).expect("storage"));
@@ -395,18 +395,18 @@ mod tests {
             storage as Arc<dyn StorageEngine>,
             Arc::clone(&clock) as Arc<dyn Clock>,
         );
-        let tenant_id = TenantId::generate();
-        (engine, tenant_id, clock)
+        let realm_id = RealmId::generate();
+        (engine, realm_id, clock)
     }
 
     // === Scenario: Security-critical mutations emit structured audit events ===
 
     #[test]
     fn append_event_returns_correct_fields() {
-        let (engine, tenant_id) = setup();
+        let (engine, realm_id) = setup();
 
         let request = CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "user_abc".to_string(),
             action: AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -417,7 +417,7 @@ mod tests {
         let event = engine.append(&request).expect("append");
 
         // Verify all required fields are present and correct
-        assert_eq!(event.tenant_id, tenant_id);
+        assert_eq!(event.realm_id, realm_id);
         assert_eq!(event.actor, "user_abc");
         assert_eq!(event.action, AuditAction::UserCreated);
         assert_eq!(event.resource_type, "user");
@@ -434,10 +434,10 @@ mod tests {
 
     #[test]
     fn append_multiple_events_returns_ordered_by_time() {
-        let (engine, tenant_id, clock) = setup_with_clock();
+        let (engine, realm_id, clock) = setup_with_clock();
 
         let r1 = CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "user_a".to_string(),
             action: AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -449,7 +449,7 @@ mod tests {
         clock.advance(1_000_000); // +1 second
 
         let r2 = CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "user_b".to_string(),
             action: AuditAction::SessionCreated,
             resource_type: "session".to_string(),
@@ -468,13 +468,13 @@ mod tests {
 
     #[test]
     fn events_are_persistent_and_immutable() {
-        let (engine, tenant_id) = setup();
+        let (engine, realm_id) = setup();
 
         let request = CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: "admin".to_string(),
-            action: AuditAction::TenantCreated,
-            resource_type: "tenant".to_string(),
+            action: AuditAction::RealmCreated,
+            resource_type: "realm".to_string(),
             resource_id: "t1".to_string(),
             metadata: None,
         };
@@ -482,8 +482,8 @@ mod tests {
 
         // Query back — the event should still be there
         let query = AuditQuery {
-            tenant_id: tenant_id.clone(),
-            ..AuditQuery::for_tenant(tenant_id.clone())
+            realm_id: realm_id.clone(),
+            ..AuditQuery::for_realm(realm_id.clone())
         };
         let events = engine.query(&query).expect("query");
         assert_eq!(events.len(), 1);
@@ -494,12 +494,12 @@ mod tests {
 
     #[test]
     fn query_by_time_range() {
-        let (engine, tenant_id, clock) = setup_with_clock();
+        let (engine, realm_id, clock) = setup_with_clock();
 
         // Event at t=1s
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "a".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -513,7 +513,7 @@ mod tests {
         // Event at t=3s
         let e2 = engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "b".to_string(),
                 action: AuditAction::SessionCreated,
                 resource_type: "session".to_string(),
@@ -527,7 +527,7 @@ mod tests {
         // Event at t=5s
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "c".to_string(),
                 action: AuditAction::TokenIssued,
                 resource_type: "token".to_string(),
@@ -538,10 +538,10 @@ mod tests {
 
         // Query: events between t=2s and t=4s (should only get e2)
         let query = AuditQuery {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             start_time: Some(Timestamp::from_micros(2_000_000)),
             end_time: Some(Timestamp::from_micros(4_000_000)),
-            ..AuditQuery::for_tenant(tenant_id.clone())
+            ..AuditQuery::for_realm(realm_id.clone())
         };
         let results = engine.query(&query).expect("query");
         assert_eq!(results.len(), 1);
@@ -550,11 +550,11 @@ mod tests {
 
     #[test]
     fn query_by_actor() {
-        let (engine, tenant_id, clock) = setup_with_clock();
+        let (engine, realm_id, clock) = setup_with_clock();
 
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "alice".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -567,7 +567,7 @@ mod tests {
 
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "bob".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -580,7 +580,7 @@ mod tests {
 
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "alice".to_string(),
                 action: AuditAction::SessionCreated,
                 resource_type: "session".to_string(),
@@ -591,9 +591,9 @@ mod tests {
 
         // Query for alice only
         let query = AuditQuery {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: Some("alice".to_string()),
-            ..AuditQuery::for_tenant(tenant_id.clone())
+            ..AuditQuery::for_realm(realm_id.clone())
         };
         let results = engine.query(&query).expect("query");
         assert_eq!(results.len(), 2);
@@ -602,11 +602,11 @@ mod tests {
 
     #[test]
     fn query_by_action_type() {
-        let (engine, tenant_id, clock) = setup_with_clock();
+        let (engine, realm_id, clock) = setup_with_clock();
 
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "a".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -619,7 +619,7 @@ mod tests {
 
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "b".to_string(),
                 action: AuditAction::SessionCreated,
                 resource_type: "session".to_string(),
@@ -632,7 +632,7 @@ mod tests {
 
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "c".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -643,9 +643,9 @@ mod tests {
 
         // Query for UserCreated only
         let query = AuditQuery {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             action: Some(AuditAction::UserCreated),
-            ..AuditQuery::for_tenant(tenant_id.clone())
+            ..AuditQuery::for_realm(realm_id.clone())
         };
         let results = engine.query(&query).expect("query");
         assert_eq!(results.len(), 2);
@@ -654,12 +654,12 @@ mod tests {
 
     #[test]
     fn query_with_limit() {
-        let (engine, tenant_id, clock) = setup_with_clock();
+        let (engine, realm_id, clock) = setup_with_clock();
 
         for i in 0..5 {
             engine
                 .append(&CreateAuditEvent {
-                    tenant_id: tenant_id.clone(),
+                    realm_id: realm_id.clone(),
                     actor: "a".to_string(),
                     action: AuditAction::UserCreated,
                     resource_type: "user".to_string(),
@@ -671,25 +671,25 @@ mod tests {
         }
 
         let query = AuditQuery {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             limit: Some(3),
-            ..AuditQuery::for_tenant(tenant_id.clone())
+            ..AuditQuery::for_realm(realm_id.clone())
         };
         let results = engine.query(&query).expect("query");
         assert_eq!(results.len(), 3);
     }
 
-    // === Scenario: Tenant-scoped events ===
+    // === Scenario: Realm-scoped events ===
 
     #[test]
-    fn events_scoped_to_tenant() {
-        let (engine, tenant_a) = setup();
-        let tenant_b = TenantId::generate();
+    fn events_scoped_to_realm() {
+        let (engine, realm_a) = setup();
+        let realm_b = RealmId::generate();
 
-        // Append to tenant A
+        // Append to realm A
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_a.clone(),
+                realm_id: realm_a.clone(),
                 actor: "a".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -698,10 +698,10 @@ mod tests {
             })
             .expect("append to A");
 
-        // Append to tenant B
+        // Append to realm B
         engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_b.clone(),
+                realm_id: realm_b.clone(),
                 actor: "b".to_string(),
                 action: AuditAction::SessionCreated,
                 resource_type: "session".to_string(),
@@ -710,20 +710,20 @@ mod tests {
             })
             .expect("append to B");
 
-        // Query tenant A — should only see tenant A's event
+        // Query realm A — should only see realm A's event
         let results_a = engine
-            .query(&AuditQuery::for_tenant(tenant_a.clone()))
+            .query(&AuditQuery::for_realm(realm_a.clone()))
             .expect("query A");
         assert_eq!(results_a.len(), 1);
-        assert_eq!(results_a[0].tenant_id, tenant_a);
+        assert_eq!(results_a[0].realm_id, realm_a);
         assert_eq!(results_a[0].actor, "a");
 
-        // Query tenant B — should only see tenant B's event
+        // Query realm B — should only see realm B's event
         let results_b = engine
-            .query(&AuditQuery::for_tenant(tenant_b.clone()))
+            .query(&AuditQuery::for_realm(realm_b.clone()))
             .expect("query B");
         assert_eq!(results_b.len(), 1);
-        assert_eq!(results_b[0].tenant_id, tenant_b);
+        assert_eq!(results_b[0].realm_id, realm_b);
         assert_eq!(results_b[0].actor, "b");
     }
 
@@ -731,12 +731,12 @@ mod tests {
 
     #[test]
     fn integrity_hash_chain_is_valid() {
-        let (engine, tenant_id, clock) = setup_with_clock();
+        let (engine, realm_id, clock) = setup_with_clock();
 
         for i in 0..5 {
             engine
                 .append(&CreateAuditEvent {
-                    tenant_id: tenant_id.clone(),
+                    realm_id: realm_id.clone(),
                     actor: format!("actor_{i}"),
                     action: AuditAction::UserCreated,
                     resource_type: "user".to_string(),
@@ -748,18 +748,18 @@ mod tests {
         }
 
         let valid = engine
-            .verify_integrity(&tenant_id, None, None)
+            .verify_integrity(&realm_id, None, None)
             .expect("verify");
         assert!(valid, "hash chain should be valid");
     }
 
     #[test]
     fn different_events_produce_different_hashes() {
-        let (engine, tenant_id, clock) = setup_with_clock();
+        let (engine, realm_id, clock) = setup_with_clock();
 
         let e1 = engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "alice".to_string(),
                 action: AuditAction::UserCreated,
                 resource_type: "user".to_string(),
@@ -772,7 +772,7 @@ mod tests {
 
         let e2 = engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "bob".to_string(),
                 action: AuditAction::SessionCreated,
                 resource_type: "session".to_string(),
@@ -788,16 +788,16 @@ mod tests {
     }
 
     #[test]
-    fn genesis_hash_for_empty_tenant() {
-        let (engine, tenant_id) = setup();
+    fn genesis_hash_for_empty_realm() {
+        let (engine, realm_id) = setup();
 
         // First event should chain from genesis
         let event = engine
             .append(&CreateAuditEvent {
-                tenant_id: tenant_id.clone(),
+                realm_id: realm_id.clone(),
                 actor: "a".to_string(),
-                action: AuditAction::TenantCreated,
-                resource_type: "tenant".to_string(),
+                action: AuditAction::RealmCreated,
+                resource_type: "realm".to_string(),
                 resource_id: "t1".to_string(),
                 metadata: None,
             })
@@ -807,7 +807,7 @@ mod tests {
         assert!(!event.integrity_hash.is_empty());
         // Integrity check should pass
         let valid = engine
-            .verify_integrity(&tenant_id, None, None)
+            .verify_integrity(&realm_id, None, None)
             .expect("verify");
         assert!(valid);
     }
@@ -816,7 +816,7 @@ mod tests {
 #[cfg(test)]
 mod property_tests {
     use super::*;
-    use crate::core::{Clock, FakeClock, TenantId, Timestamp};
+    use crate::core::{Clock, FakeClock, RealmId, Timestamp};
     use crate::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
     use proptest::prelude::*;
     use std::sync::Arc;
@@ -834,9 +834,9 @@ mod property_tests {
             Just(AuditAction::SessionRevoked),
             Just(AuditAction::TokenIssued),
             Just(AuditAction::TokenRefreshed),
-            Just(AuditAction::TenantCreated),
-            Just(AuditAction::TenantUpdated),
-            Just(AuditAction::TenantDeleted),
+            Just(AuditAction::RealmCreated),
+            Just(AuditAction::RealmUpdated),
+            Just(AuditAction::RealmDeleted),
             Just(AuditAction::ClientRegistered),
             Just(AuditAction::AuthorizationCodeIssued),
             Just(AuditAction::AuthorizationCodeExchanged),
@@ -847,7 +847,7 @@ mod property_tests {
 
     /// Strategy for a random audit event request.
     #[allow(dead_code)]
-    fn arb_create_event(tenant_id: TenantId) -> impl Strategy<Value = CreateAuditEvent> {
+    fn arb_create_event(realm_id: RealmId) -> impl Strategy<Value = CreateAuditEvent> {
         (
             "[a-z]{3,8}", // actor
             arb_action(),
@@ -856,7 +856,7 @@ mod property_tests {
         )
             .prop_map(move |(actor, action, resource_type, resource_id)| {
                 CreateAuditEvent {
-                    tenant_id: tenant_id.clone(),
+                    realm_id: realm_id.clone(),
                     actor,
                     action,
                     resource_type,
@@ -880,12 +880,12 @@ mod property_tests {
                 storage as Arc<dyn StorageEngine>,
                 Arc::clone(&clock) as Arc<dyn Clock>,
             );
-            let tenant_id = TenantId::generate();
+            let realm_id = RealmId::generate();
 
             for i in 0..count {
                 engine
                     .append(&CreateAuditEvent {
-                        tenant_id: tenant_id.clone(),
+                        realm_id: realm_id.clone(),
                         actor: format!("actor_{i}"),
                         action: AuditAction::UserCreated,
                         resource_type: "user".to_string(),
@@ -897,7 +897,7 @@ mod property_tests {
             }
 
             let events = engine
-                .query(&AuditQuery::for_tenant(tenant_id))
+                .query(&AuditQuery::for_realm(realm_id))
                 .expect("query");
             prop_assert_eq!(events.len(), count);
         }
@@ -917,12 +917,12 @@ mod property_tests {
                 storage as Arc<dyn StorageEngine>,
                 Arc::clone(&clock) as Arc<dyn Clock>,
             );
-            let tenant_id = TenantId::generate();
+            let realm_id = RealmId::generate();
 
             for (i, action) in actions.iter().enumerate() {
                 engine
                     .append(&CreateAuditEvent {
-                        tenant_id: tenant_id.clone(),
+                        realm_id: realm_id.clone(),
                         actor: format!("actor_{i}"),
                         action: action.clone(),
                         resource_type: "resource".to_string(),
@@ -935,7 +935,7 @@ mod property_tests {
             }
 
             let events = engine
-                .query(&AuditQuery::for_tenant(tenant_id))
+                .query(&AuditQuery::for_realm(realm_id))
                 .expect("query");
 
             // Verify strict ordering

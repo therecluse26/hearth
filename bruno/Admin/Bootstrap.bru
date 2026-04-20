@@ -11,7 +11,7 @@ post {
 }
 
 headers {
-  X-Tenant-ID: {{tenantId}}
+  X-Realm-ID: {{realmId}}
   Content-Type: application/json
 }
 
@@ -32,7 +32,7 @@ script:post-response {
     const body = res.getBody();
     if (body.access_token)  bru.setEnvVar("accessToken",  body.access_token);
     if (body.refresh_token) bru.setEnvVar("refreshToken", body.refresh_token);
-    if (body.tenant_id)     bru.setEnvVar("tenantId",     body.tenant_id);
+    if (body.realm_id)     bru.setEnvVar("realmId",     body.realm_id);
     if (body.user_id)       bru.setEnvVar("userId",       body.user_id);
   }
 }

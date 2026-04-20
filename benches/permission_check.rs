@@ -13,14 +13,14 @@ use hearth::authz::{
     AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
     SubjectRef, TupleWrite,
 };
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Sets up an authz engine with a direct relationship for benchmarking.
 fn setup_direct() -> (
     tempfile::TempDir,
     EmbeddedAuthzEngine,
-    TenantId,
+    RealmId,
     ObjectRef,
     SubjectRef,
 ) {
@@ -31,24 +31,24 @@ fn setup_direct() -> (
         Arc::new(storage) as Arc<dyn StorageEngine>,
         AuthzConfig::default(),
     );
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     let obj = ObjectRef::new("document", "readme").expect("valid");
     let subj = SubjectRef::direct("user", "alice").expect("valid");
     let tuple = RelationshipTuple::new(obj.clone(), "viewer", subj.clone()).expect("valid");
 
     engine
-        .write_tuples(&tenant, &[TupleWrite::Touch(tuple)])
+        .write_tuples(&realm, &[TupleWrite::Touch(tuple)])
         .expect("write");
 
-    (dir, engine, tenant, obj, subj)
+    (dir, engine, realm, obj, subj)
 }
 
 /// Sets up an authz engine with a 3-hop transitive relationship.
 fn setup_3_hop() -> (
     tempfile::TempDir,
     EmbeddedAuthzEngine,
-    TenantId,
+    RealmId,
     ObjectRef,
     SubjectRef,
 ) {
@@ -59,7 +59,7 @@ fn setup_3_hop() -> (
         Arc::new(storage) as Arc<dyn StorageEngine>,
         AuthzConfig::default(),
     );
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // doc#viewer@group:eng#member → group:eng#member@team:core#member → team:core#member@user:alice
     let doc = ObjectRef::new("document", "readme").expect("valid");
@@ -76,7 +76,7 @@ fn setup_3_hop() -> (
 
     engine
         .write_tuples(
-            &tenant,
+            &realm,
             &[
                 TupleWrite::Touch(t1),
                 TupleWrite::Touch(t2),
@@ -85,16 +85,16 @@ fn setup_3_hop() -> (
         )
         .expect("write");
 
-    (dir, engine, tenant, doc, alice)
+    (dir, engine, realm, doc, alice)
 }
 
 fn bench_direct_check(c: &mut Criterion) {
-    let (_dir, engine, tenant, obj, subj) = setup_direct();
+    let (_dir, engine, realm, obj, subj) = setup_direct();
 
     c.bench_function("authz_direct_check", |b| {
         b.iter(|| {
             let result = engine
-                .check(&tenant, &obj, "viewer", &subj, None)
+                .check(&realm, &obj, "viewer", &subj, None)
                 .expect("check");
             assert!(result);
         });
@@ -102,12 +102,12 @@ fn bench_direct_check(c: &mut Criterion) {
 }
 
 fn bench_3_hop_traversal(c: &mut Criterion) {
-    let (_dir, engine, tenant, doc, alice) = setup_3_hop();
+    let (_dir, engine, realm, doc, alice) = setup_3_hop();
 
     c.bench_function("authz_3_hop_traversal", |b| {
         b.iter(|| {
             let result = engine
-                .check(&tenant, &doc, "viewer", &alice, None)
+                .check(&realm, &doc, "viewer", &alice, None)
                 .expect("check");
             assert!(result);
         });
@@ -115,18 +115,18 @@ fn bench_3_hop_traversal(c: &mut Criterion) {
 }
 
 fn bench_cached_check(c: &mut Criterion) {
-    let (_dir, engine, tenant, obj, subj) = setup_direct();
+    let (_dir, engine, realm, obj, subj) = setup_direct();
 
     // Prime the cache with an initial check
     let result = engine
-        .check(&tenant, &obj, "viewer", &subj, None)
+        .check(&realm, &obj, "viewer", &subj, None)
         .expect("check");
     assert!(result);
 
     c.bench_function("authz_cached_check", |b| {
         b.iter(|| {
             let result = engine
-                .check(&tenant, &obj, "viewer", &subj, None)
+                .check(&realm, &obj, "viewer", &subj, None)
                 .expect("check");
             assert!(result);
         });

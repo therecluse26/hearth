@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{ClientId, TenantId, Timestamp};
+use crate::core::{ClientId, RealmId, Timestamp};
 
 /// Configuration for OIDC / OAuth 2.0 operations.
 #[derive(Debug, Clone)]
@@ -517,8 +517,8 @@ pub(crate) struct StoredDeviceCode {
     pub(crate) user_code: String,
     /// The client that requested authorization.
     pub(crate) client_id: ClientId,
-    /// The tenant context.
-    pub(crate) tenant_id: TenantId,
+    /// The realm context.
+    pub(crate) realm_id: RealmId,
     /// Requested scope.
     pub(crate) scope: Option<String>,
     /// Current status.
@@ -548,8 +548,8 @@ pub(crate) struct StoredGrantFamily {
     pub(crate) current_refresh_hash: String,
     /// The session bound to this family.
     pub(crate) session_id: crate::core::SessionId,
-    /// The tenant owning this family.
-    pub(crate) tenant_id: TenantId,
+    /// The realm owning this family.
+    pub(crate) realm_id: RealmId,
     /// Whether this family has been revoked (e.g., theft detection).
     pub(crate) revoked: bool,
     /// When the family was created.

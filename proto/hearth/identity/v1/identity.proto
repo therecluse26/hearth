@@ -12,14 +12,14 @@ enum UserStatus {
   USER_STATUS_PENDING_VERIFICATION = 3;
 }
 
-// The lifecycle status of a tenant.
-enum TenantStatus {
-  TENANT_STATUS_UNSPECIFIED = 0;
-  TENANT_STATUS_ACTIVE = 1;
-  TENANT_STATUS_SUSPENDED = 2;
+// The lifecycle status of a realm.
+enum RealmStatus {
+  REALM_STATUS_UNSPECIFIED = 0;
+  REALM_STATUS_ACTIVE = 1;
+  REALM_STATUS_SUSPENDED = 2;
 }
 
-// A user record within a tenant.
+// A user record within a realm.
 message User {
   string id = 1;
   string email = 2;
@@ -38,19 +38,19 @@ message Session {
   int64 last_refreshed_at = 5;
 }
 
-// Per-tenant configuration overrides.
-message TenantConfig {
+// Per-realm configuration overrides.
+message RealmConfig {
   optional int64 session_ttl_micros = 1;
   optional uint32 password_memory_cost = 2;
   optional uint32 password_time_cost = 3;
 }
 
-// A tenant record.
-message Tenant {
+// A realm record.
+message Realm {
   string id = 1;
   string name = 2;
-  TenantStatus status = 3;
-  TenantConfig config = 4;
+  RealmStatus status = 3;
+  RealmConfig config = 4;
   int64 created_at = 5;
   int64 updated_at = 6;
 }
@@ -68,17 +68,17 @@ message UpdateUserRequest {
   optional UserStatus status = 3;
 }
 
-// Request to create a new tenant.
-message CreateTenantRequest {
+// Request to create a new realm.
+message CreateRealmRequest {
   string name = 1;
-  optional TenantConfig config = 2;
+  optional RealmConfig config = 2;
 }
 
-// Request to update an existing tenant.
-message UpdateTenantRequest {
+// Request to update an existing realm.
+message UpdateRealmRequest {
   optional string name = 1;
-  optional TenantStatus status = 2;
-  optional TenantConfig config = 3;
+  optional RealmStatus status = 2;
+  optional RealmConfig config = 3;
 }
 
 // A cursor-based page of users.
@@ -87,9 +87,9 @@ message UserPage {
   optional string next_cursor = 2;
 }
 
-// A cursor-based page of tenants.
-message TenantPage {
-  repeated Tenant items = 1;
+// A cursor-based page of realms.
+message RealmPage {
+  repeated Realm items = 1;
   optional string next_cursor = 2;
 }
 

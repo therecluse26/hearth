@@ -34,7 +34,7 @@ This document inventories **features not yet implemented** that would block or h
 - **Status:** Implemented. The email subsystem (`src/identity/email/`) now supports five transports: Log (dev), SMTP, `SendGrid`, `Postmark`, and `Mailgun`.
 - **What Was Delivered:**
   - HTTP-based provider adapters (`SendGrid` v3, `Postmark`, `Mailgun` with EU region) via injectable `HttpTransport` trait.
-  - Branded email templates (Askama compiled into binary) with per-tenant branding overrides (`EmailBranding` on `TenantConfig`).
+  - Branded email templates (Askama compiled into binary) with per-realm branding overrides (`EmailBranding` on `RealmConfig`).
   - Optional disk-based template override via Tera (`email.templates_dir` config).
   - `EmailService` orchestration layer separating transport from content (branding + template rendering).
   - `ApiKey` zeroize-on-drop wrapper for provider credentials.
@@ -42,7 +42,7 @@ This document inventories **features not yet implemented** that would block or h
 - **What Remains (future enhancements):**
   - AWS SES adapter (requires Sig v4 signing).
   - Delivery status tracking / bounce handling.
-  - Per-tenant email provider configuration (multi-tenant SaaS operators using different sender domains per tenant).
+  - Per-realm email provider configuration (multi-realm SaaS operators using different sender domains per realm).
 
 ### Self-Service Session Management
 
@@ -87,12 +87,12 @@ This document inventories **features not yet implemented** that would block or h
 
 - **Current State:** Hearth issues OAuth 2.0 / OIDC tokens as an IdP. The Keycloak migration module (`src/identity/migration/keycloak.rs`) handles imported users. There is no mechanism to *consume* tokens from external IdPs.
 - **What's Missing:**
-  - External IdP connector framework: register upstream OIDC providers (Google, GitHub, Microsoft, Apple) per tenant.
+  - External IdP connector framework: register upstream OIDC providers (Google, GitHub, Microsoft, Apple) per realm.
   - Authorization code flow as an OIDC RP (redirect → callback → token exchange → user linking).
   - Account linking: match external identity to existing Hearth user by email, or create a new account.
   - JIT (Just-In-Time) provisioning from external IdP claims.
-  - Per-tenant IdP configuration (tenant A uses Google, tenant B uses Okta).
-- **Why It Matters:** "Sign in with Google/GitHub" is expected by developers and consumers. Enterprise tenants need to federate with their corporate IdP (Okta, Azure AD) without SAML.
+  - Per-realm IdP configuration (realm A uses Google, realm B uses Okta).
+- **Why It Matters:** "Sign in with Google/GitHub" is expected by developers and consumers. Enterprise realms need to federate with their corporate IdP (Okta, Azure AD) without SAML.
 - **Priority Rationale:** P1 because social login drives conversion for consumer apps, and OIDC federation is the modern enterprise alternative to SAML.
 
 ### OAuth Consent Management
@@ -113,7 +113,7 @@ This document inventories **features not yet implemented** that would block or h
 - **What's Missing:**
   - Public signup endpoint (email + password, or email-only with magic link).
   - CAPTCHA or proof-of-work integration to prevent automated account creation.
-  - Configurable registration policy per tenant (open, invite-only, domain-restricted).
+  - Configurable registration policy per realm (open, invite-only, domain-restricted).
   - Welcome email with verification link.
   - Custom fields / profile data collection during registration.
 - **Why It Matters:** Applications need a self-service onboarding path for new users. Currently, users can only be created by admins or through the magic link side-effect.
@@ -143,11 +143,11 @@ This document inventories **features not yet implemented** that would block or h
 
 - **Current State:** Audit events are recorded internally (`src/audit/engine.rs`) with hash-chain integrity. There is no external notification mechanism. Webhooks are mentioned in the architecture (`docs/specs/ARCHITECTURE.md`) and vision (`docs/vision/VISION.md`).
 - **What's Missing:**
-  - Webhook subscription management: register per-tenant HTTPS endpoints with event filters.
+  - Webhook subscription management: register per-realm HTTPS endpoints with event filters.
   - Reliable delivery: at-least-once semantics with exponential backoff retry.
   - Payload signing (HMAC-SHA256) so recipients can verify authenticity.
   - Delivery log with status tracking (success, retry, failed, disabled).
-  - Event types: user.created, user.deleted, session.created, session.revoked, permission.changed, tenant.updated.
+  - Event types: user.created, user.deleted, session.created, session.revoked, permission.changed, realm.updated.
 - **Why It Matters:** Downstream systems (billing, analytics, compliance SIEM) need real-time event feeds. Without webhooks, operators must poll the audit API or build custom integrations.
 - **Priority Rationale:** P2 because the audit log provides queryable history, but push-based integration is expected for operational workflows.
 
@@ -160,7 +160,7 @@ This document inventories **features not yet implemented** that would block or h
   - Restore from snapshot: cold start from a backup.
   - `hearth backup` / `hearth restore` CLI subcommands.
   - Incremental backup (ship WAL segments since last snapshot).
-  - Per-tenant export/import for tenant migration between clusters.
+  - Per-realm export/import for realm migration between clusters.
 - **Why It Matters:** Data durability is non-negotiable. While the WAL provides crash recovery, operators need disaster recovery (DC failure, corruption, accidental deletion) and migration capabilities.
 - **Priority Rationale:** P2 because WAL + SST provides crash safety, but operational backup/restore is essential for production confidence.
 
@@ -173,9 +173,9 @@ This document inventories **features not yet implemented** that would block or h
   - Magic link: per-email rate limiting (`tests/magic_link.rs`).
 - **What's Missing:**
   - Global rate limiter middleware (IP-based, configurable per endpoint).
-  - Configurable rate limit policies per tenant (e.g., tenant A gets 1000 req/s, tenant B gets 100 req/s).
+  - Configurable rate limit policies per realm (e.g., realm A gets 1000 req/s, realm B gets 100 req/s).
   - Token bucket or sliding window algorithm with configurable parameters.
   - Rate limit headers in responses (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`).
   - DDoS mitigation: connection-level limits, request body size already enforced (Step 31).
-- **Why It Matters:** The existing per-feature rate limits protect against specific abuse vectors, but a global configurable limiter is needed for fair multi-tenant resource allocation and general API protection.
+- **Why It Matters:** The existing per-feature rate limits protect against specific abuse vectors, but a global configurable limiter is needed for fair multi-realm resource allocation and general API protection.
 - **Priority Rationale:** P2 because critical paths (password, TOTP, admin) are already protected. The gap is a unified, configurable system for all endpoints.

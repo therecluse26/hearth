@@ -65,7 +65,7 @@ struct JwtHeader {
 /// JWT claims (payload).
 ///
 /// Contains standard claims plus Hearth-specific claims for session
-/// and tenant binding.
+/// and realm binding.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenClaims {
     /// Subject — the user ID (or client ID for client credentials).
@@ -80,7 +80,7 @@ pub struct TokenClaims {
     pub iat: i64,
     /// Session ID — binds this token to a session.
     pub sid: String,
-    /// Tenant ID — binds this token to a tenant.
+    /// Realm ID — binds this token to a realm.
     pub tid: String,
     /// Token type: `"access"` or `"refresh"`.
     pub token_type: String,
@@ -221,7 +221,7 @@ impl SigningKey {
 
     /// Reconstructs a signing key from a PKCS#8 DER document.
     ///
-    /// Used to load per-tenant keys from storage.
+    /// Used to load per-realm keys from storage.
     pub fn from_pkcs8(pkcs8_der: &[u8]) -> Result<Self, IdentityError> {
         let key_pair =
             Ed25519KeyPair::from_pkcs8(pkcs8_der).map_err(|e| IdentityError::SigningError {
@@ -357,7 +357,7 @@ pub struct IssueTokenRequest<'a> {
     pub sub: &'a str,
     /// Session ID string.
     pub sid: &'a str,
-    /// Tenant ID string.
+    /// Realm ID string.
     pub tid: &'a str,
     /// Current timestamp.
     pub now: Timestamp,
@@ -484,7 +484,7 @@ mod tests {
             exp: now_secs + 900, // 15 min
             iat: now_secs,
             sid: "session_660e8400-e29b-41d4-a716-446655440000".to_string(),
-            tid: "tenant_770e8400-e29b-41d4-a716-446655440000".to_string(),
+            tid: "realm_770e8400-e29b-41d4-a716-446655440000".to_string(),
             token_type: "access".to_string(),
             jti: None,
             fid: None,
@@ -625,7 +625,7 @@ mod tests {
             .issue_token_pair(&IssueTokenRequest {
                 sub: "user_abc",
                 sid: "session_xyz",
-                tid: "tenant_123",
+                tid: "realm_123",
                 now,
                 config: &config,
             })
@@ -656,7 +656,7 @@ mod tests {
             .issue_token_pair(&IssueTokenRequest {
                 sub: "user_abc",
                 sid: "session_xyz",
-                tid: "tenant_123",
+                tid: "realm_123",
                 now: later,
                 config: &config,
             })

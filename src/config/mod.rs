@@ -14,9 +14,8 @@ pub use types::{
     ApplicationYamlConfig, AuthConfig, BrandingConfig, EmailConfig, EmailTransport, MailgunConfig,
     MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig, OnboardingConfig,
     OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml, PostmarkConfig,
-    RateLimitYaml, SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection,
-    TenantAuthYaml, TenantEmailYaml, TenantTokenYaml, TenantWebYaml, TenantYamlConfig,
-    TokenYamlConfig,
+    RateLimitYaml, RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig,
+    SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -70,13 +69,13 @@ pub struct Config {
     /// Global authentication defaults (session TTL, password hashing params).
     #[serde(default)]
     pub auth: AuthConfig,
-    /// Per-tenant configuration overrides.
+    /// Per-realm configuration overrides.
     ///
-    /// When `Some`, tenants are declaratively managed: YAML entries become
-    /// Active tenants, storage-only tenants get Archived. When `None`,
-    /// tenants are managed via API/onboarding (backward compatible).
+    /// When `Some`, realms are declaratively managed: YAML entries become
+    /// Active realms, storage-only realms get Archived. When `None`,
+    /// realms are managed via API/onboarding (backward compatible).
     #[serde(default)]
-    pub tenants: Option<std::collections::HashMap<String, TenantYamlConfig>>,
+    pub realms: Option<std::collections::HashMap<String, RealmYamlConfig>>,
     /// Whether development mode is active. Not serialized — set by [`Config::dev`].
     #[serde(skip)]
     pub dev_mode: bool,
@@ -156,7 +155,7 @@ impl Config {
             oidc: OidcYamlConfig::default(),
             token: TokenYamlConfig::default(),
             auth: AuthConfig::default(),
-            tenants: None,
+            realms: None,
             dev_mode: true,
             config_warnings: Vec::new(),
         }
@@ -266,10 +265,10 @@ impl Config {
         validate_token(&self.token)?;
         validate_email(&self.email)?;
         validate_branding(&self.branding)?;
-        validate_tenant_web_configs(self.tenants.as_ref())?;
-        validate_tenant_auth_configs(self.tenants.as_ref())?;
-        validate_tenant_applications(self.tenants.as_ref())?;
-        validate_tenant_organizations(self.tenants.as_ref())?;
+        validate_realm_web_configs(self.realms.as_ref())?;
+        validate_realm_auth_configs(self.realms.as_ref())?;
+        validate_realm_applications(self.realms.as_ref())?;
+        validate_realm_organizations(self.realms.as_ref())?;
 
         // notification_email: if set, must be a valid RFC 5322 mailbox
         if let Some(addr) = &self.onboarding.notification_email {
@@ -314,20 +313,20 @@ fn validate_branding(branding: &BrandingConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Validates per-tenant `web:` branding blocks.
-fn validate_tenant_web_configs(
-    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+/// Validates per-realm `web:` branding blocks.
+fn validate_realm_web_configs(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
 ) -> Result<(), ConfigError> {
-    let Some(tenants) = tenants else {
+    let Some(realms) = realms else {
         return Ok(());
     };
-    for (name, cfg) in tenants {
+    for (name, cfg) in realms {
         let Some(web) = &cfg.web else { continue };
         if let Some(theme) = &web.theme {
             let lower = theme.to_ascii_lowercase();
             if !VALID_UI_THEMES.contains(&lower.as_str()) {
                 return Err(invalid(
-                    &format!("tenants.{name}.web.theme"),
+                    &format!("realms.{name}.web.theme"),
                     format!(
                         "unknown theme '{}'; valid themes are: {}",
                         theme,
@@ -342,7 +341,7 @@ fn validate_tenant_web_configs(
                 .unwrap_or(false)
             {
                 return Err(invalid(
-                    &format!("tenants.{name}.web.custom_css"),
+                    &format!("realms.{name}.web.custom_css"),
                     format!("file not found or not readable: {path}"),
                 ));
             }
@@ -357,20 +356,20 @@ const VALID_MFA_METHODS: &[&str] = &["totp", "webauthn"];
 /// Valid authentication method names.
 const VALID_AUTH_METHODS: &[&str] = &["password", "magic_link", "passkey"];
 
-/// Validates per-tenant `auth:` policy blocks.
-fn validate_tenant_auth_configs(
-    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+/// Validates per-realm `auth:` policy blocks.
+fn validate_realm_auth_configs(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
 ) -> Result<(), ConfigError> {
-    let Some(tenants) = tenants else {
+    let Some(realms) = realms else {
         return Ok(());
     };
-    for (name, cfg) in tenants {
+    for (name, cfg) in realms {
         let Some(auth) = &cfg.auth else { continue };
         if let Some(methods) = &auth.mfa_methods {
             for m in methods {
                 if !VALID_MFA_METHODS.contains(&m.as_str()) {
                     return Err(invalid(
-                        &format!("tenants.{name}.auth.mfa_methods"),
+                        &format!("realms.{name}.auth.mfa_methods"),
                         format!(
                             "unknown MFA method '{}'; valid methods are: {}",
                             m,
@@ -384,7 +383,7 @@ fn validate_tenant_auth_configs(
             for m in methods {
                 if !VALID_AUTH_METHODS.contains(&m.as_str()) {
                     return Err(invalid(
-                        &format!("tenants.{name}.auth.allowed_auth_methods"),
+                        &format!("realms.{name}.auth.allowed_auth_methods"),
                         format!(
                             "unknown auth method '{}'; valid methods are: {}",
                             m,
@@ -398,7 +397,7 @@ fn validate_tenant_auth_configs(
             if let Some(len) = pp.min_length {
                 if len == 0 {
                     return Err(invalid(
-                        &format!("tenants.{name}.auth.password_policy.min_length"),
+                        &format!("realms.{name}.auth.password_policy.min_length"),
                         "must be >= 1",
                     ));
                 }
@@ -408,7 +407,7 @@ fn validate_tenant_auth_configs(
             if let Some(ttl) = &token.access_token_ttl {
                 types::parse_duration_to_micros(ttl).map_err(|e| {
                     invalid(
-                        &format!("tenants.{name}.auth.token.access_token_ttl"),
+                        &format!("realms.{name}.auth.token.access_token_ttl"),
                         format!("invalid duration: {e}"),
                     )
                 })?;
@@ -416,7 +415,7 @@ fn validate_tenant_auth_configs(
             if let Some(ttl) = &token.refresh_token_ttl {
                 types::parse_duration_to_micros(ttl).map_err(|e| {
                     invalid(
-                        &format!("tenants.{name}.auth.token.refresh_token_ttl"),
+                        &format!("realms.{name}.auth.token.refresh_token_ttl"),
                         format!("invalid duration: {e}"),
                     )
                 })?;
@@ -426,7 +425,7 @@ fn validate_tenant_auth_configs(
             if let Some(dur) = &rl.lockout_duration {
                 types::parse_duration_to_micros(dur).map_err(|e| {
                     invalid(
-                        &format!("tenants.{name}.auth.rate_limit.lockout_duration"),
+                        &format!("realms.{name}.auth.rate_limit.lockout_duration"),
                         format!("invalid duration: {e}"),
                     )
                 })?;
@@ -436,19 +435,19 @@ fn validate_tenant_auth_configs(
     Ok(())
 }
 
-/// Validates per-tenant `organizations:` declarations.
-fn validate_tenant_organizations(
-    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+/// Validates per-realm `organizations:` declarations.
+fn validate_realm_organizations(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
 ) -> Result<(), ConfigError> {
-    let Some(tenants) = tenants else {
+    let Some(realms) = realms else {
         return Ok(());
     };
-    for (tenant_name, cfg) in tenants {
+    for (realm_name, cfg) in realms {
         let Some(orgs) = &cfg.organizations else {
             continue;
         };
         for (slug, org) in orgs {
-            let prefix = format!("tenants.{tenant_name}.organizations.{slug}");
+            let prefix = format!("realms.{realm_name}.organizations.{slug}");
             if org.name.trim().is_empty() {
                 return Err(invalid(&format!("{prefix}.name"), "must not be empty"));
             }
@@ -489,19 +488,19 @@ const VALID_GRANT_TYPES: &[&str] = &[
     "urn:ietf:params:oauth:grant-type:device_code",
 ];
 
-/// Validates per-tenant `applications:` declarations.
-fn validate_tenant_applications(
-    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+/// Validates per-realm `applications:` declarations.
+fn validate_realm_applications(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
 ) -> Result<(), ConfigError> {
-    let Some(tenants) = tenants else {
+    let Some(realms) = realms else {
         return Ok(());
     };
-    for (tenant_name, cfg) in tenants {
+    for (realm_name, cfg) in realms {
         let Some(apps) = &cfg.applications else {
             continue;
         };
         for (app_key, app) in apps {
-            let prefix = format!("tenants.{tenant_name}.applications.{app_key}");
+            let prefix = format!("realms.{realm_name}.applications.{app_key}");
             if app.name.trim().is_empty() {
                 return Err(invalid(&format!("{prefix}.name"), "must not be empty"));
             }

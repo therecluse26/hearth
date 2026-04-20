@@ -3,7 +3,7 @@ package hearth
 
 // BootstrapResponse is returned by the dev bootstrap endpoint.
 type BootstrapResponse struct {
-	TenantID     string `json:"tenant_id"`
+	RealmID     string `json:"realm_id"`
 	UserID       string `json:"user_id"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -74,13 +74,13 @@ type UpdateUserRequest struct {
 	Status      *string `json:"status,omitempty"`
 }
 
-// CreateTenantRequest contains parameters for creating a tenant.
-type CreateTenantRequest struct {
+// CreateRealmRequest contains parameters for creating a realm.
+type CreateRealmRequest struct {
 	Name string `json:"name"`
 }
 
-// Tenant represents a tenant record from the API.
-type Tenant struct {
+// Realm represents a realm record from the API.
+type Realm struct {
 	ID        string      `json:"id"`
 	Name      string      `json:"name"`
 	Status    string      `json:"status"`
@@ -89,8 +89,8 @@ type Tenant struct {
 	UpdatedAt int64       `json:"updated_at,omitempty"`
 }
 
-// UpdateTenantRequest contains parameters for updating a tenant.
-type UpdateTenantRequest struct {
+// UpdateRealmRequest contains parameters for updating a realm.
+type UpdateRealmRequest struct {
 	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty"`
 }

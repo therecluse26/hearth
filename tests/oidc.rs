@@ -7,7 +7,7 @@ mod common;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{
     AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, RegisterClientRequest,
     TokenExchangeRequest, User,
@@ -15,11 +15,11 @@ use hearth::identity::{
 use ring::rand::SecureRandom;
 
 /// Helper: creates a user with a unique email.
-fn create_user(harness: &common::TestHarness, tenant: &TenantId) -> User {
+fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
         .identity()
         .create_user(
-            tenant,
+            realm,
             &CreateUserRequest {
                 email: format!("oidc-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "OIDC Test User".to_string(),
@@ -35,14 +35,14 @@ async fn oidc_authorization_code_flow_roundtrip() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     // 1. Register an OAuth client
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "Integration Test App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -59,7 +59,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
     let auth_response = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -81,7 +81,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
     let token_response = harness
         .identity()
         .exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -101,10 +101,10 @@ async fn oidc_authorization_code_flow_roundtrip() {
     // 5. Access token should be valid via session lookup
     let claims = harness
         .identity()
-        .validate_token(&tenant, token_response.access_token())
+        .validate_token(&realm, token_response.access_token())
         .expect("validate access token");
     assert_eq!(claims.sub, user.id().to_string());
-    assert_eq!(claims.tid, tenant.to_string());
+    assert_eq!(claims.tid, realm.to_string());
 
     // 6. ID token should contain correct user info
     let id_claims = hearth::identity::decode_claims_unverified(token_response.id_token())
@@ -177,12 +177,12 @@ async fn oidc_authorization_code_flow_via_http() {
 
     let base = format!("http://127.0.0.1:{port}");
     let http_client = reqwest::Client::new();
-    let tenant_id = uuid::Uuid::new_v4().to_string();
+    let realm_id = uuid::Uuid::new_v4().to_string();
 
     // 1. Create a user via HTTP
     let user_resp = http_client
         .post(format!("{base}/users"))
-        .header("X-Tenant-ID", &tenant_id)
+        .header("X-Realm-ID", &realm_id)
         .json(&serde_json::json!({
             "email": "http-oidc@example.com",
             "display_name": "HTTP OIDC Test User"
@@ -198,7 +198,7 @@ async fn oidc_authorization_code_flow_via_http() {
     // 2. Register an OAuth client via HTTP
     let register_resp = http_client
         .post(format!("{base}/clients"))
-        .header("X-Tenant-ID", &tenant_id)
+        .header("X-Realm-ID", &realm_id)
         .json(&serde_json::json!({
             "client_name": "HTTP Integration Test App",
             "redirect_uris": ["https://app.example.com/callback"]
@@ -216,7 +216,7 @@ async fn oidc_authorization_code_flow_via_http() {
     // 3. Authorize: generate authorization code via HTTP
     let auth_resp = http_client
         .post(format!("{base}/authorize"))
-        .header("X-Tenant-ID", &tenant_id)
+        .header("X-Realm-ID", &realm_id)
         .json(&serde_json::json!({
             "client_id": client_id,
             "redirect_uri": "https://app.example.com/callback",
@@ -241,7 +241,7 @@ async fn oidc_authorization_code_flow_via_http() {
     // 4. Exchange code for tokens via HTTP
     let token_resp = http_client
         .post(format!("{base}/token"))
-        .header("X-Tenant-ID", &tenant_id)
+        .header("X-Realm-ID", &realm_id)
         .json(&serde_json::json!({
             "client_id": client_id,
             "code": code,
@@ -294,21 +294,21 @@ async fn oidc_authorization_code_flow_via_http() {
         "JWKS should have at least one key"
     );
 
-    // 7. Test missing tenant header returns 400
-    let no_tenant_resp = http_client
+    // 7. Test missing realm header returns 400
+    let no_realm_resp = http_client
         .post(format!("{base}/clients"))
         .json(&serde_json::json!({
-            "client_name": "No Tenant App",
+            "client_name": "No Realm App",
             "redirect_uris": ["https://app.example.com/callback"]
         }))
         .timeout(Duration::from_secs(5))
         .send()
         .await
-        .expect("request without tenant");
+        .expect("request without realm");
     assert_eq!(
-        no_tenant_resp.status(),
+        no_realm_resp.status(),
         400,
-        "missing tenant header should return 400"
+        "missing realm header should return 400"
     );
 
     // Cleanup: kill the server
@@ -324,13 +324,13 @@ async fn oidc_pkce_s256_flow() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "PKCE Test App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -354,7 +354,7 @@ async fn oidc_pkce_s256_flow() {
     let auth_response = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -371,7 +371,7 @@ async fn oidc_pkce_s256_flow() {
 
     // 2. Exchange WITHOUT verifier should fail
     let no_verifier_result = harness.identity().exchange_authorization_code(
-        &tenant,
+        &realm,
         &TokenExchangeRequest {
             client_id: client.client_id().clone(),
             code: auth_response.code().to_string(),
@@ -388,7 +388,7 @@ async fn oidc_pkce_s256_flow() {
     let auth_response2 = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -405,7 +405,7 @@ async fn oidc_pkce_s256_flow() {
 
     // 3. Exchange with WRONG verifier should fail
     let wrong_verifier_result = harness.identity().exchange_authorization_code(
-        &tenant,
+        &realm,
         &TokenExchangeRequest {
             client_id: client.client_id().clone(),
             code: auth_response2.code().to_string(),
@@ -422,7 +422,7 @@ async fn oidc_pkce_s256_flow() {
     let auth_response3 = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -441,7 +441,7 @@ async fn oidc_pkce_s256_flow() {
     let token_response = harness
         .identity()
         .exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response3.code().to_string(),
@@ -458,7 +458,7 @@ async fn oidc_pkce_s256_flow() {
 
     let claims = harness
         .identity()
-        .validate_token(&tenant, token_response.access_token())
+        .validate_token(&realm, token_response.access_token())
         .expect("validate access token");
     assert_eq!(claims.sub, user.id().to_string());
 }
@@ -629,13 +629,13 @@ async fn conformance_token_endpoint_rfc6749() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
-    let user = create_user(&harness, &tenant);
+    let realm = RealmId::generate();
+    let user = create_user(&harness, &realm);
 
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &hearth::identity::RegisterClientRequest {
                 client_name: "RFC 6749 Conformance App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -651,7 +651,7 @@ async fn conformance_token_endpoint_rfc6749() {
     let auth_response = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &hearth::identity::AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -682,7 +682,7 @@ async fn conformance_token_endpoint_rfc6749() {
     let token_response = harness
         .identity()
         .exchange_authorization_code(
-            &tenant,
+            &realm,
             &hearth::identity::TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -726,7 +726,7 @@ async fn conformance_token_endpoint_rfc6749() {
     // "If an authorization code is used more than once, the authorization
     //  server MUST deny the request"
     let reuse_result = harness.identity().exchange_authorization_code(
-        &tenant,
+        &realm,
         &hearth::identity::TokenExchangeRequest {
             client_id: client.client_id().clone(),
             code: auth_response.code().to_string(),
@@ -742,7 +742,7 @@ async fn conformance_token_endpoint_rfc6749() {
     // --- Section 5.2: Error Response ---
     // Invalid code MUST produce an error
     let invalid_result = harness.identity().exchange_authorization_code(
-        &tenant,
+        &realm,
         &hearth::identity::TokenExchangeRequest {
             client_id: client.client_id().clone(),
             code: "totally-invalid-code-value".to_string(),
@@ -759,7 +759,7 @@ async fn conformance_token_endpoint_rfc6749() {
     let auth_response2 = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &hearth::identity::AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -775,7 +775,7 @@ async fn conformance_token_endpoint_rfc6749() {
         .expect("authorize again");
 
     let wrong_redirect = harness.identity().exchange_authorization_code(
-        &tenant,
+        &realm,
         &hearth::identity::TokenExchangeRequest {
             client_id: client.client_id().clone(),
             code: auth_response2.code().to_string(),

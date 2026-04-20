@@ -1,12 +1,12 @@
 {% extends "ui/_layout.html" %}
-{% block title %}Hearth · Tenants{% endblock %}
+{% block title %}Hearth · Realms{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="text-2xl font-semibold text-ht-content-primary">Tenants</h1>
+  <h1 class="text-2xl font-semibold text-ht-content-primary">Realms</h1>
 </div>
 
 <div class="mb-4 rounded-md border border-info/30 bg-info/[0.12] px-4 py-3 text-sm text-info-fg">
-  Tenants are configured in <code class="font-mono">hearth.yaml</code>. Add or remove tenants by editing the configuration file and restarting.
+  Realms are configured in <code class="font-mono">hearth.yaml</code>. Add or remove realms by editing the configuration file and restarting.
 </div>
 
 <div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
@@ -19,7 +19,7 @@
       </tr>
     </thead>
     <tbody id="table-body">
-      {% include "ui/admin/tenants/_rows.html" %}
+      {% include "ui/admin/realms/_rows.html" %}
     </tbody>
   </table>
 </div>
@@ -27,7 +27,7 @@
 {% match next_cursor %}
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
-      <a href="/ui/admin/tenants?cursor={{ cursor }}"
+      <a href="/ui/admin/realms?cursor={{ cursor }}"
          class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

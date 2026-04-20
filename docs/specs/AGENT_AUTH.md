@@ -43,7 +43,7 @@ An agent record **MUST** contain:
 | Field | Type | Description |
 |-------|------|-------------|
 | `agent_id` | `AgentId` (newtype UUID, prefix `agt_`) | Unique identifier. |
-| `tenant_id` | `TenantId` | Owning tenant. |
+| `realm_id` | `RealmId` | Owning realm. |
 | `owner_id` | `UserId` or `OrganizationId` | The human or organization that registered this agent. |
 | `display_name` | String (1–256 chars) | Human-readable name. |
 | `description` | String (optional, max 2048 chars) | What the agent does. |
@@ -56,8 +56,8 @@ An agent record **MUST** contain:
 **Rules:**
 
 - `AgentId` **MUST** be a distinct newtype following the conventions in [ARCHITECTURE.md Section 12.1](./ARCHITECTURE.md#121-newtype-ids). It **MUST NOT** implement `Deref`.
-- Every agent **MUST** belong to exactly one tenant. All storage keys **MUST** be tenant-prefixed per [ARCHITECTURE.md Section 7](./ARCHITECTURE.md#7-multi-tenancy).
-- An agent's `owner_id` **MUST** reference an existing user or organization within the same tenant.
+- Every agent **MUST** belong to exactly one realm. All storage keys **MUST** be realm-prefixed per [ARCHITECTURE.md Section 7](./ARCHITECTURE.md#7-multi-tenancy).
+- An agent's `owner_id` **MUST** reference an existing user or organization within the same realm.
 - Agent status transitions **MUST** be: `Active → Suspended → Active` (reversible) and `Active|Suspended → Revoked` (terminal). Revoked agents **MUST NOT** authenticate or be re-activated.
 - Agent deletion **MUST** cascade: revoke all active tokens, remove all Zanzibar tuples where the agent is a subject, delete all credentials, and emit an audit event.
 
@@ -85,7 +85,7 @@ The protocol layer **MUST** expose CRUD endpoints for agents:
 Capabilities declare what an agent is designed to do. They are informational metadata (not enforcement) — enforcement is handled by Zanzibar tuples (see [Section 5](#5-tool-level-permissions--zanzibar-integration)).
 
 - Capabilities **MUST** be expressed as URIs following the pattern: `urn:hearth:capability:{domain}:{action}` (e.g., `urn:hearth:capability:email:send`, `urn:hearth:capability:files:read`).
-- Capability URIs **SHOULD** align with the tool names registered in the tenant's tool registry.
+- Capability URIs **SHOULD** align with the tool names registered in the realm's tool registry.
 - Agents **MAY** declare zero capabilities (unconstrained agents are governed entirely by Zanzibar tuples).
 
 ### 1.5 Agent Credentials
@@ -111,7 +111,7 @@ An agent **MUST** authenticate using one or more of the following credential typ
 
 Hearth **SHOULD** serve an Agent Card for each registered agent, enabling discovery by other agents per the A2A protocol.
 
-- Agent Cards **MUST** be served at `/.well-known/agent.json?agent_id={agent_id}` for a specific agent, or at `/.well-known/agent.json` for the tenant's primary agent.
+- Agent Cards **MUST** be served at `/.well-known/agent.json?agent_id={agent_id}` for a specific agent, or at `/.well-known/agent.json` for the realm's primary agent.
 - The Agent Card **MUST** include: `name`, `description`, `url` (agent endpoint), `authentication` (supported schemes), `capabilities` (skill list).
 - Agent Cards **MUST NOT** expose internal implementation details, credential material, or Zanzibar tuple structures.
 - Agent Cards **SHOULD** include a `version` field for cache busting.
@@ -157,7 +157,7 @@ MCP tool servers advertise their authorization requirements via a discovery docu
 
 ### 2.5 Protected Resource Registration
 
-Tenants register their MCP tool servers as protected resources in Hearth.
+Realms register their MCP tool servers as protected resources in Hearth.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -169,7 +169,7 @@ Tenants register their MCP tool servers as protected resources in Hearth.
 
 **Rules:**
 
-- Resource URIs **MUST** be unique within a tenant.
+- Resource URIs **MUST** be unique within a realm.
 - Resource URIs **MUST** use HTTPS in production. HTTP **MAY** be permitted in `--dev` mode.
 - Deletion of a protected resource **MUST** revoke all outstanding tokens scoped to that resource.
 
@@ -368,7 +368,7 @@ The following Zanzibar object types **MUST** be added:
 
 **Rules:**
 
-- Permission checks for agent actions **MUST** use the existing `check()` API: `check(tenant, tool:{name}, "invoke", agent:{id})`.
+- Permission checks for agent actions **MUST** use the existing `check()` API: `check(realm, tool:{name}, "invoke", agent:{id})`.
 - `deny` tuples **MUST** take precedence over `invoke` tuples. The evaluation order is: check deny first, then check invoke. If both exist, deny wins.
 - Tool group membership **MUST** be resolved transitively: `invoke(agent, toolgroup)` + `member(tool, toolgroup)` implies `invoke(agent, tool)`.
 - Argument-level constraints **MUST NOT** be encoded in Zanzibar tuples. Tuple metadata **MAY** carry constraint hints, but enforcement is handled by AAT validation (see [Section 4](#4-scope-attenuation)).
@@ -415,7 +415,7 @@ Bearer tokens can be stolen and replayed. Agents operating in untrusted environm
 - Access tokens bound via DPoP **MUST** use token type `DPoP` (not `Bearer`).
 - Hearth **MUST** include a `DPoP-Nonce` response header to enable server-provided nonces for tighter replay protection. Clients **MUST** include the server nonce in subsequent DPoP proofs when provided.
 - Ed25519 **MUST** be supported for DPoP keys, aligning with Hearth's existing signing infrastructure per [ARCHITECTURE.md Section 8.1](./ARCHITECTURE.md#81-token-validation-and-signing). P-256 (ES256) **SHOULD** also be supported.
-- DPoP **SHOULD** be required for agents by default. It **MAY** be made optional per tenant configuration for backward compatibility.
+- DPoP **SHOULD** be required for agents by default. It **MAY** be made optional per realm configuration for backward compatibility.
 
 ### 6.4 DPoP for Delegation Chains
 
@@ -459,14 +459,14 @@ Tokens issued for agent operations **MAY** include intent-binding claims:
 
 ### 8.1 Overview
 
-Multi-agent systems require agents to discover each other, establish mutual trust, and exchange capability information. Hearth provides the trust infrastructure for agent-to-agent interactions within and across tenants.
+Multi-agent systems require agents to discover each other, establish mutual trust, and exchange capability information. Hearth provides the trust infrastructure for agent-to-agent interactions within and across realms.
 
 ### 8.2 Agent Discovery
 
 - Hearth **MUST** expose an agent registry API: `GET /v1/agents?capability={uri}&status=active`.
-- Agents **SHOULD** be discoverable by capability, tenant, and tag.
+- Agents **SHOULD** be discoverable by capability, realm, and tag.
 - Agent Cards (see [Section 1.6](#16-agent-cards-a2a-protocol)) serve as the discovery document for individual agents.
-- A tenant-level agent directory **MAY** be exposed at `/.well-known/agents` listing all public agents in the tenant.
+- A realm-level agent directory **MAY** be exposed at `/.well-known/agents` listing all public agents in the realm.
 
 ### 8.3 Mutual Authentication
 
@@ -483,17 +483,17 @@ When agent A calls agent B:
 - Agent-to-agent tokens **SHOULD** be short-lived (max 5 minutes) to limit replay windows.
 - mTLS **MAY** be used as an alternative to DPoP for agent-to-agent authentication, particularly in infrastructure contexts.
 
-### 8.4 Cross-Tenant Agent Trust
+### 8.4 Cross-Realm Agent Trust
 
-Agents from different tenants **MAY** interact if cross-tenant trust is configured.
+Agents from different realms **MAY** interact if cross-realm trust is configured.
 
 **Rules:**
 
-- Cross-tenant trust **MUST** be explicitly configured by tenant administrators. No implicit trust.
-- Trust policies **MUST** specify: source tenant, target tenant, allowed capabilities, and expiry.
-- Tokens for cross-tenant interactions **MUST** include both the issuing tenant and the target tenant in their claims.
-- Cross-tenant requests **MUST** be rate-limited independently from intra-tenant requests.
-- Cross-tenant trust policies **MUST** be auditable.
+- Cross-realm trust **MUST** be explicitly configured by realm administrators. No implicit trust.
+- Trust policies **MUST** specify: source realm, target realm, allowed capabilities, and expiry.
+- Tokens for cross-realm interactions **MUST** include both the issuing realm and the target realm in their claims.
+- Cross-realm requests **MUST** be rate-limited independently from intra-realm requests.
+- Cross-realm trust policies **MUST** be auditable.
 
 ### 8.5 Transaction Tokens
 
@@ -518,8 +518,8 @@ Some agent actions are too sensitive for automatic authorization. Hearth **MUST*
 
 The `invoke_with_approval` relation (see [Section 5.3](#53-relations)) triggers the human-in-the-loop flow:
 
-1. Agent calls `check(tenant, tool:X, "invoke", agent:A)` → returns `Denied` (no direct invoke permission).
-2. Agent calls `check(tenant, tool:X, "invoke_with_approval", agent:A)` → returns `Allowed`.
+1. Agent calls `check(realm, tool:X, "invoke", agent:A)` → returns `Denied` (no direct invoke permission).
+2. Agent calls `check(realm, tool:X, "invoke_with_approval", agent:A)` → returns `Allowed`.
 3. Agent creates an approval request.
 4. The designated approver(s) are notified.
 5. Approver grants or denies the request.
@@ -543,7 +543,7 @@ An approval request **MUST** contain:
 
 ### 9.4 Approval Policies
 
-Tenants **MUST** be able to configure approval policies per tool and per agent:
+Realms **MUST** be able to configure approval policies per tool and per agent:
 
 | Policy | Behavior |
 |--------|----------|
@@ -557,13 +557,13 @@ Tenants **MUST** be able to configure approval policies per tool and per agent:
 - Approved requests **MUST** issue a capability token with a configurable TTL (default: 5 minutes, max: 1 hour).
 - The capability token **MUST** be scoped to the specific tool and action that was approved.
 - Expired requests **MUST** be treated as denied. Agents **MUST** create a new request to retry.
-- Approvers **MUST** be identified by Zanzibar tuples: `check(tenant, approval_request:R, "approve", user:U)`.
+- Approvers **MUST** be identified by Zanzibar tuples: `check(realm, approval_request:R, "approve", user:U)`.
 
 ### 9.5 Notification
 
 - Hearth **SHOULD** support webhook notifications when approval requests are created.
 - The webhook payload **MUST** include: request ID, agent identity, tool requested, delegation chain, and a URL to approve/deny.
-- Webhook endpoints **MUST** be configured per tenant.
+- Webhook endpoints **MUST** be configured per realm.
 - Hearth **SHOULD** also support notification via the admin UI (polling or Server-Sent Events).
 
 ---
@@ -583,9 +583,9 @@ Hearth **SHOULD** emit and consume the following risk signals:
 | Agent anomalous rate | Rate monitoring | Suspend agent, revoke tokens |
 | User session revoked | User action | Revoke all delegated agent tokens |
 | Agent owner deactivated | Admin action | Suspend all owned agents |
-| Tenant suspended | Admin action | Revoke all tenant agent tokens |
+| Realm suspended | Admin action | Revoke all realm agent tokens |
 | DPoP key compromise reported | Agent or admin | Revoke tokens bound to compromised key |
-| Cross-tenant trust revoked | Admin action | Revoke all cross-tenant agent tokens |
+| Cross-realm trust revoked | Admin action | Revoke all cross-realm agent tokens |
 
 ### 10.3 Signal Delivery
 
@@ -603,7 +603,7 @@ Hearth **SHOULD** emit and consume the following risk signals:
 ### 10.5 Rules
 
 - CAEP signal evaluation **MUST NOT** add latency to the hot path (see [ARCHITECTURE.md Section 3](./ARCHITECTURE.md#3-hot-path-rules)). Revocation is applied asynchronously; the hot path checks the pre-computed revocation state.
-- Signal evaluation **SHOULD** be configurable per tenant (some tenants may not want aggressive auto-revocation).
+- Signal evaluation **SHOULD** be configurable per realm (some realms may not want aggressive auto-revocation).
 - All signal-triggered actions **MUST** be recorded in the audit log with the triggering signal as context.
 
 ---
@@ -625,12 +625,12 @@ In infrastructure contexts (Kubernetes, cloud platforms), agents authenticate as
 
 - Agents presenting X.509 SVIDs **MUST** authenticate via mTLS.
 - Hearth's TLS termination layer (see [ARCHITECTURE.md Section 8](./ARCHITECTURE.md#8-security)) **MUST** extract the client certificate and map the SPIFFE ID to an `AgentId`.
-- The mapping from SPIFFE ID to `AgentId` **MUST** be configured per tenant.
+- The mapping from SPIFFE ID to `AgentId` **MUST** be configured per realm.
 
 ### 11.4 Rules
 
-- Workload identity is an **OPTIONAL** authentication method. Tenants **MUST** explicitly enable it.
-- Trust bundles **MUST** be configurable per tenant (different tenants may use different SPIRE domains).
+- Workload identity is an **OPTIONAL** authentication method. Realms **MUST** explicitly enable it.
+- Trust bundles **MUST** be configurable per realm (different realms may use different SPIRE domains).
 - SVID validation **MUST** check: certificate chain, expiration, and SPIFFE ID format.
 - Workload identity **SHOULD** be combinable with DPoP for defense-in-depth (mTLS for transport, DPoP for token binding).
 
@@ -671,13 +671,13 @@ The audit action enum **MUST** be extended with:
 | `ApprovalGranted` | Human approved agent action. |
 | `ApprovalDenied` | Human denied agent action. |
 | `AgentTokenRevoked` | Agent token revoked (manual or CAEP-triggered). |
-| `CrossTenantTrustCreated` | Cross-tenant trust policy created. |
-| `CrossTenantTrustRevoked` | Cross-tenant trust policy revoked. |
+| `CrossRealmTrustCreated` | Cross-realm trust policy created. |
+| `CrossRealmTrustRevoked` | Cross-realm trust policy revoked. |
 
 ### 12.3 Agent Rate Monitoring
 
 - Hearth **SHOULD** maintain per-agent rate counters for: token requests, tool invocations, approval requests, and delegation events.
-- Anomaly thresholds **SHOULD** be configurable per agent or per tenant.
+- Anomaly thresholds **SHOULD** be configurable per agent or per realm.
 - When an agent exceeds its rate threshold, Hearth **SHOULD** emit a risk signal (see [Section 10.2](#102-risk-signals)) and **MAY** auto-suspend the agent.
 
 ### 12.4 Delegation Chain Visualization
@@ -691,33 +691,33 @@ The audit action enum **MUST** be extended with:
 
 ### 13.1 Key Prefixes
 
-All agent-related storage keys **MUST** be tenant-prefixed per [ARCHITECTURE.md Section 7](./ARCHITECTURE.md#7-multi-tenancy).
+All agent-related storage keys **MUST** be realm-prefixed per [ARCHITECTURE.md Section 7](./ARCHITECTURE.md#7-multi-tenancy).
 
 | Prefix Pattern | Content |
 |----------------|---------|
-| `{tenant}:agt:id:{agent_id}` | Agent entity record. |
-| `{tenant}:agt:owner:{owner_id}:{agent_id}` | Index: agents by owner. |
-| `{tenant}:agt:name:{name_hash}` | Index: agent by display name (for uniqueness within tenant). |
-| `{tenant}:agt:cred:{agent_id}:{credential_id}` | Agent credential (API key hash, public key). |
-| `{tenant}:agt:card:{agent_id}` | Agent Card JSON. |
-| `{tenant}:tool:id:{tool_name}` | Tool registration record. |
-| `{tenant}:toolgrp:{group_name}:{tool_name}` | Tool group membership. |
-| `{tenant}:res:id:{resource_id}` | Protected resource (MCP server) record. |
-| `{tenant}:res:uri:{uri_hash}` | Index: protected resource by URI. |
-| `{tenant}:appreq:{request_id}` | Approval request record. |
-| `{tenant}:appreq:agt:{agent_id}:{request_id}` | Index: approval requests by agent. |
-| `{tenant}:appreq:pending:{request_id}` | Index: pending approval requests (for approver dashboard). |
-| `{tenant}:consent:{user_id}:{agent_id}` | User-to-agent consent record. |
-| `{tenant}:dpop:nonce:{nonce}` | DPoP server nonce (short-lived). |
-| `{tenant}:dpop:jti:{jti}` | DPoP proof replay prevention (short-lived). |
-| `{tenant}:xttrust:{source_tenant}:{target_tenant}` | Cross-tenant trust policy. |
+| `{realm}:agt:id:{agent_id}` | Agent entity record. |
+| `{realm}:agt:owner:{owner_id}:{agent_id}` | Index: agents by owner. |
+| `{realm}:agt:name:{name_hash}` | Index: agent by display name (for uniqueness within realm). |
+| `{realm}:agt:cred:{agent_id}:{credential_id}` | Agent credential (API key hash, public key). |
+| `{realm}:agt:card:{agent_id}` | Agent Card JSON. |
+| `{realm}:tool:id:{tool_name}` | Tool registration record. |
+| `{realm}:toolgrp:{group_name}:{tool_name}` | Tool group membership. |
+| `{realm}:res:id:{resource_id}` | Protected resource (MCP server) record. |
+| `{realm}:res:uri:{uri_hash}` | Index: protected resource by URI. |
+| `{realm}:appreq:{request_id}` | Approval request record. |
+| `{realm}:appreq:agt:{agent_id}:{request_id}` | Index: approval requests by agent. |
+| `{realm}:appreq:pending:{request_id}` | Index: pending approval requests (for approver dashboard). |
+| `{realm}:consent:{user_id}:{agent_id}` | User-to-agent consent record. |
+| `{realm}:dpop:nonce:{nonce}` | DPoP server nonce (short-lived). |
+| `{realm}:dpop:jti:{jti}` | DPoP proof replay prevention (short-lived). |
+| `{realm}:xttrust:{source_realm}:{target_realm}` | Cross-realm trust policy. |
 
 ### 13.2 Storage Rules
 
 - Agent records **MUST** use the same batch-write pattern as other identity operations per [ARCHITECTURE.md Section 6.1](./ARCHITECTURE.md#61-write-path-invariants): entity + indexes as a single WAL entry.
 - DPoP nonce and JTI entries **MUST** use TTL-based expiry. The storage engine **SHOULD** support automatic expiry for these short-lived entries.
 - Approval request status transitions **MUST** be atomic (compare-and-swap or conditional write).
-- Cross-tenant trust policies **MUST** be stored under both the source and target tenant namespaces for bidirectional lookup.
+- Cross-realm trust policies **MUST** be stored under both the source and target realm namespaces for bidirectional lookup.
 
 ---
 
@@ -767,7 +767,7 @@ Implementation **MUST** follow the dependency order below. Each phase builds on 
 | D.1 | AAT issuance and validation | B.4 | Unit: derivation rules, chain validation. Property: scope only narrows. Adversarial: escalation via crafted AATs. |
 | D.2 | Agent discovery and registry | A.4 | Integration: search by capability. |
 | D.3 | Transaction tokens | A.6 | Unit: single-use, expiry. Adversarial: replay. |
-| D.4 | Cross-tenant trust policies | A.2 | Unit: policy CRUD. Integration: cross-tenant token issuance. Adversarial: trust bypass. |
+| D.4 | Cross-realm trust policies | A.2 | Unit: policy CRUD. Integration: cross-realm token issuance. Adversarial: trust bypass. |
 | D.5 | CAEP risk signals | A.2 | Unit: signal emission. Integration: signal → revocation. |
 | D.6 | Agent rate monitoring | A.2 | Unit: counter increment, threshold detection. Integration: auto-suspend on anomaly. |
 | D.7 | Workload identity (SPIFFE) | A.3 | Integration: mTLS + SVID → AgentId mapping. |
@@ -810,6 +810,6 @@ Implementation **MUST** follow the dependency order below. Each phase builds on 
 | MCP servers as protected resources | Registered in Hearth config | Tokens need audience restriction. Registering MCP servers gives Hearth the URI vocabulary for `aud` claims and enables PRM discovery. |
 | Phased implementation | A → B → C → D | Each phase has clear dependencies. Foundation (identity + DPoP) must exist before delegation. Delegation must exist before tool permissions. Advanced features (AATs, CAEP) build on all prior phases. |
 | Agent Cards at well-known path | Per A2A protocol | Interoperability with the emerging A2A ecosystem. Minimal cost (JSON endpoint), high value (agent discovery). |
-| Cross-tenant trust explicit-only | No implicit trust | Security default. Cross-tenant agent interactions are high-risk (data boundary crossing). Explicit configuration forces deliberate trust decisions. |
+| Cross-realm trust explicit-only | No implicit trust | Security default. Cross-realm agent interactions are high-risk (data boundary crossing). Explicit configuration forces deliberate trust decisions. |
 | Transaction tokens single-use | 60-second max lifetime | Agent-to-agent calls should be transactional. Longer-lived tokens for A2A invite replay attacks. Single-use + short TTL minimizes exposure. |
 | Scope intersection (not union) | At delegation time | Least privilege. The effective scope can never exceed any single input. Fail-fast at issuance prevents confusing denials at resource access time. |

@@ -7,7 +7,7 @@
 mod common;
 
 use hearth::authz::{ObjectRef, SubjectRef, TupleWrite};
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{
     AuthorizationRequest, CleartextPassword, CodeChallengeMethod, CreateUserRequest,
     RegisterClientRequest, TokenExchangeRequest,
@@ -18,22 +18,22 @@ use base64::Engine as _;
 use ring::rand::SecureRandom;
 
 // === TEST_SCENARIOS: Developer on-ramp ===
-// start server → create tenant → create app → complete OIDC login
+// start server → create realm → create app → complete OIDC login
 
 #[tokio::test]
-async fn developer_onramp_tenant_app_oidc_login() {
+async fn developer_onramp_realm_app_oidc_login() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
 
-    // 1. Create a tenant (just generate an ID — no separate tenant CRUD yet)
-    let tenant = TenantId::generate();
+    // 1. Create a realm (just generate an ID — no separate realm CRUD yet)
+    let realm = RealmId::generate();
 
     // 2. Create a user (the developer)
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "dev@startup.io".to_string(),
                 display_name: "Developer".to_string(),
@@ -45,14 +45,14 @@ async fn developer_onramp_tenant_app_oidc_login() {
     let password = CleartextPassword::from_string("s3cureP@ssw0rd!".to_string());
     harness
         .identity()
-        .set_password(&tenant, user.id(), &password)
+        .set_password(&realm, user.id(), &password)
         .expect("set password");
 
     // 4. Register an OAuth client (the app)
     let client = harness
         .identity()
         .register_client(
-            &tenant,
+            &realm,
             &RegisterClientRequest {
                 client_name: "My SaaS App".to_string(),
                 redirect_uris: vec!["https://app.startup.io/callback".to_string()],
@@ -65,7 +65,7 @@ async fn developer_onramp_tenant_app_oidc_login() {
     // 5. Verify password (simulating authentication)
     let verified = harness
         .identity()
-        .verify_password(&tenant, user.id(), &password)
+        .verify_password(&realm, user.id(), &password)
         .expect("verify password");
     assert!(verified, "correct password should verify");
 
@@ -80,7 +80,7 @@ async fn developer_onramp_tenant_app_oidc_login() {
     let auth_response = harness
         .identity()
         .authorize(
-            &tenant,
+            &realm,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.startup.io/callback".to_string(),
@@ -98,7 +98,7 @@ async fn developer_onramp_tenant_app_oidc_login() {
     let token_response = harness
         .identity()
         .exchange_authorization_code(
-            &tenant,
+            &realm,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -111,10 +111,10 @@ async fn developer_onramp_tenant_app_oidc_login() {
     // 7. Verify the tokens are valid
     let claims = harness
         .identity()
-        .validate_token(&tenant, token_response.access_token())
+        .validate_token(&realm, token_response.access_token())
         .expect("validate token");
     assert_eq!(claims.sub, user.id().to_string());
-    assert_eq!(claims.tid, tenant.to_string());
+    assert_eq!(claims.tid, realm.to_string());
 
     // 8. JWKS can verify the token externally
     let jwks = harness.identity().jwks();
@@ -129,13 +129,13 @@ async fn user_lifecycle_register_authenticate_session_token() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // 1. Register: create user
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
@@ -147,13 +147,13 @@ async fn user_lifecycle_register_authenticate_session_token() {
     let password = CleartextPassword::from_string("MyP@ssw0rd123".to_string());
     harness
         .identity()
-        .set_password(&tenant, user.id(), &password)
+        .set_password(&realm, user.id(), &password)
         .expect("set password");
 
     // 3. Authenticate: verify password
     let verified = harness
         .identity()
-        .verify_password(&tenant, user.id(), &password)
+        .verify_password(&realm, user.id(), &password)
         .expect("verify");
     assert!(verified);
 
@@ -161,7 +161,7 @@ async fn user_lifecycle_register_authenticate_session_token() {
     let wrong = CleartextPassword::from_string("WrongPassword".to_string());
     let wrong_result = harness
         .identity()
-        .verify_password(&tenant, user.id(), &wrong)
+        .verify_password(&realm, user.id(), &wrong)
         .expect("verify wrong");
     assert!(!wrong_result, "wrong password should not verify");
 
@@ -169,7 +169,7 @@ async fn user_lifecycle_register_authenticate_session_token() {
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -179,26 +179,26 @@ async fn user_lifecycle_register_authenticate_session_token() {
     // 5. Issue tokens from session
     let tokens = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     // 6. Validate token
     let claims = harness
         .identity()
-        .validate_token(&tenant, tokens.access_token())
+        .validate_token(&realm, tokens.access_token())
         .expect("validate");
     assert_eq!(claims.sub, user.id().to_string());
     assert_eq!(claims.sid, session.id().to_string());
-    assert_eq!(claims.tid, tenant.to_string());
+    assert_eq!(claims.tid, realm.to_string());
 
     // 7. Token refresh works
     let refreshed = harness
         .identity()
-        .refresh_tokens(&tenant, tokens.refresh_token())
+        .refresh_tokens(&realm, tokens.refresh_token())
         .expect("refresh");
     let refreshed_claims = harness
         .identity()
-        .validate_token(&tenant, refreshed.access_token())
+        .validate_token(&realm, refreshed.access_token())
         .expect("validate refreshed");
     assert_eq!(refreshed_claims.sub, user.id().to_string());
 }
@@ -211,13 +211,13 @@ async fn auth_plus_authz_permission_grant_and_check() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // 1. Create and authenticate user
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "bob@example.com".to_string(),
                 display_name: "Bob".to_string(),
@@ -228,12 +228,12 @@ async fn auth_plus_authz_permission_grant_and_check() {
     let password = CleartextPassword::from_string("BobsP@ss123".to_string());
     harness
         .identity()
-        .set_password(&tenant, user.id(), &password)
+        .set_password(&realm, user.id(), &password)
         .expect("set password");
 
     let verified = harness
         .identity()
-        .verify_password(&tenant, user.id(), &password)
+        .verify_password(&realm, user.id(), &password)
         .expect("verify");
     assert!(verified);
 
@@ -241,20 +241,20 @@ async fn auth_plus_authz_permission_grant_and_check() {
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let tokens = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     // 3. Validate token to confirm identity
     let claims = harness
         .identity()
-        .validate_token(&tenant, tokens.access_token())
+        .validate_token(&realm, tokens.access_token())
         .expect("validate");
     assert_eq!(claims.sub, user.id().to_string());
 
@@ -267,7 +267,7 @@ async fn auth_plus_authz_permission_grant_and_check() {
     harness
         .authz()
         .write_tuples(
-            &tenant,
+            &realm,
             &[TupleWrite::Touch(
                 hearth::authz::RelationshipTuple::new(object.clone(), "owner", subject.clone())
                     .expect("valid tuple"),
@@ -278,21 +278,21 @@ async fn auth_plus_authz_permission_grant_and_check() {
     // 5. Check permission — should be granted
     let has_access = harness
         .authz()
-        .check(&tenant, &object, "owner", &subject, None)
+        .check(&realm, &object, "owner", &subject, None)
         .expect("check");
     assert!(has_access, "user should have owner permission");
 
     // 6. Check non-existent permission — should be denied
     let no_access = harness
         .authz()
-        .check(&tenant, &object, "admin", &subject, None)
+        .check(&realm, &object, "admin", &subject, None)
         .expect("check admin");
     assert!(!no_access, "user should NOT have admin permission");
 
     // 7. Expand should list the user as owner
     let owners = harness
         .authz()
-        .expand(&tenant, &object, "owner", None)
+        .expand(&realm, &object, "owner", None)
         .expect("expand");
     assert!(
         owners.contains(&subject),
@@ -308,13 +308,13 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // 1. Create user with credentials, session, and tokens
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "charlie@example.com".to_string(),
                 display_name: "Charlie".to_string(),
@@ -325,13 +325,13 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
     let password = CleartextPassword::from_string("Ch@rlieP@ss!".to_string());
     harness
         .identity()
-        .set_password(&tenant, user.id(), &password)
+        .set_password(&realm, user.id(), &password)
         .expect("set password");
 
     let session = harness
         .identity()
         .create_session(
-            &tenant,
+            &realm,
             user.id(),
             &hearth::identity::SessionContext::default(),
         )
@@ -339,39 +339,39 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
 
     let tokens = harness
         .identity()
-        .issue_tokens(&tenant, user.id(), session.id())
+        .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
     // Verify everything works before deletion
     let claims = harness
         .identity()
-        .validate_token(&tenant, tokens.access_token())
+        .validate_token(&realm, tokens.access_token())
         .expect("validate pre-delete");
     assert_eq!(claims.sub, user.id().to_string());
 
     let session_valid = harness
         .identity()
-        .get_session(&tenant, session.id())
+        .get_session(&realm, session.id())
         .expect("get session pre-delete");
     assert!(session_valid.is_some(), "session should exist pre-delete");
 
     // 2. Delete the user
     harness
         .identity()
-        .delete_user(&tenant, user.id())
+        .delete_user(&realm, user.id())
         .expect("delete user");
 
     // 3. Verify user is gone
     let user_gone = harness
         .identity()
-        .get_user(&tenant, user.id())
+        .get_user(&realm, user.id())
         .expect("get deleted user");
     assert!(user_gone.is_none(), "user should be gone after deletion");
 
     // 4. Session should be invalidated
     let session_gone = harness
         .identity()
-        .get_session(&tenant, session.id())
+        .get_session(&realm, session.id())
         .expect("get session post-delete");
     assert!(
         session_gone.is_none(),
@@ -381,7 +381,7 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
     // 5. Token validation should fail (session is gone)
     let token_result = harness
         .identity()
-        .validate_token(&tenant, tokens.access_token());
+        .validate_token(&realm, tokens.access_token());
     assert!(
         token_result.is_err(),
         "token validation should fail after user deletion"
@@ -390,7 +390,7 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
     // 6. Password verification should fail
     let cred_result = harness
         .identity()
-        .verify_password(&tenant, user.id(), &password);
+        .verify_password(&realm, user.id(), &password);
     assert!(
         cred_result.is_err(),
         "credential verification should fail after user deletion"

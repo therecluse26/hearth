@@ -62,21 +62,21 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | `max_members` config | `OrganizationConfig` struct exists | NO | ~~NO~~ **YES** (`organizations:` YAML `config.max_members`) | ~~YAML config field~~ Done (A4) |
 | List user's orgs | `list_user_organizations` | ~~NO~~ **YES** (user detail page) | N/A | ~~Add to user detail page~~ Done (B5) |
 
-### 1.4 Tenants
+### 1.4 Realms
 
 | Capability | Backend Method | Admin UI | YAML Config | Recommendation |
 |---|---|---|---|---|
-| CRUD + reconciliation | `create_tenant`, `get_tenant`, `update_tenant`, `delete_tenant` | YES (list, detail, delete) | YES (`tenants:` section + `reconcile_tenants()`) | Working well |
-| List | `list_tenants` | YES | N/A | OK |
-| Session TTL | Via `TenantConfig.session_ttl_micros` | NO (config-managed) | YES (`session_ttl`) | OK |
-| Password hashing costs | Via `TenantConfig.password_memory_cost/time_cost` | NO (config-managed) | YES | OK |
-| Email branding | Via `TenantConfig.email_branding` | NO (config-managed) | YES (`email.branding`) | OK |
-| Web theme | Via `TenantConfig.web_theme_css` | NO (config-managed) | YES (`web.theme`) | OK |
-| MFA policy (required/methods) | `TenantConfig.mfa_required` / `mfa_methods` | NO (config-managed) | ~~NO~~ **YES** (`auth.mfa_required`, `auth.mfa_methods`) | ~~Add to YAML~~ Done (A2) |
-| Password policy (length, complexity) | `TenantConfig.password_policy` | NO (config-managed) | ~~NO~~ **YES** (`auth.password_policy.*`) | ~~Add to YAML~~ Done (A2) |
-| Allowed auth methods | `TenantConfig.allowed_auth_methods` | NO (config-managed) | ~~NO~~ **YES** (`auth.allowed_auth_methods`) | ~~Add to YAML~~ Done (A2) |
-| Token TTLs (access/refresh) | `TenantConfig.access_token_ttl_secs` / `refresh_token_ttl_secs` | NO (config-managed) | ~~NO~~ **YES** (global `token:` section + per-tenant `auth.token.*`) | ~~Add to YAML~~ Done (A1 + A2) |
-| Rate limit overrides | `TenantConfig.max_failed_logins` / `lockout_duration_secs` | NO (config-managed) | ~~NO~~ **YES** (`auth.rate_limit.*`) | ~~Add to YAML~~ Done (A2) |
+| CRUD + reconciliation | `create_realm`, `get_realm`, `update_realm`, `delete_realm` | YES (list, detail, delete) | YES (`realms:` section + `reconcile_realms()`) | Working well |
+| List | `list_realms` | YES | N/A | OK |
+| Session TTL | Via `RealmConfig.session_ttl_micros` | NO (config-managed) | YES (`session_ttl`) | OK |
+| Password hashing costs | Via `RealmConfig.password_memory_cost/time_cost` | NO (config-managed) | YES | OK |
+| Email branding | Via `RealmConfig.email_branding` | NO (config-managed) | YES (`email.branding`) | OK |
+| Web theme | Via `RealmConfig.web_theme_css` | NO (config-managed) | YES (`web.theme`) | OK |
+| MFA policy (required/methods) | `RealmConfig.mfa_required` / `mfa_methods` | NO (config-managed) | ~~NO~~ **YES** (`auth.mfa_required`, `auth.mfa_methods`) | ~~Add to YAML~~ Done (A2) |
+| Password policy (length, complexity) | `RealmConfig.password_policy` | NO (config-managed) | ~~NO~~ **YES** (`auth.password_policy.*`) | ~~Add to YAML~~ Done (A2) |
+| Allowed auth methods | `RealmConfig.allowed_auth_methods` | NO (config-managed) | ~~NO~~ **YES** (`auth.allowed_auth_methods`) | ~~Add to YAML~~ Done (A2) |
+| Token TTLs (access/refresh) | `RealmConfig.access_token_ttl_secs` / `refresh_token_ttl_secs` | NO (config-managed) | ~~NO~~ **YES** (global `token:` section + per-realm `auth.token.*`) | ~~Add to YAML~~ Done (A1 + A2) |
+| Rate limit overrides | `RealmConfig.max_failed_logins` / `lockout_duration_secs` | NO (config-managed) | ~~NO~~ **YES** (`auth.rate_limit.*`) | ~~Add to YAML~~ Done (A2) |
 
 ### 1.5 OIDC / Token (Global)
 
@@ -101,13 +101,13 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | Token revocation | `revoke_token` | NO | N/A | Protocol endpoint — correct |
 | Token introspection | `introspect_token` | NO | N/A | Protocol endpoint — correct |
 | OIDC Discovery | `oidc_discovery` | NO | N/A | Protocol endpoint — correct |
-| JWKS | `jwks`, `tenant_jwks` | NO | N/A | Protocol endpoint — correct |
+| JWKS | `jwks`, `realm_jwks` | NO | N/A | Protocol endpoint — correct |
 
 ### 1.7 Sessions (Admin)
 
 | Capability | Backend Method | Admin UI | YAML Config | Recommendation |
 |---|---|---|---|---|
-| Global list | `list_sessions_by_tenant` | YES (`admin_sessions_list`) | N/A | OK |
+| Global list | `list_sessions_by_realm` | YES (`admin_sessions_list`) | N/A | OK |
 | Revoke | `revoke_session` | YES (`admin_session_revoke`) | N/A | OK |
 | Per-user list | `list_sessions_by_user` | ~~NO~~ **YES** (user detail page) | N/A | ~~Add to user detail~~ Done (B2) |
 
@@ -128,13 +128,13 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | Permission check | `check` | NO | N/A | API-only — correct |
 | Expand | `expand` | NO | N/A | API-only — correct |
 | Watch | `watch` | NO | N/A | API-only — correct |
-| Namespace schemas | Per-tenant JSON via `set_namespace_config` | NO | NO | Future: **YAML** |
+| Namespace schemas | Per-realm JSON via `set_namespace_config` | NO | NO | Future: **YAML** |
 
 ### 1.10 Migration
 
 | Capability | Backend Method | Admin UI | YAML Config | Recommendation |
 |---|---|---|---|---|
-| Import tenant | `import_tenant` | NO | N/A | CLI-only (`hearth migrate keycloak`) — correct |
+| Import realm | `import_realm` | NO | N/A | CLI-only (`hearth migrate keycloak`) — correct |
 | Import user | `import_user` | NO | N/A | CLI-only — correct |
 | Import client | `import_client` | NO | N/A | CLI-only — correct |
 
@@ -151,7 +151,7 @@ Migration is inherently a one-time CLI operation. No UI or config surface needed
 
 ## 2. Config Expansion Proposals
 
-These proposals follow the existing reconciliation pattern established by `reconcile_tenants()` in `src/identity/reconcile.rs`. The pattern: YAML is the source of truth for structural config; on startup, Hearth creates/updates/archives entities to match the declared state.
+These proposals follow the existing reconciliation pattern established by `reconcile_realms()` in `src/identity/reconcile.rs`. The pattern: YAML is the source of truth for structural config; on startup, Hearth creates/updates/archives entities to match the declared state.
 
 ### Priority 1: OIDC & Token Configuration — DONE (A1)
 
@@ -183,14 +183,14 @@ token:
 
 **Note:** `token.issuer` and `oidc.issuer` are currently separate fields. The YAML layer should unify them: default `token.issuer` to `oidc.issuer` when omitted. Document that `oidc.issuer` is the canonical issuer URL and `token.issuer` exists for backward compatibility.
 
-### Priority 2: Per-Tenant Auth Policies — DONE (A2)
+### Priority 2: Per-Realm Auth Policies — DONE (A2)
 
-~~Extend `TenantYamlConfig` with auth policy knobs.~~ Implemented: `TenantAuthYaml` with `mfa_required`, `mfa_methods`, `allowed_auth_methods`, `password_policy`, `token` TTL overrides, and `rate_limit`. Fields are stored in `TenantConfig` and reconciled on startup. Enforcement is a separate follow-up.
+~~Extend `RealmYamlConfig` with auth policy knobs.~~ Implemented: `RealmAuthYaml` with `mfa_required`, `mfa_methods`, `allowed_auth_methods`, `password_policy`, `token` TTL overrides, and `rate_limit`. Fields are stored in `RealmConfig` and reconciled on startup. Enforcement is a separate follow-up.
 
 **Proposed YAML extension:**
 
 ```yaml
-tenants:
+realms:
   customer-portal:
     session_ttl: "12h"               # existing
     password_memory_cost: 65536      # existing
@@ -205,7 +205,7 @@ tenants:
         require_number: true
         require_special: false
       token:
-        access_token_ttl: "15m"      # per-tenant override of global
+        access_token_ttl: "15m"      # per-realm override of global
         refresh_token_ttl: "7d"
       rate_limit:
         max_failed_logins: 5
@@ -213,15 +213,15 @@ tenants:
 ```
 
 **Files to modify:**
-- `src/config/types.rs` — new `TenantAuthYaml`, `PasswordPolicyYaml`, `RateLimitYaml` structs; add `auth: Option<TenantAuthYaml>` to `TenantYamlConfig`
-- `src/identity/types.rs` — extend `TenantConfig` with matching runtime fields
-- `src/identity/reconcile.rs` — map YAML auth fields into `TenantConfig` during reconciliation
+- `src/config/types.rs` — new `RealmAuthYaml`, `PasswordPolicyYaml`, `RateLimitYaml` structs; add `auth: Option<RealmAuthYaml>` to `RealmYamlConfig`
+- `src/identity/types.rs` — extend `RealmConfig` with matching runtime fields
+- `src/identity/reconcile.rs` — map YAML auth fields into `RealmConfig` during reconciliation
 - `src/config/mod.rs` — validation (e.g., `min_length >= 8`, valid `mfa_methods` values)
 
 **Enforcement approach:** These fields are *policy declarations* — they require corresponding enforcement code in the identity engine:
 - `mfa_required`: check after password verification in login flow
 - `password_policy`: validate in `set_password` / `change_password`
-- `rate_limit`: feed into `RateLimiter` configuration per tenant
+- `rate_limit`: feed into `RateLimiter` configuration per realm
 - `allowed_auth_methods`: gate magic link, passkey, and password flows
 
 ### Priority 3: OAuth Client Declarations — DONE (A3, depends on C1)
@@ -231,7 +231,7 @@ tenants:
 **Proposed YAML extension:**
 
 ```yaml
-tenants:
+realms:
   customer-portal:
     applications:
       frontend-spa:
@@ -253,10 +253,10 @@ tenants:
 - **Create if missing:** hash secret, store client with generated `ClientId`
 - **Update if changed:** update `client_name`, `redirect_uris`, `grant_types`; re-hash secret only if env var value changed (compare against stored hash)
 - **Archive if removed from YAML:** soft-delete (reject token requests but preserve audit trail)
-- **Client ID stability:** use deterministic ID derived from `tenant_name + app_key` (e.g., `frontend-spa`) to ensure clients survive YAML re-reads without generating new IDs
+- **Client ID stability:** use deterministic ID derived from `realm_name + app_key` (e.g., `frontend-spa`) to ensure clients survive YAML re-reads without generating new IDs
 
 **Files to modify:**
-- `src/config/types.rs` — new `ApplicationYamlConfig` struct; add `applications: Option<HashMap<String, ApplicationYamlConfig>>` to `TenantYamlConfig`
+- `src/config/types.rs` — new `ApplicationYamlConfig` struct; add `applications: Option<HashMap<String, ApplicationYamlConfig>>` to `RealmYamlConfig`
 - `src/identity/reconcile.rs` — new `reconcile_applications()` function
 - `src/identity/oidc.rs` — extend `UpdateClientRequest` with `grant_types: Option<Vec<String>>`
 - `src/identity/engine.rs` — implement `update_client` grant_types update path
@@ -270,7 +270,7 @@ tenants:
 **Proposed YAML extension:**
 
 ```yaml
-tenants:
+realms:
   customer-portal:
     organizations:
       acme-corp:
@@ -284,16 +284,16 @@ tenants:
           max_members: 50
 ```
 
-**Reconciliation behavior:** create/update/archive like tenants. Slug derived from the YAML key (e.g., `acme-corp`). Members and invitations remain operational (API/UI only) — they are runtime bindings, not structural config.
+**Reconciliation behavior:** create/update/archive like realms. Slug derived from the YAML key (e.g., `acme-corp`). Members and invitations remain operational (API/UI only) — they are runtime bindings, not structural config.
 
 **Files to modify:**
-- `src/config/types.rs` — new `OrganizationYamlConfig` struct; add `organizations: Option<HashMap<String, OrganizationYamlConfig>>` to `TenantYamlConfig`
+- `src/config/types.rs` — new `OrganizationYamlConfig` struct; add `organizations: Option<HashMap<String, OrganizationYamlConfig>>` to `RealmYamlConfig`
 - `src/identity/reconcile.rs` — new `reconcile_organizations()` function
 
 ### Priority 5: Zanzibar Namespace Schemas (Future)
 
 ```yaml
-tenants:
+realms:
   customer-portal:
     authz:
       namespaces:
@@ -306,7 +306,7 @@ tenants:
               union: [this, editor]
 ```
 
-Lower priority — authz namespace config is an advanced feature. The backend already supports per-tenant namespace JSON via `set_namespace_config`. YAML would be a convenience layer.
+Lower priority — authz namespace config is an advanced feature. The backend already supports per-realm namespace JSON via `set_namespace_config`. YAML would be a convenience layer.
 
 ---
 
@@ -362,7 +362,7 @@ These are operational tasks that inherently need a UI — they act on runtime da
 
 **8. ~~Device authorization approval page~~ DONE (D3)**
 
-- **Route:** `GET /ui/device` → form with user_code input; `POST /ui/device` → `approve_device(tenant, user_code, user_id)`
+- **Route:** `GET /ui/device` → form with user_code input; `POST /ui/device` → `approve_device(realm, user_code, user_id)`
 - **Template:** `templates/ui/device_approve.html` (authenticated, with flash messages)
 
 **9. ~~Audit list: date range filters~~ DONE (B7)**
@@ -408,7 +408,7 @@ These are runtime/transactional data — cannot be declared statically:
 | Step | What | Key Files | Depends On | Status |
 |---|---|---|---|---|
 | A1 | `oidc:` and `token:` YAML sections | `config/types.rs`, `config/mod.rs`, `main.rs` | — | **DONE** |
-| A2 | Per-tenant auth policies | `config/types.rs`, `identity/types.rs`, `identity/reconcile.rs` | A1 (for `token` defaults) | **DONE** |
+| A2 | Per-realm auth policies | `config/types.rs`, `identity/types.rs`, `identity/reconcile.rs` | A1 (for `token` defaults) | **DONE** |
 | A3 | Application declarations + reconciliation | `config/types.rs`, `identity/reconcile.rs`, `identity/oidc.rs`, `identity/engine.rs` | C1 (`UpdateClientRequest.grant_types`) | **DONE** |
 | A4 | Organization declarations + reconciliation | `config/types.rs`, `identity/reconcile.rs` | — | **DONE** |
 
@@ -451,12 +451,12 @@ These are runtime/transactional data — cannot be declared statically:
 - [x] Cross-referenced all 6 `AuthorizationEngine` trait methods (check, expand, write_tuples, set/get_namespace, watch)
 - [x] Audited all 50+ registered routes in `src/protocol/web/mod.rs`
 - [x] ~~Verified `UpdateClientRequest` fields: only `client_name` and `redirect_uris` (no `grant_types`)~~ Now includes `grant_types` (C1)
-- [x] Verified `TenantConfig` fields: `session_ttl_micros`, `password_memory_cost`, `password_time_cost`, `email_branding`, `web_theme_css`
-- [x] Verified `TenantYamlConfig` fields: `session_ttl`, `password_memory_cost`, `password_time_cost`, `email`, `web`
+- [x] Verified `RealmConfig` fields: `session_ttl_micros`, `password_memory_cost`, `password_time_cost`, `email_branding`, `web_theme_css`
+- [x] Verified `RealmYamlConfig` fields: `session_ttl`, `password_memory_cost`, `password_time_cost`, `email`, `web`
 - [x] Verified `OidcConfig` defaults: issuer `"https://hearth.local"`, auth code TTL 600s, enforce_nonces false
 - [x] Verified `TokenConfig` defaults: issuer `"hearth"`, audience `"hearth"`, access 900s, refresh 604,800s
 - [x] ~~Confirmed `hearth.example.yaml` has no `oidc:`, `token:`, or `applications:` sections~~ Now has all three (A1, A3)
-- [x] Confirmed reconciliation pattern: `reconcile_tenants()` creates/updates/archives based on YAML diff
+- [x] Confirmed reconciliation pattern: `reconcile_realms()` creates/updates/archives based on YAML diff
 - [x] ~~Confirmed admin handler inventory: 30+ handlers, no user detail enhancements~~ Now 40+ handlers with full user detail (B1–B5)
 - [x] ~~Confirmed user detail template: shows only ID, email, status, edit link, delete button~~ Now shows sessions, MFA, WebAuthn, org memberships, action buttons (B1–B5)
 - [x] ~~Identified `accept_invitation` dead end~~ Resolved: email delivery (D1) + acceptance route (D2) implemented

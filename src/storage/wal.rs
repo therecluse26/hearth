@@ -10,7 +10,7 @@
 //! Payload layout:
 //! ```text
 //! [8 bytes: timestamp i64 LE]
-//! [16 bytes: tenant UUID]
+//! [16 bytes: realm UUID]
 //! [1 byte: operation (0=Put, 1=Delete)]
 //! [4 bytes: key length u32 LE]
 //! [N bytes: key]
@@ -18,7 +18,7 @@
 //! [M bytes: value]
 //! ```
 
-use crate::core::{TenantId, Timestamp};
+use crate::core::{RealmId, Timestamp};
 use crate::storage::error::StorageError;
 use crate::storage::fs::{Fs, FsFile, RealFs};
 use std::io::SeekFrom;
@@ -46,8 +46,8 @@ pub enum WalOperation {
 pub struct WalEntry {
     /// When this mutation occurred.
     pub timestamp: Timestamp,
-    /// Which tenant owns this data.
-    pub tenant_id: TenantId,
+    /// Which realm owns this data.
+    pub realm_id: RealmId,
     /// The type of mutation.
     pub operation: WalOperation,
     /// The key being mutated.
@@ -64,8 +64,8 @@ impl WalEntry {
         // Timestamp: i64 LE
         buf.extend_from_slice(&self.timestamp.as_micros().to_le_bytes());
 
-        // Tenant UUID: 16 bytes
-        buf.extend_from_slice(self.tenant_id.as_uuid().as_bytes());
+        // Realm UUID: 16 bytes
+        buf.extend_from_slice(self.realm_id.as_uuid().as_bytes());
 
         // Operation: 1 byte
         let op_byte: u8 = match self.operation {
@@ -114,14 +114,14 @@ impl WalEntry {
         let timestamp = Timestamp::from_micros(i64::from_le_bytes(ts_bytes));
         pos += 8;
 
-        // Tenant UUID
+        // Realm UUID
         let uuid_bytes: [u8; 16] =
             data[pos..pos + 16]
                 .try_into()
                 .map_err(|_| StorageError::DeserializationFailed {
                     reason: "invalid UUID bytes".to_string(),
                 })?;
-        let tenant_id = TenantId::new(Uuid::from_bytes(uuid_bytes));
+        let realm_id = RealmId::new(Uuid::from_bytes(uuid_bytes));
         pos += 16;
 
         // Operation
@@ -184,7 +184,7 @@ impl WalEntry {
 
         Ok(WalEntry {
             timestamp,
-            tenant_id,
+            realm_id,
             operation,
             key,
             value,
@@ -197,14 +197,14 @@ impl WalEntry {
 pub struct BatchEntry {
     /// Put or Delete. Batch is disallowed — batches cannot nest.
     pub operation: WalOperation,
-    /// Target key within the batch's tenant.
+    /// Target key within the batch's realm.
     pub key: Vec<u8>,
     /// Value (empty for Delete).
     pub value: Vec<u8>,
 }
 
 /// Encodes a sequence of batch entries into the `value` field of a batch
-/// `WalEntry`. The outer record's timestamp + tenant apply to every sub-entry.
+/// `WalEntry`. The outer record's timestamp + realm apply to every sub-entry.
 ///
 /// Layout:
 /// ```text
@@ -521,7 +521,7 @@ impl std::fmt::Debug for Wal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::TenantId;
+    use crate::core::RealmId;
     use proptest::prelude::*;
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -530,7 +530,7 @@ mod tests {
     fn make_entry(key: &[u8], value: &[u8], op: WalOperation) -> WalEntry {
         WalEntry {
             timestamp: Timestamp::from_micros(1_700_000_000_000_000),
-            tenant_id: TenantId::new(Uuid::new_v4()),
+            realm_id: RealmId::new(Uuid::new_v4()),
             operation: op,
             key: key.to_vec(),
             value: value.to_vec(),
@@ -707,7 +707,7 @@ mod tests {
     fn arb_wal_entry() -> impl Strategy<Value = WalEntry> {
         (
             any::<i64>(),                               // timestamp micros
-            any::<[u8; 16]>(),                          // tenant uuid bytes
+            any::<[u8; 16]>(),                          // realm uuid bytes
             prop_oneof![Just(0u8), Just(1u8)],          // operation
             prop::collection::vec(any::<u8>(), 0..256), // key
             prop::collection::vec(any::<u8>(), 0..256), // value
@@ -720,7 +720,7 @@ mod tests {
                 };
                 WalEntry {
                     timestamp: Timestamp::from_micros(ts),
-                    tenant_id: TenantId::new(Uuid::from_bytes(uuid_bytes)),
+                    realm_id: RealmId::new(Uuid::from_bytes(uuid_bytes)),
                     operation,
                     key,
                     value,

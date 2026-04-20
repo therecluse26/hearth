@@ -7,7 +7,7 @@
 mod common;
 
 use hearth::authz::{AuthzError, ObjectRef};
-use hearth::core::{SessionId, TenantId, UserId};
+use hearth::core::{RealmId, SessionId, UserId};
 use hearth::identity::{
     CleartextPassword, CreateUserRequest, IdentityError, RegisterClientRequest,
 };
@@ -62,21 +62,17 @@ async fn error_responses_leak_no_internal_state() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Collect error messages from various failure modes
     let errors = [
-        err_display(harness.identity().delete_user(&tenant, &UserId::generate())),
+        err_display(harness.identity().delete_user(&realm, &UserId::generate())),
         err_display(
             harness
                 .identity()
-                .revoke_session(&tenant, &SessionId::generate()),
+                .revoke_session(&realm, &SessionId::generate()),
         ),
-        err_display(
-            harness
-                .identity()
-                .validate_token(&tenant, "fake.token.here"),
-        ),
+        err_display(harness.identity().validate_token(&realm, "fake.token.here")),
     ];
 
     for msg in &errors {
@@ -147,13 +143,13 @@ async fn constant_time_comparisons_for_secrets() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Create a user with a password
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "timing-test@example.com".to_string(),
                 display_name: "Timing Test".to_string(),
@@ -164,7 +160,7 @@ async fn constant_time_comparisons_for_secrets() {
     let pw = CleartextPassword::from_string("CorrectP@ss123".to_string());
     harness
         .identity()
-        .set_password(&tenant, user.id(), &pw)
+        .set_password(&realm, user.id(), &pw)
         .expect("set password");
 
     // Non-existent user should fail with the same generic error type
@@ -172,7 +168,7 @@ async fn constant_time_comparisons_for_secrets() {
     let fake_pw = CleartextPassword::from_string("anything".to_string());
     let result = harness
         .identity()
-        .verify_password(&tenant, &fake_user, &fake_pw);
+        .verify_password(&realm, &fake_user, &fake_pw);
     assert!(result.is_err(), "non-existent user should return error");
 
     // Error must NOT reveal whether the user exists
@@ -190,7 +186,7 @@ async fn constant_time_comparisons_for_secrets() {
     let fake_session = SessionId::generate();
     let session_result = harness
         .identity()
-        .get_session(&tenant, &fake_session)
+        .get_session(&realm, &fake_session)
         .expect("get session should not error");
     assert!(
         session_result.is_none(),
@@ -198,7 +194,7 @@ async fn constant_time_comparisons_for_secrets() {
     );
 
     // Token validation for garbage should fail cleanly
-    let token_result = harness.identity().validate_token(&tenant, "garbage-token");
+    let token_result = harness.identity().validate_token(&realm, "garbage-token");
     assert!(token_result.is_err(), "garbage token should fail");
 }
 
@@ -277,12 +273,12 @@ async fn input_size_limits_enforced() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = TenantId::generate();
+    let realm = RealmId::generate();
 
     // Oversized email
     let long_email = format!("{}@example.com", "a".repeat(1000));
     let result = harness.identity().create_user(
-        &tenant,
+        &realm,
         &CreateUserRequest {
             email: long_email,
             display_name: "Normal Name".to_string(),
@@ -292,7 +288,7 @@ async fn input_size_limits_enforced() {
 
     // Oversized display name
     let result = harness.identity().create_user(
-        &tenant,
+        &realm,
         &CreateUserRequest {
             email: "valid@example.com".to_string(),
             display_name: "x".repeat(10_000),
@@ -304,7 +300,7 @@ async fn input_size_limits_enforced() {
     let user = harness
         .identity()
         .create_user(
-            &tenant,
+            &realm,
             &CreateUserRequest {
                 email: "limits@example.com".to_string(),
                 display_name: "Limits Test".to_string(),
@@ -313,9 +309,7 @@ async fn input_size_limits_enforced() {
         .expect("create user");
 
     let huge_pw = CleartextPassword::from_string("P@".repeat(5_000));
-    let result = harness
-        .identity()
-        .set_password(&tenant, user.id(), &huge_pw);
+    let result = harness.identity().set_password(&realm, user.id(), &huge_pw);
     assert!(
         result.is_err(),
         "extremely large password should be rejected"
@@ -323,7 +317,7 @@ async fn input_size_limits_enforced() {
 
     // Oversized OAuth client name
     let result = harness.identity().register_client(
-        &tenant,
+        &realm,
         &RegisterClientRequest {
             client_name: "x".repeat(10_000),
             redirect_uris: vec!["https://example.com/callback".to_string()],
@@ -336,7 +330,7 @@ async fn input_size_limits_enforced() {
     // Oversized redirect URI
     let long_uri = format!("https://example.com/{}", "a".repeat(10_000));
     let result = harness.identity().register_client(
-        &tenant,
+        &realm,
         &RegisterClientRequest {
             client_name: "Normal App".to_string(),
             redirect_uris: vec![long_uri],

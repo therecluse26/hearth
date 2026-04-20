@@ -273,7 +273,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Adversarial
 
 - [x] Malformed permission tuples (invalid object/relation/subject) rejected safely `P0` `fast`
-- [x] Cross-tenant permission leak prevented: namespace traversal returns no results `P0` `fast`
+- [x] Cross-realm permission leak prevented: namespace traversal returns no results `P0` `fast`
 - [x] Maximum graph traversal depth enforced to prevent DoS via deep chains `P0` `fast`
 
 #### Benchmark
@@ -373,7 +373,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Integration
 
 - [x] `hearth serve --dev` starts server and accepts connections `P0` `fast`
-- [x] CLI management commands (`tenant create`, `app create`) succeed against running server `P1` `fast`
+- [x] CLI management commands (`realm create`, `app create`) succeed against running server `P1` `fast`
 - [x] CLI exits with appropriate non-zero error codes on invalid input or unreachable server `P0` `fast`
 
 ---
@@ -382,7 +382,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Integration
 
-- [x] Developer on-ramp: start server → create tenant → create app → complete OIDC login `P0` `fast`
+- [x] Developer on-ramp: start server → create realm → create app → complete OIDC login `P0` `fast`
 - [x] User lifecycle: register → authenticate → receive session → validate token `P0` `fast`
 - [x] Auth + authz: authenticate → write permission → check permission → authorized action succeeds `P0` `fast`
 - [x] Cascading invalidation: delete user → sessions invalidated → token validation fails `P0` `fast`
@@ -549,34 +549,34 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 #### Unit
 
-- [x] Create tenant with configuration returns assigned TenantId `P0` `fast`
-- [x] Tenant-scoped user creation: users bound to tenant; cross-tenant lookup returns not-found `P0` `fast`
-- [x] Per-tenant signing keys: each tenant gets independent key pair for token signing `P0` `fast`
-- [x] Tenant configuration update: changes to session TTL, password policy apply only to target tenant `P0` `fast`
-- [x] Cascading tenant deletion: removing tenant purges all users, sessions, credentials, and relationships `P0` `fast`
+- [x] Create realm with configuration returns assigned RealmId `P0` `fast`
+- [x] Realm-scoped user creation: users bound to realm; cross-realm lookup returns not-found `P0` `fast`
+- [x] Per-realm signing keys: each realm gets independent key pair for token signing `P0` `fast`
+- [x] Realm configuration update: changes to session TTL, password policy apply only to target realm `P0` `fast`
+- [x] Cascading realm deletion: removing realm purges all users, sessions, credentials, and relationships `P0` `fast`
 
 #### Integration
 
-- [x] Full tenant lifecycle via embedded API: create → configure → create users → delete tenant → verify cleanup `P0` `fast`
-- [x] Multi-tenant token issuance: tokens from tenant A are not valid in tenant B `P0` `fast`
-- [x] Tenant-scoped OIDC: discovery documents and JWKS endpoints differ per tenant `P0` `fast`
+- [x] Full realm lifecycle via embedded API: create → configure → create users → delete realm → verify cleanup `P0` `fast`
+- [x] Multi-realm token issuance: tokens from realm A are not valid in realm B `P0` `fast`
+- [x] Realm-scoped OIDC: discovery documents and JWKS endpoints differ per realm `P0` `fast`
 
 #### Property
 
-- [x] Random operations across N tenants never produce cross-tenant data leaks (`proptest`) `P0` `extended`
-- [x] Tenant key rotation under concurrent token issuance: all in-flight tokens remain valid (`proptest`) `P0` `extended`
-- [x] Random create/delete tenant sequences maintain consistent tenant count and clean storage (`proptest`) `P0` `extended`
+- [x] Random operations across N realms never produce cross-realm data leaks (`proptest`) `P0` `extended`
+- [x] Realm key rotation under concurrent token issuance: all in-flight tokens remain valid (`proptest`) `P0` `extended`
+- [x] Random create/delete realm sequences maintain consistent realm count and clean storage (`proptest`) `P0` `extended`
 
 #### Simulation
 
-- [x] Crash during cascading tenant deletion: recovery completes deletion or fully rolls back (`madsim`) `P0` `full`
-- [x] Concurrent tenant operations under simulated I/O delays produce no data corruption (`madsim`) `P1` `full`
+- [x] Crash during cascading realm deletion: recovery completes deletion or fully rolls back (`madsim`) `P0` `full`
+- [x] Concurrent realm operations under simulated I/O delays produce no data corruption (`madsim`) `P1` `full`
 
 #### Adversarial
 
-- [x] Cross-tenant session injection: session ID from tenant A rejected when presented to tenant B `P0` `fast`
-- [x] Tenant ID spoofing: forged TenantId in request path rejected by ownership validation `P0` `fast`
-- [x] Tenant enumeration resistance: responses for nonexistent tenants are indistinguishable from forbidden `P0` `fast`
+- [x] Cross-realm session injection: session ID from realm A rejected when presented to realm B `P0` `fast`
+- [x] Realm ID spoofing: forged RealmId in request path rejected by ownership validation `P0` `fast`
+- [x] Realm enumeration resistance: responses for nonexistent realms are indistinguishable from forbidden `P0` `fast`
 
 ---
 
@@ -629,7 +629,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Integration
 
 - [x] REST CRUD for users: create, read, update, disable, list via admin endpoints `P0` `fast`
-- [x] REST CRUD for tenants: create, read, update, delete via admin endpoints `P0` `fast`
+- [x] REST CRUD for realms: create, read, update, delete via admin endpoints `P0` `fast`
 - [x] REST CRUD for applications: create, read, update, delete via admin endpoints `P0` `fast`
 - [x] Admin audit trail: all admin mutations appear in audit log with actor identity `P0` `fast`
 
@@ -648,7 +648,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 - [x] Security-critical mutations emit structured audit events with correct fields (actor, action, resource, timestamp) `P0` `fast`
 - [x] Audit log is append-only: no API to update or delete audit entries `P0` `fast`
 - [x] Audit log query by time range, actor, action type returns correct results `P0` `fast`
-- [x] Audit events include tenant context: all entries scoped to originating tenant `P0` `fast`
+- [x] Audit events include realm context: all entries scoped to originating realm `P0` `fast`
 
 #### Integration
 
@@ -698,10 +698,10 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 #### Integration
 
 - [x] TypeScript SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
-- [x] TypeScript SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
+- [x] TypeScript SDK: admin CRUD operations (create/read/update/delete users and realms) `P0` `fast`
 - [x] TypeScript SDK: JWKS validation — tokens verified using fetched public keys `P0` `fast`
 - [x] Go SDK: complete authorization code flow (authorize → exchange → validate → refresh) `P0` `fast`
-- [x] Go SDK: admin CRUD operations (create/read/update/delete users and tenants) `P0` `fast`
+- [x] Go SDK: admin CRUD operations (create/read/update/delete users and realms) `P0` `fast`
 - [x] Go SDK: transparent token refresh — expired access token triggers automatic refresh `P0` `fast`
 
 ---
@@ -737,7 +737,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 - [x] Keycloak migration: import users/clients from Keycloak export → authenticate migrated user → verify session `P1` `fast`
 - [x] MFA enrollment + login: register → enable TOTP → authenticate with password + TOTP → receive session `P0` `fast`
 - [x] Passkey-only authentication: register passkey → passwordless login → receive session → validate token `P0` `fast`
-- [x] Multi-tenant isolation round-trip: create 2 tenants → create users in each → verify complete data isolation `P0` `fast`
+- [x] Multi-realm isolation round-trip: create 2 realms → create users in each → verify complete data isolation `P0` `fast`
 
 ---
 
@@ -772,7 +772,7 @@ High-level test categories for future phases. Individual checkboxes will be expa
 ### Phase 3+: Scale and Ecosystem
 
 - **Multi-region replication** — configurable consistency, latency-optimized routing (Simulation, Benchmark)
-- **Hearth Cloud** — managed offering, tenant provisioning, billing integration (Integration)
+- **Hearth Cloud** — managed offering, realm provisioning, billing integration (Integration)
 - **S3 cold storage** — audit log archival, cold-tier offload to object storage (Integration, Simulation)
 - **Remaining SDKs** — Python, Rust, Java, C#, Ruby, Elixir (Integration)
 
@@ -827,10 +827,10 @@ All categories from TESTING.md §6, mapped to Phase 0 and Phase 1 modules where 
 |----------|-----------------|------------------|
 | Timing attacks | Credential Storage, Cross-Cutting Concerns | Admin API (enumeration timing) |
 | Token forgery | JWT / Tokens (`alg=none`, key confusion, claim tampering) | OAuth 2.0 (rotation theft detection) |
-| Privilege escalation | Authorization Engine (malformed tuples, namespace traversal, depth limits) | Admin API (non-admin access), Multi-Tenancy (tenant ID spoofing) |
+| Privilege escalation | Authorization Engine (malformed tuples, namespace traversal, depth limits) | Admin API (non-admin access), Multi-Tenancy (realm ID spoofing) |
 | Replay attacks | Session Management (replayed tokens), OIDC (code reuse) | WebAuthn (sign counter replay), TOTP (code reuse), OAuth 2.0 (refresh reuse) |
 | Input injection | User CRUD (null bytes, unicode), Cross-Cutting (size limits) | Phase 1 Cross-Cutting (size limits) |
 | Credential stuffing | Credential Storage (rate limiting) | TOTP (brute-force lockout), Magic Link (rate limiting) |
-| Enumeration attacks | — | Magic Link (email enumeration), Multi-Tenancy (tenant enumeration) |
+| Enumeration attacks | — | Magic Link (email enumeration), Multi-Tenancy (realm enumeration) |
 | Protocol downgrade | — | TLS Termination (downgrade prevention, weak ciphers) |
 | Tamper detection | — | Audit Logging (tamper detection on read) |

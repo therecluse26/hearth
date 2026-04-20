@@ -74,57 +74,57 @@ func (UserStatus) EnumDescriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{0}
 }
 
-// The lifecycle status of a tenant.
-type TenantStatus int32
+// The lifecycle status of a realm.
+type RealmStatus int32
 
 const (
-	TenantStatus_TENANT_STATUS_UNSPECIFIED TenantStatus = 0
-	TenantStatus_TENANT_STATUS_ACTIVE      TenantStatus = 1
-	TenantStatus_TENANT_STATUS_SUSPENDED   TenantStatus = 2
+	RealmStatus_REALM_STATUS_UNSPECIFIED RealmStatus = 0
+	RealmStatus_REALM_STATUS_ACTIVE      RealmStatus = 1
+	RealmStatus_REALM_STATUS_SUSPENDED   RealmStatus = 2
 )
 
-// Enum value maps for TenantStatus.
+// Enum value maps for RealmStatus.
 var (
-	TenantStatus_name = map[int32]string{
-		0: "TENANT_STATUS_UNSPECIFIED",
-		1: "TENANT_STATUS_ACTIVE",
-		2: "TENANT_STATUS_SUSPENDED",
+	RealmStatus_name = map[int32]string{
+		0: "REALM_STATUS_UNSPECIFIED",
+		1: "REALM_STATUS_ACTIVE",
+		2: "REALM_STATUS_SUSPENDED",
 	}
-	TenantStatus_value = map[string]int32{
-		"TENANT_STATUS_UNSPECIFIED": 0,
-		"TENANT_STATUS_ACTIVE":      1,
-		"TENANT_STATUS_SUSPENDED":   2,
+	RealmStatus_value = map[string]int32{
+		"REALM_STATUS_UNSPECIFIED": 0,
+		"REALM_STATUS_ACTIVE":      1,
+		"REALM_STATUS_SUSPENDED":   2,
 	}
 )
 
-func (x TenantStatus) Enum() *TenantStatus {
-	p := new(TenantStatus)
+func (x RealmStatus) Enum() *RealmStatus {
+	p := new(RealmStatus)
 	*p = x
 	return p
 }
 
-func (x TenantStatus) String() string {
+func (x RealmStatus) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (TenantStatus) Descriptor() protoreflect.EnumDescriptor {
+func (RealmStatus) Descriptor() protoreflect.EnumDescriptor {
 	return file_hearth_identity_v1_identity_proto_enumTypes[1].Descriptor()
 }
 
-func (TenantStatus) Type() protoreflect.EnumType {
+func (RealmStatus) Type() protoreflect.EnumType {
 	return &file_hearth_identity_v1_identity_proto_enumTypes[1]
 }
 
-func (x TenantStatus) Number() protoreflect.EnumNumber {
+func (x RealmStatus) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use TenantStatus.Descriptor instead.
-func (TenantStatus) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use RealmStatus.Descriptor instead.
+func (RealmStatus) EnumDescriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{1}
 }
 
-// A user record within a tenant.
+// A user record within a realm.
 type User struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -286,8 +286,8 @@ func (x *Session) GetLastRefreshedAt() int64 {
 	return 0
 }
 
-// Per-tenant configuration overrides.
-type TenantConfig struct {
+// Per-realm configuration overrides.
+type RealmConfig struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	SessionTtlMicros   *int64                 `protobuf:"varint,1,opt,name=session_ttl_micros,json=sessionTtlMicros,proto3,oneof" json:"session_ttl_micros,omitempty"`
 	PasswordMemoryCost *uint32                `protobuf:"varint,2,opt,name=password_memory_cost,json=passwordMemoryCost,proto3,oneof" json:"password_memory_cost,omitempty"`
@@ -296,20 +296,20 @@ type TenantConfig struct {
 	sizeCache          protoimpl.SizeCache
 }
 
-func (x *TenantConfig) Reset() {
-	*x = TenantConfig{}
+func (x *RealmConfig) Reset() {
+	*x = RealmConfig{}
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *TenantConfig) String() string {
+func (x *RealmConfig) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*TenantConfig) ProtoMessage() {}
+func (*RealmConfig) ProtoMessage() {}
 
-func (x *TenantConfig) ProtoReflect() protoreflect.Message {
+func (x *RealmConfig) ProtoReflect() protoreflect.Message {
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -321,59 +321,59 @@ func (x *TenantConfig) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use TenantConfig.ProtoReflect.Descriptor instead.
-func (*TenantConfig) Descriptor() ([]byte, []int) {
+// Deprecated: Use RealmConfig.ProtoReflect.Descriptor instead.
+func (*RealmConfig) Descriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *TenantConfig) GetSessionTtlMicros() int64 {
+func (x *RealmConfig) GetSessionTtlMicros() int64 {
 	if x != nil && x.SessionTtlMicros != nil {
 		return *x.SessionTtlMicros
 	}
 	return 0
 }
 
-func (x *TenantConfig) GetPasswordMemoryCost() uint32 {
+func (x *RealmConfig) GetPasswordMemoryCost() uint32 {
 	if x != nil && x.PasswordMemoryCost != nil {
 		return *x.PasswordMemoryCost
 	}
 	return 0
 }
 
-func (x *TenantConfig) GetPasswordTimeCost() uint32 {
+func (x *RealmConfig) GetPasswordTimeCost() uint32 {
 	if x != nil && x.PasswordTimeCost != nil {
 		return *x.PasswordTimeCost
 	}
 	return 0
 }
 
-// A tenant record.
-type Tenant struct {
+// A realm record.
+type Realm struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Status        TenantStatus           `protobuf:"varint,3,opt,name=status,proto3,enum=hearth.identity.v1.TenantStatus" json:"status,omitempty"`
-	Config        *TenantConfig          `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
+	Status        RealmStatus            `protobuf:"varint,3,opt,name=status,proto3,enum=hearth.identity.v1.RealmStatus" json:"status,omitempty"`
+	Config        *RealmConfig           `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
 	CreatedAt     int64                  `protobuf:"varint,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     int64                  `protobuf:"varint,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Tenant) Reset() {
-	*x = Tenant{}
+func (x *Realm) Reset() {
+	*x = Realm{}
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Tenant) String() string {
+func (x *Realm) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Tenant) ProtoMessage() {}
+func (*Realm) ProtoMessage() {}
 
-func (x *Tenant) ProtoReflect() protoreflect.Message {
+func (x *Realm) ProtoReflect() protoreflect.Message {
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -385,47 +385,47 @@ func (x *Tenant) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Tenant.ProtoReflect.Descriptor instead.
-func (*Tenant) Descriptor() ([]byte, []int) {
+// Deprecated: Use Realm.ProtoReflect.Descriptor instead.
+func (*Realm) Descriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *Tenant) GetId() string {
+func (x *Realm) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *Tenant) GetName() string {
+func (x *Realm) GetName() string {
 	if x != nil {
 		return x.Name
 	}
 	return ""
 }
 
-func (x *Tenant) GetStatus() TenantStatus {
+func (x *Realm) GetStatus() RealmStatus {
 	if x != nil {
 		return x.Status
 	}
-	return TenantStatus_TENANT_STATUS_UNSPECIFIED
+	return RealmStatus_REALM_STATUS_UNSPECIFIED
 }
 
-func (x *Tenant) GetConfig() *TenantConfig {
+func (x *Realm) GetConfig() *RealmConfig {
 	if x != nil {
 		return x.Config
 	}
 	return nil
 }
 
-func (x *Tenant) GetCreatedAt() int64 {
+func (x *Realm) GetCreatedAt() int64 {
 	if x != nil {
 		return x.CreatedAt
 	}
 	return 0
 }
 
-func (x *Tenant) GetUpdatedAt() int64 {
+func (x *Realm) GetUpdatedAt() int64 {
 	if x != nil {
 		return x.UpdatedAt
 	}
@@ -546,29 +546,29 @@ func (x *UpdateUserRequest) GetStatus() UserStatus {
 	return UserStatus_USER_STATUS_UNSPECIFIED
 }
 
-// Request to create a new tenant.
-type CreateTenantRequest struct {
+// Request to create a new realm.
+type CreateRealmRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Config        *TenantConfig          `protobuf:"bytes,2,opt,name=config,proto3,oneof" json:"config,omitempty"`
+	Config        *RealmConfig           `protobuf:"bytes,2,opt,name=config,proto3,oneof" json:"config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CreateTenantRequest) Reset() {
-	*x = CreateTenantRequest{}
+func (x *CreateRealmRequest) Reset() {
+	*x = CreateRealmRequest{}
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CreateTenantRequest) String() string {
+func (x *CreateRealmRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CreateTenantRequest) ProtoMessage() {}
+func (*CreateRealmRequest) ProtoMessage() {}
 
-func (x *CreateTenantRequest) ProtoReflect() protoreflect.Message {
+func (x *CreateRealmRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -580,49 +580,49 @@ func (x *CreateTenantRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CreateTenantRequest.ProtoReflect.Descriptor instead.
-func (*CreateTenantRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CreateRealmRequest.ProtoReflect.Descriptor instead.
+func (*CreateRealmRequest) Descriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *CreateTenantRequest) GetName() string {
+func (x *CreateRealmRequest) GetName() string {
 	if x != nil {
 		return x.Name
 	}
 	return ""
 }
 
-func (x *CreateTenantRequest) GetConfig() *TenantConfig {
+func (x *CreateRealmRequest) GetConfig() *RealmConfig {
 	if x != nil {
 		return x.Config
 	}
 	return nil
 }
 
-// Request to update an existing tenant.
-type UpdateTenantRequest struct {
+// Request to update an existing realm.
+type UpdateRealmRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
-	Status        *TenantStatus          `protobuf:"varint,2,opt,name=status,proto3,enum=hearth.identity.v1.TenantStatus,oneof" json:"status,omitempty"`
-	Config        *TenantConfig          `protobuf:"bytes,3,opt,name=config,proto3,oneof" json:"config,omitempty"`
+	Status        *RealmStatus           `protobuf:"varint,2,opt,name=status,proto3,enum=hearth.identity.v1.RealmStatus,oneof" json:"status,omitempty"`
+	Config        *RealmConfig           `protobuf:"bytes,3,opt,name=config,proto3,oneof" json:"config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpdateTenantRequest) Reset() {
-	*x = UpdateTenantRequest{}
+func (x *UpdateRealmRequest) Reset() {
+	*x = UpdateRealmRequest{}
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpdateTenantRequest) String() string {
+func (x *UpdateRealmRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpdateTenantRequest) ProtoMessage() {}
+func (*UpdateRealmRequest) ProtoMessage() {}
 
-func (x *UpdateTenantRequest) ProtoReflect() protoreflect.Message {
+func (x *UpdateRealmRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -634,26 +634,26 @@ func (x *UpdateTenantRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpdateTenantRequest.ProtoReflect.Descriptor instead.
-func (*UpdateTenantRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use UpdateRealmRequest.ProtoReflect.Descriptor instead.
+func (*UpdateRealmRequest) Descriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *UpdateTenantRequest) GetName() string {
+func (x *UpdateRealmRequest) GetName() string {
 	if x != nil && x.Name != nil {
 		return *x.Name
 	}
 	return ""
 }
 
-func (x *UpdateTenantRequest) GetStatus() TenantStatus {
+func (x *UpdateRealmRequest) GetStatus() RealmStatus {
 	if x != nil && x.Status != nil {
 		return *x.Status
 	}
-	return TenantStatus_TENANT_STATUS_UNSPECIFIED
+	return RealmStatus_REALM_STATUS_UNSPECIFIED
 }
 
-func (x *UpdateTenantRequest) GetConfig() *TenantConfig {
+func (x *UpdateRealmRequest) GetConfig() *RealmConfig {
 	if x != nil {
 		return x.Config
 	}
@@ -713,29 +713,29 @@ func (x *UserPage) GetNextCursor() string {
 	return ""
 }
 
-// A cursor-based page of tenants.
-type TenantPage struct {
+// A cursor-based page of realms.
+type RealmPage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Items         []*Tenant              `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	Items         []*Realm               `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
 	NextCursor    *string                `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3,oneof" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *TenantPage) Reset() {
-	*x = TenantPage{}
+func (x *RealmPage) Reset() {
+	*x = RealmPage{}
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *TenantPage) String() string {
+func (x *RealmPage) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*TenantPage) ProtoMessage() {}
+func (*RealmPage) ProtoMessage() {}
 
-func (x *TenantPage) ProtoReflect() protoreflect.Message {
+func (x *RealmPage) ProtoReflect() protoreflect.Message {
 	mi := &file_hearth_identity_v1_identity_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -747,19 +747,19 @@ func (x *TenantPage) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use TenantPage.ProtoReflect.Descriptor instead.
-func (*TenantPage) Descriptor() ([]byte, []int) {
+// Deprecated: Use RealmPage.ProtoReflect.Descriptor instead.
+func (*RealmPage) Descriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *TenantPage) GetItems() []*Tenant {
+func (x *RealmPage) GetItems() []*Realm {
 	if x != nil {
 		return x.Items
 	}
 	return nil
 }
 
-func (x *TenantPage) GetNextCursor() string {
+func (x *RealmPage) GetNextCursor() string {
 	if x != nil && x.NextCursor != nil {
 		return *x.NextCursor
 	}
@@ -903,19 +903,19 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"created_at\x18\x03 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"expires_at\x18\x04 \x01(\x03R\texpiresAt\x12*\n" +
-	"\x11last_refreshed_at\x18\x05 \x01(\x03R\x0flastRefreshedAt\"\xf2\x01\n" +
-	"\fTenantConfig\x121\n" +
+	"\x11last_refreshed_at\x18\x05 \x01(\x03R\x0flastRefreshedAt\"\xf1\x01\n" +
+	"\vRealmConfig\x121\n" +
 	"\x12session_ttl_micros\x18\x01 \x01(\x03H\x00R\x10sessionTtlMicros\x88\x01\x01\x125\n" +
 	"\x14password_memory_cost\x18\x02 \x01(\rH\x01R\x12passwordMemoryCost\x88\x01\x01\x121\n" +
 	"\x12password_time_cost\x18\x03 \x01(\rH\x02R\x10passwordTimeCost\x88\x01\x01B\x15\n" +
 	"\x13_session_ttl_microsB\x17\n" +
 	"\x15_password_memory_costB\x15\n" +
-	"\x13_password_time_cost\"\xde\x01\n" +
-	"\x06Tenant\x12\x0e\n" +
+	"\x13_password_time_cost\"\xdb\x01\n" +
+	"\x05Realm\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x128\n" +
-	"\x06status\x18\x03 \x01(\x0e2 .hearth.identity.v1.TenantStatusR\x06status\x128\n" +
-	"\x06config\x18\x04 \x01(\v2 .hearth.identity.v1.TenantConfigR\x06config\x12\x1d\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x127\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x1f.hearth.identity.v1.RealmStatusR\x06status\x127\n" +
+	"\x06config\x18\x04 \x01(\v2\x1f.hearth.identity.v1.RealmConfigR\x06config\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
@@ -929,15 +929,15 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\x06status\x18\x03 \x01(\x0e2\x1e.hearth.identity.v1.UserStatusH\x02R\x06status\x88\x01\x01B\b\n" +
 	"\x06_emailB\x0f\n" +
 	"\r_display_nameB\t\n" +
-	"\a_status\"s\n" +
-	"\x13CreateTenantRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12=\n" +
-	"\x06config\x18\x02 \x01(\v2 .hearth.identity.v1.TenantConfigH\x00R\x06config\x88\x01\x01B\t\n" +
-	"\a_config\"\xcb\x01\n" +
-	"\x13UpdateTenantRequest\x12\x17\n" +
-	"\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12=\n" +
-	"\x06status\x18\x02 \x01(\x0e2 .hearth.identity.v1.TenantStatusH\x01R\x06status\x88\x01\x01\x12=\n" +
-	"\x06config\x18\x03 \x01(\v2 .hearth.identity.v1.TenantConfigH\x02R\x06config\x88\x01\x01B\a\n" +
+	"\a_status\"q\n" +
+	"\x12CreateRealmRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
+	"\x06config\x18\x02 \x01(\v2\x1f.hearth.identity.v1.RealmConfigH\x00R\x06config\x88\x01\x01B\t\n" +
+	"\a_config\"\xc8\x01\n" +
+	"\x12UpdateRealmRequest\x12\x17\n" +
+	"\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12<\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1f.hearth.identity.v1.RealmStatusH\x01R\x06status\x88\x01\x01\x12<\n" +
+	"\x06config\x18\x03 \x01(\v2\x1f.hearth.identity.v1.RealmConfigH\x02R\x06config\x88\x01\x01B\a\n" +
 	"\x05_nameB\t\n" +
 	"\a_statusB\t\n" +
 	"\a_config\"p\n" +
@@ -945,10 +945,9 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\x05items\x18\x01 \x03(\v2\x18.hearth.identity.v1.UserR\x05items\x12$\n" +
 	"\vnext_cursor\x18\x02 \x01(\tH\x00R\n" +
 	"nextCursor\x88\x01\x01B\x0e\n" +
-	"\f_next_cursor\"t\n" +
-	"\n" +
-	"TenantPage\x120\n" +
-	"\x05items\x18\x01 \x03(\v2\x1a.hearth.identity.v1.TenantR\x05items\x12$\n" +
+	"\f_next_cursor\"r\n" +
+	"\tRealmPage\x12/\n" +
+	"\x05items\x18\x01 \x03(\v2\x19.hearth.identity.v1.RealmR\x05items\x12$\n" +
 	"\vnext_cursor\x18\x02 \x01(\tH\x00R\n" +
 	"nextCursor\x88\x01\x01B\x0e\n" +
 	"\f_next_cursor\"\xa2\x01\n" +
@@ -967,11 +966,11 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\x17USER_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12USER_STATUS_ACTIVE\x10\x01\x12\x18\n" +
 	"\x14USER_STATUS_DISABLED\x10\x02\x12$\n" +
-	" USER_STATUS_PENDING_VERIFICATION\x10\x03*d\n" +
-	"\fTenantStatus\x12\x1d\n" +
-	"\x19TENANT_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
-	"\x14TENANT_STATUS_ACTIVE\x10\x01\x12\x1b\n" +
-	"\x17TENANT_STATUS_SUSPENDED\x10\x02BEZCgithub.com/hearthdb/hearth/sdks/go/generated/identity/v1;identityv1b\x06proto3"
+	" USER_STATUS_PENDING_VERIFICATION\x10\x03*`\n" +
+	"\vRealmStatus\x12\x1c\n" +
+	"\x18REALM_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13REALM_STATUS_ACTIVE\x10\x01\x12\x1a\n" +
+	"\x16REALM_STATUS_SUSPENDED\x10\x02BEZCgithub.com/hearthdb/hearth/sdks/go/generated/identity/v1;identityv1b\x06proto3"
 
 var (
 	file_hearth_identity_v1_identity_proto_rawDescOnce sync.Once
@@ -988,31 +987,31 @@ func file_hearth_identity_v1_identity_proto_rawDescGZIP() []byte {
 var file_hearth_identity_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_hearth_identity_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_hearth_identity_v1_identity_proto_goTypes = []any{
-	(UserStatus)(0),             // 0: hearth.identity.v1.UserStatus
-	(TenantStatus)(0),           // 1: hearth.identity.v1.TenantStatus
-	(*User)(nil),                // 2: hearth.identity.v1.User
-	(*Session)(nil),             // 3: hearth.identity.v1.Session
-	(*TenantConfig)(nil),        // 4: hearth.identity.v1.TenantConfig
-	(*Tenant)(nil),              // 5: hearth.identity.v1.Tenant
-	(*CreateUserRequest)(nil),   // 6: hearth.identity.v1.CreateUserRequest
-	(*UpdateUserRequest)(nil),   // 7: hearth.identity.v1.UpdateUserRequest
-	(*CreateTenantRequest)(nil), // 8: hearth.identity.v1.CreateTenantRequest
-	(*UpdateTenantRequest)(nil), // 9: hearth.identity.v1.UpdateTenantRequest
-	(*UserPage)(nil),            // 10: hearth.identity.v1.UserPage
-	(*TenantPage)(nil),          // 11: hearth.identity.v1.TenantPage
-	(*BulkResultEntry)(nil),     // 12: hearth.identity.v1.BulkResultEntry
-	(*BulkResult)(nil),          // 13: hearth.identity.v1.BulkResult
+	(UserStatus)(0),            // 0: hearth.identity.v1.UserStatus
+	(RealmStatus)(0),           // 1: hearth.identity.v1.RealmStatus
+	(*User)(nil),               // 2: hearth.identity.v1.User
+	(*Session)(nil),            // 3: hearth.identity.v1.Session
+	(*RealmConfig)(nil),        // 4: hearth.identity.v1.RealmConfig
+	(*Realm)(nil),              // 5: hearth.identity.v1.Realm
+	(*CreateUserRequest)(nil),  // 6: hearth.identity.v1.CreateUserRequest
+	(*UpdateUserRequest)(nil),  // 7: hearth.identity.v1.UpdateUserRequest
+	(*CreateRealmRequest)(nil), // 8: hearth.identity.v1.CreateRealmRequest
+	(*UpdateRealmRequest)(nil), // 9: hearth.identity.v1.UpdateRealmRequest
+	(*UserPage)(nil),           // 10: hearth.identity.v1.UserPage
+	(*RealmPage)(nil),          // 11: hearth.identity.v1.RealmPage
+	(*BulkResultEntry)(nil),    // 12: hearth.identity.v1.BulkResultEntry
+	(*BulkResult)(nil),         // 13: hearth.identity.v1.BulkResult
 }
 var file_hearth_identity_v1_identity_proto_depIdxs = []int32{
 	0,  // 0: hearth.identity.v1.User.status:type_name -> hearth.identity.v1.UserStatus
-	1,  // 1: hearth.identity.v1.Tenant.status:type_name -> hearth.identity.v1.TenantStatus
-	4,  // 2: hearth.identity.v1.Tenant.config:type_name -> hearth.identity.v1.TenantConfig
+	1,  // 1: hearth.identity.v1.Realm.status:type_name -> hearth.identity.v1.RealmStatus
+	4,  // 2: hearth.identity.v1.Realm.config:type_name -> hearth.identity.v1.RealmConfig
 	0,  // 3: hearth.identity.v1.UpdateUserRequest.status:type_name -> hearth.identity.v1.UserStatus
-	4,  // 4: hearth.identity.v1.CreateTenantRequest.config:type_name -> hearth.identity.v1.TenantConfig
-	1,  // 5: hearth.identity.v1.UpdateTenantRequest.status:type_name -> hearth.identity.v1.TenantStatus
-	4,  // 6: hearth.identity.v1.UpdateTenantRequest.config:type_name -> hearth.identity.v1.TenantConfig
+	4,  // 4: hearth.identity.v1.CreateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
+	1,  // 5: hearth.identity.v1.UpdateRealmRequest.status:type_name -> hearth.identity.v1.RealmStatus
+	4,  // 6: hearth.identity.v1.UpdateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
 	2,  // 7: hearth.identity.v1.UserPage.items:type_name -> hearth.identity.v1.User
-	5,  // 8: hearth.identity.v1.TenantPage.items:type_name -> hearth.identity.v1.Tenant
+	5,  // 8: hearth.identity.v1.RealmPage.items:type_name -> hearth.identity.v1.Realm
 	2,  // 9: hearth.identity.v1.BulkResultEntry.user:type_name -> hearth.identity.v1.User
 	12, // 10: hearth.identity.v1.BulkResult.results:type_name -> hearth.identity.v1.BulkResultEntry
 	11, // [11:11] is the sub-list for method output_type

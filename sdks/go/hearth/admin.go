@@ -11,7 +11,7 @@ import (
 // AdminClient provides access to the Hearth admin API.
 type AdminClient struct {
 	baseURL     string
-	tenantID    string
+	realmID    string
 	accessToken string
 	http        *http.Client
 }
@@ -58,40 +58,40 @@ func (a *AdminClient) ListUsers(ctx context.Context, limit int) (*PageResponse[U
 	return &result, nil
 }
 
-// CreateTenant creates a new tenant via the admin API.
-func (a *AdminClient) CreateTenant(ctx context.Context, req CreateTenantRequest) (*Tenant, error) {
-	var result Tenant
-	if err := a.post(ctx, "/admin/tenants", req, &result); err != nil {
+// CreateRealm creates a new realm via the admin API.
+func (a *AdminClient) CreateRealm(ctx context.Context, req CreateRealmRequest) (*Realm, error) {
+	var result Realm
+	if err := a.post(ctx, "/admin/realms", req, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-// GetTenant retrieves a tenant by ID via the admin API.
-func (a *AdminClient) GetTenant(ctx context.Context, tenantID string) (*Tenant, error) {
-	var result Tenant
-	if err := a.get(ctx, fmt.Sprintf("/admin/tenants/%s", tenantID), &result); err != nil {
+// GetRealm retrieves a realm by ID via the admin API.
+func (a *AdminClient) GetRealm(ctx context.Context, realmID string) (*Realm, error) {
+	var result Realm
+	if err := a.get(ctx, fmt.Sprintf("/admin/realms/%s", realmID), &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-// UpdateTenant updates a tenant via the admin API.
-func (a *AdminClient) UpdateTenant(ctx context.Context, tenantID string, req UpdateTenantRequest) (*Tenant, error) {
-	var result Tenant
-	if err := a.request(ctx, "PUT", fmt.Sprintf("/admin/tenants/%s", tenantID), req, &result); err != nil {
+// UpdateRealm updates a realm via the admin API.
+func (a *AdminClient) UpdateRealm(ctx context.Context, realmID string, req UpdateRealmRequest) (*Realm, error) {
+	var result Realm
+	if err := a.request(ctx, "PUT", fmt.Sprintf("/admin/realms/%s", realmID), req, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
-// DeleteTenant deletes a tenant via the admin API.
-func (a *AdminClient) DeleteTenant(ctx context.Context, tenantID string) error {
-	return a.request(ctx, "DELETE", fmt.Sprintf("/admin/tenants/%s", tenantID), nil, nil)
+// DeleteRealm deletes a realm via the admin API.
+func (a *AdminClient) DeleteRealm(ctx context.Context, realmID string) error {
+	return a.request(ctx, "DELETE", fmt.Sprintf("/admin/realms/%s", realmID), nil, nil)
 }
 
 func (a *AdminClient) headers(req *http.Request) {
-	req.Header.Set("X-Tenant-ID", a.tenantID)
+	req.Header.Set("X-Realm-ID", a.realmID)
 	req.Header.Set("Authorization", "Bearer "+a.accessToken)
 	req.Header.Set("Content-Type", "application/json")
 }

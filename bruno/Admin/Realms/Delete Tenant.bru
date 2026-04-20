@@ -1,17 +1,17 @@
 meta {
-  name: Delete Tenant
+  name: Delete Realm
   type: http
   seq: 5
 }
 
 delete {
-  url: {{baseUrl}}/admin/tenants/{{tenantId}}
+  url: {{baseUrl}}/admin/realms/{{realmId}}
   body: none
   auth: bearer
 }
 
 headers {
-  X-Tenant-ID: {{tenantId}}
+  X-Realm-ID: {{realmId}}
 }
 
 auth:bearer {

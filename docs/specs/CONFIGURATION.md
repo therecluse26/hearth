@@ -21,7 +21,7 @@ email:
   smtp:
     password: "${SMTP_PASSWORD}"
 
-tenants:
+realms:
   prod:
     applications:
       api:
@@ -263,15 +263,15 @@ token:
 
 ### `auth`
 
-Global authentication defaults. These apply to all tenants unless overridden per-tenant.
+Global authentication defaults. These apply to all realms unless overridden per-realm.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `session_ttl` | duration | `"24h"` | Default session lifetime. |
 | `password_memory_cost` | integer | `65536` | Argon2id memory parameter in KiB (OWASP minimum). |
 | `password_time_cost` | integer | `3` | Argon2id time parameter (iterations). |
-| `mfa_required` | bool | `false` | Whether MFA is required for all users. Per-tenant `auth.mfa_required` overrides. |
-| `passkey_requires_mfa` | bool | `false` | Whether passkey login requires an additional TOTP challenge. Per-tenant `auth.passkey_requires_mfa` overrides. |
+| `mfa_required` | bool | `false` | Whether MFA is required for all users. Per-realm `auth.mfa_required` overrides. |
+| `passkey_requires_mfa` | bool | `false` | Whether passkey login requires an additional TOTP challenge. Per-realm `auth.passkey_requires_mfa` overrides. |
 
 ```yaml
 auth:
@@ -298,66 +298,66 @@ onboarding:
 
 ---
 
-## `tenants` Section
+## `realms` Section
 
-The `tenants` key is a map of **slug → configuration**. When present, Hearth manages tenants declaratively via YAML reconciliation at startup.
+The `realms` key is a map of **slug → configuration**. When present, Hearth manages realms declaratively via YAML reconciliation at startup.
 
 ### Reconciliation Behavior
 
 | Scenario | Action |
 |----------|--------|
-| YAML entry not in storage | **Created** as an Active tenant |
+| YAML entry not in storage | **Created** as an Active realm |
 | YAML entry exists in storage | Config **updated** if changed |
-| Storage tenant not in YAML | **Archived** (soft-deleted) |
-| `tenants` key omitted entirely | No tenants → auto-create `"default"`; existing tenants left untouched |
+| Storage realm not in YAML | **Archived** (soft-deleted) |
+| `realms` key omitted entirely | No realms → auto-create `"default"`; existing realms left untouched |
 
-Archived tenants appear in the Admin UI with an "Archived" badge and can be permanently deleted from there.
+Archived realms appear in the Admin UI with an "Archived" badge and can be permanently deleted from there.
 
-### Per-Tenant Fields
+### Per-Realm Fields
 
-Each tenant entry supports:
+Each realm entry supports:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `session_ttl` | duration | inherits `auth.session_ttl` | Per-tenant session lifetime override. |
-| `password_memory_cost` | integer | inherits `auth.password_memory_cost` | Per-tenant Argon2id memory cost. |
-| `password_time_cost` | integer | inherits `auth.password_time_cost` | Per-tenant Argon2id time cost. |
-| `email` | object | — | Per-tenant email branding overrides. |
-| `web` | object | — | Per-tenant UI theme overrides. |
-| `auth` | object | — | Per-tenant auth policy (MFA, password policy, rate limits, token TTLs). |
+| `session_ttl` | duration | inherits `auth.session_ttl` | Per-realm session lifetime override. |
+| `password_memory_cost` | integer | inherits `auth.password_memory_cost` | Per-realm Argon2id memory cost. |
+| `password_time_cost` | integer | inherits `auth.password_time_cost` | Per-realm Argon2id time cost. |
+| `email` | object | — | Per-realm email branding overrides. |
+| `web` | object | — | Per-realm UI theme overrides. |
+| `auth` | object | — | Per-realm auth policy (MFA, password policy, rate limits, token TTLs). |
 | `applications` | map | — | Declarative OAuth 2.0 client definitions. |
 | `organizations` | map | — | Declarative organization definitions. |
 
-### `tenants.<name>.email`
+### `realms.<name>.email`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `branding.accent_color` | string | Override the email accent color for this tenant. |
+| `branding.accent_color` | string | Override the email accent color for this realm. |
 | `branding.support_email` | string | Override the support email shown in footers. |
 | `branding.custom_footer_text` | string | Override the email footer text. |
 
-### `tenants.<name>.web`
+### `realms.<name>.web`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `theme` | string | Named theme override for this tenant's UI sessions. |
-| `custom_css` | string | Path to a CSS file for this tenant's UI sessions. |
+| `theme` | string | Named theme override for this realm's UI sessions. |
+| `custom_css` | string | Path to a CSS file for this realm's UI sessions. |
 
-### `tenants.<name>.auth`
+### `realms.<name>.auth`
 
-Per-tenant authentication policy. These are policy declarations stored in `TenantConfig` — enforcement happens in the identity engine.
+Per-realm authentication policy. These are policy declarations stored in `RealmConfig` — enforcement happens in the identity engine.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mfa_required` | bool | `false` | Whether MFA is required for all users in this tenant. |
+| `mfa_required` | bool | `false` | Whether MFA is required for all users in this realm. |
 | `passkey_requires_mfa` | bool | `false` | Whether passkey (WebAuthn) login still requires a TOTP challenge. Passkeys are inherently multi-factor, but regulated environments (healthcare, finance) may require an additional TOTP step. When `true` and the user has TOTP enrolled, passkey login redirects to the MFA challenge page. When `true` but the user has no TOTP enrolled, login proceeds normally. |
 | `mfa_methods` | list | — | Allowed MFA methods: `"totp"`, `"webauthn"`. |
 | `allowed_auth_methods` | list | — | Allowed login methods: `"password"`, `"magic_link"`, `"passkey"`. |
 | `password_policy` | object | — | Password complexity requirements (see below). |
-| `token` | object | — | Per-tenant token TTL overrides. |
-| `rate_limit` | object | — | Per-tenant rate limit overrides. |
+| `token` | object | — | Per-realm token TTL overrides. |
+| `rate_limit` | object | — | Per-realm rate limit overrides. |
 
-#### `tenants.<name>.auth.password_policy`
+#### `realms.<name>.auth.password_policy`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -366,21 +366,21 @@ Per-tenant authentication policy. These are policy declarations stored in `Tenan
 | `require_number` | bool | — | Require at least one digit. |
 | `require_special` | bool | — | Require at least one special character. |
 
-#### `tenants.<name>.auth.token`
+#### `realms.<name>.auth.token`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `access_token_ttl` | duration | inherits `token.access_token_ttl` | Per-tenant access token lifetime. |
-| `refresh_token_ttl` | duration | inherits `token.refresh_token_ttl` | Per-tenant refresh token lifetime. |
+| `access_token_ttl` | duration | inherits `token.access_token_ttl` | Per-realm access token lifetime. |
+| `refresh_token_ttl` | duration | inherits `token.refresh_token_ttl` | Per-realm refresh token lifetime. |
 
-#### `tenants.<name>.auth.rate_limit`
+#### `realms.<name>.auth.rate_limit`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_failed_logins` | integer | — | Maximum failed login attempts before lockout. |
 | `lockout_duration` | duration | — | How long to lock out after exceeding max failed logins. |
 
-### `tenants.<name>.applications`
+### `realms.<name>.applications`
 
 Declarative OAuth 2.0 client definitions. Keyed by a **slug** (used to derive a deterministic `client_id` via UUID v5).
 
@@ -398,7 +398,7 @@ Reconciliation:
 - Removed slug → client **archived**
 
 ```yaml
-tenants:
+realms:
   prod:
     applications:
       dashboard:
@@ -416,7 +416,7 @@ tenants:
           - client_credentials
 ```
 
-### `tenants.<name>.organizations`
+### `realms.<name>.organizations`
 
 Declarative organization definitions. Keyed by **slug**. Members and invitations are managed at runtime — not via YAML.
 
@@ -432,7 +432,7 @@ Reconciliation:
 - Removed slug → organization left in place (not archived, since it may have runtime members)
 
 ```yaml
-tenants:
+realms:
   prod:
     organizations:
       acme-corp:
@@ -489,7 +489,7 @@ auth:
 onboarding:
   base_url: "https://auth.example.com"
 
-tenants:
+realms:
   customer-portal:
     session_ttl: "12h"
     web:

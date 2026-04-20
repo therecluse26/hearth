@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 
-use crate::core::TenantId;
+use crate::core::RealmId;
 use crate::storage::memtable::CompositeKey;
 
 /// A single entry in the hot tier.
@@ -94,8 +94,8 @@ impl HotTier {
     /// Lock-free read from the hot tier. Returns `None` if not cached.
     ///
     /// On hit, sets the reference bit to protect the entry from eviction.
-    pub(crate) fn get(&self, tenant_id: &TenantId, key: &[u8]) -> Option<Vec<u8>> {
-        let composite = CompositeKey::new(tenant_id.clone(), key.to_vec());
+    pub(crate) fn get(&self, realm_id: &RealmId, key: &[u8]) -> Option<Vec<u8>> {
+        let composite = CompositeKey::new(realm_id.clone(), key.to_vec());
         let snapshot = self.data.load();
         snapshot.get(&composite).map(|entry| {
             // Mark as recently accessed — protects from next sweep
@@ -108,8 +108,8 @@ impl HotTier {
     ///
     /// If the tier is at capacity, runs clock sweep to evict entries first.
     /// This is a write operation (off hot path) — acquires the write lock.
-    pub(crate) fn promote(&self, tenant_id: &TenantId, key: &[u8], value: &[u8]) {
-        let composite = CompositeKey::new(tenant_id.clone(), key.to_vec());
+    pub(crate) fn promote(&self, realm_id: &RealmId, key: &[u8], value: &[u8]) {
+        let composite = CompositeKey::new(realm_id.clone(), key.to_vec());
 
         let Ok(_guard) = self.write_lock.lock() else {
             return; // Poisoned mutex — silently skip promotion
@@ -138,8 +138,8 @@ impl HotTier {
     /// Invalidates (removes) an entry from the hot tier.
     ///
     /// Called on writes/deletes to ensure stale data isn't served.
-    pub(crate) fn invalidate(&self, tenant_id: &TenantId, key: &[u8]) {
-        let composite = CompositeKey::new(tenant_id.clone(), key.to_vec());
+    pub(crate) fn invalidate(&self, realm_id: &RealmId, key: &[u8]) {
+        let composite = CompositeKey::new(realm_id.clone(), key.to_vec());
 
         let Ok(_guard) = self.write_lock.lock() else {
             return;
@@ -215,8 +215,8 @@ impl HotTier {
     }
 
     /// Returns whether the hot tier contains the given key.
-    pub(crate) fn contains(&self, tenant_id: &TenantId, key: &[u8]) -> bool {
-        let composite = CompositeKey::new(tenant_id.clone(), key.to_vec());
+    pub(crate) fn contains(&self, realm_id: &RealmId, key: &[u8]) -> bool {
+        let composite = CompositeKey::new(realm_id.clone(), key.to_vec());
         self.data.load().contains_key(&composite)
     }
 
@@ -276,7 +276,7 @@ impl std::fmt::Debug for HotTier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::TenantId;
+    use crate::core::RealmId;
 
     // ===== Phase A: P0 Fast Unit Tests =====
 
@@ -289,21 +289,21 @@ mod tests {
             eviction_batch_size: 10,
         };
         let tier = HotTier::new(config);
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         // Promote an entry
-        tier.promote(&tenant, b"key1", b"value1");
-        assert!(tier.contains(&tenant, b"key1"));
+        tier.promote(&realm, b"key1", b"value1");
+        assert!(tier.contains(&realm, b"key1"));
 
         // Read it (sets reference bit)
-        let val = tier.get(&tenant, b"key1");
+        let val = tier.get(&realm, b"key1");
         assert_eq!(val, Some(b"value1".to_vec()));
 
         // Sweep — should NOT evict because reference bit is set
         let evicted = tier.clock_sweep_step();
         // The sweep clears the bit but doesn't evict on first pass
         // Second read should still find the entry
-        let val = tier.get(&tenant, b"key1");
+        let val = tier.get(&realm, b"key1");
         assert_eq!(
             val,
             Some(b"value1".to_vec()),
@@ -329,11 +329,11 @@ mod tests {
             eviction_batch_size: 10,
         };
         let tier = HotTier::new(config);
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         // Promote an entry
-        tier.promote(&tenant, b"lonely", b"value");
-        assert!(tier.contains(&tenant, b"lonely"));
+        tier.promote(&realm, b"lonely", b"value");
+        assert!(tier.contains(&realm, b"lonely"));
 
         // First sweep: clears the reference bit (was set on promote)
         let _ = tier.clock_sweep_step();
@@ -342,10 +342,10 @@ mod tests {
         let evicted = tier.clock_sweep_step();
         assert!(evicted.is_some(), "unaccessed entry should be evicted");
         assert!(
-            !tier.contains(&tenant, b"lonely"),
+            !tier.contains(&realm, b"lonely"),
             "evicted entry should not be in tier"
         );
-        assert_eq!(tier.get(&tenant, b"lonely"), None);
+        assert_eq!(tier.get(&realm, b"lonely"), None);
     }
 
     // TEST_SCENARIOS.md: "Clock-based LRU approximation evicts least-recently-used records correctly"
@@ -357,12 +357,12 @@ mod tests {
             eviction_batch_size: 10,
         };
         let tier = HotTier::new(config);
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
         // Fill to capacity (all entries get ref_bit=true from promote)
-        tier.promote(&tenant, b"key1", b"v1");
-        tier.promote(&tenant, b"key2", b"v2");
-        tier.promote(&tenant, b"key3", b"v3");
+        tier.promote(&realm, b"key1", b"v1");
+        tier.promote(&realm, b"key2", b"v2");
+        tier.promote(&realm, b"key3", b"v3");
         assert_eq!(tier.len(), 3);
 
         // ONE sweep pass clears all reference bits (no eviction since all were true)
@@ -373,29 +373,29 @@ mod tests {
         );
 
         // Now access key1 and key3 — sets their ref bits back to true
-        assert!(tier.get(&tenant, b"key1").is_some());
-        assert!(tier.get(&tenant, b"key3").is_some());
+        assert!(tier.get(&realm, b"key1").is_some());
+        assert!(tier.get(&realm, b"key3").is_some());
         // key2 NOT accessed — its ref_bit remains false
 
         // Promote a new key (triggers eviction since at capacity)
         // evict_locked will find key2 with ref_bit=false and evict it
-        tier.promote(&tenant, b"key4", b"v4");
+        tier.promote(&realm, b"key4", b"v4");
 
         // key2 should have been evicted (unaccessed), others survive
         assert!(
-            tier.contains(&tenant, b"key1"),
+            tier.contains(&realm, b"key1"),
             "accessed key1 should survive"
         );
         assert!(
-            !tier.contains(&tenant, b"key2"),
+            !tier.contains(&realm, b"key2"),
             "unaccessed key2 should be evicted"
         );
         assert!(
-            tier.contains(&tenant, b"key3"),
+            tier.contains(&realm, b"key3"),
             "accessed key3 should survive"
         );
         assert!(
-            tier.contains(&tenant, b"key4"),
+            tier.contains(&realm, b"key4"),
             "newly promoted key4 should exist"
         );
     }
@@ -421,13 +421,13 @@ mod tests {
             eviction_batch_size: 10,
         };
         let tier = HotTier::new(config);
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        tier.promote(&tenant, b"key1", b"old");
-        assert_eq!(tier.get(&tenant, b"key1"), Some(b"old".to_vec()));
+        tier.promote(&realm, b"key1", b"old");
+        assert_eq!(tier.get(&realm, b"key1"), Some(b"old".to_vec()));
 
-        tier.promote(&tenant, b"key1", b"new");
-        assert_eq!(tier.get(&tenant, b"key1"), Some(b"new".to_vec()));
+        tier.promote(&realm, b"key1", b"new");
+        assert_eq!(tier.get(&realm, b"key1"), Some(b"new".to_vec()));
         assert_eq!(tier.len(), 1, "update should not add a second entry");
     }
 
@@ -438,44 +438,38 @@ mod tests {
             eviction_batch_size: 10,
         };
         let tier = HotTier::new(config);
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        tier.promote(&tenant, b"key1", b"value1");
-        assert!(tier.contains(&tenant, b"key1"));
+        tier.promote(&realm, b"key1", b"value1");
+        assert!(tier.contains(&realm, b"key1"));
 
-        tier.invalidate(&tenant, b"key1");
-        assert!(!tier.contains(&tenant, b"key1"));
-        assert_eq!(tier.get(&tenant, b"key1"), None);
+        tier.invalidate(&realm, b"key1");
+        assert!(!tier.contains(&realm, b"key1"));
+        assert_eq!(tier.get(&realm, b"key1"), None);
     }
 
     #[test]
     fn invalidate_nonexistent_is_noop() {
         let config = TieredConfig::default();
         let tier = HotTier::new(config);
-        let tenant = TenantId::generate();
+        let realm = RealmId::generate();
 
-        tier.invalidate(&tenant, b"missing");
+        tier.invalidate(&realm, b"missing");
         assert_eq!(tier.len(), 0);
     }
 
     #[test]
-    fn tenant_isolation() {
+    fn realm_isolation() {
         let config = TieredConfig::default();
         let tier = HotTier::new(config);
-        let tenant_a = TenantId::generate();
-        let tenant_b = TenantId::generate();
+        let realm_a = RealmId::generate();
+        let realm_b = RealmId::generate();
 
-        tier.promote(&tenant_a, b"shared_key", b"value-a");
-        tier.promote(&tenant_b, b"shared_key", b"value-b");
+        tier.promote(&realm_a, b"shared_key", b"value-a");
+        tier.promote(&realm_b, b"shared_key", b"value-b");
 
-        assert_eq!(
-            tier.get(&tenant_a, b"shared_key"),
-            Some(b"value-a".to_vec())
-        );
-        assert_eq!(
-            tier.get(&tenant_b, b"shared_key"),
-            Some(b"value-b".to_vec())
-        );
+        assert_eq!(tier.get(&realm_a, b"shared_key"), Some(b"value-a".to_vec()));
+        assert_eq!(tier.get(&realm_b, b"shared_key"), Some(b"value-b".to_vec()));
         assert_eq!(tier.len(), 2);
     }
 
@@ -528,17 +522,17 @@ mod tests {
                 eviction_batch_size: 5,
             };
             let tier = HotTier::new(config);
-            let tenant = TenantId::generate();
+            let realm = RealmId::generate();
             let mut oracle: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
             for op in &ops {
                 match op {
                     TierOp::Promote(k, v) => {
-                        tier.promote(&tenant, k, v);
+                        tier.promote(&realm, k, v);
                         oracle.insert(k.clone(), v.clone());
                     }
                     TierOp::Get(k) => {
-                        let tier_val = tier.get(&tenant, k);
+                        let tier_val = tier.get(&realm, k);
                         if let Some(val) = &tier_val {
                             // If hot tier returns a value, it must match oracle
                             if let Some(oracle_val) = oracle.get(k) {
@@ -550,7 +544,7 @@ mod tests {
                         // (entry may have been evicted)
                     }
                     TierOp::Invalidate(k) => {
-                        tier.invalidate(&tenant, k);
+                        tier.invalidate(&realm, k);
                         oracle.remove(k);
                     }
                     TierOp::Sweep => {
@@ -578,7 +572,7 @@ mod tests {
                 eviction_batch_size: 5,
             };
             let tier = HotTier::new(config);
-            let tenant = TenantId::generate();
+            let realm = RealmId::generate();
 
             // Create 50 keys but only access 5 of them frequently (Zipfian-like)
             let hot_keys: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i]).collect();
@@ -604,8 +598,8 @@ mod tests {
                 };
 
                 // Try to read; if miss, promote (simulates cold path promotion)
-                if tier.get(&tenant, key).is_none() {
-                    tier.promote(&tenant, key, &[42u8; 8]);
+                if tier.get(&realm, key).is_none() {
+                    tier.promote(&realm, key, &[42u8; 8]);
                 }
 
                 // Occasional sweep
@@ -615,7 +609,7 @@ mod tests {
             }
 
             // After steady state, count how many hot keys are in the tier
-            let hot_in_tier = hot_keys.iter().filter(|k| tier.contains(&tenant, k)).count();
+            let hot_in_tier = hot_keys.iter().filter(|k| tier.contains(&realm, k)).count();
 
             // At least 1 out of 5 hot keys should survive in the tier.
             // With capacity=10, 50 keys, and clock-sweep eviction, certain PRNG

@@ -15,9 +15,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::authz::{AuthzConfig, AuthzError, EmbeddedAuthzEngine};
-use hearth::core::{Clock, SystemClock, TenantId, UserId};
+use hearth::core::{Clock, RealmId, SystemClock, UserId};
 use hearth::identity::{
-    CleartextPassword, CreateTenantRequest, CreateUserRequest, CredentialConfig,
+    CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
     EmbeddedIdentityEngine, IdentityConfig, IdentityError, RecoveryCodes,
 };
 use hearth::protocol::http::{router, AppState};
@@ -70,7 +70,7 @@ fn err_display<T>(result: Result<T, impl std::fmt::Display>) -> String {
 
 // === TEST_SCENARIOS: Phase 1 error responses leak no internal state ===
 //
-// Drives live Phase 1 error surfaces (MFA, WebAuthn, magic link, cross-tenant
+// Drives live Phase 1 error surfaces (MFA, WebAuthn, magic link, cross-realm
 // token) and asserts rendered messages carry no filesystem paths, stack
 // traces, SQL fragments, or credential material. Also checks Display impls
 // for Phase 1-introduced `IdentityError` variants.
@@ -81,19 +81,19 @@ async fn phase1_error_responses_leak_no_internal_state() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = harness
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: format!("cc-phase1-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("create tenant");
-    let tenant_id = tenant.id().clone();
+        .expect("create realm");
+    let realm_id = realm.id().clone();
 
     let user = harness
         .identity()
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: format!("cc-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "Cross-cutting".to_string(),
@@ -107,14 +107,10 @@ async fn phase1_error_responses_leak_no_internal_state() {
         err_display(
             harness
                 .identity()
-                .verify_totp(&tenant_id, user.id(), "000000"),
+                .verify_totp(&realm_id, user.id(), "000000"),
         ),
         // Invalid magic-link token.
-        err_display(
-            harness
-                .identity()
-                .validate_magic_link(&tenant_id, "garbage"),
-        ),
+        err_display(harness.identity().validate_magic_link(&realm_id, "garbage")),
         // Bad WebAuthn authentication (no pending challenge / credential).
         {
             let credential_id = [0u8; 16];
@@ -122,7 +118,7 @@ async fn phase1_error_responses_leak_no_internal_state() {
             let client_data_json: [u8; 0] = [];
             let signature: [u8; 0] = [];
             err_display(harness.identity().complete_webauthn_authentication(
-                &tenant_id,
+                &realm_id,
                 &hearth::identity::CompleteAuthenticationParams {
                     credential_id: &credential_id,
                     authenticator_data: &authenticator_data,
@@ -133,11 +129,11 @@ async fn phase1_error_responses_leak_no_internal_state() {
                 },
             ))
         },
-        // Cross-tenant token validation (foreign tenant).
+        // Cross-realm token validation (foreign realm).
         err_display(
             harness
                 .identity()
-                .validate_token(&TenantId::generate(), "fake.cross.tenant.token"),
+                .validate_token(&RealmId::generate(), "fake.cross.realm.token"),
         ),
     ];
 
@@ -177,9 +173,9 @@ async fn phase1_error_responses_leak_no_internal_state() {
                 reason: "boom".to_string()
             }
         ),
-        format!("{}", IdentityError::TenantNotFound),
-        format!("{}", IdentityError::DuplicateTenantName),
-        format!("{}", IdentityError::TenantSuspended),
+        format!("{}", IdentityError::RealmNotFound),
+        format!("{}", IdentityError::DuplicateRealmName),
+        format!("{}", IdentityError::RealmSuspended),
     ];
     for msg in &phase1_displays {
         assert_no_leaks("IdentityError Phase 1 variant", msg);
@@ -198,16 +194,16 @@ async fn phase1_error_responses_leak_no_internal_state() {
         "admin denial should be a generic unauthorized error: {authz_unauthorized}"
     );
 
-    // Cross-tenant enumeration: get_user for a foreign tenant returns
-    // Ok(None), not a tenant-specific error.
-    let foreign_tenant = TenantId::generate();
+    // Cross-realm enumeration: get_user for a foreign realm returns
+    // Ok(None), not a realm-specific error.
+    let foreign_realm = RealmId::generate();
     let lookup = harness
         .identity()
-        .get_user(&foreign_tenant, &UserId::generate())
-        .expect("cross-tenant user lookup should not leak via error");
+        .get_user(&foreign_realm, &UserId::generate())
+        .expect("cross-realm user lookup should not leak via error");
     assert!(
         lookup.is_none(),
-        "foreign tenant lookup must return None, not an identifying error"
+        "foreign realm lookup must return None, not an identifying error"
     );
 }
 
@@ -231,17 +227,17 @@ async fn phase1_sensitive_types_zero_on_drop() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let tenant = harness
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
+        .create_realm(&CreateRealmRequest {
             name: format!("cc-zero-{}", uuid::Uuid::new_v4()),
             config: None,
         })
-        .expect("create tenant");
+        .expect("create realm");
     let user = harness
         .identity()
         .create_user(
-            tenant.id(),
+            realm.id(),
             &CreateUserRequest {
                 email: format!("zero-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "Zero".to_string(),
@@ -250,7 +246,7 @@ async fn phase1_sensitive_types_zero_on_drop() {
         .expect("create user");
     let enrollment = harness
         .identity()
-        .enroll_totp(tenant.id(), user.id())
+        .enroll_totp(realm.id(), user.id())
         .expect("enroll");
 
     let debug = format!("{:?}", enrollment.recovery_codes);
@@ -316,7 +312,7 @@ async fn phase1_http_rejects_oversized_body_default_limit() {
         .method("POST")
         .uri("/users")
         .header("content-type", "application/json")
-        .header("x-tenant-id", TenantId::generate().as_uuid().to_string())
+        .header("x-realm-id", RealmId::generate().as_uuid().to_string())
         .body(Body::from(oversized))
         .expect("build request");
 
@@ -338,7 +334,7 @@ async fn phase1_http_rejects_oversized_body_small_limit_introspect() {
         .method("POST")
         .uri("/introspect")
         .header("content-type", "application/json")
-        .header("x-tenant-id", TenantId::generate().as_uuid().to_string())
+        .header("x-realm-id", RealmId::generate().as_uuid().to_string())
         .body(Body::from(oversized))
         .expect("build request");
 
@@ -360,7 +356,7 @@ async fn phase1_http_rejects_oversized_body_small_limit_revoke() {
         .method("POST")
         .uri("/revoke")
         .header("content-type", "application/json")
-        .header("x-tenant-id", TenantId::generate().as_uuid().to_string())
+        .header("x-realm-id", RealmId::generate().as_uuid().to_string())
         .body(Body::from(oversized))
         .expect("build request");
 

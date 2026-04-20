@@ -13,7 +13,7 @@ describe("TypeScript SDK: Admin CRUD", () => {
     if (server) stopServer(server);
   });
 
-  it("performs full CRUD on users and tenants via the admin API", async () => {
+  it("performs full CRUD on users and realms via the admin API", async () => {
     const admin = server.client.admin(server.bootstrap.access_token);
 
     // === User CRUD ===
@@ -58,37 +58,37 @@ describe("TypeScript SDK: Admin CRUD", () => {
       expect((e as { status: number }).status).toBe(404);
     }
 
-    // === Tenant CRUD ===
+    // === Realm CRUD ===
 
     // Create
-    const tenant = await admin.createTenant({
-      name: "test-tenant-crud",
+    const realm = await admin.createRealm({
+      name: "test-realm-crud",
     });
-    expect(tenant.id).toBeTruthy();
-    expect(tenant.name).toBe("test-tenant-crud");
-    expect(tenant.status).toBe("TENANT_STATUS_ACTIVE");
+    expect(realm.id).toBeTruthy();
+    expect(realm.name).toBe("test-realm-crud");
+    expect(realm.status).toBe("REALM_STATUS_ACTIVE");
 
     // Read
-    const fetchedTenant = await admin.getTenant(tenant.id);
-    expect(fetchedTenant.id).toBe(tenant.id);
-    expect(fetchedTenant.name).toBe("test-tenant-crud");
+    const fetchedRealm = await admin.getRealm(realm.id);
+    expect(fetchedRealm.id).toBe(realm.id);
+    expect(fetchedRealm.name).toBe("test-realm-crud");
 
     // Update
-    const updatedTenant = await admin.updateTenant(tenant.id, {
-      name: "updated-tenant-name",
+    const updatedRealm = await admin.updateRealm(realm.id, {
+      name: "updated-realm-name",
     });
-    expect(updatedTenant.name).toBe("updated-tenant-name");
+    expect(updatedRealm.name).toBe("updated-realm-name");
 
     // List
-    const tenantPage = await admin.listTenants({ limit: 10 });
-    expect(tenantPage.items.length).toBeGreaterThanOrEqual(1);
+    const realmPage = await admin.listRealms({ limit: 10 });
+    expect(realmPage.items.length).toBeGreaterThanOrEqual(1);
 
     // Delete
-    await admin.deleteTenant(tenant.id);
+    await admin.deleteRealm(realm.id);
 
     // Verify deleted — should 404
     try {
-      await admin.getTenant(tenant.id);
+      await admin.getRealm(realm.id);
       expect.fail("should have thrown");
     } catch (e: unknown) {
       expect((e as { status: number }).status).toBe(404);

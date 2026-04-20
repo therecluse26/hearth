@@ -220,11 +220,11 @@ mod tests {
     #[test]
     fn authz_error_display_unauthorized() {
         let err = AuthzError::Unauthorized {
-            reason: "missing tenant".to_string(),
+            reason: "missing realm".to_string(),
         };
         let display = format!("{err}");
         assert!(display.contains("unauthorized"), "got: {display}");
-        assert!(display.contains("missing tenant"), "got: {display}");
+        assert!(display.contains("missing realm"), "got: {display}");
     }
 
     #[test]

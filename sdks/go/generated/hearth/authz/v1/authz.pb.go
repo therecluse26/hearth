@@ -486,7 +486,7 @@ type TupleChangeEvent struct {
 	ObjectId      string                 `protobuf:"bytes,4,opt,name=object_id,json=objectId,proto3" json:"object_id,omitempty"`
 	Relation      string                 `protobuf:"bytes,5,opt,name=relation,proto3" json:"relation,omitempty"`
 	Subject       string                 `protobuf:"bytes,6,opt,name=subject,proto3" json:"subject,omitempty"`
-	TenantId      string                 `protobuf:"bytes,7,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	RealmId       string                 `protobuf:"bytes,7,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
 	TimestampUs   uint64                 `protobuf:"varint,8,opt,name=timestamp_us,json=timestampUs,proto3" json:"timestamp_us,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -564,9 +564,9 @@ func (x *TupleChangeEvent) GetSubject() string {
 	return ""
 }
 
-func (x *TupleChangeEvent) GetTenantId() string {
+func (x *TupleChangeEvent) GetRealmId() string {
 	if x != nil {
-		return x.TenantId
+		return x.RealmId
 	}
 	return ""
 }
@@ -785,7 +785,7 @@ const file_hearth_authz_v1_authz_proto_rawDesc = "" +
 	"\toperation\x18\x01 \x01(\x0e2$.hearth.authz.v1.TupleWriteOperationR\toperation\x128\n" +
 	"\x05tuple\x18\x02 \x01(\v2\".hearth.authz.v1.RelationshipTupleR\x05tuple\",\n" +
 	"\x10ConsistencyToken\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\x04R\aversion\"\x9e\x02\n" +
+	"\aversion\x18\x01 \x01(\x04R\aversion\"\x9c\x02\n" +
 	"\x10TupleChangeEvent\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12:\n" +
 	"\x06action\x18\x02 \x01(\x0e2\".hearth.authz.v1.TupleChangeActionR\x06action\x12\x1f\n" +
@@ -793,8 +793,8 @@ const file_hearth_authz_v1_authz_proto_rawDesc = "" +
 	"objectType\x12\x1b\n" +
 	"\tobject_id\x18\x04 \x01(\tR\bobjectId\x12\x1a\n" +
 	"\brelation\x18\x05 \x01(\tR\brelation\x12\x18\n" +
-	"\asubject\x18\x06 \x01(\tR\asubject\x12\x1b\n" +
-	"\ttenant_id\x18\a \x01(\tR\btenantId\x12!\n" +
+	"\asubject\x18\x06 \x01(\tR\asubject\x12\x19\n" +
+	"\brealm_id\x18\a \x01(\tR\arealmId\x12!\n" +
 	"\ftimestamp_us\x18\b \x01(\x04R\vtimestampUs\"C\n" +
 	"\vWatchFilter\x12$\n" +
 	"\vobject_type\x18\x01 \x01(\tH\x00R\n" +

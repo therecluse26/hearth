@@ -1,17 +1,17 @@
 meta {
-  name: Create Tenant
+  name: Create Realm
   type: http
   seq: 2
 }
 
 post {
-  url: {{baseUrl}}/admin/tenants
+  url: {{baseUrl}}/admin/realms
   body: json
   auth: bearer
 }
 
 headers {
-  X-Tenant-ID: {{tenantId}}
+  X-Realm-ID: {{realmId}}
   Content-Type: application/json
 }
 

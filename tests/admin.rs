@@ -1,41 +1,41 @@
 //! Admin API tests (Step 27).
 //!
 //! Tests cover: admin role enforcement, pagination, bulk operations,
-//! REST CRUD for users/tenants/applications, audit trail, privilege
+//! REST CRUD for users/realms/applications, audit trail, privilege
 //! escalation prevention, rate limiting, and enumeration timing.
 
 mod common;
 
 use hearth::audit::{AuditAction, AuditQuery, CreateAuditEvent};
 use hearth::authz::{ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::{
-    CreateTenantRequest, CreateUserRequest, OAuthClient, RegisterClientRequest,
-    UpdateClientRequest, UpdateTenantRequest, UpdateUserRequest, UserStatus,
+    CreateRealmRequest, CreateUserRequest, OAuthClient, RegisterClientRequest, UpdateClientRequest,
+    UpdateRealmRequest, UpdateUserRequest, UserStatus,
 };
 
-/// Helper: creates a tenant and returns its ID.
-fn setup_tenant(harness: &common::TestHarness) -> TenantId {
-    let tenant = harness
+/// Helper: creates a realm and returns its ID.
+fn setup_realm(harness: &common::TestHarness) -> RealmId {
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
-            name: "Test Tenant".to_string(),
+        .create_realm(&CreateRealmRequest {
+            name: "Test Realm".to_string(),
             config: None,
         })
-        .expect("create tenant");
-    tenant.id().clone()
+        .expect("create realm");
+    realm.id().clone()
 }
 
-/// Helper: creates a user in the given tenant and returns their user ID.
+/// Helper: creates a user in the given realm and returns their user ID.
 fn setup_user(
     harness: &common::TestHarness,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     email: &str,
 ) -> hearth::core::UserId {
     let user = harness
         .identity()
         .create_user(
-            tenant_id,
+            realm_id,
             &CreateUserRequest {
                 email: email.to_string(),
                 display_name: email.split('@').next().unwrap_or("User").to_string(),
@@ -49,22 +49,22 @@ fn setup_user(
 /// Returns (`user_id`, `access_token`).
 fn setup_admin(
     harness: &common::TestHarness,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
 ) -> (hearth::core::UserId, String) {
-    let user_id = setup_user(harness, tenant_id, "admin@example.com");
+    let user_id = setup_user(harness, realm_id, "admin@example.com");
 
     // Create a session and issue tokens
     let session = harness
         .identity()
         .create_session(
-            tenant_id,
+            realm_id,
             &user_id,
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let tokens = harness
         .identity()
-        .issue_tokens(tenant_id, &user_id, session.id())
+        .issue_tokens(realm_id, &user_id, session.id())
         .expect("issue tokens");
 
     // Write the admin Zanzibar tuple: hearth#admin@user:uuid
@@ -73,7 +73,7 @@ fn setup_admin(
     let tuple = RelationshipTuple::new(object, "admin", subject).expect("tuple");
     harness
         .authz()
-        .write_tuples(tenant_id, &[TupleWrite::Touch(tuple)])
+        .write_tuples(realm_id, &[TupleWrite::Touch(tuple)])
         .expect("write admin tuple");
 
     (user_id, tokens.access_token().to_string())
@@ -83,32 +83,32 @@ fn setup_admin(
 /// Returns (`user_id`, `access_token`).
 fn setup_non_admin(
     harness: &common::TestHarness,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
 ) -> (hearth::core::UserId, String) {
-    let user_id = setup_user(harness, tenant_id, "regular@example.com");
+    let user_id = setup_user(harness, realm_id, "regular@example.com");
 
     let session = harness
         .identity()
         .create_session(
-            tenant_id,
+            realm_id,
             &user_id,
             &hearth::identity::SessionContext::default(),
         )
         .expect("create session");
     let tokens = harness
         .identity()
-        .issue_tokens(tenant_id, &user_id, session.id())
+        .issue_tokens(realm_id, &user_id, session.id())
         .expect("issue tokens");
 
     (user_id, tokens.access_token().to_string())
 }
 
 /// Helper: registers an OAuth client and returns it.
-fn setup_client(harness: &common::TestHarness, tenant_id: &TenantId) -> OAuthClient {
+fn setup_client(harness: &common::TestHarness, realm_id: &RealmId) -> OAuthClient {
     harness
         .identity()
         .register_client(
-            tenant_id,
+            realm_id,
             &RegisterClientRequest {
                 client_name: "Test App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -125,16 +125,16 @@ fn setup_client(harness: &common::TestHarness, tenant_id: &TenantId) -> OAuthCli
 #[tokio::test]
 async fn admin_role_enforcement() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
-    let (admin_id, _admin_token) = setup_admin(&harness, &tenant_id);
-    let (non_admin_id, _non_admin_token) = setup_non_admin(&harness, &tenant_id);
+    let realm_id = setup_realm(&harness);
+    let (admin_id, _admin_token) = setup_admin(&harness, &realm_id);
+    let (non_admin_id, _non_admin_token) = setup_non_admin(&harness, &realm_id);
 
     // Admin user should have the admin role
     let admin_obj = ObjectRef::new("hearth", "admin").expect("obj");
     let admin_sub = SubjectRef::direct("user", &admin_id.as_uuid().to_string()).expect("subject");
     let is_admin = harness
         .authz()
-        .check(&tenant_id, &admin_obj, "admin", &admin_sub, None)
+        .check(&realm_id, &admin_obj, "admin", &admin_sub, None)
         .expect("check");
     assert!(is_admin, "admin user should have admin role");
 
@@ -143,7 +143,7 @@ async fn admin_role_enforcement() {
         SubjectRef::direct("user", &non_admin_id.as_uuid().to_string()).expect("subject");
     let is_not_admin = harness
         .authz()
-        .check(&tenant_id, &admin_obj, "admin", &non_admin_sub, None)
+        .check(&realm_id, &admin_obj, "admin", &non_admin_sub, None)
         .expect("check");
     assert!(!is_not_admin, "non-admin user should not have admin role");
 }
@@ -152,17 +152,17 @@ async fn admin_role_enforcement() {
 #[tokio::test]
 async fn pagination_and_filtering() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
+    let realm_id = setup_realm(&harness);
 
     // Create 25 users
     for i in 0..25 {
-        setup_user(&harness, &tenant_id, &format!("user{i:02}@example.com"));
+        setup_user(&harness, &realm_id, &format!("user{i:02}@example.com"));
     }
 
     // Page 1: 10 items + cursor
     let page1 = harness
         .identity()
-        .list_users(&tenant_id, None, 10)
+        .list_users(&realm_id, None, 10)
         .expect("list users page 1");
     assert_eq!(page1.items.len(), 10, "page 1 should have 10 items");
     assert!(page1.next_cursor.is_some(), "page 1 should have cursor");
@@ -170,7 +170,7 @@ async fn pagination_and_filtering() {
     // Page 2: 10 items + cursor
     let page2 = harness
         .identity()
-        .list_users(&tenant_id, page1.next_cursor.as_deref(), 10)
+        .list_users(&realm_id, page1.next_cursor.as_deref(), 10)
         .expect("list users page 2");
     assert_eq!(page2.items.len(), 10, "page 2 should have 10 items");
     assert!(page2.next_cursor.is_some(), "page 2 should have cursor");
@@ -178,7 +178,7 @@ async fn pagination_and_filtering() {
     // Page 3: 5 items, no cursor
     let page3 = harness
         .identity()
-        .list_users(&tenant_id, page2.next_cursor.as_deref(), 10)
+        .list_users(&realm_id, page2.next_cursor.as_deref(), 10)
         .expect("list users page 3");
     assert_eq!(page3.items.len(), 5, "page 3 should have 5 items");
     assert!(page3.next_cursor.is_none(), "page 3 should have no cursor");
@@ -200,11 +200,11 @@ async fn pagination_and_filtering() {
 #[tokio::test]
 async fn bulk_operations() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
+    let realm_id = setup_realm(&harness);
 
     // Pre-create users to cause duplicate email collisions
-    setup_user(&harness, &tenant_id, "dup1@example.com");
-    setup_user(&harness, &tenant_id, "dup2@example.com");
+    setup_user(&harness, &realm_id, "dup1@example.com");
+    setup_user(&harness, &realm_id, "dup2@example.com");
 
     let requests = vec![
         CreateUserRequest {
@@ -231,7 +231,7 @@ async fn bulk_operations() {
 
     let results = harness
         .identity()
-        .bulk_create_users(&tenant_id, &requests)
+        .bulk_create_users(&realm_id, &requests)
         .expect("bulk create");
 
     assert_eq!(results.len(), 5);
@@ -259,13 +259,13 @@ async fn bulk_operations() {
 #[tokio::test]
 async fn crud_users() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
+    let realm_id = setup_realm(&harness);
 
     // Create
     let user = harness
         .identity()
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "crud@example.com".to_string(),
                 display_name: "CRUD User".to_string(),
@@ -276,7 +276,7 @@ async fn crud_users() {
     // Get
     let fetched = harness
         .identity()
-        .get_user(&tenant_id, user.id())
+        .get_user(&realm_id, user.id())
         .expect("get user")
         .expect("user exists");
     assert_eq!(fetched.email(), "crud@example.com");
@@ -285,7 +285,7 @@ async fn crud_users() {
     let updated = harness
         .identity()
         .update_user(
-            &tenant_id,
+            &realm_id,
             user.id(),
             &UpdateUserRequest {
                 email: Some("updated@example.com".to_string()),
@@ -300,95 +300,95 @@ async fn crud_users() {
     // List — should find the user
     let page = harness
         .identity()
-        .list_users(&tenant_id, None, 100)
+        .list_users(&realm_id, None, 100)
         .expect("list users");
     assert!(page.items.iter().any(|u| u.id() == user.id()));
 
     // Delete
     harness
         .identity()
-        .delete_user(&tenant_id, user.id())
+        .delete_user(&realm_id, user.id())
         .expect("delete user");
 
     // Verify gone
     let gone = harness
         .identity()
-        .get_user(&tenant_id, user.id())
+        .get_user(&realm_id, user.id())
         .expect("get deleted user");
     assert!(gone.is_none(), "user should be gone after delete");
 }
 
-/// I2: REST CRUD for tenants.
+/// I2: REST CRUD for realms.
 #[tokio::test]
-async fn crud_tenants() {
+async fn crud_realms() {
     let harness = common::TestHarness::embedded().await.expect("harness");
 
     // Create
-    let tenant = harness
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
-            name: "CRUD Tenant".to_string(),
+        .create_realm(&CreateRealmRequest {
+            name: "CRUD Realm".to_string(),
             config: None,
         })
-        .expect("create tenant");
+        .expect("create realm");
 
     // Get
     let fetched = harness
         .identity()
-        .get_tenant(tenant.id())
-        .expect("get tenant")
-        .expect("tenant exists");
-    assert_eq!(fetched.name(), "CRUD Tenant");
+        .get_realm(realm.id())
+        .expect("get realm")
+        .expect("realm exists");
+    assert_eq!(fetched.name(), "CRUD Realm");
 
     // Update
     let updated = harness
         .identity()
-        .update_tenant(
-            tenant.id(),
-            &UpdateTenantRequest {
-                name: Some("Updated Tenant".to_string()),
-                status: Some(hearth::identity::TenantStatus::Suspended),
+        .update_realm(
+            realm.id(),
+            &UpdateRealmRequest {
+                name: Some("Updated Realm".to_string()),
+                status: Some(hearth::identity::RealmStatus::Suspended),
                 ..Default::default()
             },
         )
-        .expect("update tenant");
-    assert_eq!(updated.name(), "Updated Tenant");
-    assert_eq!(updated.status(), hearth::identity::TenantStatus::Suspended);
+        .expect("update realm");
+    assert_eq!(updated.name(), "Updated Realm");
+    assert_eq!(updated.status(), hearth::identity::RealmStatus::Suspended);
 
-    // List — should find the tenant
+    // List — should find the realm
     let page = harness
         .identity()
-        .list_tenants(None, 100)
-        .expect("list tenants");
-    assert!(page.items.iter().any(|t| t.id() == tenant.id()));
+        .list_realms(None, 100)
+        .expect("list realms");
+    assert!(page.items.iter().any(|t| t.id() == realm.id()));
 
     // Delete
     harness
         .identity()
-        .delete_tenant(tenant.id())
-        .expect("delete tenant");
+        .delete_realm(realm.id())
+        .expect("delete realm");
 
     // Verify gone
     let gone = harness
         .identity()
-        .get_tenant(tenant.id())
-        .expect("get deleted tenant");
-    assert!(gone.is_none(), "tenant should be gone after delete");
+        .get_realm(realm.id())
+        .expect("get deleted realm");
+    assert!(gone.is_none(), "realm should be gone after delete");
 }
 
 /// I3: REST CRUD for applications (OAuth clients).
 #[tokio::test]
 async fn crud_applications() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
+    let realm_id = setup_realm(&harness);
 
     // Register client
-    let client = setup_client(&harness, &tenant_id);
+    let client = setup_client(&harness, &realm_id);
 
     // Get client
     let fetched = harness
         .identity()
-        .get_client(&tenant_id, client.client_id())
+        .get_client(&realm_id, client.client_id())
         .expect("get client")
         .expect("client exists");
     assert_eq!(fetched.client_name(), "Test App");
@@ -397,7 +397,7 @@ async fn crud_applications() {
     let updated = harness
         .identity()
         .update_client(
-            &tenant_id,
+            &realm_id,
             client.client_id(),
             &UpdateClientRequest {
                 client_name: Some("Updated App".to_string()),
@@ -415,7 +415,7 @@ async fn crud_applications() {
     // List clients
     let page = harness
         .identity()
-        .list_clients(&tenant_id, None, 100)
+        .list_clients(&realm_id, None, 100)
         .expect("list clients");
     assert!(page
         .items
@@ -425,13 +425,13 @@ async fn crud_applications() {
     // Delete client
     harness
         .identity()
-        .delete_client(&tenant_id, client.client_id())
+        .delete_client(&realm_id, client.client_id())
         .expect("delete client");
 
     // Verify gone
     let gone = harness
         .identity()
-        .get_client(&tenant_id, client.client_id())
+        .get_client(&realm_id, client.client_id())
         .expect("get deleted client");
     assert!(gone.is_none(), "client should be gone after delete");
 }
@@ -440,8 +440,8 @@ async fn crud_applications() {
 #[tokio::test]
 async fn admin_audit_trail() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
-    let (admin_id, _) = setup_admin(&harness, &tenant_id);
+    let realm_id = setup_realm(&harness);
+    let (admin_id, _) = setup_admin(&harness, &realm_id);
 
     // Perform mutations that the admin API would audit
     // (We test the audit engine directly since the HTTP layer delegates to it)
@@ -450,7 +450,7 @@ async fn admin_audit_trail() {
     let user = harness
         .identity()
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "audit-test@example.com".to_string(),
                 display_name: "Audit Test".to_string(),
@@ -462,7 +462,7 @@ async fn admin_audit_trail() {
     harness
         .audit()
         .append(&CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: admin_id.as_uuid().to_string(),
             action: AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -471,30 +471,30 @@ async fn admin_audit_trail() {
         })
         .expect("append user created audit");
 
-    // Update a tenant
+    // Update a realm
     harness
         .audit()
         .append(&CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: admin_id.as_uuid().to_string(),
-            action: AuditAction::TenantUpdated,
-            resource_type: "tenant".to_string(),
-            resource_id: tenant_id.as_uuid().to_string(),
+            action: AuditAction::RealmUpdated,
+            resource_type: "realm".to_string(),
+            resource_id: realm_id.as_uuid().to_string(),
             metadata: Some(serde_json::json!({"via": "admin_api"})),
         })
-        .expect("append tenant updated audit");
+        .expect("append realm updated audit");
 
     // Delete a client
-    let client = setup_client(&harness, &tenant_id);
+    let client = setup_client(&harness, &realm_id);
     harness
         .identity()
-        .delete_client(&tenant_id, client.client_id())
+        .delete_client(&realm_id, client.client_id())
         .expect("delete client");
 
     harness
         .audit()
         .append(&CreateAuditEvent {
-            tenant_id: tenant_id.clone(),
+            realm_id: realm_id.clone(),
             actor: admin_id.as_uuid().to_string(),
             action: AuditAction::ClientDeleted,
             resource_type: "client".to_string(),
@@ -506,7 +506,7 @@ async fn admin_audit_trail() {
     // Query the audit log — should find 3 events
     let events = harness
         .audit()
-        .query(&AuditQuery::for_tenant(tenant_id.clone()))
+        .query(&AuditQuery::for_realm(realm_id.clone()))
         .expect("query audit");
 
     assert!(
@@ -525,7 +525,7 @@ async fn admin_audit_trail() {
 
     let actions: Vec<_> = admin_events.iter().map(|e| &e.action).collect();
     assert!(actions.contains(&&AuditAction::UserCreated));
-    assert!(actions.contains(&&AuditAction::TenantUpdated));
+    assert!(actions.contains(&&AuditAction::RealmUpdated));
     assert!(actions.contains(&&AuditAction::ClientDeleted));
 
     // Verify metadata contains "via": "admin_api"
@@ -542,13 +542,13 @@ async fn admin_audit_trail() {
 #[tokio::test]
 async fn privilege_escalation_prevention() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
-    let (_non_admin_id, non_admin_token) = setup_non_admin(&harness, &tenant_id);
+    let realm_id = setup_realm(&harness);
+    let (_non_admin_id, non_admin_token) = setup_non_admin(&harness, &realm_id);
 
     // Verify the non-admin token is valid for normal operations
     let claims = harness
         .identity()
-        .validate_token(&tenant_id, &non_admin_token)
+        .validate_token(&realm_id, &non_admin_token)
         .expect("token should be valid");
     // sub is "user_{uuid}" — strip prefix to get raw UUID
     let uuid_str = claims.sub.strip_prefix("user_").expect("user_ prefix");
@@ -560,7 +560,7 @@ async fn privilege_escalation_prevention() {
     let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string()).expect("subject");
     let is_admin = harness
         .authz()
-        .check(&tenant_id, &object, "admin", &subject, None)
+        .check(&realm_id, &object, "admin", &subject, None)
         .expect("check");
     assert!(!is_admin, "non-admin should not pass admin check");
 
@@ -568,7 +568,7 @@ async fn privilege_escalation_prevention() {
     let user = harness
         .identity()
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "innocent@example.com".to_string(),
                 display_name: "Innocent".to_string(),
@@ -616,17 +616,17 @@ async fn admin_rate_limiting() {
 #[tokio::test]
 async fn mass_enumeration_bounded() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let tenant_id = setup_tenant(&harness);
+    let realm_id = setup_realm(&harness);
 
     // Create 50 users (more than the default page size of 20)
     for i in 0..50 {
-        setup_user(&harness, &tenant_id, &format!("enum{i:03}@example.com"));
+        setup_user(&harness, &realm_id, &format!("enum{i:03}@example.com"));
     }
 
     // List with default limit (20) — should return exactly 20 regardless of total
     let page = harness
         .identity()
-        .list_users(&tenant_id, None, 20)
+        .list_users(&realm_id, None, 20)
         .expect("list users");
     assert_eq!(
         page.items.len(),
@@ -641,17 +641,17 @@ async fn mass_enumeration_bounded() {
     // Even with a tiny limit, we get bounded results
     let small_page = harness
         .identity()
-        .list_users(&tenant_id, None, 5)
+        .list_users(&realm_id, None, 5)
         .expect("list users small");
     assert_eq!(small_page.items.len(), 5);
 
-    // List tenants also works
-    let tenant_page = harness
+    // List realms also works
+    let realm_page = harness
         .identity()
-        .list_tenants(None, 100)
-        .expect("list tenants");
+        .list_realms(None, 100)
+        .expect("list realms");
     assert!(
-        !tenant_page.items.is_empty(),
-        "should have at least one tenant"
+        !realm_page.items.is_empty(),
+        "should have at least one realm"
     );
 }

@@ -68,7 +68,7 @@ message TupleChangeEvent {
   string object_id = 4;
   string relation = 5;
   string subject = 6;
-  string tenant_id = 7;
+  string realm_id = 7;
   uint64 timestamp_us = 8;
 }
 

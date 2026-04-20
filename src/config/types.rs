@@ -360,8 +360,8 @@ pub struct EmailConfig {
     /// `Mailtrap`-specific settings. Required when `transport == Mailtrap`.
     #[serde(default)]
     pub mailtrap: Option<MailtrapConfig>,
-    /// Global email branding defaults. Per-tenant overrides are stored
-    /// in `TenantConfig.email_branding`.
+    /// Global email branding defaults. Per-realm overrides are stored
+    /// in `RealmConfig.email_branding`.
     #[serde(default)]
     pub branding: Option<EmailBranding>,
     /// Optional directory containing custom Tera email templates.
@@ -408,20 +408,20 @@ impl BrandingConfig {
     }
 }
 
-/// Per-tenant web branding block in YAML.
+/// Per-realm web branding block in YAML.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct TenantWebYaml {
-    /// Named theme override for this tenant's UI sessions.
+pub struct RealmWebYaml {
+    /// Named theme override for this realm's UI sessions.
     #[serde(default)]
     pub theme: Option<String>,
-    /// Path to a custom CSS file for this tenant's UI sessions.
+    /// Path to a custom CSS file for this realm's UI sessions.
     #[serde(default)]
     pub custom_css: Option<String>,
 }
 
 /// First-run onboarding configuration.
 ///
-/// When `enabled`, Hearth generates a setup token at startup if no tenant
+/// When `enabled`, Hearth generates a setup token at startup if no realm
 /// exists and logs a one-time setup URL (Jenkins-style).
 #[derive(Debug, Clone, Deserialize)]
 pub struct OnboardingConfig {
@@ -501,11 +501,11 @@ pub struct TokenYamlConfig {
     pub refresh_token_ttl: Option<String>,
 }
 
-// ===== Auth & Tenant YAML config =====
+// ===== Auth & Realm YAML config =====
 
 /// Global authentication defaults in the `auth:` section.
 ///
-/// These apply to all tenants unless overridden per-tenant in the `tenants:` map.
+/// These apply to all realms unless overridden per-realm in the `realms:` map.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AuthConfig {
     /// Default session TTL as a human-readable duration (e.g. "24h", "30m").
@@ -518,23 +518,23 @@ pub struct AuthConfig {
     #[serde(default)]
     pub password_time_cost: Option<u32>,
     /// Whether MFA is required for all users (global default).
-    /// Per-tenant `auth.mfa_required` overrides this.
+    /// Per-realm `auth.mfa_required` overrides this.
     #[serde(default)]
     pub mfa_required: Option<bool>,
     /// Whether passkey login still requires a TOTP challenge (global default).
-    /// Per-tenant `auth.passkey_requires_mfa` overrides this.
+    /// Per-realm `auth.passkey_requires_mfa` overrides this.
     #[serde(default)]
     pub passkey_requires_mfa: Option<bool>,
 }
 
-/// Per-tenant auth policy configuration in YAML.
+/// Per-realm auth policy configuration in YAML.
 ///
-/// These are policy declarations: the config layer stores them in `TenantConfig`,
+/// These are policy declarations: the config layer stores them in `RealmConfig`,
 /// but enforcement (checking MFA on login, validating password complexity, applying
 /// rate limits) is a separate concern in the identity engine.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct TenantAuthYaml {
-    /// Whether MFA is required for all users in this tenant.
+pub struct RealmAuthYaml {
+    /// Whether MFA is required for all users in this realm.
     #[serde(default)]
     pub mfa_required: Option<bool>,
     /// Allowed MFA methods (e.g. `["totp", "webauthn"]`).
@@ -546,15 +546,15 @@ pub struct TenantAuthYaml {
     /// Password complexity requirements.
     #[serde(default)]
     pub password_policy: Option<PasswordPolicyYaml>,
-    /// Per-tenant token TTL overrides.
+    /// Per-realm token TTL overrides.
     #[serde(default)]
-    pub token: Option<TenantTokenYaml>,
+    pub token: Option<RealmTokenYaml>,
     /// Whether to enforce TOTP MFA even after passkey authentication.
     /// Passkeys are inherently multi-factor, but regulated environments
     /// may require an additional TOTP challenge. Defaults to `false`.
     #[serde(default)]
     pub passkey_requires_mfa: Option<bool>,
-    /// Per-tenant rate limit overrides.
+    /// Per-realm rate limit overrides.
     #[serde(default)]
     pub rate_limit: Option<RateLimitYaml>,
 }
@@ -576,9 +576,9 @@ pub struct PasswordPolicyYaml {
     pub require_special: Option<bool>,
 }
 
-/// Per-tenant token TTL overrides in YAML.
+/// Per-realm token TTL overrides in YAML.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct TenantTokenYaml {
+pub struct RealmTokenYaml {
     /// Access token TTL as a duration string (e.g. `"15m"`).
     #[serde(default)]
     pub access_token_ttl: Option<String>,
@@ -587,7 +587,7 @@ pub struct TenantTokenYaml {
     pub refresh_token_ttl: Option<String>,
 }
 
-/// Per-tenant rate limit overrides in YAML.
+/// Per-realm rate limit overrides in YAML.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RateLimitYaml {
     /// Maximum failed login attempts before lockout.
@@ -598,9 +598,9 @@ pub struct RateLimitYaml {
     pub lockout_duration: Option<String>,
 }
 
-/// YAML declaration for an organization within a tenant.
+/// YAML declaration for an organization within a realm.
 ///
-/// Organizations declared under `tenants.<name>.organizations:` are reconciled
+/// Organizations declared under `realms.<name>.organizations:` are reconciled
 /// with storage at startup: created if missing, updated if changed.
 /// Members and invitations are runtime-only — not managed via YAML.
 #[derive(Debug, Clone, Deserialize)]
@@ -625,7 +625,7 @@ pub struct OrgConfigYaml {
 
 /// YAML declaration for an OAuth 2.0 application (client).
 ///
-/// Applications declared under `tenants.<name>.applications:` are reconciled
+/// Applications declared under `realms.<name>.applications:` are reconciled
 /// with storage at startup: created if missing, updated if changed, archived
 /// if removed from the YAML.
 #[derive(Debug, Clone, Deserialize)]
@@ -648,19 +648,19 @@ pub struct ApplicationYamlConfig {
     pub client_secret: Option<String>,
 }
 
-/// Per-tenant email branding overrides in YAML.
+/// Per-realm email branding overrides in YAML.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct TenantEmailYaml {
+pub struct RealmEmailYaml {
     /// Email branding overrides.
     #[serde(default)]
     pub branding: Option<EmailBranding>,
 }
 
-/// Per-tenant YAML configuration block.
+/// Per-realm YAML configuration block.
 ///
 /// Fields are optional — `None` inherits from global `auth:` defaults.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct TenantYamlConfig {
+pub struct RealmYamlConfig {
     /// Session TTL override (e.g. "12h").
     #[serde(default)]
     pub session_ttl: Option<String>,
@@ -670,15 +670,15 @@ pub struct TenantYamlConfig {
     /// Argon2id time cost override.
     #[serde(default)]
     pub password_time_cost: Option<u32>,
-    /// Per-tenant email overrides.
+    /// Per-realm email overrides.
     #[serde(default)]
-    pub email: Option<TenantEmailYaml>,
-    /// Per-tenant web / UI branding overrides.
+    pub email: Option<RealmEmailYaml>,
+    /// Per-realm web / UI branding overrides.
     #[serde(default)]
-    pub web: Option<TenantWebYaml>,
-    /// Per-tenant auth policy overrides (MFA, password policy, rate limits, token TTLs).
+    pub web: Option<RealmWebYaml>,
+    /// Per-realm auth policy overrides (MFA, password policy, rate limits, token TTLs).
     #[serde(default)]
-    pub auth: Option<TenantAuthYaml>,
+    pub auth: Option<RealmAuthYaml>,
     /// Declarative OAuth 2.0 application (client) definitions.
     /// Reconciled with storage at startup.
     #[serde(default)]
@@ -725,17 +725,17 @@ pub fn parse_duration_to_micros(s: &str) -> Result<i64, String> {
     Ok(value * multiplier)
 }
 
-impl TenantYamlConfig {
-    /// Merges this per-tenant config with global auth defaults to produce a
-    /// `TenantConfig` suitable for storage.
+impl RealmYamlConfig {
+    /// Merges this per-realm config with global auth defaults to produce a
+    /// `RealmConfig` suitable for storage.
     ///
     /// `web_theme_css` is populated by the caller (main.rs) after reading
     /// the optional CSS file from disk; it is `None` here.
-    pub fn to_tenant_config(
+    pub fn to_realm_config(
         &self,
         global: &AuthConfig,
         global_branding: Option<&EmailBranding>,
-    ) -> crate::identity::TenantConfig {
+    ) -> crate::identity::RealmConfig {
         let session_ttl_micros = self
             .session_ttl
             .as_deref()
@@ -789,7 +789,7 @@ impl TenantYamlConfig {
             .and_then(|r| r.lockout_duration.as_deref())
             .and_then(|s| parse_duration_to_micros(s).ok());
 
-        crate::identity::TenantConfig {
+        crate::identity::RealmConfig {
             session_ttl_micros,
             password_memory_cost,
             password_time_cost,
@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn tenant_yaml_config_merge() {
+    fn realm_yaml_config_merge() {
         let global = AuthConfig {
             session_ttl: Some("24h".to_string()),
             password_memory_cost: Some(65536),
@@ -909,12 +909,12 @@ mod tests {
             mfa_required: None,
             passkey_requires_mfa: None,
         };
-        let tenant_cfg = TenantYamlConfig {
+        let realm_cfg = RealmYamlConfig {
             session_ttl: Some("12h".to_string()),
-            ..TenantYamlConfig::default()
+            ..RealmYamlConfig::default()
         };
-        let merged = tenant_cfg.to_tenant_config(&global, None);
-        // Per-tenant TTL overrides global
+        let merged = realm_cfg.to_realm_config(&global, None);
+        // Per-realm TTL overrides global
         assert_eq!(merged.session_ttl_micros, Some(43_200_000_000));
         // Inherited from global
         assert_eq!(merged.password_memory_cost, Some(65536));

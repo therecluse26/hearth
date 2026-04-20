@@ -6,15 +6,15 @@ use std::fmt;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum IdentityError {
-    /// The requested tenant was not found.
-    TenantNotFound,
-    /// The tenant is suspended; operations are denied.
-    TenantSuspended,
-    /// A tenant with the given name already exists.
-    DuplicateTenantName,
+    /// The requested realm was not found.
+    RealmNotFound,
+    /// The realm is suspended; operations are denied.
+    RealmSuspended,
+    /// A realm with the given name already exists.
+    DuplicateRealmName,
     /// The requested user was not found.
     UserNotFound,
-    /// A user with the given email already exists in this tenant.
+    /// A user with the given email already exists in this realm.
     DuplicateEmail,
     /// The input failed validation.
     InvalidInput {
@@ -137,7 +137,7 @@ pub enum IdentityError {
     RateLimited,
     /// The requested organization was not found.
     OrganizationNotFound,
-    /// An organization with the given slug already exists in this tenant.
+    /// An organization with the given slug already exists in this realm.
     DuplicateOrgSlug,
     /// The organization is suspended; operations are denied.
     OrganizationSuspended,
@@ -168,9 +168,9 @@ pub enum IdentityError {
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TenantNotFound => write!(f, "tenant not found"),
-            Self::TenantSuspended => write!(f, "tenant is suspended"),
-            Self::DuplicateTenantName => write!(f, "a tenant with this name already exists"),
+            Self::RealmNotFound => write!(f, "realm not found"),
+            Self::RealmSuspended => write!(f, "realm is suspended"),
+            Self::DuplicateRealmName => write!(f, "a realm with this name already exists"),
             Self::UserNotFound => write!(f, "user not found"),
             Self::DuplicateEmail => write!(f, "a user with this email already exists"),
             Self::InvalidInput { reason } => write!(f, "invalid input: {reason}"),
@@ -242,9 +242,9 @@ impl std::error::Error for IdentityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Storage(err) => Some(&**err),
-            Self::TenantNotFound
-            | Self::TenantSuspended
-            | Self::DuplicateTenantName
+            Self::RealmNotFound
+            | Self::RealmSuspended
+            | Self::DuplicateRealmName
             | Self::UserNotFound
             | Self::DuplicateEmail
             | Self::InvalidInput { .. }
@@ -302,22 +302,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_tenant_not_found() {
-        let err = IdentityError::TenantNotFound;
+    fn display_realm_not_found() {
+        let err = IdentityError::RealmNotFound;
         let display = format!("{err}");
-        assert!(display.contains("tenant not found"), "got: {display}");
+        assert!(display.contains("realm not found"), "got: {display}");
     }
 
     #[test]
-    fn display_tenant_suspended() {
-        let err = IdentityError::TenantSuspended;
+    fn display_realm_suspended() {
+        let err = IdentityError::RealmSuspended;
         let display = format!("{err}");
         assert!(display.contains("suspended"), "got: {display}");
     }
 
     #[test]
-    fn display_duplicate_tenant_name() {
-        let err = IdentityError::DuplicateTenantName;
+    fn display_duplicate_realm_name() {
+        let err = IdentityError::DuplicateRealmName;
         let display = format!("{err}");
         assert!(display.contains("already exists"), "got: {display}");
     }
@@ -712,9 +712,9 @@ mod tests {
 
     #[test]
     fn source_others_none() {
-        assert!(IdentityError::TenantNotFound.source().is_none());
-        assert!(IdentityError::TenantSuspended.source().is_none());
-        assert!(IdentityError::DuplicateTenantName.source().is_none());
+        assert!(IdentityError::RealmNotFound.source().is_none());
+        assert!(IdentityError::RealmSuspended.source().is_none());
+        assert!(IdentityError::DuplicateRealmName.source().is_none());
         assert!(IdentityError::UserNotFound.source().is_none());
         assert!(IdentityError::DuplicateEmail.source().is_none());
         assert!(IdentityError::CredentialNotFound.source().is_none());

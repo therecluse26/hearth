@@ -1,17 +1,17 @@
-//! Integration tests for user search and tenant name index.
+//! Integration tests for user search and realm name index.
 
 mod common;
 
-use hearth::identity::{CreateTenantRequest, CreateUserRequest, IdentityEngine, TenantStatus};
+use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityEngine, RealmStatus};
 
-/// Helper: creates a tenant and returns its ID.
-fn setup_tenant(identity: &dyn IdentityEngine) -> hearth::core::TenantId {
+/// Helper: creates a realm and returns its ID.
+fn setup_realm(identity: &dyn IdentityEngine) -> hearth::core::RealmId {
     identity
-        .create_tenant(&CreateTenantRequest {
-            name: "Search Test Tenant".to_string(),
+        .create_realm(&CreateRealmRequest {
+            name: "Search Test Realm".to_string(),
             config: None,
         })
-        .expect("create tenant")
+        .expect("create realm")
         .id()
         .clone()
 }
@@ -22,7 +22,7 @@ fn setup_tenant(identity: &dyn IdentityEngine) -> hearth::core::TenantId {
 async fn search_users_by_email_prefix() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tid = setup_tenant(identity);
+    let tid = setup_realm(identity);
 
     identity
         .create_user(
@@ -54,7 +54,7 @@ async fn search_users_by_email_prefix() {
 async fn search_users_by_display_name() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tid = setup_tenant(identity);
+    let tid = setup_realm(identity);
 
     identity
         .create_user(
@@ -77,7 +77,7 @@ async fn search_users_by_display_name() {
 async fn search_users_case_insensitive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tid = setup_tenant(identity);
+    let tid = setup_realm(identity);
 
     identity
         .create_user(
@@ -105,7 +105,7 @@ async fn search_users_case_insensitive() {
 async fn search_users_respects_limit() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tid = setup_tenant(identity);
+    let tid = setup_realm(identity);
 
     for i in 0..5 {
         identity
@@ -129,7 +129,7 @@ async fn search_users_respects_limit() {
 async fn search_users_empty_query_returns_empty() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tid = setup_tenant(identity);
+    let tid = setup_realm(identity);
 
     identity
         .create_user(
@@ -153,7 +153,7 @@ async fn search_users_empty_query_returns_empty() {
 async fn search_users_no_matches_returns_empty() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
-    let tid = setup_tenant(identity);
+    let tid = setup_realm(identity);
 
     identity
         .create_user(
@@ -171,53 +171,53 @@ async fn search_users_no_matches_returns_empty() {
     assert!(results.is_empty());
 }
 
-// ===== get_tenant_by_name tests =====
+// ===== get_realm_by_name tests =====
 
 #[tokio::test]
-async fn get_tenant_by_name_found() {
+async fn get_realm_by_name_found() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
 
     let created = identity
-        .create_tenant(&CreateTenantRequest {
-            name: "my-tenant".to_string(),
+        .create_realm(&CreateRealmRequest {
+            name: "my-realm".to_string(),
             config: None,
         })
         .expect("create");
 
     let found = identity
-        .get_tenant_by_name("my-tenant")
+        .get_realm_by_name("my-realm")
         .expect("lookup")
-        .expect("should find tenant");
+        .expect("should find realm");
     assert_eq!(found.id(), created.id());
-    assert_eq!(found.name(), "my-tenant");
+    assert_eq!(found.name(), "my-realm");
 }
 
 #[tokio::test]
-async fn get_tenant_by_name_not_found() {
+async fn get_realm_by_name_not_found() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
 
-    let result = identity.get_tenant_by_name("nonexistent").expect("lookup");
+    let result = identity.get_realm_by_name("nonexistent").expect("lookup");
     assert!(result.is_none());
 }
 
 #[tokio::test]
-async fn tenant_name_index_survives_rename() {
+async fn realm_name_index_survives_rename() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
 
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
             name: "original-name".to_string(),
             config: None,
         })
         .expect("create");
 
     identity
-        .update_tenant(
-            tenant.id(),
-            &hearth::identity::UpdateTenantRequest {
+        .update_realm(
+            realm.id(),
+            &hearth::identity::UpdateRealmRequest {
                 name: Some("new-name".to_string()),
                 ..Default::default()
             },
@@ -226,67 +226,67 @@ async fn tenant_name_index_survives_rename() {
 
     // Old name should not resolve
     assert!(identity
-        .get_tenant_by_name("original-name")
+        .get_realm_by_name("original-name")
         .expect("lookup old")
         .is_none());
 
     // New name should resolve
     let found = identity
-        .get_tenant_by_name("new-name")
+        .get_realm_by_name("new-name")
         .expect("lookup new")
-        .expect("should find renamed tenant");
-    assert_eq!(found.id(), tenant.id());
+        .expect("should find renamed realm");
+    assert_eq!(found.id(), realm.id());
 }
 
 #[tokio::test]
-async fn tenant_name_index_cleaned_on_delete() {
+async fn realm_name_index_cleaned_on_delete() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
 
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
             name: "to-delete".to_string(),
             config: None,
         })
         .expect("create");
 
-    identity.delete_tenant(tenant.id()).expect("delete");
+    identity.delete_realm(realm.id()).expect("delete");
 
     // Name should not resolve after deletion
     assert!(identity
-        .get_tenant_by_name("to-delete")
+        .get_realm_by_name("to-delete")
         .expect("lookup")
         .is_none());
 }
 
 #[tokio::test]
-async fn tenant_archived_status_persists() {
+async fn realm_archived_status_persists() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();
 
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
             name: "archive-test".to_string(),
             config: None,
         })
         .expect("create");
 
     let updated = identity
-        .update_tenant(
-            tenant.id(),
-            &hearth::identity::UpdateTenantRequest {
-                status: Some(TenantStatus::Archived),
+        .update_realm(
+            realm.id(),
+            &hearth::identity::UpdateRealmRequest {
+                status: Some(RealmStatus::Archived),
                 ..Default::default()
             },
         )
         .expect("archive");
 
-    assert_eq!(updated.status(), TenantStatus::Archived);
+    assert_eq!(updated.status(), RealmStatus::Archived);
 
     // Fetch again to verify persistence
     let fetched = identity
-        .get_tenant(tenant.id())
+        .get_realm(realm.id())
         .expect("get")
         .expect("should exist");
-    assert_eq!(fetched.status(), TenantStatus::Archived);
+    assert_eq!(fetched.status(), RealmStatus::Archived);
 }

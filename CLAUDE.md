@@ -44,7 +44,7 @@ Six modules with strict downward dependency flow:
 |-------|------|------|
 | Core | `src/core/` | Shared types and traits only. No logic, no state, no I/O. |
 | Protocol | `src/protocol/` | Wire adapters (REST, gRPC, OIDC, SAML, SCIM). Stateless, thin. |
-| Identity Engine | `src/identity/` | Domain logic. Users, credentials, sessions, tenants, tokens. |
+| Identity Engine | `src/identity/` | Domain logic. Users, credentials, sessions, realms, tokens. |
 | Authorization Engine | `src/authz/` | Zanzibar relationship tuples. `check()`, `expand()`, `write_tuples()`, `watch()`. |
 | Cluster | `src/cluster/` | Raft consensus via `openraft`. Invisible in single-node mode. |
 | Storage Engine | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |
@@ -80,9 +80,9 @@ Everything else (user creation, hashing, token issuance, WAL writes, cold-tier p
 
 ### Multi-Tenancy
 
-- Every storage operation MUST require a `TenantId` parameter (newtype, not raw string).
-- All keys MUST be prefixed with tenant ID. No code path to construct a key without `TenantId`.
-- Scans MUST be bounded to a single tenant's key space.
+- Every storage operation MUST require a `RealmId` parameter (newtype, not raw string).
+- All keys MUST be prefixed with realm ID. No code path to construct a key without `RealmId`.
+- Scans MUST be bounded to a single realm's key space.
 
 ### API Contracts
 
@@ -166,7 +166,7 @@ CI runs four tiers: Fast (every commit), Standard (merge), Extended (nightly), F
 
 ### Types
 
-- Entity IDs are distinct newtypes: `UserId(Uuid)`, `SessionId(Uuid)`, `TenantId(Uuid)`, etc.
+- Entity IDs are distinct newtypes: `UserId(Uuid)`, `SessionId(Uuid)`, `RealmId(Uuid)`, etc.
 - Newtypes MUST NOT implement `Deref` to inner type. Use `.as_uuid()`.
 - Timestamps stored as UTC. Internal representation: Unix microseconds.
 - Clock injectable via `Clock` trait for deterministic testing.
@@ -178,7 +178,7 @@ CI runs four tiers: Fast (every commit), Standard (merge), Extended (nightly), F
 - **Password hashing**: Argon2id, OWASP parameters. Off hot path, no latency compromise.
 - **Input validation**: Each layer validates its own invariants. MUST NOT assume upstream validated.
 - **Crypto**: `ring` or `RustCrypto` only. No hand-rolled crypto. Constant-time secret comparisons.
-- **Encryption at rest**: Per-tenant keys. Keys MUST NOT appear in logs/errors/debug output.
+- **Encryption at rest**: Per-realm keys. Keys MUST NOT appear in logs/errors/debug output.
 - **Audit**: Security-critical mutations emit structured `tracing` events at `info` level.
 
 ### Concurrency & Safety

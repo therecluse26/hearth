@@ -1,8 +1,8 @@
-//! Per-tenant email branding configuration.
+//! Per-realm email branding configuration.
 //!
-//! Each tenant can override the accent color, support email, and footer
+//! Each realm can override the accent color, support email, and footer
 //! text. The [`EmailBranding::merge`] function produces a resolved
-//! branding by overlaying tenant overrides on global defaults.
+//! branding by overlaying realm overrides on global defaults.
 //!
 //! `product_name` and `logo_url` are **global** branding concerns
 //! (shared by the web UI and emails) and live in
@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Per-tenant email branding configuration.
+/// Per-realm email branding configuration.
 ///
 /// All fields are optional. When `None`, [`ResolvedBranding`] uses
 /// built-in defaults (accent color `#E85D04`, etc.).
@@ -29,21 +29,21 @@ pub struct EmailBranding {
 }
 
 impl EmailBranding {
-    /// Merges global defaults with tenant overrides.
+    /// Merges global defaults with realm overrides.
     ///
-    /// Tenant `Some` fields take precedence over global `Some` fields.
+    /// Realm `Some` fields take precedence over global `Some` fields.
     /// Returns a new `EmailBranding` with all overrides applied.
-    pub fn merge(global: &Self, tenant: &Self) -> Self {
+    pub fn merge(global: &Self, realm: &Self) -> Self {
         Self {
-            accent_color: tenant
+            accent_color: realm
                 .accent_color
                 .clone()
                 .or_else(|| global.accent_color.clone()),
-            support_email: tenant
+            support_email: realm
                 .support_email
                 .clone()
                 .or_else(|| global.support_email.clone()),
-            custom_footer_text: tenant
+            custom_footer_text: realm
                 .custom_footer_text
                 .clone()
                 .or_else(|| global.custom_footer_text.clone()),
@@ -114,25 +114,25 @@ mod tests {
             accent_color: Some("#FF0000".to_string()),
             ..Default::default()
         };
-        let tenant = EmailBranding::default();
+        let realm = EmailBranding::default();
 
-        let merged = EmailBranding::merge(&global, &tenant);
+        let merged = EmailBranding::merge(&global, &realm);
         assert_eq!(merged.accent_color.as_deref(), Some("#FF0000"));
     }
 
     #[test]
-    fn merge_tenant_overrides_global() {
+    fn merge_realm_overrides_global() {
         let global = EmailBranding {
             accent_color: Some("#111111".to_string()),
             support_email: Some("global@example.com".to_string()),
             ..Default::default()
         };
-        let tenant = EmailBranding {
+        let realm = EmailBranding {
             accent_color: Some("#222222".to_string()),
             ..Default::default()
         };
 
-        let merged = EmailBranding::merge(&global, &tenant);
+        let merged = EmailBranding::merge(&global, &realm);
         assert_eq!(merged.accent_color.as_deref(), Some("#222222"));
         // support_email falls through to global
         assert_eq!(merged.support_email.as_deref(), Some("global@example.com"));

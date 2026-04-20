@@ -24,7 +24,7 @@ export class HearthError extends Error {
 /** Configuration for HearthClient. */
 export interface HearthClientConfig {
   baseUrl: string;
-  tenantId: string;
+  realmId: string;
 }
 
 /**
@@ -35,14 +35,14 @@ export interface HearthClientConfig {
  */
 export class HearthClient {
   private readonly baseUrl: string;
-  private readonly tenantId: string;
+  private readonly realmId: string;
 
   constructor(config: HearthClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, "");
-    this.tenantId = config.tenantId;
+    this.realmId = config.realmId;
   }
 
-  /** POST /admin/bootstrap — create tenant, admin user, tokens (dev mode only). */
+  /** POST /admin/bootstrap — create realm, admin user, tokens (dev mode only). */
   static async bootstrap(baseUrl: string): Promise<BootstrapResponse> {
     const url = `${baseUrl.replace(/\/$/, "")}/admin/bootstrap`;
     const resp = await fetch(url, { method: "POST" });
@@ -101,7 +101,7 @@ export class HearthClient {
   async userinfo(accessToken: string): Promise<UserInfoResponse> {
     const resp = await fetch(`${this.baseUrl}/userinfo`, {
       headers: {
-        "X-Tenant-ID": this.tenantId,
+        "X-Realm-ID": this.realmId,
         Authorization: `Bearer ${accessToken}`,
       },
     });
@@ -133,7 +133,7 @@ export class HearthClient {
 
   /** Creates an AdminClient using the given access token. */
   admin(accessToken: string): AdminClient {
-    return new AdminClient(this.baseUrl, this.tenantId, accessToken);
+    return new AdminClient(this.baseUrl, this.realmId, accessToken);
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -141,7 +141,7 @@ export class HearthClient {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Tenant-ID": this.tenantId,
+        "X-Realm-ID": this.realmId,
       },
       body: JSON.stringify(body),
     });

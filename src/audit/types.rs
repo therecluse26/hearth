@@ -4,7 +4,7 @@
 //! mutations. Each event includes an integrity hash forming a hash chain
 //! for tamper detection.
 
-use crate::core::{AuditEventId, TenantId, Timestamp};
+use crate::core::{AuditEventId, RealmId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// Categories of security-critical actions recorded in the audit log.
@@ -31,12 +31,12 @@ pub enum AuditAction {
     TokenIssued,
     /// Tokens were refreshed.
     TokenRefreshed,
-    /// A new tenant was created.
-    TenantCreated,
-    /// A tenant record was updated.
-    TenantUpdated,
-    /// A tenant was deleted.
-    TenantDeleted,
+    /// A new realm was created.
+    RealmCreated,
+    /// A realm record was updated.
+    RealmUpdated,
+    /// A realm was deleted.
+    RealmDeleted,
     /// An OAuth client was registered.
     ClientRegistered,
     /// An authorization code was issued.
@@ -77,9 +77,9 @@ impl AuditAction {
             Self::SessionRevoked => "session_revoked",
             Self::TokenIssued => "token_issued",
             Self::TokenRefreshed => "token_refreshed",
-            Self::TenantCreated => "tenant_created",
-            Self::TenantUpdated => "tenant_updated",
-            Self::TenantDeleted => "tenant_deleted",
+            Self::RealmCreated => "realm_created",
+            Self::RealmUpdated => "realm_updated",
+            Self::RealmDeleted => "realm_deleted",
             Self::ClientRegistered => "client_registered",
             Self::AuthorizationCodeIssued => "authz_code_issued",
             Self::AuthorizationCodeExchanged => "authz_code_exchanged",
@@ -111,9 +111,9 @@ impl std::str::FromStr for AuditAction {
             "session_revoked" => Ok(Self::SessionRevoked),
             "token_issued" => Ok(Self::TokenIssued),
             "token_refreshed" => Ok(Self::TokenRefreshed),
-            "tenant_created" => Ok(Self::TenantCreated),
-            "tenant_updated" => Ok(Self::TenantUpdated),
-            "tenant_deleted" => Ok(Self::TenantDeleted),
+            "realm_created" => Ok(Self::RealmCreated),
+            "realm_updated" => Ok(Self::RealmUpdated),
+            "realm_deleted" => Ok(Self::RealmDeleted),
             "client_registered" => Ok(Self::ClientRegistered),
             "authz_code_issued" => Ok(Self::AuthorizationCodeIssued),
             "authz_code_exchanged" => Ok(Self::AuthorizationCodeExchanged),
@@ -145,13 +145,13 @@ impl std::fmt::Display for AuditAction {
 pub struct AuditEvent {
     /// Unique identifier for this event.
     pub id: AuditEventId,
-    /// The tenant this event belongs to.
-    pub tenant_id: TenantId,
+    /// The realm this event belongs to.
+    pub realm_id: RealmId,
     /// The actor who performed the action (user ID, "system", etc.).
     pub actor: String,
     /// The type of action performed.
     pub action: AuditAction,
-    /// The type of resource affected (e.g., "user", "session", "tenant").
+    /// The type of resource affected (e.g., "user", "session", "realm").
     pub resource_type: String,
     /// The identifier of the affected resource.
     pub resource_id: String,
@@ -162,7 +162,7 @@ pub struct AuditEvent {
     pub metadata: Option<serde_json::Value>,
     /// SHA-256 hash chain link: `SHA256(prev_hash || event_data)`.
     ///
-    /// For the first event in a tenant's log, `prev_hash` is the
+    /// For the first event in a realm's log, `prev_hash` is the
     /// string "genesis".
     pub integrity_hash: String,
 }
@@ -173,8 +173,8 @@ pub struct AuditEvent {
 /// `timestamp`, and `integrity_hash`.
 #[derive(Clone, Debug)]
 pub struct CreateAuditEvent {
-    /// The tenant this event belongs to.
-    pub tenant_id: TenantId,
+    /// The realm this event belongs to.
+    pub realm_id: RealmId,
     /// The actor who performed the action.
     pub actor: String,
     /// The type of action performed.
@@ -193,8 +193,8 @@ pub struct CreateAuditEvent {
 /// Results are always returned in chronological order.
 #[derive(Clone, Debug)]
 pub struct AuditQuery {
-    /// Filter by tenant (required).
-    pub tenant_id: TenantId,
+    /// Filter by realm (required).
+    pub realm_id: RealmId,
     /// Only events at or after this timestamp.
     pub start_time: Option<Timestamp>,
     /// Only events before this timestamp (exclusive).
@@ -208,10 +208,10 @@ pub struct AuditQuery {
 }
 
 impl AuditQuery {
-    /// Creates a new query for a specific tenant with no filters.
-    pub fn for_tenant(tenant_id: TenantId) -> Self {
+    /// Creates a new query for a specific realm with no filters.
+    pub fn for_realm(realm_id: RealmId) -> Self {
         Self {
-            tenant_id,
+            realm_id,
             start_time: None,
             end_time: None,
             actor: None,
@@ -233,7 +233,7 @@ mod tests {
             AuditAction::UserDeleted,
             AuditAction::CredentialSet,
             AuditAction::SessionCreated,
-            AuditAction::TenantCreated,
+            AuditAction::RealmCreated,
             AuditAction::TupleWritten,
         ];
         for action in &actions {
@@ -260,7 +260,7 @@ mod tests {
     fn audit_event_serde_round_trip() {
         let event = AuditEvent {
             id: AuditEventId::generate(),
-            tenant_id: TenantId::generate(),
+            realm_id: RealmId::generate(),
             actor: "user_123".to_string(),
             action: AuditAction::UserCreated,
             resource_type: "user".to_string(),
@@ -277,14 +277,14 @@ mod tests {
     #[test]
     fn create_audit_event_debug() {
         let req = CreateAuditEvent {
-            tenant_id: TenantId::generate(),
+            realm_id: RealmId::generate(),
             actor: "system".to_string(),
-            action: AuditAction::TenantCreated,
-            resource_type: "tenant".to_string(),
-            resource_id: "tenant_789".to_string(),
+            action: AuditAction::RealmCreated,
+            resource_type: "realm".to_string(),
+            resource_id: "realm_789".to_string(),
             metadata: None,
         };
         let debug = format!("{req:?}");
-        assert!(debug.contains("TenantCreated"));
+        assert!(debug.contains("RealmCreated"));
     }
 }

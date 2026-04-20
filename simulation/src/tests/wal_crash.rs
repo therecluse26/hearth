@@ -8,14 +8,14 @@
 
 use std::io::Write;
 
-use hearth::core::{TenantId, Timestamp};
+use hearth::core::{RealmId, Timestamp};
 use hearth::storage::wal::{SyncMode, Wal, WalConfig, WalEntry, WalOperation};
 
 /// Helper to create a test WAL entry.
 fn make_entry(key: &[u8], value: &[u8]) -> WalEntry {
     WalEntry {
         timestamp: Timestamp::from_micros(1_700_000_000_000_000),
-        tenant_id: TenantId::generate(),
+        realm_id: RealmId::generate(),
         operation: WalOperation::Put,
         key: key.to_vec(),
         value: value.to_vec(),

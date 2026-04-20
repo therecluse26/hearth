@@ -12,13 +12,13 @@
 //! * `GET  /ui/admin/users/:id/edit` — edit-user form.
 //! * `POST /ui/admin/users/:id/edit` — submit edit-user form.
 //! * `POST /ui/admin/users/:id/delete` — delete user.
-//! * `GET  /ui/admin/tenants` — paginated tenant list.
-//! * `GET  /ui/admin/tenants/new` — create-tenant form.
-//! * `POST /ui/admin/tenants/new` — submit create-tenant form.
-//! * `GET  /ui/admin/tenants/:id` — tenant detail page.
-//! * `GET  /ui/admin/tenants/:id/edit` — edit-tenant form.
-//! * `POST /ui/admin/tenants/:id/edit` — submit edit-tenant form.
-//! * `POST /ui/admin/tenants/:id/delete` — delete tenant.
+//! * `GET  /ui/admin/realms` — paginated realm list.
+//! * `GET  /ui/admin/realms/new` — create-realm form.
+//! * `POST /ui/admin/realms/new` — submit create-realm form.
+//! * `GET  /ui/admin/realms/:id` — realm detail page.
+//! * `GET  /ui/admin/realms/:id/edit` — edit-realm form.
+//! * `POST /ui/admin/realms/:id/edit` — submit edit-realm form.
+//! * `POST /ui/admin/realms/:id/delete` — delete realm.
 //! * `GET  /ui/admin/applications` — paginated application list.
 //! * `GET  /ui/admin/applications/new` — register-application form.
 //! * `POST /ui/admin/applications/new` — submit registration form.
@@ -38,12 +38,12 @@ use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId};
 use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
     IdentityError, OAuthClient, Organization, OrganizationConfig, OrganizationInvitation,
-    OrganizationMembership, OrganizationRole, OrganizationStatus, Page, RegisterClientRequest,
-    Session, Tenant, TenantStatus, UpdateClientRequest, UpdateOrganizationRequest,
+    OrganizationMembership, OrganizationRole, OrganizationStatus, Page, Realm, RealmStatus,
+    RegisterClientRequest, Session, UpdateClientRequest, UpdateOrganizationRequest,
     UpdateUserRequest, User, UserStatus,
 };
 
@@ -94,7 +94,7 @@ struct UserListTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/users`.
@@ -107,7 +107,7 @@ pub async fn admin_users_list(
     let result = if search_query.len() >= 2 {
         state
             .identity
-            .search_users(&session.tenant_id, &search_query, 20)
+            .search_users(&session.realm_id, &search_query, 20)
             .map(|users| Page {
                 items: users,
                 next_cursor: None,
@@ -115,7 +115,7 @@ pub async fn admin_users_list(
     } else {
         state
             .identity
-            .list_users(&session.tenant_id, params.cursor.as_deref(), 20)
+            .list_users(&session.realm_id, params.cursor.as_deref(), 20)
     };
 
     match result {
@@ -133,7 +133,7 @@ pub async fn admin_users_list(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_users failed");
@@ -164,7 +164,7 @@ struct UserNewTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/users/new`.
@@ -186,7 +186,7 @@ pub async fn admin_user_create_form(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
     })
 }
 
@@ -218,20 +218,20 @@ pub async fn admin_user_create_submit(
         display_name: form.display_name.clone(),
     };
 
-    match state.identity.create_user(&session.tenant_id, &req) {
+    match state.identity.create_user(&session.realm_id, &req) {
         Ok(user) => {
             // Set the initial password.
             let pw = CleartextPassword::from_string(form.password);
             if let Err(e) = state
                 .identity
-                .set_password(&session.tenant_id, user.id(), &pw)
+                .set_password(&session.realm_id, user.id(), &pw)
             {
                 tracing::warn!(error = %e, "set initial password after create_user failed");
             }
 
             // Activate the user (skip email verification for admin-created users).
             let _ = state.identity.update_user(
-                &session.tenant_id,
+                &session.realm_id,
                 user.id(),
                 &UpdateUserRequest {
                     email: None,
@@ -258,7 +258,7 @@ pub async fn admin_user_create_submit(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(IdentityError::InvalidInput { reason }) => render(&UserNewTemplate {
             error: Some(reason),
@@ -274,7 +274,7 @@ pub async fn admin_user_create_submit(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "create_user failed");
@@ -292,7 +292,7 @@ pub async fn admin_user_create_submit(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
     }
@@ -370,7 +370,7 @@ struct UserDetailTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// Query params for user detail page (flash messages).
@@ -393,7 +393,7 @@ pub async fn admin_user_detail(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    let user = match state.identity.get_user(&session.tenant_id, &uid) {
+    let user = match state.identity.get_user(&session.realm_id, &uid) {
         Ok(Some(u)) => u,
         Ok(None) => return super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -405,7 +405,7 @@ pub async fn admin_user_detail(
     // Load related data for the detail page
     let raw_sessions = state
         .identity
-        .list_sessions_by_user(&session.tenant_id, &uid, None, 10)
+        .list_sessions_by_user(&session.realm_id, &uid, None, 10)
         .unwrap_or_default();
     let sessions: Vec<UserSessionRow> = raw_sessions
         .items
@@ -422,12 +422,12 @@ pub async fn admin_user_detail(
 
     let mfa_enabled = state
         .identity
-        .mfa_enabled(&session.tenant_id, &uid)
+        .mfa_enabled(&session.realm_id, &uid)
         .unwrap_or(false);
 
     let raw_creds = state
         .identity
-        .list_webauthn_credentials(&session.tenant_id, &uid)
+        .list_webauthn_credentials(&session.realm_id, &uid)
         .unwrap_or_default();
     let webauthn_credentials: Vec<WebAuthnCredRow> = raw_creds
         .iter()
@@ -450,13 +450,13 @@ pub async fn admin_user_detail(
     // Load org memberships and resolve org names
     let memberships = state
         .identity
-        .list_user_organizations(&session.tenant_id, &uid, None, 50)
+        .list_user_organizations(&session.realm_id, &uid, None, 50)
         .unwrap_or_default();
     let mut org_memberships = Vec::with_capacity(memberships.items.len());
     for m in &memberships.items {
         let (org_name, org_slug) = match state
             .identity
-            .get_organization(&session.tenant_id, m.org_id())
+            .get_organization(&session.realm_id, m.org_id())
         {
             Ok(Some(o)) => (o.name().to_string(), o.slug().to_string()),
             _ => ("(unknown)".to_string(), String::new()),
@@ -478,7 +478,7 @@ pub async fn admin_user_detail(
         other => other.to_string(),
     });
 
-    let is_user_admin = check_user_admin(&state, &session.tenant_id, &uid);
+    let is_user_admin = check_user_admin(&state, &session.realm_id, &uid);
     let created_at_display = format_ts(user.created_at());
     let updated_at_display = format_ts(user.updated_at());
 
@@ -502,7 +502,7 @@ pub async fn admin_user_detail(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
     })
 }
 
@@ -517,7 +517,7 @@ pub async fn admin_user_send_reset(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    let user = match state.identity.get_user(&session.tenant_id, &uid) {
+    let user = match state.identity.get_user(&session.realm_id, &uid) {
         Ok(Some(u)) => u,
         Ok(None) => return super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -528,7 +528,7 @@ pub async fn admin_user_send_reset(
 
     match state
         .identity
-        .request_password_reset(&session.tenant_id, user.email())
+        .request_password_reset(&session.realm_id, user.email())
     {
         Ok(Some(_token)) => {
             // Token generated — in production, the email service sends it.
@@ -557,7 +557,7 @@ pub async fn admin_user_disable_mfa(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    match state.identity.disable_mfa(&session.tenant_id, &uid) {
+    match state.identity.disable_mfa(&session.realm_id, &uid) {
         Ok(()) => {
             tracing::info!(user_id = %uid, admin = %session.user_email, "admin disabled MFA");
         }
@@ -580,7 +580,7 @@ pub async fn admin_user_revoke_session(
         Err(_) => return super::handlers_common::not_found("Session not found"),
     };
 
-    match state.identity.revoke_session(&session.tenant_id, &sid) {
+    match state.identity.revoke_session(&session.realm_id, &sid) {
         Ok(()) => {
             tracing::info!(session_id = %session_id, admin = %session.user_email, "admin revoked session");
         }
@@ -610,7 +610,7 @@ pub async fn admin_user_revoke_webauthn(
 
     match state
         .identity
-        .revoke_webauthn_credential(&session.tenant_id, &uid, &cred_id_bytes)
+        .revoke_webauthn_credential(&session.realm_id, &uid, &cred_id_bytes)
     {
         Ok(()) => {
             tracing::info!(user_id = %uid, admin = %session.user_email, "admin revoked WebAuthn credential");
@@ -650,7 +650,7 @@ struct UserEditTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/users/:id/edit`.
@@ -664,9 +664,9 @@ pub async fn admin_user_edit_form(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    match state.identity.get_user(&session.tenant_id, &uid) {
+    match state.identity.get_user(&session.realm_id, &uid) {
         Ok(Some(user)) => {
-            let is_user_admin = check_user_admin(&state, &session.tenant_id, &uid);
+            let is_user_admin = check_user_admin(&state, &session.realm_id, &uid);
             render(&UserEditTemplate {
                 form_email: user.email().to_string(),
                 form_display_name: user.display_name().to_string(),
@@ -684,7 +684,7 @@ pub async fn admin_user_edit_form(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
         Ok(None) => super::handlers_common::not_found("User not found"),
@@ -734,13 +734,13 @@ pub async fn admin_user_edit_submit(
         status,
     };
 
-    match state.identity.update_user(&session.tenant_id, &uid, &req) {
+    match state.identity.update_user(&session.realm_id, &uid, &req) {
         Ok(_updated) => {
             // Sync admin role if changed
             let want_admin = form.admin.is_some();
-            let has_admin = check_user_admin(&state, &session.tenant_id, &uid);
+            let has_admin = check_user_admin(&state, &session.realm_id, &uid);
             if want_admin != has_admin {
-                if let Err(e) = set_user_admin(&state, &session.tenant_id, &uid, want_admin) {
+                if let Err(e) = set_user_admin(&state, &session.realm_id, &uid, want_admin) {
                     tracing::warn!(error = %e, user_id = %uid, want_admin, "admin role toggle failed");
                 }
             }
@@ -798,7 +798,7 @@ pub async fn admin_user_delete(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    match state.identity.delete_user(&session.tenant_id, &uid) {
+    match state.identity.delete_user(&session.realm_id, &uid) {
         Ok(()) => {
             audit_user_event(&state, &session, &uid, "delete");
             Redirect::to("/ui/admin/users").into_response()
@@ -836,13 +836,13 @@ fn render_edit_error(
 ) -> Response {
     let user = state
         .identity
-        .get_user(&session.tenant_id, uid)
+        .get_user(&session.realm_id, uid)
         .ok()
         .flatten();
 
     match user {
         Some(ref user) => {
-            let is_user_admin = check_user_admin(state, &session.tenant_id, uid);
+            let is_user_admin = check_user_admin(state, &session.realm_id, uid);
             render(&UserEditTemplate {
                 user: user.clone(),
                 error: Some(msg.to_string()),
@@ -860,7 +860,7 @@ fn render_edit_error(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
         None => super::handlers_common::not_found("User not found"),
@@ -883,7 +883,7 @@ fn audit_user_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "user".to_string(),
@@ -895,20 +895,20 @@ fn audit_user_event(
 }
 
 // =========================================================================
-// Tenants
+// Realms
 // =========================================================================
 
 // Chrome fields for admin templates are inlined per struct initializer
 // because Rust macros cannot expand to field initializers.
 
 // ---------------------------------------------------------------------------
-// Tenant list
+// Realm list
 // ---------------------------------------------------------------------------
 
 #[derive(Template)]
-#[template(path = "ui/admin/tenants/list.html")]
-struct TenantListTemplate {
-    tenants: Vec<Tenant>,
+#[template(path = "ui/admin/realms/list.html")]
+struct RealmListTemplate {
+    realms: Vec<Realm>,
     next_cursor: Option<String>,
     chrome: bool,
     active: &'static str,
@@ -920,21 +920,21 @@ struct TenantListTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
-/// `GET /ui/admin/tenants`.
-pub async fn admin_tenants_list(
+/// `GET /ui/admin/realms`.
+pub async fn admin_realms_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     Query(params): Query<PaginationParams>,
 ) -> Response {
-    match state.identity.list_tenants(params.cursor.as_deref(), 20) {
-        Ok(page) => render(&TenantListTemplate {
-            tenants: page.items,
+    match state.identity.list_realms(params.cursor.as_deref(), 20) {
+        Ok(page) => render(&RealmListTemplate {
+            realms: page.items,
             next_cursor: page.next_cursor,
             chrome: true,
-            active: "tenants",
+            active: "realms",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -943,23 +943,23 @@ pub async fn admin_tenants_list(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
-            tracing::warn!(error = %e, "list_tenants failed");
+            tracing::warn!(error = %e, "list_realms failed");
             super::handlers_common::server_error()
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Tenant detail
+// Realm detail
 // ---------------------------------------------------------------------------
 
 #[derive(Template)]
-#[template(path = "ui/admin/tenants/detail.html")]
-struct TenantDetailTemplate {
-    tenant: Tenant,
+#[template(path = "ui/admin/realms/detail.html")]
+struct RealmDetailTemplate {
+    realm: Realm,
     /// Pre-formatted access token TTL (e.g. "15m", "1h").
     access_token_ttl_display: Option<String>,
     /// Pre-formatted refresh token TTL.
@@ -976,33 +976,33 @@ struct TenantDetailTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
-/// `GET /ui/admin/tenants/:id`.
-pub async fn admin_tenant_detail(
+/// `GET /ui/admin/realms/:id`.
+pub async fn admin_realm_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     AxumPath(tid): AxumPath<String>,
 ) -> Response {
-    let tenant_id = match tid.parse::<uuid::Uuid>() {
-        Ok(u) => TenantId::new(u),
-        Err(_) => return super::handlers_common::not_found("Tenant not found"),
+    let realm_id = match tid.parse::<uuid::Uuid>() {
+        Ok(u) => RealmId::new(u),
+        Err(_) => return super::handlers_common::not_found("Realm not found"),
     };
 
-    match state.identity.get_tenant(&tenant_id) {
-        Ok(Some(tenant)) => {
-            let cfg = tenant.config();
+    match state.identity.get_realm(&realm_id) {
+        Ok(Some(realm)) => {
+            let cfg = realm.config();
             let access_token_ttl_display = cfg.access_token_ttl_micros.map(format_micros_human);
             let refresh_token_ttl_display = cfg.refresh_token_ttl_micros.map(format_micros_human);
             let lockout_duration_display = cfg.lockout_duration_micros.map(format_micros_human);
-            render(&TenantDetailTemplate {
-                tenant,
+            render(&RealmDetailTemplate {
+                realm,
                 access_token_ttl_display,
                 refresh_token_ttl_display,
                 lockout_duration_display,
                 chrome: true,
-                active: "tenants",
+                active: "realms",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -1011,19 +1011,19 @@ pub async fn admin_tenant_detail(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
-        Ok(None) => super::handlers_common::not_found("Tenant not found"),
+        Ok(None) => super::handlers_common::not_found("Realm not found"),
         Err(e) => {
-            tracing::warn!(error = %e, "get_tenant failed");
+            tracing::warn!(error = %e, "get_realm failed");
             super::handlers_common::server_error()
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Delete tenant (only Archived tenants)
+// Delete realm (only Archived realms)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -1032,8 +1032,8 @@ pub struct DeleteForm {
     pub csrf: String,
 }
 
-/// `POST /ui/admin/tenants/:id/delete`.
-pub async fn admin_tenant_delete(
+/// `POST /ui/admin/realms/:id/delete`.
+pub async fn admin_realm_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     AxumPath(tid): AxumPath<String>,
@@ -1043,62 +1043,62 @@ pub async fn admin_tenant_delete(
         return resp;
     }
 
-    let tenant_id = match tid.parse::<uuid::Uuid>() {
-        Ok(u) => TenantId::new(u),
-        Err(_) => return super::handlers_common::not_found("Tenant not found"),
+    let realm_id = match tid.parse::<uuid::Uuid>() {
+        Ok(u) => RealmId::new(u),
+        Err(_) => return super::handlers_common::not_found("Realm not found"),
     };
 
-    // Only allow permanent deletion of Archived tenants.
-    match state.identity.get_tenant(&tenant_id) {
-        Ok(Some(tenant)) if tenant.status() == TenantStatus::Archived => {
-            match state.identity.delete_tenant(&tenant_id) {
+    // Only allow permanent deletion of Archived realms.
+    match state.identity.get_realm(&realm_id) {
+        Ok(Some(realm)) if realm.status() == RealmStatus::Archived => {
+            match state.identity.delete_realm(&realm_id) {
                 Ok(()) => {
-                    audit_tenant_event(&state, &session, &tenant_id, "delete");
-                    Redirect::to("/ui/admin/tenants").into_response()
+                    audit_realm_event(&state, &session, &realm_id, "delete");
+                    Redirect::to("/ui/admin/realms").into_response()
                 }
-                Err(IdentityError::TenantNotFound) => {
-                    super::handlers_common::not_found("Tenant not found")
+                Err(IdentityError::RealmNotFound) => {
+                    super::handlers_common::not_found("Realm not found")
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "delete_tenant failed");
+                    tracing::warn!(error = %e, "delete_realm failed");
                     super::handlers_common::server_error()
                 }
             }
         }
         Ok(Some(_)) => super::handlers_common::bad_request(
-            "Only archived tenants can be permanently deleted. Remove the tenant from hearth.yaml and restart to archive it first.",
+            "Only archived realms can be permanently deleted. Remove the realm from hearth.yaml and restart to archive it first.",
         ),
-        Ok(None) => super::handlers_common::not_found("Tenant not found"),
+        Ok(None) => super::handlers_common::not_found("Realm not found"),
         Err(e) => {
-            tracing::warn!(error = %e, "get_tenant failed");
+            tracing::warn!(error = %e, "get_realm failed");
             super::handlers_common::server_error()
         }
     }
 }
 
-/// Best-effort audit for tenant operations.
-fn audit_tenant_event(
+/// Best-effort audit for realm operations.
+fn audit_realm_event(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     op: &'static str,
 ) {
     use crate::audit::{AuditAction, CreateAuditEvent};
     let action = match op {
-        "create" => AuditAction::TenantCreated,
-        "update" => AuditAction::TenantUpdated,
-        "delete" => AuditAction::TenantDeleted,
+        "create" => AuditAction::RealmCreated,
+        "update" => AuditAction::RealmUpdated,
+        "delete" => AuditAction::RealmDeleted,
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
-        resource_type: "tenant".to_string(),
-        resource_id: tenant_id.as_uuid().to_string(),
+        resource_type: "realm".to_string(),
+        resource_id: realm_id.as_uuid().to_string(),
         metadata: Some(serde_json::json!({ "via": "ui" })),
     }) {
-        tracing::warn!(error = %e, "tenant admin audit append failed");
+        tracing::warn!(error = %e, "realm admin audit append failed");
     }
 }
 
@@ -1125,7 +1125,7 @@ struct AppListTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/applications`.
@@ -1136,7 +1136,7 @@ pub async fn admin_apps_list(
 ) -> Response {
     match state
         .identity
-        .list_clients(&session.tenant_id, params.cursor.as_deref(), 20)
+        .list_clients(&session.realm_id, params.cursor.as_deref(), 20)
     {
         Ok(page) => render(&AppListTemplate {
             applications: page.items,
@@ -1151,7 +1151,7 @@ pub async fn admin_apps_list(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_clients failed");
@@ -1186,7 +1186,7 @@ struct AppNewTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/applications/new`.
@@ -1213,7 +1213,7 @@ pub async fn admin_app_create_form(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
     })
 }
 
@@ -1262,7 +1262,7 @@ pub async fn admin_app_create_submit(
         .unwrap_or_else(|| vec!["authorization_code".to_string()]);
 
     match state.identity.register_client(
-        &session.tenant_id,
+        &session.realm_id,
         &RegisterClientRequest {
             client_name: form.client_name.clone(),
             redirect_uris: uris.clone(),
@@ -1286,7 +1286,7 @@ pub async fn admin_app_create_submit(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
         Err(IdentityError::InvalidInput { reason }) => render(&AppNewTemplate {
@@ -1308,7 +1308,7 @@ pub async fn admin_app_create_submit(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "register_client failed");
@@ -1331,7 +1331,7 @@ pub async fn admin_app_create_submit(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
     }
@@ -1356,7 +1356,7 @@ struct AppDetailTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/applications/:id`.
@@ -1370,7 +1370,7 @@ pub async fn admin_app_detail(
         Err(_) => return super::handlers_common::not_found("Application not found"),
     };
 
-    match state.identity.get_client(&session.tenant_id, &client_id) {
+    match state.identity.get_client(&session.realm_id, &client_id) {
         Ok(Some(app)) => render(&AppDetailTemplate {
             app,
             client_secret: None,
@@ -1384,7 +1384,7 @@ pub async fn admin_app_detail(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Ok(None) => super::handlers_common::not_found("Application not found"),
         Err(e) => {
@@ -1420,7 +1420,7 @@ struct AppEditTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/applications/:id/edit`.
@@ -1434,7 +1434,7 @@ pub async fn admin_app_edit_form(
         Err(_) => return super::handlers_common::not_found("Application not found"),
     };
 
-    match state.identity.get_client(&session.tenant_id, &client_id) {
+    match state.identity.get_client(&session.realm_id, &client_id) {
         Ok(Some(app)) => {
             let gt = app.grant_types();
             render(&AppEditTemplate {
@@ -1456,7 +1456,7 @@ pub async fn admin_app_edit_form(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
         Ok(None) => super::handlers_common::not_found("Application not found"),
@@ -1504,7 +1504,7 @@ pub async fn admin_app_edit_submit(
         .collect();
 
     match state.identity.update_client(
-        &session.tenant_id,
+        &session.realm_id,
         &client_id,
         &UpdateClientRequest {
             client_name: Some(form.client_name.clone()),
@@ -1546,7 +1546,7 @@ pub async fn admin_app_delete(
         Err(_) => return super::handlers_common::not_found("Application not found"),
     };
 
-    match state.identity.delete_client(&session.tenant_id, &client_id) {
+    match state.identity.delete_client(&session.realm_id, &client_id) {
         Ok(()) => {
             audit_app_event(&state, &session, &client_id, "delete");
             Redirect::to("/ui/admin/applications").into_response()
@@ -1582,12 +1582,12 @@ pub async fn admin_app_regenerate_secret(
 
     match state
         .identity
-        .regenerate_client_secret(&session.tenant_id, &client_id)
+        .regenerate_client_secret(&session.realm_id, &client_id)
     {
         Ok(new_secret) => {
             audit_app_event(&state, &session, &client_id, "update");
             // Re-fetch the client to render the detail page with the new secret.
-            match state.identity.get_client(&session.tenant_id, &client_id) {
+            match state.identity.get_client(&session.realm_id, &client_id) {
                 Ok(Some(app)) => render(&AppDetailTemplate {
                     app,
                     client_secret: Some(new_secret),
@@ -1601,7 +1601,7 @@ pub async fn admin_app_regenerate_secret(
                     product_name: state.product_name.clone(),
                     logo_url: state.logo_url.clone(),
                     theme_css: state.theme_css.clone(),
-                    tenant_theme_css: state.tenant_theme_css(),
+                    realm_theme_css: state.realm_theme_css(),
                 }),
                 _ => Redirect::to(&format!("/ui/admin/applications/{}", client_id.as_uuid()))
                     .into_response(),
@@ -1635,7 +1635,7 @@ fn audit_app_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "client".to_string(),
@@ -1682,14 +1682,14 @@ struct SessionListTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
 /// Checks if a specific user has the `hearth#admin` role.
 fn check_user_admin(
     state: &Arc<WebState>,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     user_id: &crate::core::UserId,
 ) -> bool {
     // INVARIANT: "hearth"/"admin" and "user"/<uuid> are valid ObjectRef /
@@ -1700,14 +1700,14 @@ fn check_user_admin(
     let subj = crate::authz::SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
     state
         .authz
-        .check(tenant_id, &obj, "admin", &subj, None)
+        .check(realm_id, &obj, "admin", &subj, None)
         .unwrap_or(false)
 }
 
 /// Grants or revokes the `hearth#admin` role for a user.
 fn set_user_admin(
     state: &Arc<WebState>,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     user_id: &crate::core::UserId,
     grant: bool,
 ) -> Result<(), crate::authz::AuthzError> {
@@ -1724,7 +1724,7 @@ fn set_user_admin(
     } else {
         TupleWrite::Delete(tuple)
     };
-    state.authz.write_tuples(tenant_id, &[op])?;
+    state.authz.write_tuples(realm_id, &[op])?;
     Ok(())
 }
 
@@ -1794,12 +1794,12 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 /// when the user has been deleted.
 fn resolve_user_email(
     state: &Arc<WebState>,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     user_id: &crate::core::UserId,
 ) -> String {
     state
         .identity
-        .get_user(tenant_id, user_id)
+        .get_user(realm_id, user_id)
         .ok()
         .flatten()
         .map_or_else(|| "(unknown)".to_string(), |u| u.email().to_string())
@@ -1813,14 +1813,14 @@ pub async fn admin_sessions_list(
 ) -> Response {
     match state
         .identity
-        .list_sessions_by_tenant(&session.tenant_id, params.cursor.as_deref(), 20)
+        .list_sessions_by_realm(&session.realm_id, params.cursor.as_deref(), 20)
     {
         Ok(page) => {
             let rows: Vec<SessionRow> = page
                 .items
                 .into_iter()
                 .map(|s| {
-                    let email = resolve_user_email(&state, &session.tenant_id, s.user_id());
+                    let email = resolve_user_email(&state, &session.realm_id, s.user_id());
                     let device_label = s.device_label().unwrap_or("Unknown device").to_string();
                     let ip_address = s.ip_address().unwrap_or("\u{2014}").to_string();
                     SessionRow {
@@ -1846,11 +1846,11 @@ pub async fn admin_sessions_list(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
         Err(e) => {
-            tracing::warn!(error = %e, "list_sessions_by_tenant failed");
+            tracing::warn!(error = %e, "list_sessions_by_realm failed");
             super::handlers_common::server_error()
         }
     }
@@ -1875,7 +1875,7 @@ pub async fn admin_session_revoke(
 
     match state
         .identity
-        .revoke_session(&session.tenant_id, &session_id)
+        .revoke_session(&session.realm_id, &session_id)
     {
         Ok(()) => {
             audit_session_event(&state, &session, &session_id, "revoke");
@@ -1908,7 +1908,7 @@ fn audit_session_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "session".to_string(),
@@ -1997,7 +1997,7 @@ struct AuditListTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// Rows-only partial returned when the audit filter is triggered via HTMX.
@@ -2009,7 +2009,7 @@ struct AuditRowsTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/audit`.
@@ -2040,7 +2040,7 @@ pub async fn admin_audit_list(
 
     let limit = params.limit.unwrap_or(50).min(200);
     let query = crate::audit::AuditQuery {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         start_time,
         end_time,
         actor: params.actor.clone().filter(|s| !s.is_empty()),
@@ -2063,7 +2063,7 @@ pub async fn admin_audit_list(
                     product_name: String::new(),
                     logo_url: String::new(),
                     theme_css: state.theme_css.clone(),
-                    tenant_theme_css: None,
+                    realm_theme_css: None,
                 })
             } else {
                 render(&AuditListTemplate {
@@ -2084,7 +2084,7 @@ pub async fn admin_audit_list(
                     product_name: state.product_name.clone(),
                     logo_url: state.logo_url.clone(),
                     theme_css: state.theme_css.clone(),
-                    tenant_theme_css: state.tenant_theme_css(),
+                    realm_theme_css: state.realm_theme_css(),
                 })
             }
         }
@@ -2100,7 +2100,7 @@ pub async fn admin_audit_verify_integrity(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
 ) -> Response {
-    match state.audit.verify_integrity(&session.tenant_id, None, None) {
+    match state.audit.verify_integrity(&session.realm_id, None, None) {
         Ok(true) => render(&AuditListTemplate {
             events: Vec::new(),
             form_actor: String::new(),
@@ -2119,7 +2119,7 @@ pub async fn admin_audit_verify_integrity(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Ok(false) => render(&AuditListTemplate {
             events: Vec::new(),
@@ -2142,7 +2142,7 @@ pub async fn admin_audit_verify_integrity(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "audit verify_integrity failed");
@@ -2184,13 +2184,13 @@ pub async fn admin_test_email(
 
     match &state.email {
         Some(email_service) => {
-            let tenant_branding = state
+            let realm_branding = state
                 .identity
-                .get_tenant(&session.tenant_id)
+                .get_realm(&session.realm_id)
                 .ok()
                 .flatten()
                 .and_then(|t| t.config().email_branding.clone());
-            match email_service.send_test_email(email, tenant_branding.as_ref()) {
+            match email_service.send_test_email(email, realm_branding.as_ref()) {
                 Ok(()) => {
                     tracing::info!(to = %email, "admin test email sent");
                     Redirect::to("/ui/admin/settings?flash=test_email_sent").into_response()
@@ -2230,7 +2230,7 @@ struct OrgListTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/organizations`.
@@ -2241,7 +2241,7 @@ pub async fn admin_orgs_list(
 ) -> Response {
     match state
         .identity
-        .list_organizations(&session.tenant_id, params.cursor.as_deref(), 20)
+        .list_organizations(&session.realm_id, params.cursor.as_deref(), 20)
     {
         Ok(page) => render(&OrgListTemplate {
             organizations: page.items,
@@ -2256,7 +2256,7 @@ pub async fn admin_orgs_list(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_organizations failed");
@@ -2288,7 +2288,7 @@ struct OrgNewTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/organizations/new`.
@@ -2312,7 +2312,7 @@ pub async fn admin_org_create_form(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
     })
 }
 
@@ -2352,7 +2352,7 @@ pub async fn admin_org_create_submit(
     });
 
     match state.identity.create_organization(
-        &session.tenant_id,
+        &session.realm_id,
         &CreateOrganizationRequest {
             name: form.name.clone(),
             slug: form.slug.clone(),
@@ -2380,7 +2380,7 @@ pub async fn admin_org_create_submit(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Err(e) => {
             tracing::warn!(error = %e, "create_organization failed");
@@ -2400,7 +2400,7 @@ pub async fn admin_org_create_submit(
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
-                tenant_theme_css: state.tenant_theme_css(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
     }
@@ -2438,7 +2438,7 @@ struct OrgDetailTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// Query params for org detail page (flash messages via PRG).
@@ -2464,7 +2464,7 @@ pub async fn admin_org_detail(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
-    let org = match state.identity.get_organization(&session.tenant_id, &org_id) {
+    let org = match state.identity.get_organization(&session.realm_id, &org_id) {
         Ok(Some(o)) => o,
         Ok(None) => return super::handlers_common::not_found("Organization not found"),
         Err(e) => {
@@ -2475,7 +2475,7 @@ pub async fn admin_org_detail(
 
     let memberships = state
         .identity
-        .list_members(&session.tenant_id, &org_id, None, 100)
+        .list_members(&session.realm_id, &org_id, None, 100)
         .map(|p| p.items)
         .unwrap_or_default();
 
@@ -2485,7 +2485,7 @@ pub async fn admin_org_detail(
         .map(|m| {
             let (name, email) = state
                 .identity
-                .get_user(&session.tenant_id, m.user_id())
+                .get_user(&session.realm_id, m.user_id())
                 .ok()
                 .flatten()
                 .map_or_else(
@@ -2502,7 +2502,7 @@ pub async fn admin_org_detail(
 
     let invitations = state
         .identity
-        .list_invitations(&session.tenant_id, &org_id, None, 100)
+        .list_invitations(&session.realm_id, &org_id, None, 100)
         .map(|p| p.items)
         .unwrap_or_default();
 
@@ -2532,7 +2532,7 @@ pub async fn admin_org_detail(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
     })
 }
 
@@ -2560,7 +2560,7 @@ struct OrgEditTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/organizations/:id/edit`.
@@ -2574,7 +2574,7 @@ pub async fn admin_org_edit_form(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
-    match state.identity.get_organization(&session.tenant_id, &org_id) {
+    match state.identity.get_organization(&session.realm_id, &org_id) {
         Ok(Some(org)) => render(&OrgEditTemplate {
             form_name: org.name().to_string(),
             form_description: org.description().to_string(),
@@ -2592,7 +2592,7 @@ pub async fn admin_org_edit_form(
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
+            realm_theme_css: state.realm_theme_css(),
         }),
         Ok(None) => super::handlers_common::not_found("Organization not found"),
         Err(e) => {
@@ -2650,7 +2650,7 @@ pub async fn admin_org_edit_submit(
     });
 
     match state.identity.update_organization(
-        &session.tenant_id,
+        &session.realm_id,
         &org_id,
         &UpdateOrganizationRequest {
             name: Some(form.name.clone()),
@@ -2695,7 +2695,7 @@ pub async fn admin_org_delete(
 
     match state
         .identity
-        .delete_organization(&session.tenant_id, &org_id)
+        .delete_organization(&session.realm_id, &org_id)
     {
         Ok(()) => {
             audit_org_event(&state, &session, &org_id, "delete");
@@ -2754,7 +2754,7 @@ pub async fn admin_org_add_member(
 
     match state
         .identity
-        .add_member(&session.tenant_id, &org_id, &user_id, role)
+        .add_member(&session.realm_id, &org_id, &user_id, role)
     {
         Ok(_) => org_redirect_flash(&org_id, "Member added successfully", "success"),
         Err(IdentityError::AlreadyMember) => {
@@ -2794,7 +2794,7 @@ pub async fn admin_org_remove_member(
 
     match state
         .identity
-        .remove_member(&session.tenant_id, &org_id, &user_id)
+        .remove_member(&session.realm_id, &org_id, &user_id)
     {
         Ok(()) => org_redirect_flash(&org_id, "Member removed", "success"),
         Err(e) => {
@@ -2843,7 +2843,7 @@ pub async fn admin_org_update_role(
 
     match state
         .identity
-        .update_member_role(&session.tenant_id, &org_id, &user_id, role)
+        .update_member_role(&session.realm_id, &org_id, &user_id, role)
     {
         Ok(_) => org_redirect_flash(&org_id, "Role updated", "success"),
         Err(e) => {
@@ -2888,7 +2888,7 @@ pub async fn admin_org_invite(
     let role = parse_org_role(&form.role);
 
     match state.identity.create_invitation(
-        &session.tenant_id,
+        &session.realm_id,
         &CreateInvitationRequest {
             org_id: org_id.clone(),
             email: form.email.clone(),
@@ -2901,7 +2901,7 @@ pub async fn admin_org_invite(
             if let Some(ref email_service) = state.email {
                 let org_name = state
                     .identity
-                    .get_organization(&session.tenant_id, &org_id)
+                    .get_organization(&session.realm_id, &org_id)
                     .ok()
                     .flatten()
                     .map_or_else(|| "your organization".to_string(), |o| o.name().to_string());
@@ -2913,9 +2913,9 @@ pub async fn admin_org_invite(
                     .unwrap_or_else(|| "https://hearth.local".to_string());
                 let accept_url = format!("{base_url}/ui/accept-invitation?token={token}");
 
-                let tenant_branding = state
+                let realm_branding = state
                     .identity
-                    .get_tenant(&session.tenant_id)
+                    .get_realm(&session.realm_id)
                     .ok()
                     .flatten()
                     .and_then(|t| t.config().email_branding.clone());
@@ -2925,7 +2925,7 @@ pub async fn admin_org_invite(
                     &accept_url,
                     &org_name,
                     &session.user_email,
-                    tenant_branding.as_ref(),
+                    realm_branding.as_ref(),
                 ) {
                     tracing::warn!(error = %e, "failed to send invitation email");
                 }
@@ -2967,7 +2967,7 @@ pub async fn admin_org_revoke_invite(
 
     match state
         .identity
-        .revoke_invitation(&session.tenant_id, &invitation_id)
+        .revoke_invitation(&session.realm_id, &invitation_id)
     {
         Ok(()) => {}
         Err(e) => {
@@ -3000,7 +3000,7 @@ struct UserSearchResultsTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/api/users/search?q=...` — returns HTML fragment for HTMX.
@@ -3015,7 +3015,7 @@ pub async fn admin_api_user_search(
     } else {
         state
             .identity
-            .search_users(&session.tenant_id, &query, 10)
+            .search_users(&session.realm_id, &query, 10)
             .unwrap_or_default()
     };
 
@@ -3025,7 +3025,7 @@ pub async fn admin_api_user_search(
         product_name: String::new(),
         logo_url: String::new(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: None,
+        realm_theme_css: None,
     })
 }
 
@@ -3088,7 +3088,7 @@ fn audit_org_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        tenant_id: session.tenant_id.clone(),
+        realm_id: session.realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "organization".to_string(),
@@ -3120,7 +3120,7 @@ struct SystemInfoTemplate {
     product_name: String,
     logo_url: String,
     theme_css: String,
-    tenant_theme_css: Option<String>,
+    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/settings` — read-only system information page.
@@ -3140,6 +3140,6 @@ pub async fn admin_system_info(
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
-        tenant_theme_css: state.tenant_theme_css(),
+        realm_theme_css: state.realm_theme_css(),
     })
 }

@@ -43,7 +43,7 @@ use sha2::{Digest, Sha256};
 use crate::audit::AuditEngine;
 use crate::authz::AuthorizationEngine;
 use crate::config::{Config, EnvVarWarning};
-use crate::core::TenantId;
+use crate::core::RealmId;
 use crate::identity::onboarding::OnboardingService;
 use crate::identity::{EmailService, IdentityEngine};
 
@@ -64,7 +64,7 @@ pub const DEFAULT_LOGO_URL: &str = "/ui/static/img/hearth-wide-web.svg";
 /// Shared state for the `/ui/*` routes.
 ///
 /// Every field is cheap to clone — engines are `Arc<dyn _>`,
-/// [`CookieSecret`] wraps an `Arc<[u8; 32]>`, and `current_tenant`
+/// [`CookieSecret`] wraps an `Arc<[u8; 32]>`, and `current_realm`
 /// wraps an `Arc<RwLock<...>>`.
 #[derive(Clone)]
 pub struct WebState {
@@ -84,11 +84,11 @@ pub struct WebState {
     pub email: Option<Arc<EmailService>>,
     /// 32-byte random secret used to MAC session cookies.
     pub cookie_secret: CookieSecret,
-    /// The tenant the UI is currently pinned to. Set by
+    /// The realm the UI is currently pinned to. Set by
     /// [`OnboardingService::complete_setup`] on first-run, and cached
     /// on successful login for subsequent requests. `None` at startup
-    /// until a tenant is known.
-    pub current_tenant: Arc<RwLock<Option<TenantId>>>,
+    /// until a realm is known.
+    pub current_realm: Arc<RwLock<Option<RealmId>>>,
     /// Configuration warnings (missing/empty env vars) surfaced on the
     /// admin dashboard.
     pub config_warnings: Vec<EnvVarWarning>,
@@ -113,16 +113,16 @@ pub struct WebState {
     /// Served at `GET /ui/static/theme.css`. Empty string when no theme
     /// is configured (ember dark is the default, expressed only in `:root`).
     pub theme_css: String,
-    /// Per-tenant CSS blocks keyed by `TenantId` lowercased hex string.
-    /// Served at `GET /ui/static/tenant-theme/{id}`. Empty when no tenants
-    /// have per-tenant themes configured.
-    pub tenant_themes: HashMap<String, String>,
+    /// Per-realm CSS blocks keyed by `RealmId` lowercased hex string.
+    /// Served at `GET /ui/static/realm-theme/{id}`. Empty when no realms
+    /// have per-realm themes configured.
+    pub realm_themes: HashMap<String, String>,
     /// `ETag` for the global theme CSS (SHA-256 of [`WebState::theme_css`],
     /// first 8 bytes). Updated by [`WebState::with_theme_css`].
     pub theme_css_etag: String,
-    /// Per-tenant `ETags`, keyed by the same tenant hex string as
-    /// [`WebState::tenant_themes`]. Updated by [`WebState::with_tenant_themes`].
-    pub tenant_theme_etags: HashMap<String, String>,
+    /// Per-realm `ETags`, keyed by the same realm hex string as
+    /// [`WebState::realm_themes`]. Updated by [`WebState::with_realm_themes`].
+    pub realm_theme_etags: HashMap<String, String>,
     /// Parsed trusted proxy IP addresses (from `server.trusted_proxies` config).
     ///
     /// Used by [`crate::protocol::client_info::extract_client_ip`] to walk
@@ -160,7 +160,7 @@ impl WebState {
             onboarding,
             email,
             cookie_secret,
-            current_tenant: Arc::new(RwLock::new(None)),
+            current_realm: Arc::new(RwLock::new(None)),
             config_warnings: Vec::new(),
             email_is_log_transport: false,
             product_name: "Hearth".to_string(),
@@ -168,9 +168,9 @@ impl WebState {
             custom_logo: None,
             config: None,
             theme_css: String::new(),
-            tenant_themes: HashMap::new(),
+            realm_themes: HashMap::new(),
             theme_css_etag: etag_for(""),
-            tenant_theme_etags: HashMap::new(),
+            realm_theme_etags: HashMap::new(),
             trusted_proxies: Vec::new(),
         }
     }
@@ -239,40 +239,40 @@ impl WebState {
         self
     }
 
-    /// Sets the per-tenant theme map (tenant hex id → composed CSS).
+    /// Sets the per-realm theme map (realm hex id → composed CSS).
     /// Also computes and caches per-entry `ETags`.
     #[must_use]
-    pub fn with_tenant_themes(mut self, map: HashMap<String, String>) -> Self {
-        self.tenant_theme_etags = map.iter().map(|(k, v)| (k.clone(), etag_for(v))).collect();
-        self.tenant_themes = map;
+    pub fn with_realm_themes(mut self, map: HashMap<String, String>) -> Self {
+        self.realm_theme_etags = map.iter().map(|(k, v)| (k.clone(), etag_for(v))).collect();
+        self.realm_themes = map;
         self
     }
 
-    /// Pins a tenant as the "current" one for this process. Called by
+    /// Pins a realm as the "current" one for this process. Called by
     /// onboarding and the login handler so subsequent requests skip
-    /// the `list_tenants` walk.
-    pub fn set_current_tenant(&self, tenant_id: TenantId) {
-        if let Ok(mut guard) = self.current_tenant.write() {
-            *guard = Some(tenant_id);
+    /// the `list_realms` walk.
+    pub fn set_current_realm(&self, realm_id: RealmId) {
+        if let Ok(mut guard) = self.current_realm.write() {
+            *guard = Some(realm_id);
         }
     }
 
-    /// Reads the currently-pinned tenant id, if any.
+    /// Reads the currently-pinned realm id, if any.
     #[must_use]
-    pub fn current_tenant(&self) -> Option<TenantId> {
-        self.current_tenant.read().ok().and_then(|g| g.clone())
+    pub fn current_realm(&self) -> Option<RealmId> {
+        self.current_realm.read().ok().and_then(|g| g.clone())
     }
 
-    /// Returns the per-tenant theme CSS for the currently-pinned tenant,
-    /// or `None` if no per-tenant theme is configured.
+    /// Returns the per-realm theme CSS for the currently-pinned realm,
+    /// or `None` if no per-realm theme is configured.
     ///
-    /// Used by all authenticated handlers to populate `tenant_theme_css`
-    /// in template structs, enabling inline per-tenant CSS overrides.
+    /// Used by all authenticated handlers to populate `realm_theme_css`
+    /// in template structs, enabling inline per-realm CSS overrides.
     #[must_use]
-    pub fn tenant_theme_css(&self) -> Option<String> {
-        let tenant_id = self.current_tenant()?;
-        let id = tenant_id.as_uuid().to_string();
-        self.tenant_themes.get(&id).cloned()
+    pub fn realm_theme_css(&self) -> Option<String> {
+        let realm_id = self.current_realm()?;
+        let id = realm_id.as_uuid().to_string();
+        self.realm_themes.get(&id).cloned()
     }
 }
 
@@ -298,9 +298,9 @@ impl WebState {
 /// | `/ui/admin/users/{id}` | GET | User detail |
 /// | `/ui/admin/users/{id}/edit` | GET/POST | Edit user |
 /// | `/ui/admin/users/{id}/delete` | POST | Delete user |
-/// | `/ui/admin/tenants` | GET | Admin tenants list (read-only) |
-/// | `/ui/admin/tenants/{id}` | GET | Tenant detail (read-only) |
-/// | `/ui/admin/tenants/{id}/delete` | POST | Delete archived tenant |
+/// | `/ui/admin/realms` | GET | Admin realms list (read-only) |
+/// | `/ui/admin/realms/{id}` | GET | Realm detail (read-only) |
+/// | `/ui/admin/realms/{id}/delete` | POST | Delete archived realm |
 /// | `/ui/admin/applications` | GET | Admin applications list |
 /// | `/ui/admin/applications/new` | GET/POST | Register application |
 /// | `/ui/admin/applications/{id}` | GET | Application detail |
@@ -421,18 +421,18 @@ pub fn router(state: WebState) -> Router {
             "/admin/users/{id}/webauthn/{cred_id}/revoke",
             axum::routing::post(admin::admin_user_revoke_webauthn),
         )
-        // --- Tenants (read-only; managed via hearth.yaml) ---
+        // --- Realms (read-only; managed via hearth.yaml) ---
         .route(
-            "/admin/tenants",
-            axum::routing::get(admin::admin_tenants_list),
+            "/admin/realms",
+            axum::routing::get(admin::admin_realms_list),
         )
         .route(
-            "/admin/tenants/{id}",
-            axum::routing::get(admin::admin_tenant_detail),
+            "/admin/realms/{id}",
+            axum::routing::get(admin::admin_realm_detail),
         )
         .route(
-            "/admin/tenants/{id}/delete",
-            axum::routing::post(admin::admin_tenant_delete),
+            "/admin/realms/{id}/delete",
+            axum::routing::post(admin::admin_realm_delete),
         )
         // --- Organizations ---
         .route(
@@ -607,9 +607,9 @@ pub const HEARTH_WIDE_SVG: &[u8] = include_bytes!("assets/hearth-wide-web.svg");
 const HEARTH_ICON_SVG: &[u8] = include_bytes!("assets/hearth-icon.svg");
 
 /// Serves all `/ui/static/*` assets — embedded files, operator theme
-/// CSS, per-tenant theme CSS, and runtime-loaded custom logos.
+/// CSS, per-realm theme CSS, and runtime-loaded custom logos.
 ///
-/// Handles `theme.css` and `tenant-theme/{id}` inline to avoid
+/// Handles `theme.css` and `realm-theme/{id}` inline to avoid
 /// catch-all vs specific-route ambiguity in the axum router.
 ///
 /// Files are compiled into the binary — there is no filesystem access,
@@ -645,13 +645,13 @@ async fn serve_static(
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
-    // Per-tenant theme CSS.
-    if let Some(id) = file.strip_prefix("tenant-theme/") {
-        if let Some(css) = state.tenant_themes.get(id) {
-            // INVARIANT: etag is inserted for every key in tenant_themes
-            // by with_tenant_themes().
+    // Per-realm theme CSS.
+    if let Some(id) = file.strip_prefix("realm-theme/") {
+        if let Some(css) = state.realm_themes.get(id) {
+            // INVARIANT: etag is inserted for every key in realm_themes
+            // by with_realm_themes().
             #[allow(clippy::unwrap_used)]
-            let etag = state.tenant_theme_etags.get(id).unwrap().as_str();
+            let etag = state.realm_theme_etags.get(id).unwrap().as_str();
             if is_not_modified(&headers, etag) {
                 return Response::builder()
                     .status(StatusCode::NOT_MODIFIED)

@@ -289,7 +289,7 @@ Six themes ship built in. Configure via `branding.theme` in `hearth.yaml`.
 
 ### Custom CSS
 
-Operators may append arbitrary CSS via `branding.custom_css: /path/to/brand.css`. The file is read once at startup and served after the named theme, so it can override any `--ht-*` variable or add custom rules. Per-tenant overrides are supported via `tenants.<name>.web.custom_css`.
+Operators may append arbitrary CSS via `branding.custom_css: /path/to/brand.css`. The file is read once at startup and served after the named theme, so it can override any `--ht-*` variable or add custom rules. Per-realm overrides are supported via `realms.<name>.web.custom_css`.
 
 **Rebuild Tailwind after any template or `input.css` change:**
 ```sh

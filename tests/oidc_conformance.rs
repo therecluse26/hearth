@@ -10,19 +10,19 @@
 mod common;
 
 use base64::Engine as _;
-use hearth::core::TenantId;
+use hearth::core::RealmId;
 use hearth::identity::tokens::{decode_claims_unverified, verify_token_signature};
 use hearth::identity::{
-    AuthorizationRequest, CreateTenantRequest, CreateUserRequest, OAuthClient,
+    AuthorizationRequest, CreateRealmRequest, CreateUserRequest, OAuthClient,
     RegisterClientRequest, TokenExchangeRequest,
 };
 
 // ===== Helpers =====
 
-/// Sets up a harness with a tenant, user, and client for OIDC flows.
+/// Sets up a harness with a realm, user, and client for OIDC flows.
 async fn setup_oidc_env() -> (
     common::TestHarness,
-    TenantId,
+    RealmId,
     hearth::core::UserId,
     OAuthClient,
 ) {
@@ -30,19 +30,19 @@ async fn setup_oidc_env() -> (
         .await
         .expect("embedded harness");
 
-    let tenant = harness
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
-            name: "oidc-conformance-tenant".to_string(),
+        .create_realm(&CreateRealmRequest {
+            name: "oidc-conformance-realm".to_string(),
             config: None,
         })
-        .expect("create tenant");
-    let tenant_id = tenant.id().clone();
+        .expect("create realm");
+    let realm_id = realm.id().clone();
 
     let user = harness
         .identity()
         .create_user(
-            &tenant_id,
+            &realm_id,
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice Smith".to_string(),
@@ -53,7 +53,7 @@ async fn setup_oidc_env() -> (
     let client = harness
         .identity()
         .register_client(
-            &tenant_id,
+            &realm_id,
             &RegisterClientRequest {
                 client_name: "OIDC Conformance App".to_string(),
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
@@ -63,13 +63,13 @@ async fn setup_oidc_env() -> (
         )
         .expect("register client");
 
-    (harness, tenant_id, user.id().clone(), client)
+    (harness, realm_id, user.id().clone(), client)
 }
 
 /// Runs a full authorization code flow and returns the token response.
 fn authorize_and_exchange(
     harness: &common::TestHarness,
-    tenant_id: &TenantId,
+    realm_id: &RealmId,
     user_id: &hearth::core::UserId,
     client: &OAuthClient,
     nonce: Option<String>,
@@ -77,7 +77,7 @@ fn authorize_and_exchange(
     let auth_response = harness
         .identity()
         .authorize(
-            tenant_id,
+            realm_id,
             &AuthorizationRequest {
                 client_id: client.client_id().clone(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
@@ -95,7 +95,7 @@ fn authorize_and_exchange(
     harness
         .identity()
         .exchange_authorization_code(
-            tenant_id,
+            realm_id,
             &TokenExchangeRequest {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
@@ -113,9 +113,9 @@ fn authorize_and_exchange(
 
 #[tokio::test]
 async fn oidc_core_required_claims_and_signing() {
-    let (harness, tenant_id, user_id, client) = setup_oidc_env().await;
+    let (harness, realm_id, user_id, client) = setup_oidc_env().await;
 
-    let token_response = authorize_and_exchange(&harness, &tenant_id, &user_id, &client, None);
+    let token_response = authorize_and_exchange(&harness, &realm_id, &user_id, &client, None);
 
     // 1. ID token MUST be a JWT
     let id_token = token_response.id_token();
@@ -150,7 +150,7 @@ async fn oidc_core_required_claims_and_signing() {
     assert_eq!(claims.token_type, "id_token", "must be id_token");
 
     // 6. ID token MUST be signed with EdDSA (verify signature)
-    let jwks = harness.identity().tenant_jwks(&tenant_id).expect("jwks");
+    let jwks = harness.identity().realm_jwks(&realm_id).expect("jwks");
     assert!(!jwks.keys.is_empty(), "JWKS must have at least one key");
     let pub_key_b64 = &jwks.keys[0].x;
     let pub_key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -159,7 +159,7 @@ async fn oidc_core_required_claims_and_signing() {
     let verified = verify_token_signature(id_token, &pub_key_bytes);
     assert!(
         verified.is_ok(),
-        "ID token signature must verify with tenant key"
+        "ID token signature must verify with realm key"
     );
 
     // 7. exp > iat
@@ -312,20 +312,20 @@ async fn oidc_dynamic_client_registration() {
         .await
         .expect("embedded harness");
 
-    let tenant = harness
+    let realm = harness
         .identity()
-        .create_tenant(&CreateTenantRequest {
-            name: "dyn-reg-tenant".to_string(),
+        .create_realm(&CreateRealmRequest {
+            name: "dyn-reg-realm".to_string(),
             config: None,
         })
-        .expect("create tenant");
-    let tenant_id = tenant.id().clone();
+        .expect("create realm");
+    let realm_id = realm.id().clone();
 
     // 1. Register a new client (RFC 7591 §2)
     let client = harness
         .identity()
         .register_client(
-            &tenant_id,
+            &realm_id,
             &RegisterClientRequest {
                 client_name: "Dynamic App".to_string(),
                 redirect_uris: vec![
@@ -352,7 +352,7 @@ async fn oidc_dynamic_client_registration() {
     // 2. Read client metadata (RFC 7592 §2)
     let fetched = harness
         .identity()
-        .get_client(&tenant_id, client.client_id())
+        .get_client(&realm_id, client.client_id())
         .expect("get client")
         .expect("client should exist");
 
@@ -364,7 +364,7 @@ async fn oidc_dynamic_client_registration() {
     let updated = harness
         .identity()
         .update_client(
-            &tenant_id,
+            &realm_id,
             client.client_id(),
             &hearth::identity::UpdateClientRequest {
                 client_name: Some("Updated Dynamic App".to_string()),
@@ -384,7 +384,7 @@ async fn oidc_dynamic_client_registration() {
     // 4. Verify updated metadata persists
     let re_fetched = harness
         .identity()
-        .get_client(&tenant_id, client.client_id())
+        .get_client(&realm_id, client.client_id())
         .expect("get client after update")
         .expect("client should still exist");
 
@@ -398,14 +398,14 @@ async fn oidc_dynamic_client_registration() {
 
 #[tokio::test]
 async fn oidc_userinfo_endpoint() {
-    let (harness, tenant_id, user_id, client) = setup_oidc_env().await;
+    let (harness, realm_id, user_id, client) = setup_oidc_env().await;
 
-    let token_response = authorize_and_exchange(&harness, &tenant_id, &user_id, &client, None);
+    let token_response = authorize_and_exchange(&harness, &realm_id, &user_id, &client, None);
 
     // 1. Call userinfo with valid access token
     let userinfo = harness
         .identity()
-        .userinfo(&tenant_id, token_response.access_token())
+        .userinfo(&realm_id, token_response.access_token())
         .expect("userinfo should succeed");
 
     // 2. sub claim MUST always be present (OIDC Core §5.3.2)
@@ -423,9 +423,7 @@ async fn oidc_userinfo_endpoint() {
     assert!(!userinfo.sub.is_empty(), "sub must be non-empty");
 
     // 4. Verify userinfo with an invalid token fails
-    let bad_result = harness
-        .identity()
-        .userinfo(&tenant_id, "invalid.token.here");
+    let bad_result = harness.identity().userinfo(&realm_id, "invalid.token.here");
     assert!(bad_result.is_err(), "userinfo with invalid token must fail");
 
     // 5. Verify userinfo with a revoked session token fails
@@ -437,12 +435,12 @@ async fn oidc_userinfo_endpoint() {
     let session_id = hearth::core::SessionId::new(session_uuid);
     harness
         .identity()
-        .revoke_session(&tenant_id, &session_id)
+        .revoke_session(&realm_id, &session_id)
         .expect("revoke session");
 
     let revoked_result = harness
         .identity()
-        .userinfo(&tenant_id, token_response.access_token());
+        .userinfo(&realm_id, token_response.access_token());
     assert!(
         revoked_result.is_err(),
         "userinfo with revoked session token must fail"
@@ -456,12 +454,12 @@ async fn oidc_userinfo_endpoint() {
 
 #[tokio::test]
 async fn oidc_id_token_required_claims_with_nonce() {
-    let (harness, tenant_id, user_id, client) = setup_oidc_env().await;
+    let (harness, realm_id, user_id, client) = setup_oidc_env().await;
 
     // 1. Issue tokens WITH a nonce
     let nonce = "conformance-nonce-12345".to_string();
     let token_response =
-        authorize_and_exchange(&harness, &tenant_id, &user_id, &client, Some(nonce.clone()));
+        authorize_and_exchange(&harness, &realm_id, &user_id, &client, Some(nonce.clone()));
 
     let id_token = token_response.id_token();
     let claims = decode_claims_unverified(id_token).expect("decode ID token");
@@ -499,7 +497,7 @@ async fn oidc_id_token_required_claims_with_nonce() {
     );
 
     // 3. Verify cryptographic signature
-    let jwks = harness.identity().tenant_jwks(&tenant_id).expect("jwks");
+    let jwks = harness.identity().realm_jwks(&realm_id).expect("jwks");
     let pub_key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&jwks.keys[0].x)
         .expect("decode public key");
@@ -508,7 +506,7 @@ async fn oidc_id_token_required_claims_with_nonce() {
     assert_eq!(verified_claims.sub, claims.sub);
 
     // 4. Verify that omitting nonce results in no nonce in ID token
-    let no_nonce_response = authorize_and_exchange(&harness, &tenant_id, &user_id, &client, None);
+    let no_nonce_response = authorize_and_exchange(&harness, &realm_id, &user_id, &client, None);
     let no_nonce_claims =
         decode_claims_unverified(no_nonce_response.id_token()).expect("decode no-nonce ID token");
     assert!(
@@ -525,7 +523,7 @@ async fn oidc_id_token_required_claims_with_nonce() {
     // 6. Two different ID tokens must have different jti values
     let other_response = authorize_and_exchange(
         &harness,
-        &tenant_id,
+        &realm_id,
         &user_id,
         &client,
         Some("other-nonce".to_string()),

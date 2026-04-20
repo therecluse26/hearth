@@ -18,11 +18,11 @@ use std::sync::Arc;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
-use hearth::core::{Clock, SystemClock, TenantId, UserId};
+use hearth::core::{Clock, RealmId, SystemClock, UserId};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{
-    CleartextPassword, CreateTenantRequest, CreateUserRequest, CredentialConfig,
+    CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
     EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, UpdateUserRequest, UserStatus,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
@@ -50,7 +50,7 @@ const PASSWORD: &str = "correct-horse-battery-staple";
 struct TestRig {
     app: axum::Router,
     identity: Arc<dyn IdentityEngine>,
-    tenant_id: TenantId,
+    realm_id: RealmId,
     user_id: UserId,
 }
 
@@ -83,15 +83,15 @@ fn build_rig() -> TestRig {
         Arc::clone(&clock),
     ));
 
-    let tenant = identity
-        .create_tenant(&CreateTenantRequest {
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
             name: "Acme".to_string(),
             config: None,
         })
-        .expect("create tenant");
+        .expect("create realm");
     let user = identity
         .create_user(
-            tenant.id(),
+            realm.id(),
             &CreateUserRequest {
                 email: "alice@acme.test".to_string(),
                 display_name: "Alice".to_string(),
@@ -100,11 +100,11 @@ fn build_rig() -> TestRig {
         .expect("create user");
     let password = CleartextPassword::from_string(PASSWORD.to_string());
     identity
-        .set_password(tenant.id(), user.id(), &password)
+        .set_password(realm.id(), user.id(), &password)
         .expect("set password");
     identity
         .update_user(
-            tenant.id(),
+            realm.id(),
             user.id(),
             &UpdateUserRequest {
                 email: None,
@@ -133,7 +133,7 @@ fn build_rig() -> TestRig {
     TestRig {
         app,
         identity,
-        tenant_id: tenant.id().clone(),
+        realm_id: realm.id().clone(),
         user_id: user.id().clone(),
     }
 }
@@ -142,14 +142,14 @@ fn build_rig() -> TestRig {
 fn enroll_mfa(rig: &TestRig) -> String {
     let enrollment = rig
         .identity
-        .enroll_totp(&rig.tenant_id, &rig.user_id)
+        .enroll_totp(&rig.realm_id, &rig.user_id)
         .expect("enroll_totp");
     let secret_b32 = enrollment.secret_base32.clone();
 
     // Generate a valid TOTP code for the current time and verify enrollment.
     let code = compute_totp_code(&secret_b32, current_unix_secs());
     rig.identity
-        .verify_totp_enrollment(&rig.tenant_id, &rig.user_id, &code)
+        .verify_totp_enrollment(&rig.realm_id, &rig.user_id, &code)
         .expect("verify_totp_enrollment");
     secret_b32
 }
@@ -469,7 +469,7 @@ async fn mfa_challenge_post_expired_cookie_shows_expired() {
         let mut m = <Hmac<Sha256>>::new_from_slice(&COOKIE_SECRET_BYTES).expect("hmac key");
         m.update(rig.user_id.as_uuid().as_bytes());
         m.update(b"|");
-        m.update(rig.tenant_id.as_uuid().as_bytes());
+        m.update(rig.realm_id.as_uuid().as_bytes());
         m.update(b"|");
         m.update(expired.to_string().as_bytes());
         m.update(b"|");
@@ -479,7 +479,7 @@ async fn mfa_challenge_post_expired_cookie_shows_expired() {
     let expired_cookie = format!(
         "{}.{}.{expired}.{return_to_b64}.{mac}",
         rig.user_id.as_uuid(),
-        rig.tenant_id.as_uuid(),
+        rig.realm_id.as_uuid(),
     );
 
     let response = rig
@@ -518,7 +518,7 @@ async fn mfa_challenge_post_recovery_code_creates_session() {
     // Enroll MFA and capture recovery codes.
     let enrollment = rig
         .identity
-        .enroll_totp(&rig.tenant_id, &rig.user_id)
+        .enroll_totp(&rig.realm_id, &rig.user_id)
         .expect("enroll_totp");
     let recovery_codes: Vec<String> = enrollment.recovery_codes.as_slice().to_vec();
     let secret_b32 = enrollment.secret_base32.clone();
@@ -526,7 +526,7 @@ async fn mfa_challenge_post_recovery_code_creates_session() {
     // Verify enrollment with a valid TOTP code.
     let code = compute_totp_code(&secret_b32, current_unix_secs());
     rig.identity
-        .verify_totp_enrollment(&rig.tenant_id, &rig.user_id, &code)
+        .verify_totp_enrollment(&rig.realm_id, &rig.user_id, &code)
         .expect("verify_totp_enrollment");
 
     // Login to get pending cookie.
