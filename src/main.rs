@@ -427,6 +427,23 @@ async fn run_serve(
     .with_logo_url(web_logo_url)
     .with_config(Arc::new(config.clone()));
 
+    // Parse trusted proxy IPs from config for real client IP extraction.
+    let trusted_proxies: Vec<std::net::IpAddr> = config
+        .server
+        .trusted_proxies
+        .iter()
+        .filter_map(|s| {
+            s.parse::<std::net::IpAddr>().ok().or_else(|| {
+                warn!(addr = %s, "ignoring invalid trusted_proxies entry (expected IP address)");
+                None
+            })
+        })
+        .collect();
+    if !trusted_proxies.is_empty() {
+        info!(count = trusted_proxies.len(), "loaded trusted_proxies");
+    }
+    web_state = web_state.with_trusted_proxies(trusted_proxies);
+
     if let Some((bytes, content_type)) = custom_logo {
         web_state = web_state.with_custom_logo(bytes, content_type);
     }

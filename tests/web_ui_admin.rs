@@ -121,7 +121,11 @@ fn build_rig() -> TestRig {
         )
         .expect("activate admin");
     let admin_session = identity
-        .create_session(tenant.id(), admin_user.id())
+        .create_session(
+            tenant.id(),
+            admin_user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create admin session");
 
     // Write admin Zanzibar tuple.
@@ -158,7 +162,11 @@ fn build_rig() -> TestRig {
         )
         .expect("activate non-admin");
     let non_admin_session = identity
-        .create_session(tenant.id(), non_admin_user.id())
+        .create_session(
+            tenant.id(),
+            non_admin_user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create non-admin session");
 
     let onboarding = Arc::new(OnboardingService::new(
@@ -971,7 +979,11 @@ async fn admin_revoke_session_succeeds() {
     // Create a throwaway session to revoke.
     let extra_session = rig
         .identity
-        .create_session(&rig.tenant_id, &rig.non_admin_user_id)
+        .create_session(
+            &rig.tenant_id,
+            &rig.non_admin_user_id,
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create extra session");
 
     let sid = extra_session.id().as_uuid();

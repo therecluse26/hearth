@@ -350,9 +350,12 @@ pub async fn serve_router(
 
     info!(%local_addr, "HTTP server listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await?;
 
     Ok(())
 }
@@ -1896,8 +1899,12 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     let user_id = user.id().clone();
 
-    // Create session
-    let session = match state.identity.create_session(&tenant_id, &user_id) {
+    // Create session (API-initiated — no browser context)
+    let session = match state.identity.create_session(
+        &tenant_id,
+        &user_id,
+        &crate::identity::SessionContext::default(),
+    ) {
         Ok(s) => s,
         Err(e) => return identity_error_to_response(&e).into_response(),
     };

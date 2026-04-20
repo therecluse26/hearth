@@ -36,7 +36,11 @@ async fn token_issuance_and_validation_roundtrip() {
     // Create a session
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // Issue tokens
@@ -91,7 +95,11 @@ async fn token_refresh_flow_end_to_end() {
     // Create session and initial tokens
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let original_pair = harness
         .identity()
@@ -149,7 +157,11 @@ async fn token_invalid_after_session_revoked() {
 
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let pair = harness
         .identity()
@@ -194,7 +206,11 @@ async fn token_invalid_for_different_tenant() {
 
     let session = harness
         .identity()
-        .create_session(&tenant_a, user.id())
+        .create_session(
+            &tenant_a,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let pair = harness
         .identity()
@@ -223,7 +239,11 @@ async fn issue_tokens_fails_nonexistent_user() {
 
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // Delete the user

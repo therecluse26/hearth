@@ -168,7 +168,11 @@ async fn user_lifecycle_register_authenticate_session_token() {
     // 4. Receive session
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     assert_eq!(session.user_id(), user.id());
 
@@ -236,7 +240,11 @@ async fn auth_plus_authz_permission_grant_and_check() {
     // 2. Create session and tokens
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let tokens = harness
         .identity()
@@ -322,7 +330,11 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
 
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     let tokens = harness

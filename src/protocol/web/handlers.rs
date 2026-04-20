@@ -31,6 +31,7 @@
 //!   session id to its tenant id via HMAC-SHA256). See [`super::auth`]
 //!   for parsing.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use askama::Template;
@@ -43,7 +44,14 @@ use serde::Deserialize;
 use crate::identity::onboarding::OnboardingError;
 use crate::identity::{
     AuthenticationOptions, CleartextPassword, CompleteAuthenticationParams, IdentityError,
+    SessionContext,
 };
+use crate::protocol::client_info::build_session_context;
+
+/// Default peer address used when `ConnectInfo` is not available
+/// (e.g., in tests using `tower::oneshot` without `into_make_service_with_connect_info`).
+const FALLBACK_PEER: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
 use super::auth::{
     clear_mfa_pending_cookie, cookie_value_from_headers, issue_auth_cookies,
@@ -604,10 +612,12 @@ pub struct LoginForm {
 /// message (enumeration resistance).
 pub async fn login_submit(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
     let email = form.email.trim();
     let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
+    let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
 
     let product_name = state.product_name.clone();
     let logo_url = state.logo_url.clone();
@@ -671,7 +681,10 @@ pub async fn login_submit(
             return response;
         }
 
-        match state.identity.create_session(tenant.id(), user.id()) {
+        match state
+            .identity
+            .create_session(tenant.id(), user.id(), &session_ctx)
+        {
             Ok(session) => {
                 let IssuedCookies {
                     session_cookie,
@@ -807,6 +820,7 @@ pub async fn passkey_login_complete(
     axum::Json(body): axum::Json<PasskeyLoginCompleteBody>,
 ) -> Response {
     use base64::Engine as _;
+    let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
 
     let b64 = &base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -860,6 +874,7 @@ pub async fn passkey_login_complete(
             &signature,
             user_handle_bytes.as_ref(),
             &origin,
+            &session_ctx,
         );
     };
     // Try parsing as UUID string representation.
@@ -879,6 +894,7 @@ pub async fn passkey_login_complete(
             &signature,
             user_handle_bytes.as_ref(),
             &origin,
+            &session_ctx,
         );
     };
 
@@ -892,6 +908,7 @@ pub async fn passkey_login_complete(
         &signature,
         user_handle_bytes.as_ref(),
         &origin,
+        &session_ctx,
     )
 }
 
@@ -910,6 +927,7 @@ fn passkey_complete_for_user(
     signature: &[u8],
     user_handle_bytes: Option<&Vec<u8>>,
     origin: &str,
+    session_ctx: &SessionContext,
 ) -> Response {
     // Find which tenant owns this user.
     let tenants = match state.identity.list_tenants(None, 100) {
@@ -956,10 +974,7 @@ fn passkey_complete_for_user(
 
     // Check tenant policy: some regulated environments require TOTP
     // even after passkey auth despite its inherent multi-factor nature.
-    let require_mfa_after_passkey = tenant
-        .config()
-        .passkey_requires_mfa
-        .unwrap_or(false);
+    let require_mfa_after_passkey = tenant.config().passkey_requires_mfa.unwrap_or(false);
 
     if require_mfa_after_passkey {
         let mfa_on = state
@@ -988,7 +1003,7 @@ fn passkey_complete_for_user(
     // Only reached if passkey_requires_mfa is false or user has no MFA enrolled.
     match state
         .identity
-        .create_session(tenant.id(), auth_result.user_id())
+        .create_session(tenant.id(), auth_result.user_id(), session_ctx)
     {
         Ok(session) => {
             let IssuedCookies {
@@ -1060,6 +1075,7 @@ pub async fn mfa_challenge_submit(
     headers: HeaderMap,
     Form(form): Form<MfaChallengeForm>,
 ) -> Response {
+    let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
     let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
         return mfa_expired_response(
             state.product_name.clone(),
@@ -1124,7 +1140,7 @@ pub async fn mfa_challenge_submit(
     // MFA passed — create the session.
     match state
         .identity
-        .create_session(&pending.tenant_id, &pending.user_id)
+        .create_session(&pending.tenant_id, &pending.user_id, &session_ctx)
     {
         Ok(session) => {
             let IssuedCookies {

@@ -27,6 +27,14 @@ pub struct ServerConfig {
     /// Whether to require a client certificate (mTLS). Requires `tls_client_ca_path`.
     #[serde(default)]
     pub tls_require_client_cert: bool,
+    /// Trusted reverse proxy IP addresses (CIDR notation not yet supported).
+    ///
+    /// When configured, the server extracts the real client IP from the
+    /// `X-Forwarded-For` header using the rightmost-non-trusted algorithm.
+    /// When empty (default), the peer socket IP is used directly and XFF is
+    /// ignored — the safe default for direct-to-internet deployments.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl ServerConfig {
@@ -48,6 +56,7 @@ impl Default for ServerConfig {
             tls_key_path: None,
             tls_client_ca_path: None,
             tls_require_client_cert: false,
+            trusted_proxies: Vec::new(),
         }
     }
 }

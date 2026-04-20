@@ -86,7 +86,8 @@
   <table class="w-full">
     <thead>
       <tr class="border-b border-divider-subtle">
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">ID</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Device</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">IP</th>
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Created</th>
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Expires</th>
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
@@ -96,7 +97,8 @@
     <tbody>
       {% for s in sessions %}
       <tr class="border-b border-divider-faint">
-        <td class="px-3 py-2"><code class="font-mono text-xs text-ht-content-secondary">{{ s.id[..8] }}…</code></td>
+        <td class="px-3 py-2 text-sm text-ht-content-secondary">{{ s.device_label }}</td>
+        <td class="px-3 py-2 font-mono text-xs text-ht-content-muted">{{ s.ip_address }}</td>
         <td class="px-3 py-2 text-sm text-ht-content-muted">{{ s.created_at }}</td>
         <td class="px-3 py-2 text-sm text-ht-content-muted">{{ s.expires_at }}</td>
         <td class="px-3 py-2">
@@ -117,7 +119,7 @@
       </tr>
       {% endfor %}
       {% if sessions.is_empty() %}
-      <tr><td colspan="5" class="px-3 py-6 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
+      <tr><td colspan="6" class="px-3 py-6 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
       {% endif %}
     </tbody>
   </table>

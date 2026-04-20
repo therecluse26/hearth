@@ -135,6 +135,20 @@ impl User {
     }
 }
 
+/// Device and network context captured at session creation time.
+///
+/// All fields are optional — API-originated sessions (no browser) or
+/// sessions created before this feature was added will have `None` values.
+#[derive(Clone, Debug, Default)]
+pub struct SessionContext {
+    /// Client IP address (peer or extracted from `X-Forwarded-For`).
+    pub ip_address: Option<String>,
+    /// Raw `User-Agent` header value (stored for future re-parsing).
+    pub user_agent_raw: Option<String>,
+    /// Pre-parsed device label, e.g. `"Chrome, Mac OSX"`.
+    pub device_label: Option<String>,
+}
+
 /// An authentication session bound to a user.
 ///
 /// Sessions have a configurable TTL and can be refreshed or revoked.
@@ -147,6 +161,12 @@ pub struct Session {
     expires_at: Timestamp,
     last_refreshed_at: Timestamp,
     revoked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ip_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_agent_raw: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_label: Option<String>,
 }
 
 impl Session {
@@ -156,6 +176,7 @@ impl Session {
         user_id: UserId,
         created_at: Timestamp,
         expires_at: Timestamp,
+        context: &SessionContext,
     ) -> Self {
         Self {
             id,
@@ -164,6 +185,9 @@ impl Session {
             expires_at,
             last_refreshed_at: created_at,
             revoked: false,
+            ip_address: context.ip_address.clone(),
+            user_agent_raw: context.user_agent_raw.clone(),
+            device_label: context.device_label.clone(),
         }
     }
 
@@ -211,6 +235,21 @@ impl Session {
     pub(crate) fn refresh(&mut self, now: Timestamp, ttl_micros: i64) {
         self.expires_at = now.add_micros(ttl_micros);
         self.last_refreshed_at = now;
+    }
+
+    /// Returns the client IP address captured at session creation, if available.
+    pub fn ip_address(&self) -> Option<&str> {
+        self.ip_address.as_deref()
+    }
+
+    /// Returns the raw User-Agent header captured at session creation, if available.
+    pub fn user_agent_raw(&self) -> Option<&str> {
+        self.user_agent_raw.as_deref()
+    }
+
+    /// Returns the pre-parsed device label (e.g. "Chrome, Mac OSX"), if available.
+    pub fn device_label(&self) -> Option<&str> {
+        self.device_label.as_deref()
     }
 }
 

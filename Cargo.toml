@@ -67,6 +67,7 @@ ureq = { version = "3", features = ["json"] }
 unicode-normalization = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
+woothee = "0.13"
 zeroize = { version = "1", features = ["derive"] }
 
 [features]

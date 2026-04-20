@@ -8,6 +8,7 @@ use std::sync::Arc;
 use hearth::core::{Clock, FakeClock, TenantId, Timestamp};
 use hearth::identity::{
     CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
+    SessionContext,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -50,7 +51,7 @@ fn simulation_crash_recovery_sessions() {
                 .expect("create user");
 
             let session = engine
-                .create_session(&tenant, user.id())
+                .create_session(&tenant, user.id(), &SessionContext::default())
                 .expect("create session");
             session_ids.push((session.id().clone(), user.id().clone()));
         }
@@ -126,7 +127,7 @@ fn simulation_ttl_clock_skew() {
         .expect("create user");
 
     let session = engine
-        .create_session(&tenant, user.id())
+        .create_session(&tenant, user.id(), &SessionContext::default())
         .expect("create session");
     let ttl = identity_config.session.ttl_micros;
 
@@ -161,7 +162,7 @@ fn simulation_ttl_clock_skew() {
 
     // 4. Create a new session, refresh it, verify new TTL baseline
     let session2 = engine
-        .create_session(&tenant, user.id())
+        .create_session(&tenant, user.id(), &SessionContext::default())
         .expect("create session 2");
 
     clock.advance(ttl / 2);

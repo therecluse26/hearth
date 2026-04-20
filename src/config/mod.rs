@@ -136,6 +136,7 @@ impl Config {
                 tls_key_path: None,
                 tls_client_ca_path: None,
                 tls_require_client_cert: false,
+                trusted_proxies: Vec::new(),
             },
             storage: StorageSection {
                 data_dir: String::new(),

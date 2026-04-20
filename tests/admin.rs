@@ -56,7 +56,11 @@ fn setup_admin(
     // Create a session and issue tokens
     let session = harness
         .identity()
-        .create_session(tenant_id, &user_id)
+        .create_session(
+            tenant_id,
+            &user_id,
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let tokens = harness
         .identity()
@@ -85,7 +89,11 @@ fn setup_non_admin(
 
     let session = harness
         .identity()
-        .create_session(tenant_id, &user_id)
+        .create_session(
+            tenant_id,
+            &user_id,
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let tokens = harness
         .identity()

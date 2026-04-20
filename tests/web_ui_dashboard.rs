@@ -128,7 +128,11 @@ fn build_rig() -> TestRig {
         )
         .expect("activate user");
     let session = identity
-        .create_session(tenant.id(), user.id())
+        .create_session(
+            tenant.id(),
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // Grant the user the hearth#admin relation (same as the onboarding flow).

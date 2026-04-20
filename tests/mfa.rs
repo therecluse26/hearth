@@ -163,7 +163,11 @@ async fn mfa_enrollment_full_flow() {
     // Can still create a session (MFA does not block session creation)
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     assert!(
         harness

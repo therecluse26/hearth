@@ -64,7 +64,11 @@ async fn full_tenant_lifecycle() {
 
     // 4. Create session
     let session = identity
-        .create_session(tenant.id(), user.id())
+        .create_session(
+            tenant.id(),
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // 5. Delete tenant
@@ -126,7 +130,11 @@ async fn multi_tenant_token_isolation() {
         .expect("create user A");
 
     let session_a = identity
-        .create_session(tenant_a.id(), user_a.id())
+        .create_session(
+            tenant_a.id(),
+            user_a.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session A");
 
     let tokens_a = identity
@@ -234,7 +242,11 @@ async fn adversarial_cross_tenant_session_injection() {
         )
         .expect("create user");
     let session = identity
-        .create_session(tenant_a.id(), user.id())
+        .create_session(
+            tenant_a.id(),
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // Session should be valid in tenant A
@@ -293,7 +305,11 @@ async fn adversarial_tenant_id_spoofing() {
     );
 
     // Cannot create session via forged tenant
-    let session_result = identity.create_session(&forged_tenant, user.id());
+    let session_result = identity.create_session(
+        &forged_tenant,
+        user.id(),
+        &hearth::identity::SessionContext::default(),
+    );
     assert!(
         session_result.is_err(),
         "creating session with forged tenant should fail"
@@ -301,7 +317,11 @@ async fn adversarial_tenant_id_spoofing() {
 
     // Cannot issue tokens via forged tenant
     let fake_session = identity
-        .create_session(tenant.id(), user.id())
+        .create_session(
+            tenant.id(),
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("real session");
     let token_result = identity.issue_tokens(&forged_tenant, user.id(), fake_session.id());
     assert!(

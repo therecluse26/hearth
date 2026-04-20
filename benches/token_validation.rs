@@ -45,7 +45,11 @@ fn setup_tokens() -> (
         .expect("create user");
 
     let session = engine
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     let pair = engine
@@ -100,7 +104,11 @@ fn bench_token_issuance(c: &mut Criterion) {
     c.bench_function("token_issuance_full_flow", |b| {
         b.iter(|| {
             let session = engine
-                .create_session(&tenant, user.id())
+                .create_session(
+                    &tenant,
+                    user.id(),
+                    &hearth::identity::SessionContext::default(),
+                )
                 .expect("create session");
             let result = engine.issue_tokens(&tenant, user.id(), session.id());
             assert!(result.is_ok());

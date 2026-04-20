@@ -400,7 +400,11 @@ fn session_creation_blocked_for_pending_verification_user() {
 
     let err = env
         .identity
-        .create_session(&outcome.tenant_id, &outcome.admin_user_id)
+        .create_session(
+            &outcome.tenant_id,
+            &outcome.admin_user_id,
+            &hearth::identity::SessionContext::default(),
+        )
         .expect_err("pending user should not get a session");
     assert!(
         matches!(err, hearth::identity::IdentityError::UserNotVerified),
@@ -452,7 +456,11 @@ fn verify_email_token_activates_user_and_unblocks_session() {
 
     // Sessions can now be created.
     env.identity
-        .create_session(&outcome.tenant_id, &outcome.admin_user_id)
+        .create_session(
+            &outcome.tenant_id,
+            &outcome.admin_user_id,
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("active user can create sessions");
 }
 

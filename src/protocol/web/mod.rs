@@ -30,6 +30,7 @@
 //!   `X-CSRF-Token` HTMX header.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use axum::body::Body;
@@ -122,6 +123,11 @@ pub struct WebState {
     /// Per-tenant `ETags`, keyed by the same tenant hex string as
     /// [`WebState::tenant_themes`]. Updated by [`WebState::with_tenant_themes`].
     pub tenant_theme_etags: HashMap<String, String>,
+    /// Parsed trusted proxy IP addresses (from `server.trusted_proxies` config).
+    ///
+    /// Used by [`crate::protocol::client_info::extract_client_ip`] to walk
+    /// `X-Forwarded-For` right-to-left and find the real client IP.
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -165,6 +171,7 @@ impl WebState {
             tenant_themes: HashMap::new(),
             theme_css_etag: etag_for(""),
             tenant_theme_etags: HashMap::new(),
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -212,6 +219,13 @@ impl WebState {
             bytes,
             content_type,
         });
+        self
+    }
+
+    /// Sets the parsed trusted proxy IPs for real client IP extraction.
+    #[must_use]
+    pub fn with_trusted_proxies(mut self, proxies: Vec<IpAddr>) -> Self {
+        self.trusted_proxies = proxies;
         self
     }
 

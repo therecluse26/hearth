@@ -35,7 +35,11 @@ async fn session_full_lifecycle() {
     // 1. Create session
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     assert_eq!(session.user_id(), user.id());
 
@@ -121,7 +125,11 @@ async fn session_persists_across_restart() {
             .expect("create user");
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(
+                &tenant,
+                user.id(),
+                &hearth::identity::SessionContext::default(),
+            )
             .expect("create session");
         session_id = session.id().clone();
 
@@ -174,11 +182,19 @@ async fn delete_user_invalidates_sessions() {
     // Create sessions
     let s1 = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("session 1");
     let s2 = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("session 2");
 
     // Delete user
@@ -214,7 +230,11 @@ async fn sessions_are_tenant_isolated() {
 
     let session = harness
         .identity()
-        .create_session(&tenant_a, user.id())
+        .create_session(
+            &tenant_a,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // Can't see tenant A's session from tenant B
@@ -240,7 +260,11 @@ async fn create_session_for_nonexistent_user_fails() {
 
     let err = harness
         .identity()
-        .create_session(&tenant, &fake_user)
+        .create_session(
+            &tenant,
+            &fake_user,
+            &hearth::identity::SessionContext::default(),
+        )
         .expect_err("should fail");
     assert!(
         format!("{err}").contains("user not found"),
@@ -283,7 +307,11 @@ async fn replayed_session_token_rejected_after_revocation() {
 
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // Capture the session ID (simulating an attacker who observed it)
@@ -342,15 +370,27 @@ async fn session_fixation_prevention() {
     // Create multiple sessions — each must get a unique ID
     let s1 = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("session 1");
     let s2 = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("session 2");
     let s3 = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("session 3");
 
     // All session IDs must be distinct (prevents fixation via ID reuse)
@@ -415,7 +455,11 @@ async fn enumeration_resistance() {
 
     // Create a session, then revoke it
     let revoked_session = engine
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     engine
         .revoke_session(&tenant, revoked_session.id())
@@ -423,7 +467,11 @@ async fn enumeration_resistance() {
 
     // Create a session, then let it expire
     let expired_session = engine
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     clock.advance(10_000_001); // Past TTL
 

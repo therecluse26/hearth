@@ -297,7 +297,11 @@ async fn mfa_enrollment_plus_login() {
     // 5. Session + tokens.
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let tokens = harness
         .identity()
@@ -416,7 +420,11 @@ async fn passkey_only_authentication() {
     // Session + tokens flow off the passkey-authenticated user.
     let session = harness
         .identity()
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
     let tokens = harness
         .identity()
@@ -488,11 +496,19 @@ async fn multi_tenant_isolation_roundtrip() {
 
     let session_a = harness
         .identity()
-        .create_session(&a, user_a.id())
+        .create_session(
+            &a,
+            user_a.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("session A");
     let session_b = harness
         .identity()
-        .create_session(&b, user_b.id())
+        .create_session(
+            &b,
+            user_b.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("session B");
 
     let tokens_a = harness

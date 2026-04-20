@@ -312,6 +312,10 @@ pub struct UserSessionRow {
     pub expires_at: String,
     /// Whether the session has been revoked.
     pub revoked: bool,
+    /// Device label (e.g. "Chrome, Mac OSX") or "Unknown device".
+    pub device_label: String,
+    /// Client IP address or "\u{2014}" (em dash) if unavailable.
+    pub ip_address: String,
 }
 
 /// A row in the user detail page's `WebAuthn` credentials table.
@@ -411,6 +415,8 @@ pub async fn admin_user_detail(
             created_at: format_ts(s.created_at()),
             expires_at: format_ts(s.expires_at()),
             revoked: s.is_revoked(),
+            device_label: s.device_label().unwrap_or("Unknown device").to_string(),
+            ip_address: s.ip_address().unwrap_or("\u{2014}").to_string(),
         })
         .collect();
 
@@ -1655,6 +1661,10 @@ pub struct SessionRow {
     pub created_at_display: String,
     /// Human-readable expires-at.
     pub expires_at_display: String,
+    /// Device label (e.g. "Chrome, Mac OSX") or "Unknown device".
+    pub device_label: String,
+    /// Client IP address or "\u{2014}" (em dash) if unavailable.
+    pub ip_address: String,
 }
 
 #[derive(Template)]
@@ -1811,11 +1821,15 @@ pub async fn admin_sessions_list(
                 .into_iter()
                 .map(|s| {
                     let email = resolve_user_email(&state, &session.tenant_id, s.user_id());
+                    let device_label = s.device_label().unwrap_or("Unknown device").to_string();
+                    let ip_address = s.ip_address().unwrap_or("\u{2014}").to_string();
                     SessionRow {
                         created_at_display: format_ts(s.created_at()),
                         expires_at_display: format_ts(s.expires_at()),
                         session: s,
                         user_email: email,
+                        device_label,
+                        ip_address,
                     }
                 })
                 .collect();

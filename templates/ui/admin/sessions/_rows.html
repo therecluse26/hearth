@@ -1,9 +1,8 @@
 {% for s in sessions %}
 <tr class="border-b border-divider-subtle" id="session-{{ s.session.id().as_uuid() }}">
-  <td class="px-4 py-3">
-    <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ s.session.id().as_uuid() }}</code>
-  </td>
   <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ s.user_email }}</td>
+  <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ s.device_label }}</td>
+  <td class="px-4 py-3 font-mono text-xs text-ht-content-muted">{{ s.ip_address }}</td>
   <td class="px-4 py-3 text-sm text-ht-content-muted">{{ s.created_at_display }}</td>
   <td class="px-4 py-3 text-sm text-ht-content-muted">{{ s.expires_at_display }}</td>
   <td class="px-4 py-3 text-right">
@@ -26,5 +25,5 @@
 </tr>
 {% endfor %}
 {% if sessions.is_empty() %}
-<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
+<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
 {% endif %}

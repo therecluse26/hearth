@@ -114,7 +114,11 @@ fn build_rig() -> TestRig {
         )
         .expect("activate user");
     let session = identity
-        .create_session(tenant.id(), user.id())
+        .create_session(
+            tenant.id(),
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     let onboarding = Arc::new(OnboardingService::new(

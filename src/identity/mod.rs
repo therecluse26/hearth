@@ -45,9 +45,9 @@ pub use types::{
     BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
     Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
-    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Session, Tenant,
-    TenantConfig, TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest, UpdateUserRequest,
-    User, UserStatus,
+    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Session,
+    SessionContext, Tenant, TenantConfig, TenantStatus, UpdateOrganizationRequest,
+    UpdateTenantRequest, UpdateUserRequest, User, UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
@@ -191,10 +191,15 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// Generates a random `SessionId`, sets TTL from configuration,
     /// and persists the session record. The user must exist.
+    ///
+    /// `context` carries optional device and network metadata (IP, User-Agent)
+    /// captured at the point of authentication. Pass `&SessionContext::default()`
+    /// for API-originated or test sessions without browser context.
     fn create_session(
         &self,
         tenant_id: &TenantId,
         user_id: &UserId,
+        context: &SessionContext,
     ) -> Result<Session, IdentityError>;
 
     /// Looks up a session by ID.

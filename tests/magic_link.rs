@@ -72,7 +72,11 @@ async fn magic_link_full_passwordless_flow() {
     // Use user_id to create a session (proves the user is authenticated)
     let session = harness
         .identity()
-        .create_session(&tenant, &returned_user_id)
+        .create_session(
+            &tenant,
+            &returned_user_id,
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session after magic link auth");
 
     assert!(

@@ -43,7 +43,11 @@ fn setup_session() -> (
         .expect("create user");
 
     let session = engine
-        .create_session(&tenant, user.id())
+        .create_session(
+            &tenant,
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
         .expect("create session");
 
     // Read the session once to ensure it's in the hot tier
@@ -70,7 +74,11 @@ fn bench_session_creation(c: &mut Criterion) {
 
     c.bench_function("session_creation", |b| {
         b.iter(|| {
-            let result = engine.create_session(&tenant, &user_id);
+            let result = engine.create_session(
+                &tenant,
+                &user_id,
+                &hearth::identity::SessionContext::default(),
+            );
             assert!(result.is_ok());
         });
     });

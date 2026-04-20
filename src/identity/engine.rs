@@ -62,7 +62,7 @@ use crate::identity::types::{
     BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, Organization,
     OrganizationInvitation, OrganizationMembership, OrganizationRole, OrganizationStatus, Page,
-    Session, Tenant, TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest,
+    Session, SessionContext, Tenant, TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest,
     UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
@@ -1611,6 +1611,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         &self,
         tenant_id: &TenantId,
         user_id: &UserId,
+        context: &SessionContext,
     ) -> Result<Session, IdentityError> {
         // Ensure the user exists and is permitted to start a session.
         // Unverified users must complete the email-verification flow first;
@@ -1629,7 +1630,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let session_id = SessionId::generate();
         let now = self.clock.now();
         let expires_at = now.add_micros(self.config.session.ttl_micros);
-        let session = Session::new(session_id.clone(), user_id.clone(), now, expires_at);
+        let session = Session::new(
+            session_id.clone(),
+            user_id.clone(),
+            now,
+            expires_at,
+            context,
+        );
 
         // Persist session record
         self.persist_session(tenant_id, &session)?;
@@ -2197,8 +2204,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(tenant_id, &code_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
-        // 9. Create a session for the user
-        let session = self.create_session(tenant_id, &stored_code.user_id)?;
+        // 9. Create a session for the user (OAuth code exchange — no browser context)
+        let session =
+            self.create_session(tenant_id, &stored_code.user_id, &SessionContext::default())?;
 
         // 10. Create grant family for refresh token rotation
         let family_id = uuid::Uuid::new_v4().to_string();
@@ -2603,8 +2611,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             DeviceCodeStatus::Denied => Err(IdentityError::DeviceCodeDenied),
             DeviceCodeStatus::Expired => Err(IdentityError::DeviceCodeExpired),
             DeviceCodeStatus::Approved { user_id } => {
-                // Issue tokens like exchange_authorization_code
-                let session = self.create_session(tenant_id, user_id)?;
+                // Issue tokens like exchange_authorization_code (device flow — no browser context)
+                let session =
+                    self.create_session(tenant_id, user_id, &SessionContext::default())?;
                 let token_pair = self.issue_tokens(tenant_id, user_id, session.id())?;
 
                 // Issue ID token
@@ -5976,7 +5985,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         assert_eq!(session.user_id(), user.id());
@@ -5993,9 +6002,85 @@ mod tests {
         let tenant = TenantId::generate();
 
         let err = engine
-            .create_session(&tenant, &UserId::generate())
+            .create_session(&tenant, &UserId::generate(), &SessionContext::default())
             .expect_err("should fail");
         assert!(matches!(err, IdentityError::UserNotFound));
+    }
+
+    // ===== Session metadata round-trip =====
+
+    #[test]
+    fn session_with_full_context_persists_metadata() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let ctx = SessionContext {
+            ip_address: Some("203.0.113.42".to_string()),
+            user_agent_raw: Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()),
+            device_label: Some("Chrome, Mac OSX".to_string()),
+        };
+
+        let session = engine
+            .create_session(&tenant, user.id(), &ctx)
+            .expect("create session");
+
+        assert_eq!(session.ip_address(), Some("203.0.113.42"));
+        assert_eq!(session.device_label(), Some("Chrome, Mac OSX"));
+        assert!(session.user_agent_raw().is_some());
+
+        // Verify round-trip through storage
+        let fetched = engine
+            .get_session(&tenant, session.id())
+            .expect("get session")
+            .expect("should exist");
+
+        assert_eq!(fetched.ip_address(), Some("203.0.113.42"));
+        assert_eq!(fetched.device_label(), Some("Chrome, Mac OSX"));
+        assert_eq!(fetched.user_agent_raw(), session.user_agent_raw());
+    }
+
+    #[test]
+    fn session_with_default_context_has_none_metadata() {
+        let (_dir, engine, _clock) = setup_engine();
+        let tenant = TenantId::generate();
+        let user = create_test_user(&engine, &tenant);
+
+        let session = engine
+            .create_session(&tenant, user.id(), &SessionContext::default())
+            .expect("create session");
+
+        assert!(session.ip_address().is_none());
+        assert!(session.user_agent_raw().is_none());
+        assert!(session.device_label().is_none());
+
+        let fetched = engine
+            .get_session(&tenant, session.id())
+            .expect("get session")
+            .expect("should exist");
+
+        assert!(fetched.ip_address().is_none());
+        assert!(fetched.device_label().is_none());
+    }
+
+    #[test]
+    fn session_deserialized_without_metadata_fields_has_none() {
+        // Simulate a session serialized before metadata fields were added.
+        // SessionId/UserId serialize as bare UUIDs (serde newtype over Uuid).
+        let old_json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "user_id": "00000000-0000-0000-0000-000000000002",
+            "created_at": 1000000,
+            "expires_at": 87400000000,
+            "last_refreshed_at": 1000000,
+            "revoked": false
+        }"#;
+
+        let session: Session = serde_json::from_str(old_json).expect("deserialize old format");
+
+        assert!(session.ip_address().is_none());
+        assert!(session.user_agent_raw().is_none());
+        assert!(session.device_label().is_none());
     }
 
     // ===== Session Scenario 2: Lookup session by ID =====
@@ -6007,7 +6092,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         let fetched = engine
@@ -6041,7 +6126,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Revoke it
@@ -6074,7 +6159,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Session should be valid now
@@ -6097,7 +6182,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Advance clock to 1 μs before expiry
@@ -6120,7 +6205,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         let ttl = 24 * 60 * 60 * 1_000_000_i64;
@@ -6158,7 +6243,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         // Advance past TTL
@@ -6178,7 +6263,7 @@ mod tests {
         let user = create_test_user(&engine, &tenant);
 
         let session = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("create session");
 
         engine
@@ -6201,10 +6286,10 @@ mod tests {
 
         // Create multiple sessions
         let s1 = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("session 1");
         let s2 = engine
-            .create_session(&tenant, user.id())
+            .create_session(&tenant, user.id(), &SessionContext::default())
             .expect("session 2");
 
         // Both should be valid
@@ -6326,7 +6411,7 @@ mod tests {
                 let mut session_ids = Vec::new();
                 for _ in 0..n_create {
                     let session = engine
-                        .create_session(&tenant, user.id())
+                        .create_session(&tenant, user.id(), &SessionContext::default())
                         .expect("create session");
                     session_ids.push(session.id().clone());
                 }
@@ -6370,7 +6455,7 @@ mod tests {
                 let mut ids = std::collections::HashSet::new();
                 for _ in 0..n {
                     let session = engine
-                        .create_session(&tenant, user.id())
+                        .create_session(&tenant, user.id(), &SessionContext::default())
                         .expect("create session");
                     let was_new = ids.insert(session.id().clone());
                     prop_assert!(was_new, "session ID collision detected");
@@ -7232,7 +7317,7 @@ mod tests {
 
         // Create sessions
         let session = engine
-            .create_session(tenant.id(), user1.id())
+            .create_session(tenant.id(), user1.id(), &SessionContext::default())
             .expect("create session");
 
         // Delete tenant
@@ -7414,7 +7499,7 @@ mod tests {
                     display_name: "Rotation User".to_string(),
                 }).expect("create user");
 
-                let session = engine.create_session(tenant.id(), user.id())
+                let session = engine.create_session(tenant.id(), user.id(), &SessionContext::default())
                     .expect("create session");
 
                 // Issue tokens with current key
@@ -7706,7 +7791,7 @@ mod tests {
         let tenant_id = create_test_tenant(&engine);
         let user = create_test_user(&engine, &tenant_id);
         let session = engine
-            .create_session(&tenant_id, user.id())
+            .create_session(&tenant_id, user.id(), &SessionContext::default())
             .expect("session");
         let tokens = engine
             .issue_tokens(&tenant_id, user.id(), session.id())
@@ -7814,7 +7899,7 @@ mod tests {
         let tenant_id = create_test_tenant(&engine);
         let user = create_test_user(&engine, &tenant_id);
         let session = engine
-            .create_session(&tenant_id, user.id())
+            .create_session(&tenant_id, user.id(), &SessionContext::default())
             .expect("session");
         let tokens = engine
             .issue_tokens(&tenant_id, user.id(), session.id())
@@ -7845,7 +7930,7 @@ mod tests {
         let tenant_id = create_test_tenant(&engine);
         let user = create_test_user(&engine, &tenant_id);
         let session = engine
-            .create_session(&tenant_id, user.id())
+            .create_session(&tenant_id, user.id(), &SessionContext::default())
             .expect("session");
         let tokens = engine
             .issue_tokens(&tenant_id, user.id(), session.id())
