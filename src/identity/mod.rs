@@ -45,9 +45,9 @@ pub use types::{
     BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateTenantRequest,
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
     Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
-    OrganizationRole, OrganizationStatus, Page, RawCredential, Session, Tenant, TenantConfig,
-    TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest, UpdateUserRequest, User,
-    UserStatus,
+    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Session, Tenant,
+    TenantConfig, TenantStatus, UpdateOrganizationRequest, UpdateTenantRequest, UpdateUserRequest,
+    User, UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
@@ -676,6 +676,20 @@ pub trait IdentityEngine: Send + Sync {
         client_id: &crate::core::ClientId,
         request: &UpdateClientRequest,
     ) -> Result<OAuthClient, IdentityError>;
+
+    /// Regenerates the client secret for a confidential OAuth client.
+    ///
+    /// Generates a new random secret, hashes it with Argon2id, updates the
+    /// stored client, and returns the plaintext secret exactly once. The
+    /// old secret is permanently invalidated.
+    ///
+    /// Returns `Err(ClientNotFound)` if the client does not exist.
+    /// Returns `Err(InvalidInput)` if the client is a public client (no secret).
+    fn regenerate_client_secret(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<String, IdentityError>;
 
     /// Deletes an OAuth client by ID.
     fn delete_client(

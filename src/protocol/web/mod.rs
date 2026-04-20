@@ -320,6 +320,10 @@ pub fn router(state: WebState) -> Router {
                 .post(handlers::forgot_password_submit),
         )
         .route(
+            "/accept-invitation",
+            axum::routing::get(handlers::accept_invitation_page),
+        )
+        .route(
             "/forgot-password/sent",
             axum::routing::get(handlers::forgot_password_sent),
         )
@@ -328,6 +332,11 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(handlers::reset_password_form).post(handlers::reset_password_submit),
         )
         .route("/", axum::routing::get(handlers::dashboard))
+        .route(
+            "/device",
+            axum::routing::get(handlers::device_approve_form)
+                .post(handlers::device_approve_submit),
+        )
         .route("/logout", axum::routing::post(handlers::logout_submit))
         .route("/account", axum::routing::get(account::account_index))
         .route(
@@ -362,6 +371,22 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/users/{id}/delete",
             axum::routing::post(admin::admin_user_delete),
+        )
+        .route(
+            "/admin/users/{id}/reset-password",
+            axum::routing::post(admin::admin_user_send_reset),
+        )
+        .route(
+            "/admin/users/{id}/disable-mfa",
+            axum::routing::post(admin::admin_user_disable_mfa),
+        )
+        .route(
+            "/admin/users/{id}/sessions/{sid}/revoke",
+            axum::routing::post(admin::admin_user_revoke_session),
+        )
+        .route(
+            "/admin/users/{id}/webauthn/{cred_id}/revoke",
+            axum::routing::post(admin::admin_user_revoke_webauthn),
         )
         // --- Tenants (read-only; managed via hearth.yaml) ---
         .route(
@@ -454,6 +479,10 @@ pub fn router(state: WebState) -> Router {
         )
         // --- Audit ---
         .route("/admin/audit", axum::routing::get(admin::admin_audit_list))
+        .route(
+            "/admin/audit/verify",
+            axum::routing::post(admin::admin_audit_verify_integrity),
+        )
         .route(
             "/admin/settings",
             axum::routing::get(admin::admin_system_info),

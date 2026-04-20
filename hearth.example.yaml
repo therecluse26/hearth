@@ -115,6 +115,24 @@ email:
   # Directory containing Tera templates that override the compiled defaults.
   # templates_dir: "./templates/email"
 
+# --- OIDC / OAuth 2.0 -------------------------------------------------------
+# Controls the OIDC Discovery document and authorization code behaviour.
+
+# oidc:
+#   issuer: "https://auth.example.com"   # default: "https://hearth.local"
+#   authorization_code_ttl: "10m"        # default: 10 minutes
+#   enforce_nonces: false                # default: false
+
+# --- Token issuance ---------------------------------------------------------
+# Controls JWT claims and expiration. `token.issuer` defaults to `oidc.issuer`
+# when omitted, so you only need to set it here if they differ.
+
+# token:
+#   issuer: "https://auth.example.com"   # default: oidc.issuer or "hearth"
+#   audience: "hearth"                   # default: "hearth"
+#   access_token_ttl: "15m"             # default: 15 minutes
+#   refresh_token_ttl: "7d"             # default: 7 days
+
 # --- Auth defaults (global) -------------------------------------------------
 # These apply to all tenants unless overridden per-tenant below.
 
@@ -154,12 +172,55 @@ email:
 #     web:
 #       theme: cloud                    # light theme for this tenant
 #       custom_css: /etc/hearth/customer-portal.css   # optional tenant CSS
+#     auth:
+#       mfa_required: true              # require MFA for all users
+#       mfa_methods:                    # allowed MFA methods
+#         - totp
+#         - webauthn
+#       allowed_auth_methods:           # allowed login methods
+#         - password
+#         - magic_link
+#         - passkey
+#       password_policy:
+#         min_length: 12
+#         require_uppercase: true
+#         require_number: true
+#         require_special: false
+#       token:
+#         access_token_ttl: "30m"       # per-tenant token TTL override
+#         refresh_token_ttl: "14d"
+#       rate_limit:
+#         max_failed_logins: 5
+#         lockout_duration: "15m"
 #
 #   internal-tools:
 #     session_ttl: "8h"
 #     password_memory_cost: 131072      # stricter for internal use
 #     web:
 #       theme: midnight                 # violet/purple dark theme
+#     organizations:
+#       acme-corp:
+#         name: "Acme Corporation"
+#         description: "Main enterprise customer"
+#         config:
+#           max_members: 500
+#       beta-testers:
+#         name: "Beta Testers"
+#         description: "Early access program"
+#     applications:
+#       dashboard:
+#         name: "Internal Dashboard"
+#         redirect_uris:
+#           - "https://dashboard.internal.example.com/callback"
+#         grant_types:
+#           - authorization_code
+#           - refresh_token
+#       api-service:
+#         name: "API Service"
+#         confidential: true
+#         client_secret: "${INTERNAL_API_SECRET}"
+#         grant_types:
+#           - client_credentials
 
 onboarding:
   # enabled: true  # set to false to permanently disable the /ui/setup flow

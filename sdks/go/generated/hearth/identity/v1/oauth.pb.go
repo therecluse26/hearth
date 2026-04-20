@@ -403,6 +403,7 @@ type UpdateClientRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ClientName    *string                `protobuf:"bytes,1,opt,name=client_name,json=clientName,proto3,oneof" json:"client_name,omitempty"`
 	RedirectUris  []string               `protobuf:"bytes,2,rep,name=redirect_uris,json=redirectUris,proto3" json:"redirect_uris,omitempty"`
+	GrantTypes    []string               `protobuf:"bytes,3,rep,name=grant_types,json=grantTypes,proto3" json:"grant_types,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -447,6 +448,13 @@ func (x *UpdateClientRequest) GetClientName() string {
 func (x *UpdateClientRequest) GetRedirectUris() []string {
 	if x != nil {
 		return x.RedirectUris
+	}
+	return nil
+}
+
+func (x *UpdateClientRequest) GetGrantTypes() []string {
+	if x != nil {
+		return x.GrantTypes
 	}
 	return nil
 }
@@ -1557,11 +1565,13 @@ const file_hearth_identity_v1_oauth_proto_rawDesc = "" +
 	"\rclient_secret\x18\x03 \x01(\tH\x00R\fclientSecret\x88\x01\x01\x12\x1f\n" +
 	"\vgrant_types\x18\x04 \x03(\tR\n" +
 	"grantTypesB\x10\n" +
-	"\x0e_client_secret\"p\n" +
+	"\x0e_client_secret\"\x91\x01\n" +
 	"\x13UpdateClientRequest\x12$\n" +
 	"\vclient_name\x18\x01 \x01(\tH\x00R\n" +
 	"clientName\x88\x01\x01\x12#\n" +
-	"\rredirect_uris\x18\x02 \x03(\tR\fredirectUrisB\x0e\n" +
+	"\rredirect_uris\x18\x02 \x03(\tR\fredirectUris\x12\x1f\n" +
+	"\vgrant_types\x18\x03 \x03(\tR\n" +
+	"grantTypesB\x0e\n" +
 	"\f_client_name\"\xd9\x01\n" +
 	"\vOAuthClient\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x1f\n" +

@@ -1,0 +1,48 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Authorize Device{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-md">
+  <div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-divider-subtle">
+    <div class="mb-6 text-center">
+      <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-ember-500/[0.12]">
+        <svg class="h-6 w-6 text-ember-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+      </div>
+      <h1 class="font-display text-xl font-medium text-ht-content-primary">Authorize Device</h1>
+      <p class="mt-2 text-sm text-ht-content-muted">
+        Enter the code displayed on your device to grant access.
+      </p>
+    </div>
+
+    <form method="post" action="/ui/device" class="space-y-4">
+      {% match csrf %}
+      {% when Some with (token) %}
+      <input type="hidden" name="csrf_token" value="{{ token }}">
+      {% when None %}
+      {% endmatch %}
+
+      <div>
+        <label for="user_code" class="block text-sm font-medium text-ht-content-secondary mb-1">Device Code</label>
+        <input
+          type="text"
+          id="user_code"
+          name="user_code"
+          maxlength="8"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="ABCD1234"
+          class="block w-full rounded-sm bg-ht-surface-base px-3 py-2 text-center text-lg font-mono tracking-[0.25em] text-ht-content-primary ring-1 ring-divider-subtle placeholder:text-ht-content-muted/40 focus:outline-none focus:ring-2 focus:ring-ember-500/50"
+          required>
+      </div>
+
+      <button type="submit"
+              class="w-full btn-ember rounded px-4 py-2.5 text-sm font-semibold">
+        Approve
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}

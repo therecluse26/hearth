@@ -3915,6 +3915,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
             client.set_redirect_uris(uris.clone());
         }
+        if let Some(grant_types) = &request.grant_types {
+            if grant_types.is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "grant_types cannot be empty".to_string(),
+                });
+            }
+            client.set_grant_types(grant_types.clone());
+        }
 
         let updated_bytes =
             serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
@@ -3925,6 +3933,54 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .map_err(Self::storage_err)?;
 
         Ok(client)
+    }
+
+    fn regenerate_client_secret(
+        &self,
+        tenant_id: &TenantId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<String, IdentityError> {
+        let key = keys::encode_oauth_client(client_id);
+        let bytes = self
+            .storage
+            .get(tenant_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::ClientNotFound)?;
+
+        let mut client: OAuthClient =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        if !client.is_confidential() {
+            return Err(IdentityError::InvalidInput {
+                reason: "cannot regenerate secret for a public client".to_string(),
+            });
+        }
+
+        // Generate new random secret (32 bytes, base64url)
+        let rng = ring::rand::SystemRandom::new();
+        let mut secret_bytes = [0u8; 32];
+        rng.fill(&mut secret_bytes)
+            .map_err(|_| IdentityError::SigningError {
+                reason: "failed to generate random bytes for client secret".to_string(),
+            })?;
+        let plaintext_secret = URL_SAFE_NO_PAD.encode(secret_bytes);
+
+        // Hash with Argon2id
+        let secret_hash =
+            credentials::hash_raw_secret(plaintext_secret.as_bytes(), &self.config.credential)?;
+        client.set_client_secret_hash(secret_hash);
+
+        let updated_bytes =
+            serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(tenant_id, &key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(plaintext_secret)
     }
 
     fn delete_client(
@@ -6966,8 +7022,7 @@ mod tests {
             session_ttl_micros: Some(3_600_000_000), // 1 hour
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
-            email_branding: None,
-            web_theme_css: None,
+            ..TenantConfig::default()
         };
         let tenant = engine
             .create_tenant(&CreateTenantRequest {
@@ -7095,9 +7150,7 @@ mod tests {
         let new_config = TenantConfig {
             session_ttl_micros: Some(7_200_000_000), // 2 hours
             password_memory_cost: Some(32768),
-            password_time_cost: None,
-            email_branding: None,
-            web_theme_css: None,
+            ..TenantConfig::default()
         };
         let updated = engine
             .update_tenant(

@@ -6,11 +6,20 @@
     <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ user.display_name() }}</h1>
     <p class="mt-1 text-sm text-ht-content-muted">{{ user.email() }}</p>
   </div>
-  <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
-     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-    Edit
-  </a>
+  <div class="flex items-center gap-2">
+    <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
+       class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+      Edit
+    </a>
+  </div>
 </div>
+
+{# Flash message #}
+{% match flash_message %}
+  {% when Some with (msg) %}
+  <div class="mb-4 rounded-md bg-success/[0.12] px-4 py-3 text-sm text-success-fg">{{ msg }}</div>
+  {% when None %}
+{% endmatch %}
 
 {# Info card #}
 <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
@@ -36,6 +45,161 @@
       </dd>
     </div>
   </dl>
+</div>
+
+{# Actions bar #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+  <div class="flex flex-wrap items-center gap-3">
+    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/reset-password">
+      {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+      <button type="submit" class="rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+        Send password reset
+      </button>
+    </form>
+    {% if mfa_enabled %}
+    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/disable-mfa" x-data="{ confirm: false }">
+      {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+      <button @click.prevent="confirm ? $el.form.submit() : (confirm = true)" type="button"
+              :class="confirm ? 'btn-danger' : 'border border-strong bg-ht-surface-elevated text-ht-content-secondary hover-bg-divider'"
+              class="rounded px-3 py-1.5 text-sm font-medium">
+        <span x-text="confirm ? 'Confirm disable MFA' : 'Disable MFA'"></span>
+      </button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{# Sessions section #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <h2 class="mb-4 text-lg font-semibold text-ht-content-primary">Sessions</h2>
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">ID</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Created</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Expires</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
+        <th class="px-3 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr class="border-b border-divider-faint">
+        <td class="px-3 py-2"><code class="font-mono text-xs text-ht-content-secondary">{{ s.id[..8] }}…</code></td>
+        <td class="px-3 py-2 text-sm text-ht-content-muted">{{ s.created_at }}</td>
+        <td class="px-3 py-2 text-sm text-ht-content-muted">{{ s.expires_at }}</td>
+        <td class="px-3 py-2">
+          {% if s.revoked %}
+            <span class="inline-flex items-center rounded-full bg-danger/[0.12] px-2 py-0.5 text-xs font-medium text-danger-fg">Revoked</span>
+          {% else %}
+            <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-right">
+          {% if !s.revoked %}
+          <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/sessions/{{ s.id }}/revoke">
+            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+            <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if sessions.is_empty() %}
+      <tr><td colspan="5" class="px-3 py-6 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{# MFA section #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <div class="flex items-center justify-between">
+    <h2 class="text-lg font-semibold text-ht-content-primary">Multi-Factor Authentication</h2>
+    {% if mfa_enabled %}
+      <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2.5 py-1 text-xs font-medium text-success-fg">Enabled</span>
+    {% else %}
+      <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2.5 py-1 text-xs font-medium text-ht-content-muted ring-1 ring-divider-subtle">Not enabled</span>
+    {% endif %}
+  </div>
+</div>
+
+{# WebAuthn credentials #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <h2 class="mb-4 text-lg font-semibold text-ht-content-primary">WebAuthn Credentials</h2>
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Credential ID</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Algorithm</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Discoverable</th>
+        <th class="px-3 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in webauthn_credentials %}
+      <tr class="border-b border-divider-faint">
+        <td class="px-3 py-2"><code class="font-mono text-xs text-ht-content-secondary">{{ c.id_short }}</code></td>
+        <td class="px-3 py-2 text-sm text-ht-content-muted">
+          {% if c.algorithm == -7 %}ES256{% else if c.algorithm == -257 %}RS256{% else %}{{ c.algorithm }}{% endif %}
+        </td>
+        <td class="px-3 py-2">
+          {% if c.discoverable %}
+            <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Yes</span>
+          {% else %}
+            <span class="text-xs text-ht-content-muted">No</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-right">
+          <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/webauthn/{{ c.id_b64url }}/revoke">
+            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+            <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if webauthn_credentials.is_empty() %}
+      <tr><td colspan="4" class="px-3 py-6 text-center text-sm text-ht-content-muted">No WebAuthn credentials registered.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{# Organizations section #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <h2 class="mb-4 text-lg font-semibold text-ht-content-primary">Organizations</h2>
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Organization</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in org_memberships %}
+      <tr class="border-b border-divider-faint">
+        <td class="px-3 py-2">
+          <a href="/ui/admin/organizations/{{ m.org_id }}" class="group">
+            <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.org_name }}</div>
+            <div class="text-xs text-ht-content-muted">{{ m.org_slug }}</div>
+          </a>
+        </td>
+        <td class="px-3 py-2">
+          {% if m.role == "Owner" %}
+            <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Owner</span>
+          {% else if m.role == "Admin" %}
+            <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Admin</span>
+          {% else %}
+            <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">Member</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if org_memberships.is_empty() %}
+      <tr><td colspan="2" class="px-3 py-6 text-center text-sm text-ht-content-muted">Not a member of any organization.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
 </div>
 
 {# Danger zone #}

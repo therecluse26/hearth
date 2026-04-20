@@ -451,6 +451,47 @@ impl Default for OnboardingConfig {
     }
 }
 
+// ===== OIDC & Token YAML config =====
+
+/// OIDC configuration from the `oidc:` YAML section.
+///
+/// Controls OIDC Discovery metadata, authorization code TTL, and nonce enforcement.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OidcYamlConfig {
+    /// The issuer URL used in discovery documents and ID tokens.
+    /// Must be a valid URL. Example: `"https://auth.example.com"`
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// Authorization code TTL as a duration string (e.g. `"10m"`).
+    /// Default: 10 minutes (600 seconds).
+    #[serde(default)]
+    pub authorization_code_ttl: Option<String>,
+    /// Whether to enforce nonce uniqueness in authorization requests.
+    #[serde(default)]
+    pub enforce_nonces: Option<bool>,
+}
+
+/// Token configuration from the `token:` YAML section.
+///
+/// Controls JWT issuance parameters: issuer, audience, and TTLs.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TokenYamlConfig {
+    /// The `iss` claim value. Defaults to `oidc.issuer` when omitted.
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// The `aud` claim value.
+    #[serde(default)]
+    pub audience: Option<String>,
+    /// Access token TTL as a duration string (e.g. `"15m"`).
+    /// Default: 15 minutes.
+    #[serde(default)]
+    pub access_token_ttl: Option<String>,
+    /// Refresh token TTL as a duration string (e.g. `"7d"`).
+    /// Default: 7 days.
+    #[serde(default)]
+    pub refresh_token_ttl: Option<String>,
+}
+
 // ===== Auth & Tenant YAML config =====
 
 /// Global authentication defaults in the `auth:` section.
@@ -467,6 +508,122 @@ pub struct AuthConfig {
     /// Argon2id time cost (iterations).
     #[serde(default)]
     pub password_time_cost: Option<u32>,
+}
+
+/// Per-tenant auth policy configuration in YAML.
+///
+/// These are policy declarations: the config layer stores them in `TenantConfig`,
+/// but enforcement (checking MFA on login, validating password complexity, applying
+/// rate limits) is a separate concern in the identity engine.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TenantAuthYaml {
+    /// Whether MFA is required for all users in this tenant.
+    #[serde(default)]
+    pub mfa_required: Option<bool>,
+    /// Allowed MFA methods (e.g. `["totp", "webauthn"]`).
+    #[serde(default)]
+    pub mfa_methods: Option<Vec<String>>,
+    /// Allowed authentication methods (e.g. `["password", "magic_link", "passkey"]`).
+    #[serde(default)]
+    pub allowed_auth_methods: Option<Vec<String>>,
+    /// Password complexity requirements.
+    #[serde(default)]
+    pub password_policy: Option<PasswordPolicyYaml>,
+    /// Per-tenant token TTL overrides.
+    #[serde(default)]
+    pub token: Option<TenantTokenYaml>,
+    /// Per-tenant rate limit overrides.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitYaml>,
+}
+
+/// Password complexity policy in YAML.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PasswordPolicyYaml {
+    /// Minimum password length. Must be >= 1.
+    #[serde(default)]
+    pub min_length: Option<usize>,
+    /// Require at least one uppercase letter.
+    #[serde(default)]
+    pub require_uppercase: Option<bool>,
+    /// Require at least one digit.
+    #[serde(default)]
+    pub require_number: Option<bool>,
+    /// Require at least one special character.
+    #[serde(default)]
+    pub require_special: Option<bool>,
+}
+
+/// Per-tenant token TTL overrides in YAML.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TenantTokenYaml {
+    /// Access token TTL as a duration string (e.g. `"15m"`).
+    #[serde(default)]
+    pub access_token_ttl: Option<String>,
+    /// Refresh token TTL as a duration string (e.g. `"7d"`).
+    #[serde(default)]
+    pub refresh_token_ttl: Option<String>,
+}
+
+/// Per-tenant rate limit overrides in YAML.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RateLimitYaml {
+    /// Maximum failed login attempts before lockout.
+    #[serde(default)]
+    pub max_failed_logins: Option<u32>,
+    /// Lockout duration as a duration string (e.g. `"15m"`).
+    #[serde(default)]
+    pub lockout_duration: Option<String>,
+}
+
+/// YAML declaration for an organization within a tenant.
+///
+/// Organizations declared under `tenants.<name>.organizations:` are reconciled
+/// with storage at startup: created if missing, updated if changed.
+/// Members and invitations are runtime-only — not managed via YAML.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrganizationYamlConfig {
+    /// Human-readable organization name.
+    pub name: String,
+    /// Optional description.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Optional configuration overrides.
+    #[serde(default)]
+    pub config: Option<OrgConfigYaml>,
+}
+
+/// Organization configuration overrides in YAML.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OrgConfigYaml {
+    /// Maximum number of members allowed. `None` means unlimited.
+    #[serde(default)]
+    pub max_members: Option<u32>,
+}
+
+/// YAML declaration for an OAuth 2.0 application (client).
+///
+/// Applications declared under `tenants.<name>.applications:` are reconciled
+/// with storage at startup: created if missing, updated if changed, archived
+/// if removed from the YAML.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplicationYamlConfig {
+    /// Human-readable application name.
+    pub name: String,
+    /// Allowed OAuth 2.0 redirect URIs.
+    #[serde(default)]
+    pub redirect_uris: Option<Vec<String>>,
+    /// Allowed OAuth 2.0 grant types (e.g. `["authorization_code", "client_credentials"]`).
+    #[serde(default)]
+    pub grant_types: Option<Vec<String>>,
+    /// Whether this is a confidential client (has a client secret).
+    /// Defaults to `false` (public client).
+    #[serde(default)]
+    pub confidential: Option<bool>,
+    /// Client secret. Supports `${ENV_VAR}` substitution.
+    /// Required when `confidential: true`. Hashed with Argon2id before storage.
+    #[serde(default)]
+    pub client_secret: Option<String>,
 }
 
 /// Per-tenant email branding overrides in YAML.
@@ -497,6 +654,17 @@ pub struct TenantYamlConfig {
     /// Per-tenant web / UI branding overrides.
     #[serde(default)]
     pub web: Option<TenantWebYaml>,
+    /// Per-tenant auth policy overrides (MFA, password policy, rate limits, token TTLs).
+    #[serde(default)]
+    pub auth: Option<TenantAuthYaml>,
+    /// Declarative OAuth 2.0 application (client) definitions.
+    /// Reconciled with storage at startup.
+    #[serde(default)]
+    pub applications: Option<std::collections::HashMap<String, ApplicationYamlConfig>>,
+    /// Declarative organization definitions.
+    /// Reconciled with storage at startup. Members/invitations are runtime-only.
+    #[serde(default)]
+    pub organizations: Option<std::collections::HashMap<String, OrganizationYamlConfig>>,
 }
 
 /// Parses a human-readable duration string into microseconds.
@@ -561,6 +729,41 @@ impl TenantYamlConfig {
             .and_then(|e| e.branding.clone())
             .or_else(|| global_branding.cloned());
 
+        // Map auth policy fields from the YAML `auth:` block (if present).
+        let auth = self.auth.as_ref();
+
+        let mfa_required = auth.and_then(|a| a.mfa_required);
+        let mfa_methods = auth.and_then(|a| a.mfa_methods.clone());
+        let allowed_auth_methods = auth.and_then(|a| a.allowed_auth_methods.clone());
+
+        let password_policy = auth
+            .and_then(|a| a.password_policy.as_ref())
+            .map(|pp| crate::identity::PasswordPolicy {
+                min_length: pp.min_length,
+                require_uppercase: pp.require_uppercase,
+                require_number: pp.require_number,
+                require_special: pp.require_special,
+            });
+
+        let access_token_ttl_micros = auth
+            .and_then(|a| a.token.as_ref())
+            .and_then(|t| t.access_token_ttl.as_deref())
+            .and_then(|s| parse_duration_to_micros(s).ok());
+
+        let refresh_token_ttl_micros = auth
+            .and_then(|a| a.token.as_ref())
+            .and_then(|t| t.refresh_token_ttl.as_deref())
+            .and_then(|s| parse_duration_to_micros(s).ok());
+
+        let max_failed_logins = auth
+            .and_then(|a| a.rate_limit.as_ref())
+            .and_then(|r| r.max_failed_logins);
+
+        let lockout_duration_micros = auth
+            .and_then(|a| a.rate_limit.as_ref())
+            .and_then(|r| r.lockout_duration.as_deref())
+            .and_then(|s| parse_duration_to_micros(s).ok());
+
         crate::identity::TenantConfig {
             session_ttl_micros,
             password_memory_cost,
@@ -568,6 +771,14 @@ impl TenantYamlConfig {
             email_branding,
             // Populated by main.rs after reading the CSS file from disk.
             web_theme_css: None,
+            mfa_required,
+            mfa_methods,
+            allowed_auth_methods,
+            password_policy,
+            access_token_ttl_micros,
+            refresh_token_ttl_micros,
+            max_failed_logins,
+            lockout_duration_micros,
         }
     }
 }
@@ -672,10 +883,7 @@ mod tests {
         };
         let tenant_cfg = TenantYamlConfig {
             session_ttl: Some("12h".to_string()),
-            password_memory_cost: None,
-            password_time_cost: None,
-            email: None,
-            web: None,
+            ..TenantYamlConfig::default()
         };
         let merged = tenant_cfg.to_tenant_config(&global, None);
         // Per-tenant TTL overrides global

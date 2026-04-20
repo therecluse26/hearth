@@ -369,6 +369,7 @@ async fn oidc_dynamic_client_registration() {
             &hearth::identity::UpdateClientRequest {
                 client_name: Some("Updated Dynamic App".to_string()),
                 redirect_uris: Some(vec!["https://new-app.example.com/callback".to_string()]),
+                grant_types: None,
             },
         )
         .expect("update client");

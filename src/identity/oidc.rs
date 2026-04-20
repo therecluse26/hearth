@@ -169,6 +169,11 @@ impl OAuthClient {
     pub(crate) fn set_redirect_uris(&mut self, uris: Vec<String>) {
         self.redirect_uris = uris;
     }
+
+    /// Sets the client secret hash. Used internally during secret regeneration.
+    pub(crate) fn set_client_secret_hash(&mut self, hash: String) {
+        self.client_secret_hash = Some(hash);
+    }
 }
 
 /// Request to update an existing OAuth 2.0 client.
@@ -180,6 +185,8 @@ pub struct UpdateClientRequest {
     pub client_name: Option<String>,
     /// New set of redirect URIs.
     pub redirect_uris: Option<Vec<String>>,
+    /// New set of allowed grant types.
+    pub grant_types: Option<Vec<String>>,
 }
 
 /// The PKCE code challenge method.

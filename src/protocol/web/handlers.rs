@@ -1353,6 +1353,248 @@ pub(super) fn internal_error_response() -> Response {
     render_status(&tmpl, StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+// ============================================================================
+// Invitation acceptance
+// ============================================================================
+
+/// Query params for the invitation acceptance page.
+#[derive(Debug, Deserialize)]
+pub struct AcceptInvitationParams {
+    /// The plaintext invitation token from the email link.
+    pub token: Option<String>,
+}
+
+/// Template for invitation acceptance result.
+#[derive(Template)]
+#[template(path = "ui/accept_invitation.html")]
+#[allow(clippy::struct_excessive_bools)]
+struct AcceptInvitationTemplate {
+    success: bool,
+    org_name: String,
+    error_message: String,
+    // Chrome fields.
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    tenant_theme_css: Option<String>,
+}
+
+/// `GET /ui/accept-invitation?token=...` — accepts an organization invitation.
+///
+/// Walks all tenants, trying `accept_invitation` with the token.
+/// On success, renders a welcome page; on failure, renders an error.
+pub async fn accept_invitation_page(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<AcceptInvitationParams>,
+) -> Response {
+    let token = match &params.token {
+        Some(t) if !t.is_empty() => t.as_str(),
+        _ => {
+            return render(&AcceptInvitationTemplate {
+                success: false,
+                org_name: String::new(),
+                error_message: "No invitation token provided.".to_string(),
+                chrome: false,
+                active: "",
+                user_email: None,
+                is_admin: false,
+                flash: None,
+                csrf: None,
+                narrow: true,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                tenant_theme_css: None,
+            });
+        }
+    };
+
+    // Walk tenants and try to accept the invitation
+    let tenants = match state.identity.list_tenants(None, 100) {
+        Ok(page) => page.items,
+        Err(e) => {
+            tracing::error!(error = %e, "accept_invitation: failed to list tenants");
+            return render(&AcceptInvitationTemplate {
+                success: false,
+                org_name: String::new(),
+                error_message: "An internal error occurred.".to_string(),
+                chrome: false,
+                active: "",
+                user_email: None,
+                is_admin: false,
+                flash: None,
+                csrf: None,
+                narrow: true,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                tenant_theme_css: None,
+            });
+        }
+    };
+
+    for tenant in &tenants {
+        if let Ok(membership) = state.identity.accept_invitation(tenant.id(), token) {
+            // Resolve org name for display
+            let org_name = state
+                .identity
+                .get_organization(tenant.id(), membership.org_id())
+                .ok()
+                .flatten()
+                .map_or_else(
+                    || "the organization".to_string(),
+                    |o| o.name().to_string(),
+                );
+
+            return render(&AcceptInvitationTemplate {
+                success: true,
+                org_name,
+                error_message: String::new(),
+                chrome: false,
+                active: "",
+                user_email: None,
+                is_admin: false,
+                flash: None,
+                csrf: None,
+                narrow: true,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                tenant_theme_css: None,
+            });
+        }
+    }
+
+    // No tenant accepted the token
+    render(&AcceptInvitationTemplate {
+        success: false,
+        org_name: String::new(),
+        error_message: "This invitation has expired or is invalid.".to_string(),
+        chrome: false,
+        active: "",
+        user_email: None,
+        is_admin: false,
+        flash: None,
+        csrf: None,
+        narrow: true,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        tenant_theme_css: None,
+    })
+}
+
+// ============================================================================
+// Device Authorization Approval
+// ============================================================================
+
+/// Query / flash parameters for the device approval page.
+#[derive(Debug, Deserialize)]
+pub struct DeviceApproveParams {
+    /// Flash key for success / error messages after POST redirect.
+    pub flash: Option<String>,
+}
+
+/// Template for the device authorization approval page.
+#[derive(Template)]
+#[template(path = "ui/device_approve.html")]
+#[allow(clippy::struct_excessive_bools)]
+pub struct DeviceApproveTemplate {
+    pub chrome: bool,
+    pub active: &'static str,
+    pub user_email: Option<String>,
+    pub is_admin: bool,
+    pub flash: Option<super::templates::Flash>,
+    pub csrf: Option<String>,
+    pub narrow: bool,
+    pub product_name: String,
+    pub logo_url: String,
+    pub theme_css: String,
+    pub tenant_theme_css: Option<String>,
+}
+
+/// Form submitted when the user approves a device.
+#[derive(Debug, Deserialize)]
+pub struct DeviceApproveForm {
+    /// The 8-character user code shown on the input-constrained device.
+    pub user_code: String,
+    /// CSRF token.
+    #[serde(default)]
+    pub csrf_token: Option<String>,
+}
+
+/// GET `/ui/device` — renders the device approval form (requires auth).
+pub async fn device_approve_form(
+    State(state): State<Arc<WebState>>,
+    session: super::auth::UiSession,
+    Query(params): Query<DeviceApproveParams>,
+) -> Response {
+    let admin = is_admin(&state, &session);
+    let flash = match params.flash.as_deref() {
+        Some("approved") => Some(super::templates::Flash {
+            kind: "success",
+            message: "Device approved successfully.".to_string(),
+        }),
+        Some("expired") => Some(super::templates::Flash {
+            kind: "error",
+            message: "That device code has expired.".to_string(),
+        }),
+        Some("invalid") => Some(super::templates::Flash {
+            kind: "error",
+            message: "Invalid device code. Please check and try again.".to_string(),
+        }),
+        _ => None,
+    };
+
+    render(&DeviceApproveTemplate {
+        chrome: true,
+        active: "",
+        user_email: Some(session.user_email.clone()),
+        is_admin: admin,
+        flash,
+        csrf: session.csrf.clone(),
+        narrow: true,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        tenant_theme_css: state.tenant_theme_css(),
+    })
+}
+
+/// POST `/ui/device` — processes the device approval form.
+pub async fn device_approve_submit(
+    State(state): State<Arc<WebState>>,
+    session: super::auth::UiSession,
+    Form(form): Form<DeviceApproveForm>,
+) -> Response {
+    let code = form.user_code.trim().to_uppercase();
+
+    if code.is_empty() || code.len() > 8 {
+        return Redirect::to("/ui/device?flash=invalid").into_response();
+    }
+
+    match state
+        .identity
+        .approve_device(&session.tenant_id, &code, &session.user_id)
+    {
+        Ok(()) => Redirect::to("/ui/device?flash=approved").into_response(),
+        Err(IdentityError::DeviceCodeExpired) => {
+            Redirect::to("/ui/device?flash=expired").into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "device_approve: approve_device failed");
+            Redirect::to("/ui/device?flash=invalid").into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

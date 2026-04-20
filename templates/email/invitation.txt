@@ -1,0 +1,13 @@
+{{ product_name }} — You're Invited!
+
+{{ inviter_email }} has invited you to join {{ org_name }} on {{ product_name }}.
+
+Accept the invitation by visiting:
+
+{{ accept_url }}
+
+This invitation expires in 7 days. If you weren't expecting this, you can safely ignore this message.
+{% if support_email.is_some() %}
+Need help? Contact {{ support_email.as_deref().unwrap_or_default() }}
+{% endif %}
+{% if custom_footer_text.is_some() %}{{ custom_footer_text.as_deref().unwrap_or_default() }}{% endif %}

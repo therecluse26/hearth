@@ -11,10 +11,12 @@ pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
 pub use types::parse_duration_to_micros;
 pub use types::{
-    AuthConfig, BrandingConfig, EmailConfig, EmailTransport, MailgunConfig, MailgunRegion,
-    MailtrapConfig, ObservabilityConfig, OnboardingConfig, OperationalConfig, PostmarkConfig,
-    SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TenantEmailYaml,
-    TenantWebYaml, TenantYamlConfig,
+    ApplicationYamlConfig, AuthConfig, BrandingConfig, EmailConfig, EmailTransport, MailgunConfig,
+    MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig, OnboardingConfig,
+    OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml, PostmarkConfig,
+    RateLimitYaml, SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection,
+    TenantAuthYaml, TenantEmailYaml, TenantTokenYaml, TenantWebYaml, TenantYamlConfig,
+    TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -59,6 +61,12 @@ pub struct Config {
     /// Global branding settings (logo URL).
     #[serde(default)]
     pub branding: BrandingConfig,
+    /// OIDC / OAuth 2.0 settings (issuer URL, authorization code TTL, nonce enforcement).
+    #[serde(default)]
+    pub oidc: OidcYamlConfig,
+    /// Token issuance settings (issuer, audience, access/refresh TTLs).
+    #[serde(default)]
+    pub token: TokenYamlConfig,
     /// Global authentication defaults (session TTL, password hashing params).
     #[serde(default)]
     pub auth: AuthConfig,
@@ -144,6 +152,8 @@ impl Config {
             email: EmailConfig::default(),
             onboarding: OnboardingConfig::default(),
             branding: BrandingConfig::default(),
+            oidc: OidcYamlConfig::default(),
+            token: TokenYamlConfig::default(),
             auth: AuthConfig::default(),
             tenants: None,
             dev_mode: true,
@@ -251,9 +261,14 @@ impl Config {
             });
         }
 
+        validate_oidc(&self.oidc)?;
+        validate_token(&self.token)?;
         validate_email(&self.email)?;
         validate_branding(&self.branding)?;
         validate_tenant_web_configs(self.tenants.as_ref())?;
+        validate_tenant_auth_configs(self.tenants.as_ref())?;
+        validate_tenant_applications(self.tenants.as_ref())?;
+        validate_tenant_organizations(self.tenants.as_ref())?;
 
         // notification_email: if set, must be a valid RFC 5322 mailbox
         if let Some(addr) = &self.onboarding.notification_email {
@@ -331,6 +346,242 @@ fn validate_tenant_web_configs(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// Valid MFA method names.
+const VALID_MFA_METHODS: &[&str] = &["totp", "webauthn"];
+
+/// Valid authentication method names.
+const VALID_AUTH_METHODS: &[&str] = &["password", "magic_link", "passkey"];
+
+/// Validates per-tenant `auth:` policy blocks.
+fn validate_tenant_auth_configs(
+    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+) -> Result<(), ConfigError> {
+    let Some(tenants) = tenants else {
+        return Ok(());
+    };
+    for (name, cfg) in tenants {
+        let Some(auth) = &cfg.auth else { continue };
+        if let Some(methods) = &auth.mfa_methods {
+            for m in methods {
+                if !VALID_MFA_METHODS.contains(&m.as_str()) {
+                    return Err(invalid(
+                        &format!("tenants.{name}.auth.mfa_methods"),
+                        format!(
+                            "unknown MFA method '{}'; valid methods are: {}",
+                            m,
+                            VALID_MFA_METHODS.join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
+        if let Some(methods) = &auth.allowed_auth_methods {
+            for m in methods {
+                if !VALID_AUTH_METHODS.contains(&m.as_str()) {
+                    return Err(invalid(
+                        &format!("tenants.{name}.auth.allowed_auth_methods"),
+                        format!(
+                            "unknown auth method '{}'; valid methods are: {}",
+                            m,
+                            VALID_AUTH_METHODS.join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
+        if let Some(pp) = &auth.password_policy {
+            if let Some(len) = pp.min_length {
+                if len == 0 {
+                    return Err(invalid(
+                        &format!("tenants.{name}.auth.password_policy.min_length"),
+                        "must be >= 1",
+                    ));
+                }
+            }
+        }
+        if let Some(token) = &auth.token {
+            if let Some(ttl) = &token.access_token_ttl {
+                types::parse_duration_to_micros(ttl).map_err(|e| {
+                    invalid(
+                        &format!("tenants.{name}.auth.token.access_token_ttl"),
+                        format!("invalid duration: {e}"),
+                    )
+                })?;
+            }
+            if let Some(ttl) = &token.refresh_token_ttl {
+                types::parse_duration_to_micros(ttl).map_err(|e| {
+                    invalid(
+                        &format!("tenants.{name}.auth.token.refresh_token_ttl"),
+                        format!("invalid duration: {e}"),
+                    )
+                })?;
+            }
+        }
+        if let Some(rl) = &auth.rate_limit {
+            if let Some(dur) = &rl.lockout_duration {
+                types::parse_duration_to_micros(dur).map_err(|e| {
+                    invalid(
+                        &format!("tenants.{name}.auth.rate_limit.lockout_duration"),
+                        format!("invalid duration: {e}"),
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validates per-tenant `organizations:` declarations.
+fn validate_tenant_organizations(
+    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+) -> Result<(), ConfigError> {
+    let Some(tenants) = tenants else {
+        return Ok(());
+    };
+    for (tenant_name, cfg) in tenants {
+        let Some(orgs) = &cfg.organizations else {
+            continue;
+        };
+        for (slug, org) in orgs {
+            let prefix = format!("tenants.{tenant_name}.organizations.{slug}");
+            if org.name.trim().is_empty() {
+                return Err(invalid(&format!("{prefix}.name"), "must not be empty"));
+            }
+            // The YAML key is the slug — validate slug format (lowercase alphanumeric + hyphens, 3-63 chars)
+            if slug.len() < 3 || slug.len() > 63 {
+                return Err(invalid(
+                    &prefix,
+                    format!("slug '{slug}' must be 3-63 characters"),
+                ));
+            }
+            if !slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                return Err(invalid(
+                    &prefix,
+                    format!(
+                        "slug '{slug}' must contain only lowercase letters, digits, and hyphens"
+                    ),
+                ));
+            }
+            if slug.starts_with('-') || slug.ends_with('-') {
+                return Err(invalid(
+                    &prefix,
+                    format!("slug '{slug}' must not start or end with a hyphen"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Valid OAuth 2.0 grant types.
+const VALID_GRANT_TYPES: &[&str] = &[
+    "authorization_code",
+    "client_credentials",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:device_code",
+];
+
+/// Validates per-tenant `applications:` declarations.
+fn validate_tenant_applications(
+    tenants: Option<&std::collections::HashMap<String, TenantYamlConfig>>,
+) -> Result<(), ConfigError> {
+    let Some(tenants) = tenants else {
+        return Ok(());
+    };
+    for (tenant_name, cfg) in tenants {
+        let Some(apps) = &cfg.applications else {
+            continue;
+        };
+        for (app_key, app) in apps {
+            let prefix = format!("tenants.{tenant_name}.applications.{app_key}");
+            if app.name.trim().is_empty() {
+                return Err(invalid(&format!("{prefix}.name"), "must not be empty"));
+            }
+            if let Some(grant_types) = &app.grant_types {
+                for gt in grant_types {
+                    if !VALID_GRANT_TYPES.contains(&gt.as_str()) {
+                        return Err(invalid(
+                            &format!("{prefix}.grant_types"),
+                            format!(
+                                "unknown grant type '{}'; valid types are: {}",
+                                gt,
+                                VALID_GRANT_TYPES.join(", ")
+                            ),
+                        ));
+                    }
+                }
+            }
+            if let Some(uris) = &app.redirect_uris {
+                for uri in uris {
+                    if uri.is_empty() {
+                        return Err(invalid(
+                            &format!("{prefix}.redirect_uris"),
+                            "redirect URIs must not be empty strings",
+                        ));
+                    }
+                }
+            }
+            let is_confidential = app.confidential.unwrap_or(false);
+            if is_confidential && app.client_secret.is_none() {
+                return Err(invalid(
+                    &format!("{prefix}.client_secret"),
+                    "client_secret is required when confidential is true",
+                ));
+            }
+            if !is_confidential && app.client_secret.is_some() {
+                return Err(invalid(
+                    &format!("{prefix}.confidential"),
+                    "confidential must be true when client_secret is provided",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validates the `oidc` section.
+fn validate_oidc(oidc: &OidcYamlConfig) -> Result<(), ConfigError> {
+    if let Some(issuer) = &oidc.issuer {
+        if issuer.is_empty() {
+            return Err(invalid("oidc.issuer", "must not be empty"));
+        }
+        // Issuer must look like a URL (starts with https:// or http://)
+        if !issuer.starts_with("https://") && !issuer.starts_with("http://") {
+            return Err(invalid(
+                "oidc.issuer",
+                "must be a URL starting with https:// or http://",
+            ));
+        }
+    }
+    if let Some(ttl) = &oidc.authorization_code_ttl {
+        types::parse_duration_to_micros(ttl).map_err(|e| {
+            invalid("oidc.authorization_code_ttl", format!("invalid duration: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+/// Validates the `token` section.
+fn validate_token(token: &TokenYamlConfig) -> Result<(), ConfigError> {
+    if let Some(issuer) = &token.issuer {
+        if issuer.is_empty() {
+            return Err(invalid("token.issuer", "must not be empty"));
+        }
+    }
+    if let Some(ttl) = &token.access_token_ttl {
+        types::parse_duration_to_micros(ttl)
+            .map_err(|e| invalid("token.access_token_ttl", format!("invalid duration: {e}")))?;
+    }
+    if let Some(ttl) = &token.refresh_token_ttl {
+        types::parse_duration_to_micros(ttl)
+            .map_err(|e| invalid("token.refresh_token_ttl", format!("invalid duration: {e}")))?;
     }
     Ok(())
 }

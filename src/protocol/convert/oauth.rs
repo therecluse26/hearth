@@ -57,6 +57,11 @@ impl From<pb::UpdateClientRequest> for domain::UpdateClientRequest {
             } else {
                 Some(r.redirect_uris)
             },
+            grant_types: if r.grant_types.is_empty() {
+                None
+            } else {
+                Some(r.grant_types)
+            },
         }
     }
 }

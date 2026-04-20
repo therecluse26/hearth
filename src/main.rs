@@ -16,7 +16,10 @@ use hearth::identity::email::{
     MailtrapEmailSender, PostmarkEmailSender, SendgridEmailSender, SharedEmailSender,
 };
 use hearth::identity::onboarding::{self, OnboardingService};
-use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
+use hearth::identity::{
+    CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, OidcConfig,
+    TokenConfig,
+};
 use hearth::protocol::http::{self, AppState};
 use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
 use hearth::protocol::web::{self, WebState};
@@ -246,13 +249,61 @@ async fn run_serve(
 
     // Initialize identity engine
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+
+    // Build OidcConfig from YAML
+    let oidc_config = {
+        let mut oc = OidcConfig::default();
+        if let Some(issuer) = &config.oidc.issuer {
+            oc.issuer.clone_from(issuer);
+        }
+        if let Some(ttl) = &config.oidc.authorization_code_ttl {
+            if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
+                oc.authorization_code_ttl_secs = micros / 1_000_000;
+            }
+        }
+        if let Some(enforce) = config.oidc.enforce_nonces {
+            oc.enforce_nonces = enforce;
+        }
+        oc
+    };
+
+    // Build TokenConfig from YAML. token.issuer defaults to oidc.issuer when omitted.
+    let token_config = {
+        let mut tc = TokenConfig::default();
+        if let Some(issuer) = &config.token.issuer {
+            tc.issuer.clone_from(issuer);
+        } else if let Some(issuer) = &config.oidc.issuer {
+            tc.issuer.clone_from(issuer);
+        }
+        if let Some(audience) = &config.token.audience {
+            tc.audience.clone_from(audience);
+        }
+        if let Some(ttl) = &config.token.access_token_ttl {
+            if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
+                tc.access_token_ttl_secs = micros / 1_000_000;
+            }
+        }
+        if let Some(ttl) = &config.token.refresh_token_ttl {
+            if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
+                tc.refresh_token_ttl_secs = micros / 1_000_000;
+            }
+        }
+        tc
+    };
+
     let identity_config = if config.dev_mode {
         IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
+            oidc: oidc_config,
+            token: token_config,
             ..IdentityConfig::default()
         }
     } else {
-        IdentityConfig::default()
+        IdentityConfig {
+            oidc: oidc_config,
+            token: token_config,
+            ..IdentityConfig::default()
+        }
     };
 
     let identity_engine: Arc<dyn IdentityEngine> = Arc::new(EmbeddedIdentityEngine::new(

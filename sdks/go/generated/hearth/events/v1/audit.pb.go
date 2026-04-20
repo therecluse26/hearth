@@ -48,6 +48,9 @@ const (
 	AuditAction_AUDIT_ACTION_CLIENT_DELETED               AuditAction = 20
 	AuditAction_AUDIT_ACTION_BULK_USERS_CREATED           AuditAction = 21
 	AuditAction_AUDIT_ACTION_BULK_USERS_DISABLED          AuditAction = 22
+	AuditAction_AUDIT_ACTION_ORG_CREATED                  AuditAction = 23
+	AuditAction_AUDIT_ACTION_ORG_UPDATED                  AuditAction = 24
+	AuditAction_AUDIT_ACTION_ORG_DELETED                  AuditAction = 25
 )
 
 // Enum value maps for AuditAction.
@@ -76,6 +79,9 @@ var (
 		20: "AUDIT_ACTION_CLIENT_DELETED",
 		21: "AUDIT_ACTION_BULK_USERS_CREATED",
 		22: "AUDIT_ACTION_BULK_USERS_DISABLED",
+		23: "AUDIT_ACTION_ORG_CREATED",
+		24: "AUDIT_ACTION_ORG_UPDATED",
+		25: "AUDIT_ACTION_ORG_DELETED",
 	}
 	AuditAction_value = map[string]int32{
 		"AUDIT_ACTION_UNSPECIFIED":                  0,
@@ -101,6 +107,9 @@ var (
 		"AUDIT_ACTION_CLIENT_DELETED":               20,
 		"AUDIT_ACTION_BULK_USERS_CREATED":           21,
 		"AUDIT_ACTION_BULK_USERS_DISABLED":          22,
+		"AUDIT_ACTION_ORG_CREATED":                  23,
+		"AUDIT_ACTION_ORG_UPDATED":                  24,
+		"AUDIT_ACTION_ORG_DELETED":                  25,
 	}
 )
 
@@ -452,7 +461,7 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\t_end_timeB\b\n" +
 	"\x06_actorB\t\n" +
 	"\a_actionB\b\n" +
-	"\x06_limit*\xa8\x06\n" +
+	"\x06_limit*\x82\a\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -477,7 +486,10 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\x1bAUDIT_ACTION_CLIENT_UPDATED\x10\x13\x12\x1f\n" +
 	"\x1bAUDIT_ACTION_CLIENT_DELETED\x10\x14\x12#\n" +
 	"\x1fAUDIT_ACTION_BULK_USERS_CREATED\x10\x15\x12$\n" +
-	" AUDIT_ACTION_BULK_USERS_DISABLED\x10\x16BAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
+	" AUDIT_ACTION_BULK_USERS_DISABLED\x10\x16\x12\x1c\n" +
+	"\x18AUDIT_ACTION_ORG_CREATED\x10\x17\x12\x1c\n" +
+	"\x18AUDIT_ACTION_ORG_UPDATED\x10\x18\x12\x1c\n" +
+	"\x18AUDIT_ACTION_ORG_DELETED\x10\x19BAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
 
 var (
 	file_hearth_events_v1_audit_proto_rawDescOnce sync.Once

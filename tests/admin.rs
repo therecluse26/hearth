@@ -394,6 +394,7 @@ async fn crud_applications() {
             &UpdateClientRequest {
                 client_name: Some("Updated App".to_string()),
                 redirect_uris: Some(vec!["https://new.example.com/cb".to_string()]),
+                grant_types: None,
             },
         )
         .expect("update client");

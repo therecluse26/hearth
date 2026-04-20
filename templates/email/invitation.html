@@ -1,0 +1,10 @@
+{% extends "email/base.html" %}
+{% block title %}You're invited to {{ org_name }} on {{ product_name }}{% endblock %}
+{% block content %}
+<p><strong>{{ inviter_email }}</strong> has invited you to join <strong>{{ org_name }}</strong> on {{ product_name }}.</p>
+<div class="btn-wrapper">
+  <a href="{{ accept_url }}" class="btn">Accept Invitation</a>
+</div>
+<p class="url-fallback">If the button doesn't work, copy and paste this URL into your browser:<br>{{ accept_url }}</p>
+<p>This invitation expires in 7 days. If you weren't expecting this, you can safely ignore this message.</p>
+{% endblock %}

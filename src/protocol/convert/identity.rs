@@ -121,8 +121,7 @@ impl From<pb::TenantConfig> for domain::TenantConfig {
             session_ttl_micros: c.session_ttl_micros,
             password_memory_cost: c.password_memory_cost,
             password_time_cost: c.password_time_cost,
-            email_branding: None,
-            web_theme_css: None,
+            ..Self::default()
         }
     }
 }
@@ -273,10 +272,7 @@ mod tests {
             domain::TenantStatus::Active,
             domain::TenantConfig {
                 session_ttl_micros: Some(3_600_000_000),
-                password_memory_cost: None,
-                password_time_cost: None,
-                email_branding: None,
-                web_theme_css: None,
+                ..domain::TenantConfig::default()
             },
             Timestamp::from_micros(1_000_000),
             Timestamp::from_micros(2_000_000),
@@ -330,8 +326,7 @@ mod tests {
             session_ttl_micros: Some(7_200_000_000),
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
-            email_branding: None,
-            web_theme_css: None,
+            ..domain::TenantConfig::default()
         };
         let proto_cfg = pb::TenantConfig::from(&domain_cfg);
         let back = domain::TenantConfig::from(proto_cfg);

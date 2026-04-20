@@ -18,6 +18,15 @@ pub struct Page<T> {
     pub next_cursor: Option<String>,
 }
 
+impl<T> Default for Page<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            next_cursor: None,
+        }
+    }
+}
+
 /// Result of a single item within a bulk operation.
 ///
 /// The `index` field identifies which item in the original request
@@ -244,6 +253,23 @@ pub enum TenantStatus {
     Archived,
 }
 
+/// Password complexity policy stored in a tenant's configuration.
+///
+/// These are *declarations* — enforcement is a separate concern in the identity
+/// engine. When all fields are `None`, no additional complexity requirements
+/// are imposed beyond the default minimum.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasswordPolicy {
+    /// Minimum password length. Must be >= 1 when set.
+    pub min_length: Option<usize>,
+    /// Require at least one uppercase letter.
+    pub require_uppercase: Option<bool>,
+    /// Require at least one digit.
+    pub require_number: Option<bool>,
+    /// Require at least one special character.
+    pub require_special: Option<bool>,
+}
+
 /// Per-tenant configuration overrides.
 ///
 /// Fields are optional — when `None`, the engine-level default is used.
@@ -261,6 +287,22 @@ pub struct TenantConfig {
     /// as the tenant-specific theme stylesheet. `None` means no per-tenant
     /// theme is configured — the global theme applies.
     pub web_theme_css: Option<String>,
+    /// Whether MFA is required for all users in this tenant.
+    pub mfa_required: Option<bool>,
+    /// Allowed MFA methods (e.g. `["totp", "webauthn"]`).
+    pub mfa_methods: Option<Vec<String>>,
+    /// Allowed authentication methods (e.g. `["password", "magic_link", "passkey"]`).
+    pub allowed_auth_methods: Option<Vec<String>>,
+    /// Password complexity policy.
+    pub password_policy: Option<PasswordPolicy>,
+    /// Per-tenant access token TTL in microseconds.
+    pub access_token_ttl_micros: Option<i64>,
+    /// Per-tenant refresh token TTL in microseconds.
+    pub refresh_token_ttl_micros: Option<i64>,
+    /// Maximum failed login attempts before lockout.
+    pub max_failed_logins: Option<u32>,
+    /// Lockout duration in microseconds after max failed logins.
+    pub lockout_duration_micros: Option<i64>,
 }
 
 /// A tenant record.
@@ -917,6 +959,16 @@ mod tests {
         assert_eq!(tenant.config(), &config);
         assert_eq!(tenant.created_at(), now);
         assert_eq!(tenant.updated_at(), now);
+
+        // Verify new auth policy fields default to None
+        assert!(config.mfa_required.is_none());
+        assert!(config.mfa_methods.is_none());
+        assert!(config.allowed_auth_methods.is_none());
+        assert!(config.password_policy.is_none());
+        assert!(config.access_token_ttl_micros.is_none());
+        assert!(config.refresh_token_ttl_micros.is_none());
+        assert!(config.max_failed_logins.is_none());
+        assert!(config.lockout_duration_micros.is_none());
     }
 
     #[test]
@@ -961,8 +1013,7 @@ mod tests {
             session_ttl_micros: Some(7_200_000_000),
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
-            email_branding: None,
-            web_theme_css: None,
+            ..TenantConfig::default()
         };
         tenant.set_config(new_config.clone());
         tenant.set_updated_at(Timestamp::from_micros(2_000));

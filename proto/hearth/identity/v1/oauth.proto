@@ -52,6 +52,7 @@ message RegisterClientRequest {
 message UpdateClientRequest {
   optional string client_name = 1;
   repeated string redirect_uris = 2;
+  repeated string grant_types = 3;
 }
 
 // A registered OAuth 2.0 client.

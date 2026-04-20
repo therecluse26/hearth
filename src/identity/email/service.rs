@@ -123,6 +123,33 @@ impl EmailService {
         self.sender.send(&msg)
     }
 
+    /// Sends an organization invitation email.
+    ///
+    /// Contains an acceptance URL and context about who sent the invitation.
+    pub fn send_invitation_email(
+        &self,
+        to: &str,
+        accept_url: &str,
+        org_name: &str,
+        inviter_email: &str,
+        tenant_branding: Option<&EmailBranding>,
+    ) -> Result<(), EmailError> {
+        let branding = self.resolve_branding(tenant_branding);
+        let mut msg = templates::render_invitation(
+            accept_url,
+            org_name,
+            inviter_email,
+            &branding,
+            self.custom_templates.as_ref(),
+        )
+        .or_else(|_| {
+            // Fallback to compiled templates if custom rendering fails
+            templates::render_invitation(accept_url, org_name, inviter_email, &branding, None)
+        })?;
+        msg.to = to.to_string();
+        self.sender.send(&msg)
+    }
+
     /// Sends a test email (admin transport verification).
     ///
     /// Uses the resolved branding to confirm transport configuration works.

@@ -5,6 +5,13 @@
   <h1 class="text-2xl font-semibold text-ht-content-primary">Audit log</h1>
 </div>
 
+{# Flash message #}
+{% match flash_message %}
+  {% when Some with (msg) %}
+  <div class="mb-4 rounded-md bg-success/[0.12] px-4 py-3 text-sm text-success-fg">{{ msg }}</div>
+  {% when None %}
+{% endmatch %}
+
 {# Filter form #}
 <div class="mb-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
   <form method="get" action="/ui/admin/audit"
@@ -19,6 +26,16 @@
     <div class="min-w-0 flex-1">
       <label for="action" class="block text-xs font-medium text-ht-content-muted">Action</label>
       <input type="text" id="action" name="action" value="{{ form_action }}" placeholder="e.g. user_created"
+             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+    </div>
+    <div class="min-w-0 w-36">
+      <label for="start_date" class="block text-xs font-medium text-ht-content-muted">Start date</label>
+      <input type="date" id="start_date" name="start_date" value="{{ form_start_date }}"
+             class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+    </div>
+    <div class="min-w-0 w-36">
+      <label for="end_date" class="block text-xs font-medium text-ht-content-muted">End date</label>
+      <input type="date" id="end_date" name="end_date" value="{{ form_end_date }}"
              class="mt-1 block w-full rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
     <div class="w-24">
@@ -36,6 +53,15 @@
       </div>
     </div>
   </form>
+  <div class="mt-3 border-t border-divider-faint pt-3">
+    <form method="post" action="/ui/admin/audit/verify" class="inline">
+      {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+      <button type="submit"
+              class="rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+        Verify integrity
+      </button>
+    </form>
+  </div>
 </div>
 
 <div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">

@@ -336,6 +336,118 @@ fn render_tera_pair(
     Ok((html, text))
 }
 
+// ===== Invitation templates =====
+
+#[derive(Template)]
+#[template(path = "email/invitation.html")]
+struct InvitationHtml<'a> {
+    accept_url: &'a str,
+    org_name: &'a str,
+    inviter_email: &'a str,
+    product_name: &'a str,
+    logo_url: &'a Option<String>,
+    logo_svg_inline: &'a Option<String>,
+    accent_color: &'a str,
+    support_email: &'a Option<String>,
+    custom_footer_text: &'a Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "email/invitation.txt")]
+struct InvitationText<'a> {
+    accept_url: &'a str,
+    org_name: &'a str,
+    inviter_email: &'a str,
+    product_name: &'a str,
+    support_email: &'a Option<String>,
+    custom_footer_text: &'a Option<String>,
+}
+
+/// Renders an organization invitation email.
+pub(crate) fn render_invitation(
+    accept_url: &str,
+    org_name: &str,
+    inviter_email: &str,
+    branding: &ResolvedBranding,
+    custom: Option<&tera::Tera>,
+) -> Result<EmailMessage, EmailError> {
+    let subject = format!(
+        "You're invited to join {org_name} on {}",
+        branding.product_name
+    );
+
+    let (html_body, text_body) = if let Some(tera) = custom {
+        let mut ctx = tera::Context::new();
+        ctx.insert("accept_url", accept_url);
+        ctx.insert("org_name", org_name);
+        ctx.insert("inviter_email", inviter_email);
+        ctx.insert("product_name", &branding.product_name);
+        ctx.insert("accent_color", &branding.accent_color);
+        ctx.insert("logo_url", &branding.logo_url);
+        ctx.insert("logo_svg_inline", &branding.logo_svg_inline);
+        ctx.insert("support_email", &branding.support_email);
+        ctx.insert("custom_footer_text", &branding.custom_footer_text);
+
+        let html = if tera.get_template_names().any(|n| n == "invitation.html") {
+            tera.render("invitation.html", &ctx)
+                .map_err(|e| EmailError::Template {
+                    reason: format!("tera render invitation.html failed: {e}"),
+                })?
+        } else {
+            return Err(EmailError::Template {
+                reason: "custom template invitation.html not found, falling back to compiled"
+                    .to_string(),
+            });
+        };
+        let text = if tera.get_template_names().any(|n| n == "invitation.txt") {
+            tera.render("invitation.txt", &ctx)
+                .map_err(|e| EmailError::Template {
+                    reason: format!("tera render invitation.txt failed: {e}"),
+                })?
+        } else {
+            return Err(EmailError::Template {
+                reason: "custom template invitation.txt not found, falling back to compiled"
+                    .to_string(),
+            });
+        };
+        (html, text)
+    } else {
+        let html = InvitationHtml {
+            accept_url,
+            org_name,
+            inviter_email,
+            product_name: &branding.product_name,
+            logo_url: &branding.logo_url,
+            logo_svg_inline: &branding.logo_svg_inline,
+            accent_color: &branding.accent_color,
+            support_email: &branding.support_email,
+            custom_footer_text: &branding.custom_footer_text,
+        };
+        let text = InvitationText {
+            accept_url,
+            org_name,
+            inviter_email,
+            product_name: &branding.product_name,
+            support_email: &branding.support_email,
+            custom_footer_text: &branding.custom_footer_text,
+        };
+        let html_str = html.render().map_err(|e| EmailError::Template {
+            reason: format!("askama render invitation.html failed: {e}"),
+        })?;
+        let text_str = text.render().map_err(|e| EmailError::Template {
+            reason: format!("askama render invitation.txt failed: {e}"),
+        })?;
+        (html_str, text_str)
+    };
+
+    Ok(EmailMessage {
+        to: String::new(),
+        subject,
+        text_body,
+        html_body,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
