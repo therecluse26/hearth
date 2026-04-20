@@ -140,6 +140,8 @@ email:
 #   session_ttl: "24h"              # duration: 30s, 5m, 8h, 1d
 #   password_memory_cost: 65536     # Argon2id memory parameter (KiB)
 #   password_time_cost: 3           # Argon2id time parameter (iterations)
+#   mfa_required: false             # require MFA for all users (global default)
+#   passkey_requires_mfa: false     # enforce TOTP even after passkey login (global default)
 
 # --- Tenants ----------------------------------------------------------------
 # Tenants are managed declaratively in this file. On startup, Hearth
@@ -174,6 +176,7 @@ email:
 #       custom_css: /etc/hearth/customer-portal.css   # optional tenant CSS
 #     auth:
 #       mfa_required: true              # require MFA for all users
+#       passkey_requires_mfa: false     # enforce TOTP even after passkey login (regulated environments)
 #       mfa_methods:                    # allowed MFA methods
 #         - totp
 #         - webauthn

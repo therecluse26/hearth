@@ -270,6 +270,8 @@ Global authentication defaults. These apply to all tenants unless overridden per
 | `session_ttl` | duration | `"24h"` | Default session lifetime. |
 | `password_memory_cost` | integer | `65536` | Argon2id memory parameter in KiB (OWASP minimum). |
 | `password_time_cost` | integer | `3` | Argon2id time parameter (iterations). |
+| `mfa_required` | bool | `false` | Whether MFA is required for all users. Per-tenant `auth.mfa_required` overrides. |
+| `passkey_requires_mfa` | bool | `false` | Whether passkey login requires an additional TOTP challenge. Per-tenant `auth.passkey_requires_mfa` overrides. |
 
 ```yaml
 auth:
@@ -348,6 +350,7 @@ Per-tenant authentication policy. These are policy declarations stored in `Tenan
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mfa_required` | bool | `false` | Whether MFA is required for all users in this tenant. |
+| `passkey_requires_mfa` | bool | `false` | Whether passkey (WebAuthn) login still requires a TOTP challenge. Passkeys are inherently multi-factor, but regulated environments (healthcare, finance) may require an additional TOTP step. When `true` and the user has TOTP enrolled, passkey login redirects to the MFA challenge page. When `true` but the user has no TOTP enrolled, login proceeds normally. |
 | `mfa_methods` | list | — | Allowed MFA methods: `"totp"`, `"webauthn"`. |
 | `allowed_auth_methods` | list | — | Allowed login methods: `"password"`, `"magic_link"`, `"passkey"`. |
 | `password_policy` | object | — | Password complexity requirements (see below). |
@@ -493,6 +496,7 @@ tenants:
       theme: cloud
     auth:
       mfa_required: true
+      passkey_requires_mfa: true
       mfa_methods: [totp, webauthn]
       password_policy:
         min_length: 12
@@ -558,4 +562,6 @@ Every field's default value at a glance.
 | `token` | `access_token_ttl` | `"15m"` |
 | `token` | `refresh_token_ttl` | `"7d"` |
 | `auth` | `session_ttl` | `"24h"` |
+| `auth` | `mfa_required` | `false` |
+| `auth` | `passkey_requires_mfa` | `false` |
 | `onboarding` | `enabled` | `true` |

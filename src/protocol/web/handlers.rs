@@ -954,8 +954,38 @@ fn passkey_complete_for_user(
         }
     };
 
+    // Check tenant policy: some regulated environments require TOTP
+    // even after passkey auth despite its inherent multi-factor nature.
+    let require_mfa_after_passkey = tenant
+        .config()
+        .passkey_requires_mfa
+        .unwrap_or(false);
+
+    if require_mfa_after_passkey {
+        let mfa_on = state
+            .identity
+            .mfa_enabled(tenant.id(), auth_result.user_id())
+            .unwrap_or(false);
+        if mfa_on {
+            let cookie = issue_mfa_pending_cookie(
+                &state.cookie_secret,
+                tenant.id(),
+                auth_result.user_id(),
+                None, // no return_to for passkey flow
+            );
+            state.set_current_tenant(tenant.id().clone());
+            let response_json = axum::Json(serde_json::json!({
+                "redirect": "/ui/mfa-challenge",
+            }));
+            let mut response = response_json.into_response();
+            append_cookie(&mut response, &cookie);
+            return response;
+        }
+    }
+
     // Passkey authentication bypasses the TOTP gate — a passkey
     // is inherently multi-factor (possession + biometric/PIN).
+    // Only reached if passkey_requires_mfa is false or user has no MFA enrolled.
     match state
         .identity
         .create_session(tenant.id(), auth_result.user_id())

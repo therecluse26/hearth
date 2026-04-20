@@ -508,6 +508,14 @@ pub struct AuthConfig {
     /// Argon2id time cost (iterations).
     #[serde(default)]
     pub password_time_cost: Option<u32>,
+    /// Whether MFA is required for all users (global default).
+    /// Per-tenant `auth.mfa_required` overrides this.
+    #[serde(default)]
+    pub mfa_required: Option<bool>,
+    /// Whether passkey login still requires a TOTP challenge (global default).
+    /// Per-tenant `auth.passkey_requires_mfa` overrides this.
+    #[serde(default)]
+    pub passkey_requires_mfa: Option<bool>,
 }
 
 /// Per-tenant auth policy configuration in YAML.
@@ -532,6 +540,11 @@ pub struct TenantAuthYaml {
     /// Per-tenant token TTL overrides.
     #[serde(default)]
     pub token: Option<TenantTokenYaml>,
+    /// Whether to enforce TOTP MFA even after passkey authentication.
+    /// Passkeys are inherently multi-factor, but regulated environments
+    /// may require an additional TOTP challenge. Defaults to `false`.
+    #[serde(default)]
+    pub passkey_requires_mfa: Option<bool>,
     /// Per-tenant rate limit overrides.
     #[serde(default)]
     pub rate_limit: Option<RateLimitYaml>,
@@ -732,9 +745,12 @@ impl TenantYamlConfig {
         // Map auth policy fields from the YAML `auth:` block (if present).
         let auth = self.auth.as_ref();
 
-        let mfa_required = auth.and_then(|a| a.mfa_required);
+        let mfa_required = auth.and_then(|a| a.mfa_required).or(global.mfa_required);
         let mfa_methods = auth.and_then(|a| a.mfa_methods.clone());
         let allowed_auth_methods = auth.and_then(|a| a.allowed_auth_methods.clone());
+        let passkey_requires_mfa = auth
+            .and_then(|a| a.passkey_requires_mfa)
+            .or(global.passkey_requires_mfa);
 
         let password_policy = auth.and_then(|a| a.password_policy.as_ref()).map(|pp| {
             crate::identity::PasswordPolicy {
@@ -779,6 +795,7 @@ impl TenantYamlConfig {
             refresh_token_ttl_micros,
             max_failed_logins,
             lockout_duration_micros,
+            passkey_requires_mfa,
         }
     }
 }
@@ -880,6 +897,8 @@ mod tests {
             session_ttl: Some("24h".to_string()),
             password_memory_cost: Some(65536),
             password_time_cost: Some(3),
+            mfa_required: None,
+            passkey_requires_mfa: None,
         };
         let tenant_cfg = TenantYamlConfig {
             session_ttl: Some("12h".to_string()),

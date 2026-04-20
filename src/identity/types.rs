@@ -303,6 +303,10 @@ pub struct TenantConfig {
     pub max_failed_logins: Option<u32>,
     /// Lockout duration in microseconds after max failed logins.
     pub lockout_duration_micros: Option<i64>,
+    /// Whether passkey login still requires a TOTP challenge.
+    /// When `Some(true)`, passkey auth is treated like password auth
+    /// with respect to MFA gating.
+    pub passkey_requires_mfa: Option<bool>,
 }
 
 /// A tenant record.
