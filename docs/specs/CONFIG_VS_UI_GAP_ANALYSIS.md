@@ -30,6 +30,8 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | Per-user org memberships | `list_user_organizations` | NO | N/A | **Add to user detail** |
 | Email verification | `issue_email_verification_token`, `verify_email_token` | NO | N/A | Self-service flow — correct |
 | UserInfo | `userinfo` | NO | N/A | Protocol endpoint — correct |
+| Password change (self-service) | `change_password` | YES (`/ui/account/password`) | N/A | OK — account self-service route exists |
+| TOTP enroll/disable (self-service) | `enroll_totp`, `verify_totp_enrollment`, `totp_disable` | YES (`/ui/account/totp/*`) | N/A | OK — account self-service routes exist |
 
 ### 1.2 Applications (OAuth Clients)
 
@@ -54,7 +56,9 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | List | `list_organizations` | YES | N/A | Keep UI |
 | Slug lookup | `get_organization_by_slug` | YES (implicit) | N/A | OK |
 | Members (add/remove/role) | `add_member`, `remove_member`, `update_member_role`, `get_membership`, `list_members` | YES | N/A | Operational — keep UI |
-| Invitations (create/revoke/list) | `create_invitation`, `accept_invitation`, `revoke_invitation`, `list_invitations` | YES | N/A | Operational — keep UI |
+| Invitations (create/revoke/list) | `create_invitation`, `revoke_invitation`, `list_invitations` | YES (create, revoke, list) | N/A | Operational — keep UI |
+| Invitation acceptance | `accept_invitation` | **NO** — no `/ui/accept-invitation` route exists | N/A | **Add public acceptance route** (token from email link) |
+| Invitation email delivery | N/A (handler has `// TODO`) | **NO** — token generated but never sent | N/A | **Wire to EmailService** |
 | `max_members` config | `OrganizationConfig` struct exists | NO | NO | **YAML config field** |
 | List user's orgs | `list_user_organizations` | NO (only from org detail side) | N/A | **Add to user detail page** |
 
@@ -85,7 +89,21 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | Auth code TTL | `OidcConfig.authorization_code_ttl_secs` (default 600s = 10min) | NO | NO | **Add `oidc:` YAML section** |
 | Nonce enforcement | `OidcConfig.enforce_nonces` (default `false`) | NO | NO | **Add `oidc:` YAML section** |
 
-### 1.6 Sessions
+### 1.6 OIDC Extended Flows
+
+| Capability | Backend Method | Admin UI | YAML Config | Recommendation |
+|---|---|---|---|---|
+| Authorization code flow | `authorize`, `exchange_authorization_code` | NO | N/A | Protocol endpoints — correct |
+| Client credentials flow | `client_credentials_token` | NO | N/A | Protocol endpoint — correct |
+| Device authorization | `device_authorize` | NO | N/A | Protocol endpoint — correct |
+| Device approval (user-facing) | `approve_device` | **NO** — no `/ui/device-approve` route | N/A | **Add user-facing approval page** |
+| Device token polling | `poll_device_token` | NO | N/A | Protocol endpoint — correct |
+| Token revocation | `revoke_token` | NO | N/A | Protocol endpoint — correct |
+| Token introspection | `introspect_token` | NO | N/A | Protocol endpoint — correct |
+| OIDC Discovery | `oidc_discovery` | NO | N/A | Protocol endpoint — correct |
+| JWKS | `jwks`, `tenant_jwks` | NO | N/A | Protocol endpoint — correct |
+
+### 1.7 Sessions (Admin)
 
 | Capability | Backend Method | Admin UI | YAML Config | Recommendation |
 |---|---|---|---|---|
@@ -93,15 +111,16 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | Revoke | `revoke_session` | YES (`admin_session_revoke`) | N/A | OK |
 | Per-user list | `list_sessions_by_user` | NO | N/A | **Add to user detail** (see §1.1) |
 
-### 1.7 Audit
+### 1.8 Audit
 
 | Capability | Backend Method | Admin UI | YAML Config | Recommendation |
 |---|---|---|---|---|
 | Query / list | `audit.query` | YES (`admin_audit_list`) | N/A | OK |
-| Integrity verify | `audit.verify_integrity` | NO | N/A | Could expose in system info |
+| Date range filtering | `AuditQuery.start_time/end_time` fields exist | **NO** — UI has actor/action filters but no date picker | N/A | **Add date range inputs** to audit list |
+| Integrity verify | `audit.verify_integrity` | **NO** | N/A | **Add to system info page** or as admin action |
 | Retention policy | NOT YET | NO | NO | Future: **YAML** |
 
-### 1.8 Zanzibar (Authorization)
+### 1.9 Zanzibar (Authorization)
 
 | Capability | Backend Method | Admin UI | YAML Config | Recommendation |
 |---|---|---|---|---|
@@ -110,6 +129,23 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | Expand | `expand` | NO | N/A | API-only — correct |
 | Watch | `watch` | NO | N/A | API-only — correct |
 | Namespace schemas | Per-tenant JSON via `set_namespace_config` | NO | NO | Future: **YAML** |
+
+### 1.10 Migration
+
+| Capability | Backend Method | Admin UI | YAML Config | Recommendation |
+|---|---|---|---|---|
+| Import tenant | `import_tenant` | NO | N/A | CLI-only (`hearth migrate keycloak`) — correct |
+| Import user | `import_user` | NO | N/A | CLI-only — correct |
+| Import client | `import_client` | NO | N/A | CLI-only — correct |
+
+Migration is inherently a one-time CLI operation. No UI or config surface needed.
+
+### 1.11 Session Filtering (Global Admin)
+
+| Capability | Backend Method | Admin UI | YAML Config | Recommendation |
+|---|---|---|---|---|
+| Filter by user | `list_sessions_by_user` exists | **NO** — global list only, no user filter | N/A | **Add user filter** to session list or see §1.1 per-user |
+| Filter by expiry status | Could derive from `Session.expires_at` | **NO** | N/A | Low priority — nice-to-have |
 
 ---
 
@@ -326,11 +362,43 @@ Backend has `mfa_enabled()` and `disable_mfa()`. Show enrollment status (TOTP en
 - **Template:** search input with `hx-get` to filter the user list
 - **Handler:** extend `admin_users_list` to accept `?q=` query parameter
 
+### P1.5 — Functional Gaps (Missing Flows)
+
+**7. Invitation acceptance page**
+
+`accept_invitation()` is defined on the `IdentityEngine` trait but has no UI route. Currently `admin_org_invite` generates a token and drops it (`_token`) with a `// TODO: send invitation email with token` comment. Two pieces needed:
+
+- **Email delivery:** wire `admin_org_invite` to `EmailService` to send the invitation token link
+- **Acceptance route:** new `GET /ui/accept-invitation?token=...` route that calls `accept_invitation()`, creates a session for the user, and redirects to dashboard
+
+Without this, invitations are a dead end — tokens are generated but never delivered or redeemable.
+
+**8. Device authorization approval page**
+
+`approve_device()` exists in the backend but has no user-facing route. The OAuth 2.0 Device Authorization Grant (RFC 8628) requires a verification page where the user enters the `user_code` displayed on their device.
+
+- **Route:** `GET /ui/device` → form with user_code input; `POST /ui/device` → `approve_device(tenant, user_code, user_id)`
+- **Requires:** authenticated session (user must be logged in)
+
+**9. Audit list: date range filters**
+
+`AuditQuery` has `start_time` and `end_time` fields, but the UI only exposes `actor` and `action` filters. Date range filtering is essential for incident investigation ("show me all events from last Tuesday").
+
+- **Template:** add date inputs to `templates/ui/admin/audit/list.html`
+- **Handler:** pass `start_time`/`end_time` query params to `AuditQuery` in `admin_audit_list`
+
+**10. Audit integrity verification**
+
+`verify_integrity()` exists on `AuditEngine` but is never called from any UI handler. Could be exposed as a button on the system info page or a dedicated admin action.
+
+- **Handler:** new `admin_audit_verify_integrity` POST in `admin.rs`
+- **Template:** result badge (chain valid / chain broken) on audit list or system info page
+
 ### P2 — Low Priority
 
-**7. Application edit: grant types** — Only needed if applications stay UI-managed. Deprioritized if YAML config (Priority 3) is implemented first.
+**11. Application edit: grant types** — Only needed if applications stay UI-managed. Deprioritized if YAML config (Priority 3) is implemented first.
 
-**8. Organization edit: max_members** — Only needed if orgs stay UI-managed. Deprioritized if YAML config (Priority 4) is implemented first.
+**12. Organization edit: max_members** — Only needed if orgs stay UI-managed. Deprioritized if YAML config (Priority 4) is implemented first.
 
 ---
 
@@ -372,6 +440,8 @@ These are runtime/transactional data — cannot be declared statically:
 | B4 | WebAuthn credential list + revoke | `admin.rs`, user detail template | — |
 | B5 | Organization memberships tab | `admin.rs`, user detail template | — |
 | B6 | User list search box | `admin.rs`, `templates/ui/admin/users/list.html` | — |
+| B7 | Audit date range filters | `admin.rs`, `templates/ui/admin/audit/list.html` | — |
+| B8 | Audit integrity verification | `admin.rs`, system info or audit template | — |
 
 ### Phase C: Backend Gaps (required before some config features)
 
@@ -380,13 +450,24 @@ These are runtime/transactional data — cannot be declared statically:
 | C1 | Add `grant_types` to `UpdateClientRequest` | `identity/oidc.rs`, `identity/engine.rs` | — |
 | C2 | Client secret regeneration API | `identity/mod.rs`, `identity/engine.rs` | — |
 
-**Recommended execution:** C1 → A1 → A2 → B1–B3 (parallel) → A3 → A4 → B4–B6 (parallel) → C2
+### Phase D: Missing Functional Flows
+
+| Step | What | Key Files | Depends On |
+|---|---|---|---|
+| D1 | Invitation email delivery | `admin.rs`, `identity/email/service.rs`, new email template | EmailService exists |
+| D2 | Invitation acceptance route | `web/mod.rs`, `handlers.rs`, new template | D1 |
+| D3 | Device authorization approval page | `web/mod.rs`, `handlers.rs`, new template | — |
+
+**Recommended execution:** C1 → A1 → A2 → B1–B3 + D3 (parallel) → D1 → D2 → A3 → A4 → B4–B8 (parallel) → C2
 
 ---
 
 ## 6. Verification Checklist
 
-- [x] Cross-referenced all 69 `IdentityEngine` trait methods against UI handlers and config types
+- [x] Cross-referenced all 81 `IdentityEngine` trait methods against UI handlers and config types
+- [x] Cross-referenced all 3 `AuditEngine` trait methods (append, query, verify_integrity)
+- [x] Cross-referenced all 6 `AuthorizationEngine` trait methods (check, expand, write_tuples, set/get_namespace, watch)
+- [x] Audited all 50+ registered routes in `src/protocol/web/mod.rs`
 - [x] Verified `UpdateClientRequest` fields: only `client_name` and `redirect_uris` (no `grant_types`)
 - [x] Verified `TenantConfig` fields: `session_ttl_micros`, `password_memory_cost`, `password_time_cost`, `email_branding`, `web_theme_css`
 - [x] Verified `TenantYamlConfig` fields: `session_ttl`, `password_memory_cost`, `password_time_cost`, `email`, `web`
@@ -396,3 +477,9 @@ These are runtime/transactional data — cannot be declared statically:
 - [x] Confirmed reconciliation pattern: `reconcile_tenants()` creates/updates/archives based on YAML diff
 - [x] Confirmed admin handler inventory: 30+ handlers, no user detail enhancements (MFA, sessions, WebAuthn)
 - [x] Confirmed user detail template: shows only ID, email, status, edit link, delete button
+- [x] Identified `accept_invitation` dead end: trait method exists, no route, token dropped with TODO comment
+- [x] Identified `approve_device` missing page: backend supports device grant, no user-facing approval UI
+- [x] Identified `AuditQuery.start_time/end_time` unused in UI: filters exist but no date inputs
+- [x] Identified `verify_integrity` unexposed: never called from any admin handler
+- [x] Confirmed account self-service routes exist: `/ui/account/password`, `/ui/account/totp/*`
+- [x] Confirmed migration methods are CLI-only (correct — no UI/config needed)
