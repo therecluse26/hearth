@@ -41,10 +41,10 @@ use crate::config::Config;
 use crate::core::{ClientId, InvitationId, OrganizationId, SessionId, TenantId};
 use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
-    IdentityError, OAuthClient, Organization, OrganizationInvitation, OrganizationMembership,
-    OrganizationRole, OrganizationStatus, Page, RegisterClientRequest, Session, Tenant,
-    TenantStatus, UpdateClientRequest, UpdateOrganizationRequest, UpdateUserRequest, User,
-    UserStatus,
+    IdentityError, OAuthClient, Organization, OrganizationConfig, OrganizationInvitation,
+    OrganizationMembership, OrganizationRole, OrganizationStatus, Page, RegisterClientRequest,
+    Session, Tenant, TenantStatus, UpdateClientRequest, UpdateOrganizationRequest,
+    UpdateUserRequest, User, UserStatus,
 };
 
 use super::auth::{verify_csrf_form_field, RequireAdmin};
@@ -349,6 +349,12 @@ struct UserDetailTemplate {
     webauthn_credentials: Vec<WebAuthnCredRow>,
     org_memberships: Vec<OrgMembershipRow>,
     flash_message: Option<String>,
+    /// Whether the displayed user has the `hearth#admin` role.
+    is_user_admin: bool,
+    /// Formatted creation timestamp.
+    created_at_display: String,
+    /// Formatted last-updated timestamp.
+    updated_at_display: String,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -371,6 +377,7 @@ pub struct UserDetailParams {
 }
 
 /// `GET /ui/admin/users/:id`.
+#[allow(clippy::too_many_lines)]
 pub async fn admin_user_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
@@ -465,6 +472,10 @@ pub async fn admin_user_detail(
         other => other.to_string(),
     });
 
+    let is_user_admin = check_user_admin(&state, &session.tenant_id, &uid);
+    let created_at_display = format_ts(user.created_at());
+    let updated_at_display = format_ts(user.updated_at());
+
     render(&UserDetailTemplate {
         user,
         sessions,
@@ -472,6 +483,9 @@ pub async fn admin_user_detail(
         webauthn_credentials,
         org_memberships,
         flash_message,
+        is_user_admin,
+        created_at_display,
+        updated_at_display,
         chrome: true,
         active: "users",
         user_email: Some(session.user_email.clone()),
@@ -523,8 +537,7 @@ pub async fn admin_user_send_reset(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=reset_sent"))
-        .into_response()
+    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=reset_sent")).into_response()
 }
 
 /// `POST /ui/admin/users/:id/disable-mfa` — disables MFA for the user.
@@ -547,8 +560,7 @@ pub async fn admin_user_disable_mfa(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=mfa_disabled"))
-        .into_response()
+    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=mfa_disabled")).into_response()
 }
 
 /// `POST /ui/admin/users/:id/sessions/:sid/revoke` — revokes a single session.
@@ -571,8 +583,7 @@ pub async fn admin_user_revoke_session(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=session_revoked"))
-        .into_response()
+    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=session_revoked")).into_response()
 }
 
 /// `POST /ui/admin/users/:id/webauthn/:cred_id/revoke` — revokes a `WebAuthn` credential.
@@ -586,8 +597,7 @@ pub async fn admin_user_revoke_webauthn(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    let Ok(cred_id_bytes) =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&cred_id_b64)
+    let Ok(cred_id_bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&cred_id_b64)
     else {
         return super::handlers_common::not_found("Invalid credential ID");
     };
@@ -604,8 +614,7 @@ pub async fn admin_user_revoke_webauthn(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=webauthn_revoked"))
-        .into_response()
+    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=webauthn_revoked")).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -615,12 +624,15 @@ pub async fn admin_user_revoke_webauthn(
 /// Template for `GET /ui/admin/users/:id/edit`.
 #[derive(Template)]
 #[template(path = "ui/admin/users/edit.html")]
+#[allow(clippy::struct_excessive_bools)]
 struct UserEditTemplate {
     user: User,
     error: Option<String>,
     form_email: String,
     form_display_name: String,
     form_status: String,
+    /// Whether the user currently has the `hearth#admin` role.
+    is_user_admin: bool,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -647,24 +659,28 @@ pub async fn admin_user_edit_form(
     };
 
     match state.identity.get_user(&session.tenant_id, &uid) {
-        Ok(Some(user)) => render(&UserEditTemplate {
-            form_email: user.email().to_string(),
-            form_display_name: user.display_name().to_string(),
-            form_status: format!("{:?}", user.status()),
-            user,
-            error: None,
-            chrome: true,
-            active: "users",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: true,
-            product_name: state.product_name.clone(),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
-        }),
+        Ok(Some(user)) => {
+            let is_user_admin = check_user_admin(&state, &session.tenant_id, &uid);
+            render(&UserEditTemplate {
+                form_email: user.email().to_string(),
+                form_display_name: user.display_name().to_string(),
+                form_status: format!("{:?}", user.status()),
+                user,
+                error: None,
+                is_user_admin,
+                chrome: true,
+                active: "users",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: true,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                tenant_theme_css: state.tenant_theme_css(),
+            })
+        }
         Ok(None) => super::handlers_common::not_found("User not found"),
         Err(e) => {
             tracing::warn!(error = %e, "get_user failed");
@@ -682,6 +698,9 @@ pub struct EditUserForm {
     pub display_name: String,
     #[serde(default)]
     pub status: String,
+    /// If present (checkbox checked), the user should have the admin role.
+    #[serde(default)]
+    pub admin: Option<String>,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
 }
@@ -711,6 +730,14 @@ pub async fn admin_user_edit_submit(
 
     match state.identity.update_user(&session.tenant_id, &uid, &req) {
         Ok(_updated) => {
+            // Sync admin role if changed
+            let want_admin = form.admin.is_some();
+            let has_admin = check_user_admin(&state, &session.tenant_id, &uid);
+            if want_admin != has_admin {
+                if let Err(e) = set_user_admin(&state, &session.tenant_id, &uid, want_admin) {
+                    tracing::warn!(error = %e, user_id = %uid, want_admin, "admin role toggle failed");
+                }
+            }
             audit_user_event(&state, &session, &uid, "update");
             Redirect::to(&format!("/ui/admin/users/{}", uid.as_uuid())).into_response()
         }
@@ -808,24 +835,28 @@ fn render_edit_error(
         .flatten();
 
     match user {
-        Some(user) => render(&UserEditTemplate {
-            user,
-            error: Some(msg.to_string()),
-            form_email: form.email.clone(),
-            form_display_name: form.display_name.clone(),
-            form_status: form.status.clone(),
-            chrome: true,
-            active: "users",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: true,
-            product_name: state.product_name.clone(),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
-        }),
+        Some(ref user) => {
+            let is_user_admin = check_user_admin(state, &session.tenant_id, uid);
+            render(&UserEditTemplate {
+                user: user.clone(),
+                error: Some(msg.to_string()),
+                form_email: form.email.clone(),
+                form_display_name: form.display_name.clone(),
+                form_status: form.status.clone(),
+                is_user_admin,
+                chrome: true,
+                active: "users",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: true,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                tenant_theme_css: state.tenant_theme_css(),
+            })
+        }
         None => super::handlers_common::not_found("User not found"),
     }
 }
@@ -923,6 +954,12 @@ pub async fn admin_tenants_list(
 #[template(path = "ui/admin/tenants/detail.html")]
 struct TenantDetailTemplate {
     tenant: Tenant,
+    /// Pre-formatted access token TTL (e.g. "15m", "1h").
+    access_token_ttl_display: Option<String>,
+    /// Pre-formatted refresh token TTL.
+    refresh_token_ttl_display: Option<String>,
+    /// Pre-formatted lockout duration.
+    lockout_duration_display: Option<String>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -948,20 +985,29 @@ pub async fn admin_tenant_detail(
     };
 
     match state.identity.get_tenant(&tenant_id) {
-        Ok(Some(tenant)) => render(&TenantDetailTemplate {
-            tenant,
-            chrome: true,
-            active: "tenants",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: true,
-            product_name: state.product_name.clone(),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
-        }),
+        Ok(Some(tenant)) => {
+            let cfg = tenant.config();
+            let access_token_ttl_display = cfg.access_token_ttl_micros.map(format_micros_human);
+            let refresh_token_ttl_display = cfg.refresh_token_ttl_micros.map(format_micros_human);
+            let lockout_duration_display = cfg.lockout_duration_micros.map(format_micros_human);
+            render(&TenantDetailTemplate {
+                tenant,
+                access_token_ttl_display,
+                refresh_token_ttl_display,
+                lockout_duration_display,
+                chrome: true,
+                active: "tenants",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: true,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                tenant_theme_css: state.tenant_theme_css(),
+            })
+        }
         Ok(None) => super::handlers_common::not_found("Tenant not found"),
         Err(e) => {
             tracing::warn!(error = %e, "get_tenant failed");
@@ -1120,6 +1166,10 @@ struct AppNewTemplate {
     form_client_name: String,
     form_redirect_uris: String,
     form_confidential: bool,
+    grant_auth_code: bool,
+    grant_client_creds: bool,
+    grant_refresh: bool,
+    grant_device: bool,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1143,6 +1193,10 @@ pub async fn admin_app_create_form(
         form_client_name: String::new(),
         form_redirect_uris: String::new(),
         form_confidential: false,
+        grant_auth_code: true,
+        grant_client_creds: false,
+        grant_refresh: false,
+        grant_device: false,
         chrome: true,
         active: "applications",
         user_email: Some(session.user_email.clone()),
@@ -1165,6 +1219,8 @@ pub struct RegisterAppForm {
     pub redirect_uris: String,
     #[serde(default)]
     pub confidential: Option<String>,
+    #[serde(default)]
+    pub grant_types: Option<Vec<String>>,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
 }
@@ -1194,13 +1250,18 @@ pub async fn admin_app_create_submit(
         None
     };
 
+    let grant_types = form
+        .grant_types
+        .clone()
+        .unwrap_or_else(|| vec!["authorization_code".to_string()]);
+
     match state.identity.register_client(
         &session.tenant_id,
         &RegisterClientRequest {
             client_name: form.client_name.clone(),
             redirect_uris: uris.clone(),
             client_secret: secret.clone(),
-            grant_types: vec!["authorization_code".to_string()],
+            grant_types: grant_types.clone(),
         },
     ) {
         Ok(client) => {
@@ -1227,6 +1288,10 @@ pub async fn admin_app_create_submit(
             form_client_name: form.client_name,
             form_redirect_uris: form.redirect_uris,
             form_confidential: is_confidential,
+            grant_auth_code: grant_types.iter().any(|g| g == "authorization_code"),
+            grant_client_creds: grant_types.iter().any(|g| g == "client_credentials"),
+            grant_refresh: grant_types.iter().any(|g| g == "refresh_token"),
+            grant_device: grant_types.iter().any(|g| g == "device_code"),
             chrome: true,
             active: "applications",
             user_email: Some(session.user_email.clone()),
@@ -1246,6 +1311,10 @@ pub async fn admin_app_create_submit(
                 form_client_name: form.client_name,
                 form_redirect_uris: form.redirect_uris,
                 form_confidential: is_confidential,
+                grant_auth_code: grant_types.iter().any(|g| g == "authorization_code"),
+                grant_client_creds: grant_types.iter().any(|g| g == "client_credentials"),
+                grant_refresh: grant_types.iter().any(|g| g == "refresh_token"),
+                grant_device: grant_types.iter().any(|g| g == "device_code"),
                 chrome: true,
                 active: "applications",
                 user_email: Some(session.user_email.clone()),
@@ -1325,11 +1394,16 @@ pub async fn admin_app_detail(
 
 #[derive(Template)]
 #[template(path = "ui/admin/applications/edit.html")]
+#[allow(clippy::struct_excessive_bools)]
 struct AppEditTemplate {
     app: OAuthClient,
     error: Option<String>,
     form_client_name: String,
     form_redirect_uris: String,
+    grant_auth_code: bool,
+    grant_client_creds: bool,
+    grant_refresh: bool,
+    grant_device: bool,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1355,23 +1429,30 @@ pub async fn admin_app_edit_form(
     };
 
     match state.identity.get_client(&session.tenant_id, &client_id) {
-        Ok(Some(app)) => render(&AppEditTemplate {
-            form_client_name: app.client_name().to_string(),
-            form_redirect_uris: app.redirect_uris().join("\n"),
-            app,
-            error: None,
-            chrome: true,
-            active: "applications",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: true,
-            product_name: state.product_name.clone(),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            tenant_theme_css: state.tenant_theme_css(),
-        }),
+        Ok(Some(app)) => {
+            let gt = app.grant_types();
+            render(&AppEditTemplate {
+                form_client_name: app.client_name().to_string(),
+                form_redirect_uris: app.redirect_uris().join("\n"),
+                grant_auth_code: gt.iter().any(|g| g == "authorization_code"),
+                grant_client_creds: gt.iter().any(|g| g == "client_credentials"),
+                grant_refresh: gt.iter().any(|g| g == "refresh_token"),
+                grant_device: gt.iter().any(|g| g == "device_code"),
+                app,
+                error: None,
+                chrome: true,
+                active: "applications",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: true,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                tenant_theme_css: state.tenant_theme_css(),
+            })
+        }
         Ok(None) => super::handlers_common::not_found("Application not found"),
         Err(e) => {
             tracing::warn!(error = %e, "get_client failed");
@@ -1386,6 +1467,8 @@ pub struct EditAppForm {
     pub client_name: String,
     #[serde(default)]
     pub redirect_uris: String,
+    #[serde(default)]
+    pub grant_types: Option<Vec<String>>,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
 }
@@ -1420,7 +1503,7 @@ pub async fn admin_app_edit_submit(
         &UpdateClientRequest {
             client_name: Some(form.client_name.clone()),
             redirect_uris: Some(uris),
-            grant_types: None,
+            grant_types: form.grant_types,
         },
     ) {
         Ok(_) => {
@@ -1467,6 +1550,65 @@ pub async fn admin_app_delete(
         }
         Err(e) => {
             tracing::warn!(error = %e, "delete_client failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// `POST /ui/admin/applications/:id/regenerate-secret`.
+///
+/// Generates a new client secret for a confidential OAuth client.
+/// Redirects back to the detail page with the new secret displayed once.
+pub async fn admin_app_regenerate_secret(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(cid): AxumPath<String>,
+    Form(form): Form<DeleteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let client_id = match cid.parse::<uuid::Uuid>() {
+        Ok(u) => ClientId::new(u),
+        Err(_) => return super::handlers_common::not_found("Application not found"),
+    };
+
+    match state
+        .identity
+        .regenerate_client_secret(&session.tenant_id, &client_id)
+    {
+        Ok(new_secret) => {
+            audit_app_event(&state, &session, &client_id, "update");
+            // Re-fetch the client to render the detail page with the new secret.
+            match state.identity.get_client(&session.tenant_id, &client_id) {
+                Ok(Some(app)) => render(&AppDetailTemplate {
+                    app,
+                    client_secret: Some(new_secret),
+                    chrome: true,
+                    active: "applications",
+                    user_email: Some(session.user_email.clone()),
+                    is_admin: true,
+                    flash: None,
+                    csrf: session.csrf.clone(),
+                    narrow: true,
+                    product_name: state.product_name.clone(),
+                    logo_url: state.logo_url.clone(),
+                    theme_css: state.theme_css.clone(),
+                    tenant_theme_css: state.tenant_theme_css(),
+                }),
+                _ => Redirect::to(&format!("/ui/admin/applications/{}", client_id.as_uuid()))
+                    .into_response(),
+            }
+        }
+        Err(IdentityError::InvalidClient) => {
+            super::handlers_common::not_found("Application not found")
+        }
+        Err(IdentityError::InvalidInput { .. }) => {
+            super::handlers_common::not_found("Cannot regenerate secret for a public client")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "regenerate_client_secret failed");
             super::handlers_common::server_error()
         }
     }
@@ -1534,6 +1676,49 @@ struct SessionListTemplate {
 }
 
 /// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
+/// Checks if a specific user has the `hearth#admin` role.
+fn check_user_admin(
+    state: &Arc<WebState>,
+    tenant_id: &TenantId,
+    user_id: &crate::core::UserId,
+) -> bool {
+    // INVARIANT: "hearth"/"admin" and "user"/<uuid> are valid ObjectRef /
+    // SubjectRef components (ASCII + UUID respectively).
+    #[allow(clippy::unwrap_used)]
+    let obj = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
+    #[allow(clippy::unwrap_used)]
+    let subj = crate::authz::SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
+    state
+        .authz
+        .check(tenant_id, &obj, "admin", &subj, None)
+        .unwrap_or(false)
+}
+
+/// Grants or revokes the `hearth#admin` role for a user.
+fn set_user_admin(
+    state: &Arc<WebState>,
+    tenant_id: &TenantId,
+    user_id: &crate::core::UserId,
+    grant: bool,
+) -> Result<(), crate::authz::AuthzError> {
+    use crate::authz::{RelationshipTuple, TupleWrite};
+    // INVARIANT: same as check_user_admin
+    #[allow(clippy::unwrap_used)]
+    let obj = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
+    #[allow(clippy::unwrap_used)]
+    let subj = crate::authz::SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
+    #[allow(clippy::unwrap_used)]
+    let tuple = RelationshipTuple::new(obj, "admin", subj).unwrap();
+    let op = if grant {
+        TupleWrite::Touch(tuple)
+    } else {
+        TupleWrite::Delete(tuple)
+    };
+    state.authz.write_tuples(tenant_id, &[op])?;
+    Ok(())
+}
+
+/// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
 fn format_ts(ts: crate::core::Timestamp) -> String {
     let secs = ts.as_micros() / 1_000_000;
     let rem = secs % 86400;
@@ -1545,6 +1730,35 @@ fn format_ts(ts: crate::core::Timestamp) -> String {
     // Civil date from Unix day — naive Gregorian.
     let (y, mo, d) = civil_from_days(days);
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02} UTC")
+}
+
+/// Formats a duration in microseconds as a human-readable string.
+///
+/// Examples: `900_000_000` → "15m", `86_400_000_000` → "24h", `3_600_000_000` → "1h".
+fn format_micros_human(micros: i64) -> String {
+    let secs = micros / 1_000_000;
+    if secs <= 0 {
+        return "0s".to_string();
+    }
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let mins = (secs % 3600) / 60;
+    let s = secs % 60;
+
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(format!("{days}d"));
+    }
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if mins > 0 {
+        parts.push(format!("{mins}m"));
+    }
+    if s > 0 || parts.is_empty() {
+        parts.push(format!("{s}s"));
+    }
+    parts.join(" ")
 }
 
 /// Converts a Unix day number to (year, month 1–12, day 1–31).
@@ -1744,7 +1958,9 @@ fn parse_date_to_timestamp(date_str: &str) -> Option<crate::core::Timestamp> {
         y -= 1;
     }
     let days = 365 * y + y / 4 - y / 100 + y / 400 + (153 * (m - 3) + 2) / 5 + day - 719_469;
-    Some(crate::core::Timestamp::from_micros(days * 86_400 * 1_000_000))
+    Some(crate::core::Timestamp::from_micros(
+        days * 86_400 * 1_000_000,
+    ))
 }
 
 #[derive(Template)]
@@ -1870,10 +2086,7 @@ pub async fn admin_audit_verify_integrity(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
 ) -> Response {
-    match state
-        .audit
-        .verify_integrity(&session.tenant_id, None, None)
-    {
+    match state.audit.verify_integrity(&session.tenant_id, None, None) {
         Ok(true) => render(&AuditListTemplate {
             events: Vec::new(),
             form_actor: String::new(),
@@ -1901,7 +2114,10 @@ pub async fn admin_audit_verify_integrity(
             form_start_date: String::new(),
             form_end_date: String::new(),
             form_limit: "50".to_string(),
-            flash_message: Some("Integrity violation detected! The audit chain may have been tampered with.".to_string()),
+            flash_message: Some(
+                "Integrity violation detected! The audit chain may have been tampered with."
+                    .to_string(),
+            ),
             chrome: true,
             active: "audit",
             user_email: Some(session.user_email.clone()),
@@ -2047,6 +2263,7 @@ struct OrgNewTemplate {
     form_name: String,
     form_slug: String,
     form_description: String,
+    form_max_members: Option<u32>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2070,6 +2287,7 @@ pub async fn admin_org_create_form(
         form_name: String::new(),
         form_slug: String::new(),
         form_description: String::new(),
+        form_max_members: None,
         chrome: true,
         active: "organizations",
         user_email: Some(session.user_email.clone()),
@@ -2093,6 +2311,8 @@ pub struct CreateOrgForm {
     pub slug: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub max_members: Option<u32>,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
 }
@@ -2113,13 +2333,17 @@ pub async fn admin_org_create_submit(
         Some(form.description.clone())
     };
 
+    let config = form.max_members.map(|max_members| OrganizationConfig {
+        max_members: Some(max_members),
+    });
+
     match state.identity.create_organization(
         &session.tenant_id,
         &CreateOrganizationRequest {
             name: form.name.clone(),
             slug: form.slug.clone(),
             description,
-            config: None,
+            config,
         },
     ) {
         Ok(org) => {
@@ -2131,6 +2355,7 @@ pub async fn admin_org_create_submit(
             form_name: form.name,
             form_slug: form.slug,
             form_description: form.description,
+            form_max_members: form.max_members,
             chrome: true,
             active: "organizations",
             user_email: Some(session.user_email.clone()),
@@ -2150,6 +2375,7 @@ pub async fn admin_org_create_submit(
                 form_name: form.name,
                 form_slug: form.slug,
                 form_description: form.description,
+                form_max_members: form.max_members,
                 chrome: true,
                 active: "organizations",
                 user_email: Some(session.user_email.clone()),
@@ -2187,6 +2413,7 @@ struct OrgDetailTemplate {
     org: Organization,
     members: Vec<MemberView>,
     invitations: Vec<OrganizationInvitation>,
+    max_members: Option<u32>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2274,10 +2501,13 @@ pub async fn admin_org_detail(
         }
     });
 
+    let max_members = org.config().max_members;
+
     render(&OrgDetailTemplate {
         org,
         members,
         invitations,
+        max_members,
         chrome: true,
         active: "organizations",
         user_email: Some(session.user_email.clone()),
@@ -2305,6 +2535,7 @@ struct OrgEditTemplate {
     form_name: String,
     form_description: String,
     form_status: String,
+    form_max_members: Option<u32>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2334,6 +2565,7 @@ pub async fn admin_org_edit_form(
             form_name: org.name().to_string(),
             form_description: org.description().to_string(),
             form_status: format!("{:?}", org.status()),
+            form_max_members: org.config().max_members,
             org,
             error: None,
             chrome: true,
@@ -2365,6 +2597,8 @@ pub struct EditOrgForm {
     pub description: String,
     #[serde(default)]
     pub status: String,
+    #[serde(default)]
+    pub max_members: Option<u32>,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
 }
@@ -2397,6 +2631,10 @@ pub async fn admin_org_edit_submit(
         Some(form.description.clone())
     };
 
+    let org_config = Some(OrganizationConfig {
+        max_members: form.max_members,
+    });
+
     match state.identity.update_organization(
         &session.tenant_id,
         &org_id,
@@ -2404,7 +2642,7 @@ pub async fn admin_org_edit_submit(
             name: Some(form.name.clone()),
             description,
             status,
-            config: None,
+            config: org_config,
         },
     ) {
         Ok(_) => {
@@ -2652,10 +2890,7 @@ pub async fn admin_org_invite(
                     .get_organization(&session.tenant_id, &org_id)
                     .ok()
                     .flatten()
-                    .map_or_else(
-                        || "your organization".to_string(),
-                        |o| o.name().to_string(),
-                    );
+                    .map_or_else(|| "your organization".to_string(), |o| o.name().to_string());
 
                 let base_url = state
                     .config

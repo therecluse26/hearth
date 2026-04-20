@@ -334,8 +334,7 @@ pub fn router(state: WebState) -> Router {
         .route("/", axum::routing::get(handlers::dashboard))
         .route(
             "/device",
-            axum::routing::get(handlers::device_approve_form)
-                .post(handlers::device_approve_submit),
+            axum::routing::get(handlers::device_approve_form).post(handlers::device_approve_submit),
         )
         .route("/logout", axum::routing::post(handlers::logout_submit))
         .route("/account", axum::routing::get(account::account_index))
@@ -354,6 +353,18 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/account/totp/disable",
             axum::routing::post(account::totp_disable),
+        )
+        .route(
+            "/account/passkeys/register-begin",
+            axum::routing::get(account::passkey_register_begin),
+        )
+        .route(
+            "/account/passkeys/register-complete",
+            axum::routing::post(account::passkey_register_complete),
+        )
+        .route(
+            "/account/passkeys/{cred_id}/delete",
+            axum::routing::post(account::passkey_delete),
         )
         .route("/admin/users", axum::routing::get(admin::admin_users_list))
         .route(
@@ -467,6 +478,10 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/applications/{id}/delete",
             axum::routing::post(admin::admin_app_delete),
+        )
+        .route(
+            "/admin/applications/{id}/regenerate-secret",
+            axum::routing::post(admin::admin_app_regenerate_secret),
         )
         // --- Sessions ---
         .route(

@@ -53,6 +53,7 @@
       {% when Some with (branding) %}
       <div class="col-span-2 mt-2 border-t border-divider-subtle pt-4">
         <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Email Branding</h3>
+        {% if branding.accent_color.is_some() || branding.support_email.is_some() || branding.custom_footer_text.is_some() %}
         <dl class="grid gap-3 sm:grid-cols-2">
           {% match branding.accent_color %}
             {% when Some with (color) %}
@@ -82,6 +83,9 @@
             {% when None %}
           {% endmatch %}
         </dl>
+        {% else %}
+        <p class="text-xs text-ht-content-muted">No overrides configured — inherits global defaults</p>
+        {% endif %}
       </div>
       {% when None %}
       <div class="col-span-2 mt-2 border-t border-divider-subtle pt-4">
@@ -89,6 +93,169 @@
       </div>
     {% endmatch %}
   </dl>
+</div>
+
+{# Auth Policy section — renders all TenantConfig fields not shown above #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <h2 class="mb-4 text-lg font-semibold text-ht-content-primary">Auth Policy</h2>
+  <div class="grid gap-6 sm:grid-cols-2">
+
+    {# ── MFA ── #}
+    <div>
+      <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">MFA</h3>
+      <dl class="space-y-2">
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-ht-content-secondary">Required</dt>
+          <dd class="text-sm text-ht-content-primary">
+            {% match config.mfa_required %}
+              {% when Some with (v) %}{% if v %}Yes{% else %}No{% endif %}
+              {% when None %}Default
+            {% endmatch %}
+          </dd>
+        </div>
+        <div class="flex items-start justify-between gap-2">
+          <dt class="text-sm text-ht-content-secondary">Methods</dt>
+          <dd class="text-right text-sm text-ht-content-primary">
+            {% match config.mfa_methods %}
+              {% when Some with (methods) %}
+                {% if methods.is_empty() %}None{% else %}
+                  {% for m in methods %}
+                    <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">{{ m }}</span>
+                  {% endfor %}
+                {% endif %}
+              {% when None %}Default
+            {% endmatch %}
+          </dd>
+        </div>
+      </dl>
+    </div>
+
+    {# ── Auth Methods ── #}
+    <div>
+      <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Auth Methods</h3>
+      <dl class="space-y-2">
+        <div class="flex items-start justify-between gap-2">
+          <dt class="text-sm text-ht-content-secondary">Allowed</dt>
+          <dd class="text-right text-sm text-ht-content-primary">
+            {% match config.allowed_auth_methods %}
+              {% when Some with (methods) %}
+                {% if methods.is_empty() %}None{% else %}
+                  {% for m in methods %}
+                    <span class="inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-xs font-medium text-steel-fg">{{ m }}</span>
+                  {% endfor %}
+                {% endif %}
+              {% when None %}Default
+            {% endmatch %}
+          </dd>
+        </div>
+      </dl>
+    </div>
+
+    {# ── Password Policy ── #}
+    <div>
+      <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Password Policy</h3>
+      {% match config.password_policy %}
+        {% when Some with (pp) %}
+        <dl class="space-y-2">
+          {% match pp.min_length %}
+            {% when Some with (n) %}
+            <div class="flex items-center justify-between">
+              <dt class="text-sm text-ht-content-secondary">Min length</dt>
+              <dd class="text-sm text-ht-content-primary">{{ n }}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match pp.require_uppercase %}
+            {% when Some with (v) %}
+            <div class="flex items-center justify-between">
+              <dt class="text-sm text-ht-content-secondary">Uppercase</dt>
+              <dd class="text-sm text-ht-content-primary">{% if v %}Required{% else %}Not required{% endif %}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match pp.require_number %}
+            {% when Some with (v) %}
+            <div class="flex items-center justify-between">
+              <dt class="text-sm text-ht-content-secondary">Number</dt>
+              <dd class="text-sm text-ht-content-primary">{% if v %}Required{% else %}Not required{% endif %}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+          {% match pp.require_special %}
+            {% when Some with (v) %}
+            <div class="flex items-center justify-between">
+              <dt class="text-sm text-ht-content-secondary">Special char</dt>
+              <dd class="text-sm text-ht-content-primary">{% if v %}Required{% else %}Not required{% endif %}</dd>
+            </div>
+            {% when None %}
+          {% endmatch %}
+        </dl>
+        {% when None %}
+        <p class="text-sm text-ht-content-muted">Default policy</p>
+      {% endmatch %}
+    </div>
+
+    {# ── Token TTLs ── #}
+    <div>
+      <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Token TTLs</h3>
+      <dl class="space-y-2">
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-ht-content-secondary">Access token</dt>
+          <dd class="text-sm text-ht-content-primary">
+            {% match access_token_ttl_display %}
+              {% when Some with (v) %}{{ v }}
+              {% when None %}Default
+            {% endmatch %}
+          </dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-ht-content-secondary">Refresh token</dt>
+          <dd class="text-sm text-ht-content-primary">
+            {% match refresh_token_ttl_display %}
+              {% when Some with (v) %}{{ v }}
+              {% when None %}Default
+            {% endmatch %}
+          </dd>
+        </div>
+      </dl>
+    </div>
+
+    {# ── Rate Limiting ── #}
+    <div class="sm:col-span-2">
+      <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Rate Limiting</h3>
+      <dl class="flex flex-wrap gap-6">
+        <div class="flex items-center gap-2">
+          <dt class="text-sm text-ht-content-secondary">Max failed logins</dt>
+          <dd class="text-sm text-ht-content-primary">
+            {% match config.max_failed_logins %}
+              {% when Some with (n) %}{{ n }}
+              {% when None %}Default
+            {% endmatch %}
+          </dd>
+        </div>
+        <div class="flex items-center gap-2">
+          <dt class="text-sm text-ht-content-secondary">Lockout duration</dt>
+          <dd class="text-sm text-ht-content-primary">
+            {% match lockout_duration_display %}
+              {% when Some with (v) %}{{ v }}
+              {% when None %}Default
+            {% endmatch %}
+          </dd>
+        </div>
+      </dl>
+    </div>
+
+    {# ── Theme ── #}
+    <div class="sm:col-span-2">
+      <h3 class="mb-3 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Theme</h3>
+      <p class="text-sm text-ht-content-primary">
+        {% match config.web_theme_css %}
+          {% when Some with (_) %}Custom
+          {% when None %}Default
+        {% endmatch %}
+      </p>
+    </div>
+  </div>
 </div>
 
 {# Danger zone — only shown for Archived tenants #}

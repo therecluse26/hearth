@@ -25,6 +25,27 @@
   </p>
 </div>
 
+{% if is_admin %}
+<div class="mb-6 grid gap-4 grid-cols-2 sm:grid-cols-4">
+  <div class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+    <p class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Users</p>
+    <p class="mt-1 text-2xl font-semibold text-ht-content-primary">{{ user_count }}</p>
+  </div>
+  <div class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+    <p class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Tenants</p>
+    <p class="mt-1 text-2xl font-semibold text-ht-content-primary">{{ tenant_count }}</p>
+  </div>
+  <div class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+    <p class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Applications</p>
+    <p class="mt-1 text-2xl font-semibold text-ht-content-primary">{{ app_count }}</p>
+  </div>
+  <div class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+    <p class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Organizations</p>
+    <p class="mt-1 text-2xl font-semibold text-ht-content-primary">{{ org_count }}</p>
+  </div>
+</div>
+{% endif %}
+
 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
   <a href="/ui/account" class="group rounded-lg bg-ht-surface-elevated p-5 ring-1 ring-divider-subtle transition hover:-translate-y-0.5 hover-ring-divider">
     <div class="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-ht-content-brand">

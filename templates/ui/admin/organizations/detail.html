@@ -34,6 +34,10 @@
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Description</dt>
       <dd class="mt-1 text-sm text-ht-content-secondary">{% if org.description().is_empty() %}<span class="text-ht-content-muted">—</span>{% else %}{{ org.description() }}{% endif %}</dd>
     </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Member limit</dt>
+      <dd class="mt-1 text-sm text-ht-content-secondary">{% match max_members %}{% when Some with (n) %}{{ n }}{% when None %}Unlimited{% endmatch %}</dd>
+    </div>
   </dl>
 </div>
 

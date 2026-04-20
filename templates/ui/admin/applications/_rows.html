@@ -13,11 +13,21 @@
       <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-muted">Public</span>
     {% endif %}
   </td>
+  <td class="px-4 py-3">
+    <div class="flex flex-wrap gap-1">
+      {% for gt in app.grant_types() %}
+        <span class="inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-xs font-medium text-steel-fg">{{ gt }}</span>
+      {% endfor %}
+      {% if app.grant_types().is_empty() %}
+        <span class="text-xs text-ht-content-muted">None</span>
+      {% endif %}
+    </div>
+  </td>
   <td class="px-4 py-3 text-right">
     <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}/edit" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
   </td>
 </tr>
 {% endfor %}
 {% if applications.is_empty() %}
-<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-ht-content-muted">No applications registered.</td></tr>
+<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-ht-content-muted">No applications registered.</td></tr>
 {% endif %}

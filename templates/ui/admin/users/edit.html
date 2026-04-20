@@ -41,6 +41,15 @@
       </select>
     </div>
 
+    <div class="flex items-center gap-2 rounded-sm border border-divider bg-ht-surface-elevated px-3 py-3">
+      <input type="checkbox" id="admin" name="admin" value="on" {% if is_user_admin %}checked{% endif %}
+             class="h-4 w-4 rounded border-divider bg-ht-surface-elevated text-ht-content-brand focus:ring-ht-content-brand">
+      <label for="admin" class="text-sm font-medium text-ht-content-secondary">
+        Admin role
+        <span class="font-normal text-ht-content-muted">— grants access to the admin console</span>
+      </label>
+    </div>
+
     <div class="flex items-center gap-3 pt-2">
       <button type="submit"
               class="btn-ember rounded px-4 py-2 text-sm font-semibold">

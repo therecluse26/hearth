@@ -50,6 +50,42 @@
   </dl>
 </div>
 
+{# Regenerate client secret (confidential clients only) #}
+{% if app.is_confidential() %}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle" x-data="{ showRegenDialog: false }">
+  <h2 class="text-base font-semibold text-ht-content-primary">Client secret</h2>
+  <p class="mt-1 text-sm text-ht-content-secondary">Generate a new secret. The current secret will stop working immediately.</p>
+  <button @click="showRegenDialog = true" type="button"
+          class="mt-4 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-semibold text-ht-content-secondary hover-bg-divider">
+    Regenerate secret
+  </button>
+
+  <div x-show="showRegenDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showRegenDialog = false">
+    <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showRegenDialog = false">
+      <h3 class="text-lg font-semibold text-ht-content-primary">Regenerate client secret?</h3>
+      <p class="mt-2 text-sm text-ht-content-muted">This will invalidate the current secret for <strong>{{ app.client_name() }}</strong>. Any integration using the old secret will break.</p>
+      <div class="mt-6 flex justify-end gap-3">
+        <button @click="showRegenDialog = false" type="button"
+                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+          Cancel
+        </button>
+        <form method="post" action="/ui/admin/applications/{{ app.client_id().as_uuid() }}/regenerate-secret">
+          {% match csrf %}
+            {% when Some with (token) %}
+              <input type="hidden" name="_csrf" value="{{ token }}">
+            {% when None %}
+          {% endmatch %}
+          <button type="submit"
+                  class="btn-ember rounded px-4 py-2 text-sm font-semibold">
+            Regenerate
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {# Danger zone #}
 <div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">
   <h2 class="text-base font-semibold text-danger-fg">Danger zone</h2>

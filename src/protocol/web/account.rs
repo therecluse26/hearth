@@ -29,7 +29,7 @@ use serde::Deserialize;
 use qrcode::render::svg;
 use qrcode::QrCode;
 
-use crate::identity::{CleartextPassword, IdentityError};
+use crate::identity::{CleartextPassword, IdentityError, RegistrationOptions};
 
 use super::auth::{verify_csrf_form_field, UiSession};
 use super::templates::{render, Flash};
@@ -49,6 +49,8 @@ struct AccountIndexTemplate {
     password_error: Option<String>,
     /// Whether MFA is currently enabled on the signed-in user.
     mfa_enabled: bool,
+    /// Registered `WebAuthn` / passkey credentials for the current user.
+    passkey_credentials: Vec<PasskeyRow>,
     // Chrome/layout fields.
     chrome: bool,
     active: &'static str,
@@ -63,10 +65,24 @@ struct AccountIndexTemplate {
     tenant_theme_css: Option<String>,
 }
 
+/// A row in the passkey credentials table on the account page.
+struct PasskeyRow {
+    /// Base64url-encoded credential ID (used in delete form actions).
+    id_b64url: String,
+    /// Truncated credential ID for display.
+    id_short: String,
+    /// COSE algorithm identifier (e.g. -7 = ES256).
+    algorithm: i64,
+    /// Whether this is a discoverable (resident key) credential.
+    discoverable: bool,
+}
+
 impl AccountIndexTemplate {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         session: &UiSession,
         mfa_enabled: bool,
+        passkey_credentials: Vec<PasskeyRow>,
         flash: Option<Flash>,
         password_error: Option<String>,
         is_admin: bool,
@@ -76,6 +92,7 @@ impl AccountIndexTemplate {
         Self {
             password_error,
             mfa_enabled,
+            passkey_credentials,
             chrome: true,
             active: "account",
             user_email: Some(session.user_email.clone()),
@@ -97,10 +114,12 @@ pub async fn account_index(State(state): State<Arc<WebState>>, session: UiSessio
         .identity
         .mfa_enabled(&session.tenant_id, &session.user_id)
         .unwrap_or(false);
+    let passkey_credentials = load_passkey_rows(&state, &session);
     let admin = super::handlers::is_admin(&state, &session);
     let mut tmpl = AccountIndexTemplate::new(
         &session,
         mfa_enabled,
+        passkey_credentials,
         None,
         None,
         admin,
@@ -201,10 +220,12 @@ fn render_with_password_error(state: &Arc<WebState>, session: &UiSession, msg: &
         .identity
         .mfa_enabled(&session.tenant_id, &session.user_id)
         .unwrap_or(false);
+    let passkey_credentials = load_passkey_rows(state, session);
     let admin = super::handlers::is_admin(state, session);
     let mut tmpl = AccountIndexTemplate::new(
         session,
         mfa_enabled,
+        passkey_credentials,
         None,
         Some(msg.to_string()),
         admin,
@@ -222,10 +243,12 @@ fn render_with_flash(state: &Arc<WebState>, session: &UiSession, flash: Flash) -
         .identity
         .mfa_enabled(&session.tenant_id, &session.user_id)
         .unwrap_or(false);
+    let passkey_credentials = load_passkey_rows(state, session);
     let admin = super::handlers::is_admin(state, session);
     let mut tmpl = AccountIndexTemplate::new(
         session,
         mfa_enabled,
+        passkey_credentials,
         Some(flash),
         None,
         admin,
@@ -393,10 +416,8 @@ pub async fn totp_enroll_form(State(state): State<Arc<WebState>>, session: UiSes
     let tenant_id = session.tenant_id.clone();
     let user_id = session.user_id.clone();
     let identity = state.identity.clone();
-    let enroll_result = tokio::task::spawn_blocking(move || {
-        identity.enroll_totp(&tenant_id, &user_id)
-    })
-    .await;
+    let enroll_result =
+        tokio::task::spawn_blocking(move || identity.enroll_totp(&tenant_id, &user_id)).await;
 
     let enroll_result = match enroll_result {
         Ok(r) => r,
@@ -627,4 +648,207 @@ fn audit_mfa_event(
         metadata: Some(serde_json::json!({ "via": "ui", "op": op })),
     })?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Passkey / WebAuthn management
+// ---------------------------------------------------------------------------
+
+/// Loads the current user's `WebAuthn` credentials as template rows.
+fn load_passkey_rows(state: &Arc<WebState>, session: &UiSession) -> Vec<PasskeyRow> {
+    state
+        .identity
+        .list_webauthn_credentials(&session.tenant_id, &session.user_id)
+        .unwrap_or_default()
+        .iter()
+        .map(|c| {
+            let id_b64url = c.credential_id_b64url();
+            let id_short = if id_b64url.len() > 16 {
+                format!("{}...", &id_b64url[..16])
+            } else {
+                id_b64url.clone()
+            };
+            PasskeyRow {
+                id_b64url,
+                id_short,
+                algorithm: c.algorithm(),
+                discoverable: c.discoverable(),
+            }
+        })
+        .collect()
+}
+
+/// `GET /ui/account/passkeys/register-begin` — starts a `WebAuthn`
+/// registration ceremony and returns the challenge as JSON.
+pub async fn passkey_register_begin(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    use axum::http::{header, StatusCode};
+    use axum::Json;
+    use base64::Engine as _;
+
+    // Derive RP ID from Host header (strip port if present).
+    let host_str = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let rp_id = host_str
+        .split(':')
+        .next()
+        .unwrap_or("localhost")
+        .to_string();
+
+    let options = RegistrationOptions {
+        rp_id: rp_id.clone(),
+        discoverable: true,
+    };
+
+    match state
+        .identity
+        .start_webauthn_registration(&session.tenant_id, &session.user_id, &options)
+    {
+        Ok(challenge) => {
+            let challenge_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge);
+            let user_id_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(session.user_id.as_uuid().as_bytes());
+            let body = serde_json::json!({
+                "challenge": challenge_b64,
+                "rp": { "id": rp_id, "name": state.product_name },
+                "user": {
+                    "id": user_id_b64,
+                    "name": session.user_email,
+                    "displayName": session.user_email,
+                },
+                "pubKeyCredParams": [
+                    { "type": "public-key", "alg": -7 },   // ES256
+                    { "type": "public-key", "alg": -257 }, // RS256
+                ],
+                "authenticatorSelection": {
+                    "residentKey": "preferred",
+                    "userVerification": "preferred",
+                },
+                "attestation": "none",
+            });
+            Json(body).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "start_webauthn_registration failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Registration unavailable",
+            )
+                .into_response()
+        }
+    }
+}
+
+/// JSON body from the browser `WebAuthn` registration completion.
+#[derive(Debug, Deserialize)]
+pub struct PasskeyRegisterCompleteBody {
+    /// Base64url-encoded `clientDataJSON` from the authenticator.
+    pub client_data_json: String,
+    /// Base64url-encoded `attestationObject` from the authenticator.
+    pub attestation_object: String,
+}
+
+/// `POST /ui/account/passkeys/register-complete` — completes the
+/// `WebAuthn` registration ceremony and stores the credential.
+pub async fn passkey_register_complete(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<PasskeyRegisterCompleteBody>,
+) -> Response {
+    use axum::http::{header, StatusCode};
+    use base64::Engine as _;
+
+    let Ok(client_data_json) =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&body.client_data_json)
+    else {
+        return (StatusCode::BAD_REQUEST, "Invalid client_data_json").into_response();
+    };
+    let Ok(attestation_object) =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&body.attestation_object)
+    else {
+        return (StatusCode::BAD_REQUEST, "Invalid attestation_object").into_response();
+    };
+
+    // Derive origin from Host header.
+    let host_str = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = if host_str.starts_with("localhost") || host_str.starts_with("127.0.0.1") {
+        "http"
+    } else {
+        "https"
+    };
+    let origin = format!("{scheme}://{host_str}");
+
+    match state.identity.complete_webauthn_registration(
+        &session.tenant_id,
+        &session.user_id,
+        &client_data_json,
+        &attestation_object,
+        &origin,
+        true, // discoverable
+    ) {
+        Ok(_cred) => {
+            if let Err(e) = audit_mfa_event(&state, &session, "passkey_register") {
+                tracing::warn!(error = %e, "passkey register audit append failed");
+            }
+            (StatusCode::OK, "OK").into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "complete_webauthn_registration failed");
+            (StatusCode::BAD_REQUEST, "Registration failed").into_response()
+        }
+    }
+}
+
+/// `application/x-www-form-urlencoded` body for passkey deletion.
+#[derive(Debug, Deserialize)]
+pub struct DeletePasskeyForm {
+    /// CSRF double-submit token.
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/account/passkeys/:cred_id/delete` — revokes the user's
+/// own passkey credential.
+pub async fn passkey_delete(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    axum::extract::Path(cred_id_b64): axum::extract::Path<String>,
+    Form(form): Form<DeletePasskeyForm>,
+) -> Response {
+    use base64::Engine as _;
+
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let Ok(cred_id_bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&cred_id_b64)
+    else {
+        return Redirect::to("/ui/account").into_response();
+    };
+
+    match state.identity.revoke_webauthn_credential(
+        &session.tenant_id,
+        &session.user_id,
+        &cred_id_bytes,
+    ) {
+        Ok(()) => {
+            if let Err(e) = audit_mfa_event(&state, &session, "passkey_revoke") {
+                tracing::warn!(error = %e, "passkey revoke audit append failed");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "revoke_webauthn_credential failed");
+        }
+    }
+
+    Redirect::to("/ui/account").into_response()
 }

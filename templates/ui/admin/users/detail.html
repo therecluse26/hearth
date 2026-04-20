@@ -2,10 +2,13 @@
 {% block title %}Hearth · {{ user.display_name() }}{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <div>
+  <div class="flex items-center gap-3">
     <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ user.display_name() }}</h1>
-    <p class="mt-1 text-sm text-ht-content-muted">{{ user.email() }}</p>
+    {% if is_user_admin %}
+      <span class="inline-flex items-center rounded-full bg-violet-bg px-2.5 py-0.5 text-xs font-semibold text-violet-fg">Admin</span>
+    {% endif %}
   </div>
+  <p class="mt-1 text-sm text-ht-content-muted">{{ user.email() }}</p>
   <div class="flex items-center gap-2">
     <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
        class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
@@ -43,6 +46,14 @@
           <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Pending</span>
         {% endif %}
       </dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Created</dt>
+      <dd class="mt-1 text-sm text-ht-content-muted">{{ created_at_display }}</dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Updated</dt>
+      <dd class="mt-1 text-sm text-ht-content-muted">{{ updated_at_display }}</dd>
     </div>
   </dl>
 </div>

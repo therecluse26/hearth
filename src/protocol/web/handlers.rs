@@ -231,6 +231,11 @@ struct DashboardTemplate {
     theme_css: String,
     tenant_theme_css: Option<String>,
     config_warnings: Vec<crate::config::EnvVarWarning>,
+    /// Entity counts for the admin stats row.
+    user_count: usize,
+    tenant_count: usize,
+    app_count: usize,
+    org_count: usize,
 }
 
 /// Invalid / expired / malformed verification link page.
@@ -864,6 +869,34 @@ pub async fn dashboard(
     } else {
         Vec::new()
     };
+
+    // Count entities for admin stats. Non-fatal — defaults to 0.
+    let (user_count, tenant_count, app_count, org_count) = if is_admin {
+        let uc = state
+            .identity
+            .list_users(&session.tenant_id, None, 10_000)
+            .map(|p| p.items.len())
+            .unwrap_or(0);
+        let tc = state
+            .identity
+            .list_tenants(None, 10_000)
+            .map(|p| p.items.len())
+            .unwrap_or(0);
+        let ac = state
+            .identity
+            .list_clients(&session.tenant_id, None, 10_000)
+            .map(|p| p.items.len())
+            .unwrap_or(0);
+        let oc = state
+            .identity
+            .list_organizations(&session.tenant_id, None, 10_000)
+            .map(|p| p.items.len())
+            .unwrap_or(0);
+        (uc, tc, ac, oc)
+    } else {
+        (0, 0, 0, 0)
+    };
+
     render(&DashboardTemplate {
         chrome: true,
         active: "dashboard",
@@ -877,6 +910,10 @@ pub async fn dashboard(
         theme_css: state.theme_css.clone(),
         tenant_theme_css: state.tenant_theme_css(),
         config_warnings,
+        user_count,
+        tenant_count,
+        app_count,
+        org_count,
     })
 }
 
@@ -1448,10 +1485,7 @@ pub async fn accept_invitation_page(
                 .get_organization(tenant.id(), membership.org_id())
                 .ok()
                 .flatten()
-                .map_or_else(
-                    || "the organization".to_string(),
-                    |o| o.name().to_string(),
-                );
+                .map_or_else(|| "the organization".to_string(), |o| o.name().to_string());
 
             return render(&AcceptInvitationTemplate {
                 success: true,
