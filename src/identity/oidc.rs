@@ -761,7 +761,7 @@ mod tests {
                 "authorization_code".to_string(),
                 "client_credentials".to_string(),
             ],
-            registration_endpoint: Some("https://hearth.local/register".to_string()),
+            registration_endpoint: None,
             device_authorization_endpoint: Some(
                 "https://hearth.local/device/authorize".to_string(),
             ),

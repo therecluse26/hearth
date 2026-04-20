@@ -59,4 +59,39 @@
     </div>
   </form>
 </div>
+
+{# Organizations section #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <h2 class="mb-4 text-lg font-semibold text-ht-content-primary">Organizations</h2>
+  {% if org_memberships.is_empty() %}
+    <p class="text-sm text-ht-content-muted">This user is not a member of any organization.</p>
+  {% else %}
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Organization</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in org_memberships %}
+      <tr class="border-b border-divider-faint">
+        <td class="px-3 py-2">
+          <a href="/ui/admin/organizations/{{ m.org_id }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ m.org_name }}</a>
+        </td>
+        <td class="px-3 py-2">
+          {% if m.role|fmt("{:?}") == "Owner" %}
+            <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Owner</span>
+          {% else if m.role|fmt("{:?}") == "Admin" %}
+            <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Admin</span>
+          {% else %}
+            <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">Member</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
 {% endblock %}

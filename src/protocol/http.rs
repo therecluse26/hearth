@@ -312,7 +312,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(device_authorization),
         )
         .route("/userinfo", axum::routing::get(userinfo))
-        .route("/register", axum::routing::post(dynamic_register_client))
         .nest("/admin", admin_routes)
         .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
@@ -1080,60 +1079,6 @@ async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
             Json(proto_to_rest_json(&pb::UserInfoResponse::from(&info))),
         )
             .into_response(),
-        Err(e) => identity_error_to_response(&e).into_response(),
-    }
-}
-
-// === Dynamic Client Registration (RFC 7591) ===
-
-/// POST /register — dynamically register a new OAuth 2.0 client.
-/// Request body for dynamic client registration (RFC 7591).
-///
-/// Uses a custom struct because RFC 7591 fields are all optional.
-#[derive(Debug, Deserialize)]
-struct HttpDynamicRegisterRequest {
-    /// Human-readable client name.
-    client_name: Option<String>,
-    /// Redirect URIs for the client.
-    redirect_uris: Option<Vec<String>>,
-    /// Grant types the client will use.
-    grant_types: Option<Vec<String>>,
-}
-
-async fn dynamic_register_client(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<HttpDynamicRegisterRequest>,
-) -> impl IntoResponse {
-    let realm_id = match extract_realm_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
-    };
-
-    let request = crate::identity::RegisterClientRequest {
-        client_name: body.client_name.unwrap_or_default(),
-        redirect_uris: body.redirect_uris.unwrap_or_default(),
-        client_secret: None, // Dynamic registration creates public clients
-        grant_types: body
-            .grant_types
-            .unwrap_or_else(|| vec!["authorization_code".to_string()]),
-    };
-
-    match state.identity.register_client(&realm_id, &request) {
-        Ok(client) => {
-            // RFC 7591 response includes registration_client_uri, not in proto
-            let mut resp = proto_to_rest_json(&pb::OAuthClient::from(&client));
-            if let Some(obj) = resp.as_object_mut() {
-                obj.insert(
-                    "registration_client_uri".to_string(),
-                    serde_json::Value::String(format!(
-                        "/register/{}",
-                        client.client_id().as_uuid()
-                    )),
-                );
-            }
-            (StatusCode::CREATED, Json(resp)).into_response()
-        }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }

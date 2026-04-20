@@ -28,10 +28,12 @@
 //!   form.
 //! * `POST /ui/admin/applications/:id/delete` — delete application.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::{Path as AxumPath, Query, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use base64::Engine as _;
@@ -43,8 +45,7 @@ use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
     IdentityError, OAuthClient, Organization, OrganizationConfig, OrganizationInvitation,
     OrganizationMembership, OrganizationRole, OrganizationStatus, Page, Realm, RealmStatus,
-    RegisterClientRequest, Session, UpdateClientRequest, UpdateOrganizationRequest,
-    UpdateUserRequest, User, UserStatus,
+    Session, UpdateOrganizationRequest, UpdateUserRequest, User, UserStatus,
 };
 
 use super::auth::{verify_csrf_form_field, RequireAdmin};
@@ -639,6 +640,8 @@ struct UserEditTemplate {
     form_status: String,
     /// Whether the user currently has the `hearth#admin` role.
     is_user_admin: bool,
+    /// Organizations this user belongs to (read-only display).
+    org_memberships: Vec<UserOrgView>,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -651,6 +654,16 @@ struct UserEditTemplate {
     logo_url: String,
     theme_css: String,
     realm_theme_css: Option<String>,
+}
+
+/// View model for a user's organization membership (displayed on user edit page).
+pub struct UserOrgView {
+    /// The organization name.
+    pub org_name: String,
+    /// The organization UUID (for linking to detail page).
+    pub org_id: String,
+    /// The user's role in the organization.
+    pub role: OrganizationRole,
 }
 
 /// `GET /ui/admin/users/:id/edit`.
@@ -667,6 +680,7 @@ pub async fn admin_user_edit_form(
     match state.identity.get_user(&session.realm_id, &uid) {
         Ok(Some(user)) => {
             let is_user_admin = check_user_admin(&state, &session.realm_id, &uid);
+            let org_memberships = resolve_user_org_memberships(&state, &session.realm_id, &uid);
             render(&UserEditTemplate {
                 form_email: user.email().to_string(),
                 form_display_name: user.display_name().to_string(),
@@ -674,6 +688,7 @@ pub async fn admin_user_edit_form(
                 user,
                 error: None,
                 is_user_admin,
+                org_memberships,
                 chrome: true,
                 active: "users",
                 user_email: Some(session.user_email.clone()),
@@ -843,6 +858,7 @@ fn render_edit_error(
     match user {
         Some(ref user) => {
             let is_user_admin = check_user_admin(state, &session.realm_id, uid);
+            let org_memberships = resolve_user_org_memberships(state, &session.realm_id, uid);
             render(&UserEditTemplate {
                 user: user.clone(),
                 error: Some(msg.to_string()),
@@ -850,6 +866,7 @@ fn render_edit_error(
                 form_display_name: form.display_name.clone(),
                 form_status: form.status.clone(),
                 is_user_admin,
+                org_memberships,
                 chrome: true,
                 active: "users",
                 user_email: Some(session.user_email.clone()),
@@ -1161,184 +1178,7 @@ pub async fn admin_apps_list(
 }
 
 // ---------------------------------------------------------------------------
-// Register application
-// ---------------------------------------------------------------------------
-
-#[derive(Template)]
-#[template(path = "ui/admin/applications/new.html")]
-#[allow(clippy::struct_excessive_bools)]
-struct AppNewTemplate {
-    error: Option<String>,
-    form_client_name: String,
-    form_redirect_uris: String,
-    form_confidential: bool,
-    grant_auth_code: bool,
-    grant_client_creds: bool,
-    grant_refresh: bool,
-    grant_device: bool,
-    chrome: bool,
-    active: &'static str,
-    user_email: Option<String>,
-    is_admin: bool,
-    flash: Option<Flash>,
-    csrf: Option<String>,
-    narrow: bool,
-    product_name: String,
-    logo_url: String,
-    theme_css: String,
-    realm_theme_css: Option<String>,
-}
-
-/// `GET /ui/admin/applications/new`.
-pub async fn admin_app_create_form(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-) -> Response {
-    render(&AppNewTemplate {
-        error: None,
-        form_client_name: String::new(),
-        form_redirect_uris: String::new(),
-        form_confidential: false,
-        grant_auth_code: true,
-        grant_client_creds: false,
-        grant_refresh: false,
-        grant_device: false,
-        chrome: true,
-        active: "applications",
-        user_email: Some(session.user_email.clone()),
-        is_admin: true,
-        flash: None,
-        csrf: session.csrf.clone(),
-        narrow: true,
-        product_name: state.product_name.clone(),
-        logo_url: state.logo_url.clone(),
-        theme_css: state.theme_css.clone(),
-        realm_theme_css: state.realm_theme_css(),
-    })
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RegisterAppForm {
-    #[serde(default)]
-    pub client_name: String,
-    #[serde(default)]
-    pub redirect_uris: String,
-    #[serde(default)]
-    pub confidential: Option<String>,
-    #[serde(default)]
-    pub grant_types: Option<Vec<String>>,
-    #[serde(rename = "_csrf", default)]
-    pub csrf: String,
-}
-
-/// `POST /ui/admin/applications/new`.
-pub async fn admin_app_create_submit(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    Form(form): Form<RegisterAppForm>,
-) -> Response {
-    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
-        return resp;
-    }
-
-    let uris: Vec<String> = form
-        .redirect_uris
-        .lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect();
-
-    let is_confidential = form.confidential.as_deref() == Some("true");
-    let secret = if is_confidential {
-        Some(uuid::Uuid::new_v4().to_string())
-    } else {
-        None
-    };
-
-    let grant_types = form
-        .grant_types
-        .clone()
-        .unwrap_or_else(|| vec!["authorization_code".to_string()]);
-
-    match state.identity.register_client(
-        &session.realm_id,
-        &RegisterClientRequest {
-            client_name: form.client_name.clone(),
-            redirect_uris: uris.clone(),
-            client_secret: secret.clone(),
-            grant_types: grant_types.clone(),
-        },
-    ) {
-        Ok(client) => {
-            audit_app_event(&state, &session, client.client_id(), "create");
-            // Show the detail page with the one-time client secret.
-            render(&AppDetailTemplate {
-                app: client,
-                client_secret: secret,
-                chrome: true,
-                active: "applications",
-                user_email: Some(session.user_email.clone()),
-                is_admin: true,
-                flash: None,
-                csrf: session.csrf.clone(),
-                narrow: true,
-                product_name: state.product_name.clone(),
-                logo_url: state.logo_url.clone(),
-                theme_css: state.theme_css.clone(),
-                realm_theme_css: state.realm_theme_css(),
-            })
-        }
-        Err(IdentityError::InvalidInput { reason }) => render(&AppNewTemplate {
-            error: Some(reason),
-            form_client_name: form.client_name,
-            form_redirect_uris: form.redirect_uris,
-            form_confidential: is_confidential,
-            grant_auth_code: grant_types.iter().any(|g| g == "authorization_code"),
-            grant_client_creds: grant_types.iter().any(|g| g == "client_credentials"),
-            grant_refresh: grant_types.iter().any(|g| g == "refresh_token"),
-            grant_device: grant_types.iter().any(|g| g == "device_code"),
-            chrome: true,
-            active: "applications",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: true,
-            product_name: state.product_name.clone(),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            realm_theme_css: state.realm_theme_css(),
-        }),
-        Err(e) => {
-            tracing::warn!(error = %e, "register_client failed");
-            render(&AppNewTemplate {
-                error: Some("Unable to register application right now.".to_string()),
-                form_client_name: form.client_name,
-                form_redirect_uris: form.redirect_uris,
-                form_confidential: is_confidential,
-                grant_auth_code: grant_types.iter().any(|g| g == "authorization_code"),
-                grant_client_creds: grant_types.iter().any(|g| g == "client_credentials"),
-                grant_refresh: grant_types.iter().any(|g| g == "refresh_token"),
-                grant_device: grant_types.iter().any(|g| g == "device_code"),
-                chrome: true,
-                active: "applications",
-                user_email: Some(session.user_email.clone()),
-                is_admin: true,
-                flash: None,
-                csrf: session.csrf.clone(),
-                narrow: true,
-                product_name: state.product_name.clone(),
-                logo_url: state.logo_url.clone(),
-                theme_css: state.theme_css.clone(),
-                realm_theme_css: state.realm_theme_css(),
-            })
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Application detail
+// Application detail (read-only — apps managed via hearth.yaml)
 // ---------------------------------------------------------------------------
 
 #[derive(Template)]
@@ -1389,173 +1229,6 @@ pub async fn admin_app_detail(
         Ok(None) => super::handlers_common::not_found("Application not found"),
         Err(e) => {
             tracing::warn!(error = %e, "get_client failed");
-            super::handlers_common::server_error()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Edit application
-// ---------------------------------------------------------------------------
-
-#[derive(Template)]
-#[template(path = "ui/admin/applications/edit.html")]
-#[allow(clippy::struct_excessive_bools)]
-struct AppEditTemplate {
-    app: OAuthClient,
-    error: Option<String>,
-    form_client_name: String,
-    form_redirect_uris: String,
-    grant_auth_code: bool,
-    grant_client_creds: bool,
-    grant_refresh: bool,
-    grant_device: bool,
-    chrome: bool,
-    active: &'static str,
-    user_email: Option<String>,
-    is_admin: bool,
-    flash: Option<Flash>,
-    csrf: Option<String>,
-    narrow: bool,
-    product_name: String,
-    logo_url: String,
-    theme_css: String,
-    realm_theme_css: Option<String>,
-}
-
-/// `GET /ui/admin/applications/:id/edit`.
-pub async fn admin_app_edit_form(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    AxumPath(cid): AxumPath<String>,
-) -> Response {
-    let client_id = match cid.parse::<uuid::Uuid>() {
-        Ok(u) => ClientId::new(u),
-        Err(_) => return super::handlers_common::not_found("Application not found"),
-    };
-
-    match state.identity.get_client(&session.realm_id, &client_id) {
-        Ok(Some(app)) => {
-            let gt = app.grant_types();
-            render(&AppEditTemplate {
-                form_client_name: app.client_name().to_string(),
-                form_redirect_uris: app.redirect_uris().join("\n"),
-                grant_auth_code: gt.iter().any(|g| g == "authorization_code"),
-                grant_client_creds: gt.iter().any(|g| g == "client_credentials"),
-                grant_refresh: gt.iter().any(|g| g == "refresh_token"),
-                grant_device: gt.iter().any(|g| g == "device_code"),
-                app,
-                error: None,
-                chrome: true,
-                active: "applications",
-                user_email: Some(session.user_email.clone()),
-                is_admin: true,
-                flash: None,
-                csrf: session.csrf.clone(),
-                narrow: true,
-                product_name: state.product_name.clone(),
-                logo_url: state.logo_url.clone(),
-                theme_css: state.theme_css.clone(),
-                realm_theme_css: state.realm_theme_css(),
-            })
-        }
-        Ok(None) => super::handlers_common::not_found("Application not found"),
-        Err(e) => {
-            tracing::warn!(error = %e, "get_client failed");
-            super::handlers_common::server_error()
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct EditAppForm {
-    #[serde(default)]
-    pub client_name: String,
-    #[serde(default)]
-    pub redirect_uris: String,
-    #[serde(default)]
-    pub grant_types: Option<Vec<String>>,
-    #[serde(rename = "_csrf", default)]
-    pub csrf: String,
-}
-
-/// `POST /ui/admin/applications/:id/edit`.
-pub async fn admin_app_edit_submit(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    AxumPath(cid): AxumPath<String>,
-    Form(form): Form<EditAppForm>,
-) -> Response {
-    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
-        return resp;
-    }
-
-    let client_id = match cid.parse::<uuid::Uuid>() {
-        Ok(u) => ClientId::new(u),
-        Err(_) => return super::handlers_common::not_found("Application not found"),
-    };
-
-    let uris: Vec<String> = form
-        .redirect_uris
-        .lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect();
-
-    match state.identity.update_client(
-        &session.realm_id,
-        &client_id,
-        &UpdateClientRequest {
-            client_name: Some(form.client_name.clone()),
-            redirect_uris: Some(uris),
-            grant_types: form.grant_types,
-        },
-    ) {
-        Ok(_) => {
-            audit_app_event(&state, &session, &client_id, "update");
-            Redirect::to(&format!("/ui/admin/applications/{}", client_id.as_uuid())).into_response()
-        }
-        Err(IdentityError::InvalidClient) => {
-            super::handlers_common::not_found("Application not found")
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "update_client failed");
-            super::handlers_common::server_error()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Delete application
-// ---------------------------------------------------------------------------
-
-/// `POST /ui/admin/applications/:id/delete`.
-pub async fn admin_app_delete(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    AxumPath(cid): AxumPath<String>,
-    Form(form): Form<DeleteForm>,
-) -> Response {
-    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
-        return resp;
-    }
-
-    let client_id = match cid.parse::<uuid::Uuid>() {
-        Ok(u) => ClientId::new(u),
-        Err(_) => return super::handlers_common::not_found("Application not found"),
-    };
-
-    match state.identity.delete_client(&session.realm_id, &client_id) {
-        Ok(()) => {
-            audit_app_event(&state, &session, &client_id, "delete");
-            Redirect::to("/ui/admin/applications").into_response()
-        }
-        Err(IdentityError::InvalidClient) => {
-            super::handlers_common::not_found("Application not found")
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "delete_client failed");
             super::handlers_common::server_error()
         }
     }
@@ -1702,6 +1375,39 @@ fn check_user_admin(
         .authz
         .check(realm_id, &obj, "admin", &subj, None)
         .unwrap_or(false)
+}
+
+/// Resolves the list of organizations a user belongs to (for display on the user edit page).
+fn resolve_user_org_memberships(
+    state: &Arc<WebState>,
+    realm_id: &RealmId,
+    user_id: &crate::core::UserId,
+) -> Vec<UserOrgView> {
+    let memberships = state
+        .identity
+        .list_user_organizations(realm_id, user_id, None, 50)
+        .map(|p| p.items)
+        .unwrap_or_default();
+
+    memberships
+        .into_iter()
+        .map(|m| {
+            let org_name = state
+                .identity
+                .get_organization(realm_id, m.org_id())
+                .ok()
+                .flatten()
+                .map_or_else(
+                    || m.org_id().as_uuid().to_string(),
+                    |o| o.name().to_string(),
+                );
+            UserOrgView {
+                org_name,
+                org_id: m.org_id().as_uuid().to_string(),
+                role: m.role(),
+            }
+        })
+        .collect()
 }
 
 /// Grants or revokes the `hearth#admin` role for a user.
@@ -2768,6 +2474,192 @@ pub async fn admin_org_add_member(
 }
 
 // ---------------------------------------------------------------------------
+// Member picker modal (HTMX)
+// ---------------------------------------------------------------------------
+
+/// Template for the full member picker modal (initial load).
+#[derive(Template)]
+#[template(path = "ui/admin/organizations/_member_modal.html")]
+#[allow(dead_code)]
+struct MemberPickerModalTemplate {
+    org_id: String,
+    users: Vec<User>,
+    query: String,
+    next_cursor: Option<String>,
+    csrf: Option<String>,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// Template for the picker rows partial (pagination/search updates).
+#[derive(Template)]
+#[template(path = "ui/admin/organizations/_member_picker_rows.html")]
+#[allow(dead_code)]
+struct MemberPickerRowsTemplate {
+    org_id: String,
+    users: Vec<User>,
+    query: String,
+    next_cursor: Option<String>,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// Query params for member picker.
+#[derive(Debug, Deserialize)]
+pub struct MemberPickerParams {
+    /// Search query.
+    #[serde(default)]
+    pub q: String,
+    /// Pagination cursor.
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// `GET /ui/admin/organizations/:id/members/picker` — HTMX modal or rows partial.
+pub async fn admin_org_member_picker(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+    Query(params): Query<MemberPickerParams>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let query = params.q.trim().to_string();
+    let page = if query.len() >= 2 {
+        state
+            .identity
+            .search_users(&session.realm_id, &query, 20)
+            .map(|users| Page {
+                items: users,
+                next_cursor: None,
+            })
+    } else {
+        state
+            .identity
+            .list_users(&session.realm_id, params.cursor.as_deref(), 20)
+    };
+
+    let (users, next_cursor) = match page {
+        Ok(p) => (p.items, p.next_cursor),
+        Err(e) => {
+            tracing::warn!(error = %e, "member picker list_users failed");
+            (Vec::new(), None)
+        }
+    };
+
+    let org_id_str = org_id.as_uuid().to_string();
+
+    // If request has HX-Target=picker-results, return only the rows partial.
+    // Otherwise return the full modal (initial open).
+    let is_rows_only = headers
+        .get("HX-Target")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == "picker-results");
+
+    if is_rows_only {
+        render(&MemberPickerRowsTemplate {
+            org_id: org_id_str,
+            users,
+            query,
+            next_cursor,
+            product_name: String::new(),
+            logo_url: String::new(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: None,
+        })
+    } else {
+        render(&MemberPickerModalTemplate {
+            org_id: org_id_str,
+            users,
+            query,
+            next_cursor,
+            csrf: session.csrf.clone(),
+            product_name: String::new(),
+            logo_url: String::new(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bulk add members
+// ---------------------------------------------------------------------------
+
+/// Form data for `POST /ui/admin/organizations/:id/members/bulk`.
+#[derive(Debug, Deserialize)]
+pub struct BulkAddMembersForm {
+    /// Selected user IDs (multiple values from checkboxes).
+    #[serde(default)]
+    pub user_ids: Vec<String>,
+    /// Role to assign to all selected users.
+    #[serde(default)]
+    pub role: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/:id/members/bulk` — add multiple members at once.
+pub async fn admin_org_bulk_add_members(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(oid): AxumPath<String>,
+    Form(form): Form<BulkAddMembersForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    if form.user_ids.is_empty() {
+        return org_redirect_flash(&org_id, "No users selected", "error");
+    }
+
+    let role = parse_org_role(&form.role);
+    let mut added = 0u32;
+    let mut skipped = 0u32;
+
+    for uid_str in &form.user_ids {
+        let Ok(u) = uid_str.trim().parse::<uuid::Uuid>() else {
+            skipped += 1;
+            continue;
+        };
+        let user_id = crate::core::UserId::new(u);
+
+        match state
+            .identity
+            .add_member(&session.realm_id, &org_id, &user_id, role)
+        {
+            Ok(_) => added += 1,
+            Err(IdentityError::AlreadyMember) => skipped += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, user_id = %uid_str, "bulk add_member failed");
+                skipped += 1;
+            }
+        }
+    }
+
+    let msg = if skipped > 0 {
+        format!("Added {added} member(s), {skipped} skipped (already members or invalid)")
+    } else {
+        format!("Added {added} member(s) successfully")
+    };
+    org_redirect_flash(&org_id, &msg, "success")
+}
+
+// ---------------------------------------------------------------------------
 // Remove member
 // ---------------------------------------------------------------------------
 
@@ -3030,6 +2922,37 @@ pub async fn admin_api_user_search(
 }
 
 // ---------------------------------------------------------------------------
+// Config reload API
+// ---------------------------------------------------------------------------
+
+/// `POST /admin/api/config/reload` — triggers config hot-reload.
+///
+/// Notifies the SIGHUP handler loop to re-read the config file and run
+/// reconciliation. Returns a JSON acknowledgement.
+pub async fn admin_api_config_reload(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+) -> Response {
+    if let Some(notify) = &state.reload_notify {
+        notify.notify_one();
+        axum::response::Json(serde_json::json!({
+            "status": "ok",
+            "message": "configuration reload triggered"
+        }))
+        .into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::response::Json(serde_json::json!({
+                "status": "error",
+                "message": "reload not available (no config file loaded)"
+            })),
+        )
+            .into_response()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Organization helpers
 // ---------------------------------------------------------------------------
 
@@ -3142,4 +3065,367 @@ pub async fn admin_system_info(
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Config Editor
+// ---------------------------------------------------------------------------
+
+/// Template for `GET /ui/admin/settings/editor`.
+#[derive(Template)]
+#[template(path = "ui/admin/settings/editor.html")]
+#[allow(dead_code, clippy::struct_excessive_bools)]
+struct ConfigEditorTemplate {
+    yaml_content: String,
+    read_only: bool,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// Template for the diff preview partial.
+#[derive(Template)]
+#[template(path = "ui/admin/settings/_diff_preview.html")]
+#[allow(dead_code)]
+struct DiffPreviewTemplate {
+    diff: String,
+    diff_lines: Vec<String>,
+    error: Option<String>,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// Form data for config editor actions.
+#[derive(Debug, Deserialize)]
+pub struct ConfigEditorForm {
+    #[serde(default)]
+    pub yaml: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// Query params for config editor page (flash messages via redirect).
+#[derive(Debug, Deserialize)]
+pub struct ConfigEditorParams {
+    #[serde(default)]
+    pub flash: Option<String>,
+    #[serde(default)]
+    pub flash_kind: Option<String>,
+}
+
+/// `GET /ui/admin/settings/editor` — config editor page.
+pub async fn admin_config_editor(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Query(params): Query<ConfigEditorParams>,
+) -> Response {
+    let (yaml_content, read_only) = read_config_yaml(&state);
+
+    let flash = params.flash.map(|msg| {
+        let kind = params.flash_kind.as_deref().unwrap_or("success");
+        if kind == "error" {
+            Flash::error(msg)
+        } else {
+            Flash::success(msg)
+        }
+    });
+
+    render(&ConfigEditorTemplate {
+        yaml_content,
+        read_only,
+        chrome: true,
+        active: "settings",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash,
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
+}
+
+/// `POST /ui/admin/settings/editor/preview` — HTMX diff preview.
+pub async fn admin_config_editor_preview(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    Form(form): Form<ConfigEditorForm>,
+) -> Response {
+    let new_yaml = form.yaml;
+
+    // Validate the new config
+    let validation_error = Config::from_yaml_str(&new_yaml).err().map(|e| e.to_string());
+
+    let diff = if validation_error.is_some() {
+        String::new()
+    } else {
+        let (old_yaml, _) = read_config_yaml(&state);
+        compute_unified_diff(&old_yaml, &new_yaml)
+    };
+
+    let diff_lines: Vec<String> = diff.lines().map(String::from).collect();
+
+    render(&DiffPreviewTemplate {
+        diff,
+        diff_lines,
+        error: validation_error,
+        product_name: String::new(),
+        logo_url: String::new(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: None,
+    })
+}
+
+/// `POST /ui/admin/settings/editor/apply` — validate, write to disk, trigger reload.
+pub async fn admin_config_editor_apply(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Form(form): Form<ConfigEditorForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let new_yaml = form.yaml;
+
+    // Validate first
+    if let Err(e) = Config::from_yaml_str(&new_yaml) {
+        return render_config_editor_with_flash(
+            &state,
+            &session,
+            &new_yaml,
+            Flash::error(format!("Validation failed: {e}")),
+        );
+    }
+
+    // Write to disk
+    let Some(config_path) = &state.config_path else {
+        return render_config_editor_with_flash(
+            &state,
+            &session,
+            &new_yaml,
+            Flash::error("No config file path configured — cannot write".to_string()),
+        );
+    };
+
+    if let Err(e) = std::fs::write(config_path, &new_yaml) {
+        tracing::error!(error = %e, "failed to write config file");
+        return render_config_editor_with_flash(
+            &state,
+            &session,
+            &new_yaml,
+            Flash::error(format!("Failed to write file: {e}")),
+        );
+    }
+
+    // Trigger hot-reload
+    if let Some(notify) = &state.reload_notify {
+        notify.notify_one();
+    }
+
+    tracing::info!("config file updated via editor, reload triggered");
+
+    Redirect::to(
+        "/ui/admin/settings/editor?flash=Configuration+applied+successfully&flash_kind=success",
+    )
+    .into_response()
+}
+
+/// `GET /ui/admin/settings/editor/export` — download the current YAML file.
+pub async fn admin_config_editor_export(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+) -> Response {
+    let (yaml_content, _) = read_config_yaml(&state);
+
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/x-yaml"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"hearth.yaml\"",
+            ),
+        ],
+        yaml_content,
+    )
+        .into_response()
+}
+
+// --- Config editor helpers ---
+
+/// Reads the raw YAML from the config file on disk.
+/// Returns `(yaml_content, read_only)`. `read_only` is true when no file path is available.
+fn read_config_yaml(state: &Arc<WebState>) -> (String, bool) {
+    match &state.config_path {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(content) => (content, false),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read config file for editor");
+                (format!("# Error reading config file: {e}"), true)
+            }
+        },
+        None => (
+            "# No config file path available.\n# Running in embedded/dev mode.\n".to_string(),
+            true,
+        ),
+    }
+}
+
+/// Renders the config editor template with a flash message (for inline error display).
+fn render_config_editor_with_flash(
+    state: &Arc<WebState>,
+    session: &super::auth::UiSession,
+    yaml_content: &str,
+    flash: Flash,
+) -> Response {
+    let read_only = state.config_path.is_none();
+    render(&ConfigEditorTemplate {
+        yaml_content: yaml_content.to_string(),
+        read_only,
+        chrome: true,
+        active: "settings",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: Some(flash),
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
+}
+
+/// Computes a simple unified diff between two YAML strings.
+#[allow(clippy::too_many_lines)]
+fn compute_unified_diff(old: &str, new: &str) -> String {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    if old_lines == new_lines {
+        return String::new();
+    }
+
+    // Simple Myers-like diff: find longest common subsequence, then output
+    // additions and deletions in unified format.
+    let mut output = String::new();
+    output.push_str("--- hearth.yaml (current)\n");
+    output.push_str("+++ hearth.yaml (proposed)\n");
+
+    // Walk both sequences, emitting context/add/remove lines
+    let mut old_idx = 0;
+    let mut new_idx = 0;
+    let mut hunk_lines: Vec<String> = Vec::new();
+    let mut hunk_old_start = 0usize;
+    let mut hunk_new_start = 0usize;
+    let mut hunk_old_count = 0u32;
+    let mut hunk_new_count = 0u32;
+    let mut trailing_context = 0u32;
+
+    while old_idx < old_lines.len() || new_idx < new_lines.len() {
+        if old_idx < old_lines.len()
+            && new_idx < new_lines.len()
+            && old_lines[old_idx] == new_lines[new_idx]
+        {
+            // Matching line
+            if !hunk_lines.is_empty() {
+                trailing_context += 1;
+                hunk_lines.push(format!(" {}", old_lines[old_idx]));
+                hunk_old_count += 1;
+                hunk_new_count += 1;
+                if trailing_context >= 3 {
+                    // Flush hunk
+                    let _ = writeln!(
+                        output,
+                        "@@ -{},{} +{},{} @@",
+                        hunk_old_start + 1,
+                        hunk_old_count,
+                        hunk_new_start + 1,
+                        hunk_new_count,
+                    );
+                    for l in &hunk_lines {
+                        output.push_str(l);
+                        output.push('\n');
+                    }
+                    hunk_lines.clear();
+                    hunk_old_count = 0;
+                    hunk_new_count = 0;
+                    trailing_context = 0;
+                }
+            }
+            old_idx += 1;
+            new_idx += 1;
+        } else if new_idx < new_lines.len()
+            && (old_idx >= old_lines.len()
+                || !old_lines[old_idx..]
+                    .iter()
+                    .take(10)
+                    .any(|l| *l == new_lines[new_idx]))
+        {
+            // Added line (not found in next few old lines)
+            trailing_context = 0;
+            if hunk_lines.is_empty() {
+                hunk_old_start = old_idx.saturating_sub(3);
+                hunk_new_start = new_idx.saturating_sub(3);
+                // Prepend context
+                let ctx_start = old_idx.saturating_sub(3);
+                for line in &old_lines[ctx_start..old_idx] {
+                    hunk_lines.push(format!(" {line}"));
+                    hunk_old_count += 1;
+                    hunk_new_count += 1;
+                }
+            }
+            hunk_lines.push(format!("+{}", new_lines[new_idx]));
+            hunk_new_count += 1;
+            new_idx += 1;
+        } else if old_idx < old_lines.len() {
+            // Deleted line
+            trailing_context = 0;
+            if hunk_lines.is_empty() {
+                hunk_old_start = old_idx.saturating_sub(3);
+                hunk_new_start = new_idx.saturating_sub(3);
+                let ctx_start = old_idx.saturating_sub(3);
+                for line in &old_lines[ctx_start..old_idx] {
+                    hunk_lines.push(format!(" {line}"));
+                    hunk_old_count += 1;
+                    hunk_new_count += 1;
+                }
+            }
+            hunk_lines.push(format!("-{}", old_lines[old_idx]));
+            hunk_old_count += 1;
+            old_idx += 1;
+        } else {
+            new_idx += 1;
+        }
+    }
+
+    // Flush remaining hunk
+    if !hunk_lines.is_empty() {
+        let _ = writeln!(
+            output,
+            "@@ -{},{} +{},{} @@",
+            hunk_old_start + 1,
+            hunk_old_count,
+            hunk_new_start + 1,
+            hunk_new_count,
+        );
+        for l in &hunk_lines {
+            output.push_str(l);
+            output.push('\n');
+        }
+    }
+
+    output
 }

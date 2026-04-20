@@ -150,6 +150,26 @@
   }
 }
 
+/* YAML editor — custom scrollbar + styling */
+.yaml-editor {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ht-divider) 15%, transparent) transparent;
+}
+.yaml-editor::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.yaml-editor::-webkit-scrollbar-track {
+  background: transparent;
+}
+.yaml-editor::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--ht-divider) 15%, transparent);
+  border-radius: 4px;
+}
+.yaml-editor::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--ht-divider) 25%, transparent);
+}
+
 /* Alpine x-cloak: hide elements until Alpine initialises */
 [x-cloak] { display: none !important; }
 

@@ -2,10 +2,14 @@
 {% block title %}Hearth · {{ app.client_name() }}{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ app.client_name() }}</h1>
-  <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}/edit"
+  <div>
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ app.client_name() }}</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">Managed via <code class="text-xs">hearth.yaml</code> — edit the configuration file to change this application.</p>
+  </div>
+  <a href="/ui/admin/applications"
      class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-    Edit
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    Back to list
   </a>
 </div>
 
@@ -41,6 +45,9 @@
         {% for uri in app.redirect_uris() %}
           <code class="block rounded-sm bg-ht-surface-elevated px-2 py-1 font-mono text-xs text-ht-content-secondary">{{ uri }}</code>
         {% endfor %}
+        {% if app.redirect_uris().is_empty() %}
+          <span class="text-xs text-ht-content-muted">None configured</span>
+        {% endif %}
       </dd>
     </div>
     <div>
@@ -86,37 +93,27 @@
 </div>
 {% endif %}
 
-{# Danger zone #}
-<div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">
-  <h2 class="text-base font-semibold text-danger-fg">Danger zone</h2>
-  <p class="mt-1 text-sm text-ht-content-secondary">Deleting this application invalidates all existing tokens.</p>
-  <button @click="showDialog = true" type="button"
-          class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
-    Delete application
-  </button>
-
-  <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
-    <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
-      <h3 class="text-lg font-semibold text-ht-content-primary">Delete application?</h3>
-      <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ app.client_name() }}</strong> and invalidate all tokens.</p>
-      <div class="mt-6 flex justify-end gap-3">
-        <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-          Cancel
-        </button>
-        <form method="post" action="/ui/admin/applications/{{ app.client_id().as_uuid() }}/delete">
-          {% match csrf %}
-            {% when Some with (token) %}
-              <input type="hidden" name="_csrf" value="{{ token }}">
-            {% when None %}
-          {% endmatch %}
-          <button type="submit"
-                  class="btn-danger rounded px-4 py-2 text-sm font-semibold">
-            Delete
-          </button>
-        </form>
-      </div>
+{# Connection info #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <h2 class="text-base font-semibold text-ht-content-primary">Connection info</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Use these endpoints to integrate with your application.</p>
+  <dl class="mt-4 space-y-3">
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">OIDC Discovery</dt>
+      <dd class="mt-1"><code class="block rounded-sm bg-ht-bg-base px-2 py-1 font-mono text-xs text-ht-content-secondary">/.well-known/openid-configuration</code></dd>
     </div>
-  </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Authorization</dt>
+      <dd class="mt-1"><code class="block rounded-sm bg-ht-bg-base px-2 py-1 font-mono text-xs text-ht-content-secondary">/authorize</code></dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Token</dt>
+      <dd class="mt-1"><code class="block rounded-sm bg-ht-bg-base px-2 py-1 font-mono text-xs text-ht-content-secondary">/token</code></dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">UserInfo</dt>
+      <dd class="mt-1"><code class="block rounded-sm bg-ht-bg-base px-2 py-1 font-mono text-xs text-ht-content-secondary">/userinfo</code></dd>
+    </div>
+  </dl>
 </div>
 {% endblock %}

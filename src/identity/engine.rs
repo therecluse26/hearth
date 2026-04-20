@@ -2336,7 +2336,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 "client_credentials".to_string(),
                 "urn:ietf:params:oauth:grant-type:device_code".to_string(),
             ],
-            registration_endpoint: Some(format!("{issuer}/register")),
+            registration_endpoint: None,
             device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
             revocation_endpoint: Some(format!("{issuer}/revoke")),
             introspection_endpoint: Some(format!("{issuer}/introspect")),

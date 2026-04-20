@@ -23,11 +23,8 @@
       {% endif %}
     </div>
   </td>
-  <td class="px-4 py-3 text-right">
-    <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}/edit" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
-  </td>
 </tr>
 {% endfor %}
 {% if applications.is_empty() %}
-<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-ht-content-muted">No applications registered.</td></tr>
+<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-ht-content-muted">No applications declared in configuration.</td></tr>
 {% endif %}

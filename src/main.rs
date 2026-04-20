@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use tokio::sync::Notify;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -69,6 +70,11 @@ enum Commands {
         #[command(subcommand)]
         source: MigrateSource,
     },
+    /// Configuration management commands.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 }
 
 /// Supported migration sources.
@@ -104,6 +110,27 @@ enum MigrateSource {
 enum RealmAction {
     /// Create a new realm (generates a UUID).
     Create,
+}
+
+/// Configuration management subcommands.
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Trigger a hot-reload of configuration.
+    ///
+    /// Sends SIGHUP to the running Hearth process, or hits the admin
+    /// reload endpoint if `--url` is provided.
+    Reload {
+        /// URL of the running Hearth server (e.g. `https://127.0.0.1:8443`).
+        /// When provided, triggers reload via POST /admin/api/config/reload.
+        /// When omitted, sends SIGHUP to the running process via PID file.
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Path to the PID file (default: `data_dir/hearth.pid`).
+        /// Only used when `--url` is not provided.
+        #[arg(long)]
+        pid_file: Option<PathBuf>,
+    },
 }
 
 /// Application (OAuth client) management subcommands.
@@ -174,6 +201,14 @@ async fn main() {
                     run_migrate_keycloak(&file, data_dir.as_deref(), realm.as_deref(), dry_run)
                 {
                     error!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        },
+        Commands::Config { action } => match action {
+            ConfigAction::Reload { url, pid_file } => {
+                if let Err(e) = run_config_reload(url.as_deref(), pid_file.as_deref()) {
+                    eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             }
@@ -515,18 +550,75 @@ async fn run_serve(
         }
     }
 
+    // Build reload notifier for programmatic reload (admin API endpoint).
+    let reload_notify = Arc::new(Notify::new());
+
+    // Resolve the config file path used at startup — needed for hot-reload.
+    let reload_config_path: Option<PathBuf> = config_path
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| {
+            let default = PathBuf::from("hearth.yaml");
+            if default.exists() { Some(default) } else { None }
+        });
+
     web_state = web_state
         .with_theme_css(global_theme_css)
-        .with_realm_themes(realm_themes);
+        .with_realm_themes(realm_themes)
+        .with_reload_notify(Arc::clone(&reload_notify));
+    if let Some(ref cfg_path) = reload_config_path {
+        web_state = web_state.with_config_path(cfg_path.clone());
+    }
 
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
+
+    // Write PID file for `hearth config reload` CLI.
+    let pid_file_path = data_dir.join("hearth.pid");
+    std::fs::write(&pid_file_path, std::process::id().to_string())
+        .unwrap_or_else(|e| warn!(error = %e, "failed to write PID file"));
 
     // Check for TLS configuration
     if let (Some(cert_path), Some(key_path)) =
         (&config.server.tls_cert_path, &config.server.tls_key_path)
     {
-        run_serve_tls(addr, &config, app_router, cert_path, key_path).await?;
+        run_serve_tls(
+            addr,
+            &config,
+            app_router,
+            cert_path,
+            key_path,
+            Arc::clone(&identity_engine),
+            reload_config_path,
+            dev,
+            Arc::clone(&reload_notify),
+        )
+        .await?;
     } else {
+        // Non-TLS: register SIGHUP handler for config hot-reload.
+        #[cfg(unix)]
+        {
+            let engine = Arc::clone(&identity_engine);
+            let cfg_path = reload_config_path.clone();
+            let is_dev = dev;
+            let notify = Arc::clone(&reload_notify);
+            tokio::spawn(async move {
+                let mut sig =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                        .expect("failed to register SIGHUP handler");
+                loop {
+                    tokio::select! {
+                        _sig = sig.recv() => {
+                            info!("SIGHUP received, reloading configuration");
+                        }
+                        () = notify.notified() => {
+                            info!("programmatic reload triggered");
+                        }
+                    }
+                    run_config_reconciliation(engine.as_ref(), cfg_path.as_deref(), is_dev);
+                }
+            });
+        }
+
         let shutdown = async {
             tokio::signal::ctrl_c()
                 .await
@@ -536,6 +628,8 @@ async fn run_serve(
         http::serve_router(addr, app_router, shutdown).await?;
     }
 
+    // Clean up PID file on exit.
+    let _ = std::fs::remove_file(&pid_file_path);
     info!("Hearth server stopped");
     Ok(())
 }
@@ -660,13 +754,18 @@ fn build_email_service(
     )?)
 }
 
-/// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert reload.
+/// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert + config reload.
+#[allow(clippy::too_many_arguments)]
 async fn run_serve_tls(
     addr: SocketAddr,
     config: &Config,
     app_router: axum::Router,
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
+    identity_engine: Arc<dyn IdentityEngine>,
+    reload_config_path: Option<PathBuf>,
+    dev: bool,
+    reload_notify: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let reloadable = ReloadableTlsConfig::load(cert_path.to_path_buf(), key_path.to_path_buf())
         .map_err(|e| format!("failed to load TLS certificates: {e}"))?;
@@ -702,20 +801,32 @@ async fn run_serve_tls(
         }
     });
 
-    // Register SIGHUP handler for cert hot-reload
+    // Register SIGHUP handler for cert + config hot-reload
     #[cfg(unix)]
     {
         let reloadable = Arc::new(reloadable);
         let reloadable_clone = Arc::clone(&reloadable);
+        let engine = identity_engine;
+        let cfg_path = reload_config_path;
+        let is_dev = dev;
         tokio::spawn(async move {
             let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
                 .expect("failed to register SIGHUP handler");
             loop {
-                sig.recv().await;
-                info!("SIGHUP received, reloading TLS certificates");
+                tokio::select! {
+                    _sig = sig.recv() => {
+                        info!("SIGHUP received, reloading TLS certificates and configuration");
+                    }
+                    () = reload_notify.notified() => {
+                        info!("programmatic reload triggered, reloading configuration");
+                    }
+                }
+                // Reload TLS certificates
                 if let Err(e) = reloadable_clone.reload() {
                     error!(error = %e, "TLS certificate reload failed, keeping old cert");
                 }
+                // Reload configuration and reconcile
+                run_config_reconciliation(engine.as_ref(), cfg_path.as_deref(), is_dev);
             }
         });
     }
@@ -757,6 +868,108 @@ fn load_config(
     }
 
     Ok(Config::default())
+}
+
+/// Re-loads the config file and runs full reconciliation (realms + applications).
+///
+/// Called on SIGHUP or programmatic reload. Failures are logged but do not
+/// crash the server — the previous config remains in effect.
+fn run_config_reconciliation(
+    engine: &dyn IdentityEngine,
+    config_path: Option<&std::path::Path>,
+    dev: bool,
+) {
+    let config = match load_config(dev, config_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            error!(error = %e, "config reload failed: could not parse config file");
+            return;
+        }
+    };
+
+    match hearth::identity::reconcile::reconcile_realms(engine, &config) {
+        Ok(report) => {
+            let app_created = report
+                .applications
+                .iter()
+                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Created)
+                .count();
+            let app_updated = report
+                .applications
+                .iter()
+                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Updated)
+                .count();
+            let app_archived = report
+                .applications
+                .iter()
+                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Deleted)
+                .count();
+            info!(
+                realms_created = report.created.len(),
+                realms_updated = report.updated.len(),
+                realms_archived = report.archived.len(),
+                realms_unarchived = report.unarchived.len(),
+                apps_created = app_created,
+                apps_updated = app_updated,
+                apps_archived = app_archived,
+                orgs = report.organizations.len(),
+                "configuration reconciliation complete"
+            );
+        }
+        Err(e) => {
+            error!(error = %e, "configuration reconciliation failed");
+        }
+    }
+}
+
+/// Runs the `hearth config reload` command.
+///
+/// Either sends SIGHUP to the running process (via PID file) or hits the
+/// admin reload endpoint (via HTTP).
+fn run_config_reload(
+    url: Option<&str>,
+    pid_file: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(server_url) = url {
+        // HTTP-based reload
+        let endpoint = format!("{server_url}/admin/api/config/reload");
+        let mut resp = ureq::post(&endpoint).send_empty()?;
+        let status = resp.status();
+        let body: String = resp.body_mut().read_to_string()?;
+        if status == 200 {
+            println!("reload successful: {body}");
+        } else {
+            return Err(format!("reload failed (HTTP {status}): {body}").into());
+        }
+    } else {
+        // SIGHUP-based reload
+        #[cfg(unix)]
+        {
+            let pid_path =
+                pid_file.map_or_else(|| PathBuf::from("data/hearth.pid"), PathBuf::from);
+            let pid_str = std::fs::read_to_string(&pid_path)
+                .map_err(|e| format!("cannot read PID file {}: {e}", pid_path.display()))?;
+            let pid: i32 = pid_str
+                .trim()
+                .parse()
+                .map_err(|e| format!("invalid PID in {}: {e}", pid_path.display()))?;
+            // Send SIGHUP via kill(1) to avoid a libc dependency.
+            let status = std::process::Command::new("kill")
+                .args(["-HUP", &pid.to_string()])
+                .status()
+                .map_err(|e| format!("failed to execute kill: {e}"))?;
+            if !status.success() {
+                return Err(format!("failed to send SIGHUP to PID {pid}").into());
+            }
+            println!("sent SIGHUP to PID {pid}");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid_file; // suppress unused warning
+            return Err("SIGHUP reload is only supported on Unix. Use --url instead.".into());
+        }
+    }
+    Ok(())
 }
 
 /// Runs the `hearth realm create` command.

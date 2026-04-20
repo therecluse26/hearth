@@ -3,7 +3,6 @@
 //! Verifies compliance with:
 //! - `OpenID` Connect Core 1.0
 //! - `OpenID` Connect Discovery 1.0
-//! - `OpenID` Connect Dynamic Client Registration 1.0
 //! - `UserInfo` endpoint (OIDC Core §5.3)
 //! - ID Token validation (required claims)
 
@@ -287,10 +286,10 @@ async fn oidc_discovery_all_required_fields() {
         "userinfo_endpoint must start with issuer"
     );
 
-    // Registration endpoint (RFC 7591)
+    // Dynamic registration removed — endpoint should not be advertised
     assert!(
-        doc.registration_endpoint.is_some(),
-        "registration_endpoint should be present"
+        doc.registration_endpoint.is_none(),
+        "registration_endpoint should not be present (dynamic registration removed)"
     );
 
     // PKCE support
@@ -302,94 +301,10 @@ async fn oidc_discovery_all_required_fields() {
 }
 
 // ==========================================================================
-// Conformance Test 3: OpenID Connect Dynamic Client Registration 1.0
-// Register, read, and update client metadata.
+// Conformance Test 3: (Removed) Dynamic Client Registration
+// Dynamic registration was removed — applications are managed via YAML only.
+// The register_client() engine method is retained for reconciliation/migration.
 // ==========================================================================
-
-#[tokio::test]
-async fn oidc_dynamic_client_registration() {
-    let harness = common::TestHarness::embedded()
-        .await
-        .expect("embedded harness");
-
-    let realm = harness
-        .identity()
-        .create_realm(&CreateRealmRequest {
-            name: "dyn-reg-realm".to_string(),
-            config: None,
-        })
-        .expect("create realm");
-    let realm_id = realm.id().clone();
-
-    // 1. Register a new client (RFC 7591 §2)
-    let client = harness
-        .identity()
-        .register_client(
-            &realm_id,
-            &RegisterClientRequest {
-                client_name: "Dynamic App".to_string(),
-                redirect_uris: vec![
-                    "https://app.example.com/callback".to_string(),
-                    "https://app.example.com/alt-callback".to_string(),
-                ],
-                client_secret: None,
-                grant_types: vec!["authorization_code".to_string()],
-            },
-        )
-        .expect("register client");
-
-    // Verify registration response contains required fields (RFC 7591 §3.2)
-    assert!(
-        !client.client_id().as_uuid().is_nil(),
-        "client_id must be assigned"
-    );
-    assert_eq!(client.client_name(), "Dynamic App");
-    assert_eq!(client.redirect_uris().len(), 2);
-    assert!(client
-        .grant_types()
-        .contains(&"authorization_code".to_string()));
-
-    // 2. Read client metadata (RFC 7592 §2)
-    let fetched = harness
-        .identity()
-        .get_client(&realm_id, client.client_id())
-        .expect("get client")
-        .expect("client should exist");
-
-    assert_eq!(fetched.client_id(), client.client_id());
-    assert_eq!(fetched.client_name(), "Dynamic App");
-    assert_eq!(fetched.redirect_uris(), client.redirect_uris());
-
-    // 3. Update client metadata (RFC 7592 §2.2)
-    let updated = harness
-        .identity()
-        .update_client(
-            &realm_id,
-            client.client_id(),
-            &hearth::identity::UpdateClientRequest {
-                client_name: Some("Updated Dynamic App".to_string()),
-                redirect_uris: Some(vec!["https://new-app.example.com/callback".to_string()]),
-                grant_types: None,
-            },
-        )
-        .expect("update client");
-
-    assert_eq!(updated.client_name(), "Updated Dynamic App");
-    assert_eq!(updated.redirect_uris().len(), 1);
-    assert_eq!(
-        updated.redirect_uris()[0],
-        "https://new-app.example.com/callback"
-    );
-
-    // 4. Verify updated metadata persists
-    let re_fetched = harness
-        .identity()
-        .get_client(&realm_id, client.client_id())
-        .expect("get client after update")
-        .expect("client should still exist");
-
-    assert_eq!(re_fetched.client_name(), "Updated Dynamic App");
-}
 
 // ==========================================================================
 // Conformance Test 4: UserInfo endpoint

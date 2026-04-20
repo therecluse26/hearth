@@ -751,45 +751,9 @@ async fn admin_app_list_renders() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("Register application"));
+    assert!(body.contains("Managed via hearth.yaml"));
 }
 
-#[tokio::test]
-async fn admin_create_app_succeeds_and_shows_secret() {
-    let rig = build_rig();
-    let csrf = "csrf-acreate";
-    let cookie = admin_cookie(&rig, csrf);
-
-    let form = format!(
-        "client_name=TestApp&redirect_uris=https%3A%2F%2Fexample.com%2Fcallback&confidential=true&_csrf={csrf}"
-    );
-    let response = rig
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/ui/admin/applications/new")
-                .header(header::COOKIE, cookie)
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(form))
-                .expect("build request"),
-        )
-        .await
-        .expect("oneshot");
-
-    // On success, the handler renders the detail page directly (with the secret).
-    assert_eq!(response.status(), StatusCode::OK);
-    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .expect("body");
-    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("TestApp"), "should show the app name");
-    assert!(
-        body.contains("Client secret (shown once)"),
-        "should show the secret"
-    );
-}
 
 #[tokio::test]
 async fn admin_app_detail_renders() {
@@ -834,106 +798,7 @@ async fn admin_app_detail_renders() {
     assert!(body.contains("https://example.com/cb"));
 }
 
-#[tokio::test]
-async fn admin_edit_app_succeeds() {
-    let rig = build_rig();
-    let csrf = "csrf-aedit";
-    let cookie = admin_cookie(&rig, csrf);
 
-    let client = rig
-        .identity
-        .register_client(
-            &rig.realm_id,
-            &RegisterClientRequest {
-                client_name: "EditMe".to_string(),
-                redirect_uris: vec!["https://old.example.com/cb".to_string()],
-                client_secret: None,
-                grant_types: vec!["authorization_code".to_string()],
-            },
-        )
-        .expect("register_client");
-
-    let cid = client.client_id().as_uuid();
-    let form = format!(
-        "client_name=Renamed&redirect_uris=https%3A%2F%2Fnew.example.com%2Fcb&_csrf={csrf}"
-    );
-    let response = rig
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/ui/admin/applications/{cid}/edit"))
-                .header(header::COOKIE, cookie)
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(form))
-                .expect("build request"),
-        )
-        .await
-        .expect("oneshot");
-
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-
-    let updated = rig
-        .identity
-        .get_client(&rig.realm_id, client.client_id())
-        .expect("get_client")
-        .expect("client exists");
-    assert_eq!(updated.client_name(), "Renamed");
-    assert_eq!(updated.redirect_uris(), &["https://new.example.com/cb"]);
-}
-
-#[tokio::test]
-async fn admin_delete_app_succeeds() {
-    let rig = build_rig();
-    let csrf = "csrf-adel";
-    let cookie = admin_cookie(&rig, csrf);
-
-    let client = rig
-        .identity
-        .register_client(
-            &rig.realm_id,
-            &RegisterClientRequest {
-                client_name: "DeleteMe".to_string(),
-                redirect_uris: vec!["https://example.com/cb".to_string()],
-                client_secret: None,
-                grant_types: vec!["authorization_code".to_string()],
-            },
-        )
-        .expect("register_client");
-
-    let cid = client.client_id().as_uuid();
-    let form = format!("_csrf={csrf}");
-    let response = rig
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/ui/admin/applications/{cid}/delete"))
-                .header(header::COOKIE, cookie)
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(form))
-                .expect("build request"),
-        )
-        .await
-        .expect("oneshot");
-
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        response
-            .headers()
-            .get(header::LOCATION)
-            .and_then(|v| v.to_str().ok()),
-        Some("/ui/admin/applications"),
-    );
-
-    assert!(rig
-        .identity
-        .get_client(&rig.realm_id, client.client_id())
-        .expect("get_client")
-        .is_none());
-}
 
 // ===========================================================================
 // Session tests

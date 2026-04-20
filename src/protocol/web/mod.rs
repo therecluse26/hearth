@@ -31,6 +31,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use axum::body::Body;
@@ -128,6 +129,15 @@ pub struct WebState {
     /// Used by [`crate::protocol::client_info::extract_client_ip`] to walk
     /// `X-Forwarded-For` right-to-left and find the real client IP.
     pub trusted_proxies: Vec<IpAddr>,
+    /// Notifier for triggering config hot-reload from the admin API.
+    ///
+    /// When `notify()` is called, the SIGHUP handler loop wakes and
+    /// re-reads the config file + runs reconciliation. `None` in test
+    /// contexts.
+    pub reload_notify: Option<Arc<tokio::sync::Notify>>,
+    /// Path to the config file for the config editor. `None` in test or
+    /// dev-mode contexts where no file was loaded.
+    pub config_path: Option<PathBuf>,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -172,6 +182,8 @@ impl WebState {
             theme_css_etag: etag_for(""),
             realm_theme_etags: HashMap::new(),
             trusted_proxies: Vec::new(),
+            reload_notify: None,
+            config_path: None,
         }
     }
 
@@ -245,6 +257,21 @@ impl WebState {
     pub fn with_realm_themes(mut self, map: HashMap<String, String>) -> Self {
         self.realm_theme_etags = map.iter().map(|(k, v)| (k.clone(), etag_for(v))).collect();
         self.realm_themes = map;
+        self
+    }
+
+    /// Attaches the reload notifier for triggering config hot-reload
+    /// from the admin API.
+    #[must_use]
+    pub fn with_reload_notify(mut self, notify: Arc<tokio::sync::Notify>) -> Self {
+        self.reload_notify = Some(notify);
+        self
+    }
+
+    /// Attaches the config file path for the config editor.
+    #[must_use]
+    pub fn with_config_path(mut self, path: PathBuf) -> Self {
+        self.config_path = Some(path);
         self
     }
 
@@ -460,6 +487,14 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_org_add_member),
         )
         .route(
+            "/admin/organizations/{id}/members/picker",
+            axum::routing::get(admin::admin_org_member_picker),
+        )
+        .route(
+            "/admin/organizations/{id}/members/bulk",
+            axum::routing::post(admin::admin_org_bulk_add_members),
+        )
+        .route(
             "/admin/organizations/{id}/members/{uid}/remove",
             axum::routing::post(admin::admin_org_remove_member),
         )
@@ -480,26 +515,19 @@ pub fn router(state: WebState) -> Router {
             "/admin/api/users/search",
             axum::routing::get(admin::admin_api_user_search),
         )
-        // --- Applications ---
+        // --- Config reload API ---
+        .route(
+            "/admin/api/config/reload",
+            axum::routing::post(admin::admin_api_config_reload),
+        )
+        // --- Applications (read-only — managed via hearth.yaml) ---
         .route(
             "/admin/applications",
             axum::routing::get(admin::admin_apps_list),
         )
         .route(
-            "/admin/applications/new",
-            axum::routing::get(admin::admin_app_create_form).post(admin::admin_app_create_submit),
-        )
-        .route(
             "/admin/applications/{id}",
             axum::routing::get(admin::admin_app_detail),
-        )
-        .route(
-            "/admin/applications/{id}/edit",
-            axum::routing::get(admin::admin_app_edit_form).post(admin::admin_app_edit_submit),
-        )
-        .route(
-            "/admin/applications/{id}/delete",
-            axum::routing::post(admin::admin_app_delete),
         )
         .route(
             "/admin/applications/{id}/regenerate-secret",
@@ -523,6 +551,22 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/settings",
             axum::routing::get(admin::admin_system_info),
+        )
+        .route(
+            "/admin/settings/editor",
+            axum::routing::get(admin::admin_config_editor),
+        )
+        .route(
+            "/admin/settings/editor/preview",
+            axum::routing::post(admin::admin_config_editor_preview),
+        )
+        .route(
+            "/admin/settings/editor/apply",
+            axum::routing::post(admin::admin_config_editor_apply),
+        )
+        .route(
+            "/admin/settings/editor/export",
+            axum::routing::get(admin::admin_config_editor_export),
         )
         .route(
             "/admin/test-email",
