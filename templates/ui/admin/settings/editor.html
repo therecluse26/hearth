@@ -94,11 +94,21 @@
       <p class="text-xs font-medium text-success-fg">Configuration is valid. Ready to apply.</p>
     </div>
     <div x-show="Object.keys(errors).length > 0" x-cloak
-         class="mt-4 flex items-center gap-2 rounded-md bg-danger/[0.08] px-4 py-2.5 ring-1 ring-danger/20">
-      <svg class="h-4 w-4 shrink-0 text-danger-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-      <p class="text-xs font-medium text-danger-fg">
-        <span x-text="Object.keys(errors).length"></span> validation error(s). Fix highlighted fields before applying.
-      </p>
+         class="mt-4 rounded-md bg-danger/[0.08] px-4 py-2.5 ring-1 ring-danger/20">
+      <div class="flex items-center gap-2">
+        <svg class="h-4 w-4 shrink-0 text-danger-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <p class="text-xs font-medium text-danger-fg">
+          <span x-text="Object.keys(errors).length"></span> validation error(s).
+          <span x-show="Object.keys(errors).some(k => hasInlineError(k))">Fix highlighted fields before applying.</span>
+        </p>
+      </div>
+      {# List errors that don't have a visible inline error element #}
+      <template x-for="[key, msg] in Object.entries(errors).filter(([k]) => !hasInlineError(k))" :key="key">
+        <div class="mt-1.5 ml-6 flex items-start gap-1.5 text-xs text-danger-fg">
+          <code class="shrink-0 rounded-sm bg-danger/[0.12] px-1 py-0.5 font-mono text-[11px]" x-text="key"></code>
+          <span x-text="msg"></span>
+        </div>
+      </template>
     </div>
 
     {# Action bar (visual mode) #}
@@ -286,6 +296,13 @@ function configEditor() {
         return 'mt-1.5 block w-full rounded-sm border border-danger/60 ring-1 ring-danger/30 bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-danger/60 focus:outline-none focus:ring-1 focus:ring-danger/30';
       }
       return 'mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember';
+    },
+
+    // True if this error key has a visible inline <p> error element in the DOM.
+    hasInlineError(key) {
+      try {
+        return !!document.querySelector("p[x-show*=\"errors['" + key + "']\"]");
+      } catch { return false; }
     },
 
     // Calls the backend validate endpoint and populates errors map.
