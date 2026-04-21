@@ -1,0 +1,789 @@
+{# Visual config editor — section forms.
+   Numeric fields use type="number"; string fields use type="text" (supports env var
+   references like ${PORT:-8420}). Uses Alpine.js x-show for section visibility.
+   Field rendering uses a shared Alpine template pattern to minimize duplication. #}
+
+{# ═══════════════════════════════════════════════════════
+   Server Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'server' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Server</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Network and TLS settings.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Bind Address</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">IP address the server listens on.</p>
+      <input type="text" :value="getVal('server.bind_address', '')" @input="setVal('server.bind_address', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('server.bind_address'))">
+      <p x-show="errors['server.bind_address']" x-text="errors['server.bind_address']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Port</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">HTTP port (1–65535). Supports env var substitution.</p>
+      <input type="number" min="1" max="65535" :value="getVal('server.port', '')" @input="setVal('server.port', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('server.port'))">
+      <p x-show="errors['server.port']" x-text="errors['server.port']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">TLS Certificate Path</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Path to PEM certificate file (optional).</p>
+      <input type="text" :value="getVal('server.tls_cert_path', '')" @input="setVal('server.tls_cert_path', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('server.tls_cert_path'))">
+      <p x-show="errors['server.tls_cert_path']" x-text="errors['server.tls_cert_path']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">TLS Key Path</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Path to PEM private key file (optional).</p>
+      <input type="text" :value="getVal('server.tls_key_path', '')" @input="setVal('server.tls_key_path', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('server.tls_key_path'))">
+      <p x-show="errors['server.tls_key_path']" x-text="errors['server.tls_key_path']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">TLS Client CA Path</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">CA cert for mTLS client verification (optional).</p>
+      <input type="text" :value="getVal('server.tls_client_ca_path', '')" @input="setVal('server.tls_client_ca_path', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('server.tls_client_ca_path'))">
+      <p x-show="errors['server.tls_client_ca_path']" x-text="errors['server.tls_client_ca_path']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Require Client Cert</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Require a valid client certificate (mTLS).</p>
+      <select @change="setVal('server.tls_require_client_cert', $el.value === 'true' ? true : $el.value === 'false' ? false : null)"
+              :class="(Object.keys(errors).length, fieldClass('server.tls_require_client_cert'))">
+        <option value="" :selected="getVal('server.tls_require_client_cert', null) === null">— not set —</option>
+        <option value="true" :selected="getVal('server.tls_require_client_cert', null) === true">Enabled</option>
+        <option value="false" :selected="getVal('server.tls_require_client_cert', null) === false">Disabled</option>
+      </select>
+      <p x-show="errors['server.tls_require_client_cert']" x-text="errors['server.tls_require_client_cert']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+  {# trusted_proxies — dynamic list #}
+  <div class="mt-5">
+    <label class="block text-sm font-medium text-ht-content-secondary">Trusted Proxies</label>
+    <p class="mt-0.5 text-xs text-ht-content-muted">IP addresses of trusted reverse proxies for X-Forwarded-For extraction.</p>
+    <template x-for="(item, i) in getList('server.trusted_proxies')" :key="i">
+      <div class="mt-1.5 flex gap-2">
+        <input type="text" :value="item" @input="config.server.trusted_proxies[i] = $el.value"
+               class="flex-1 rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+        <button @click="removeListItem('server.trusted_proxies', i)" type="button"
+                class="rounded border border-strong px-2 py-1 text-xs text-ht-content-muted hover:text-danger-fg hover-bg-divider" title="Remove">&times;</button>
+      </div>
+    </template>
+    <button @click="addListItem('server.trusted_proxies')" type="button"
+            class="mt-2 flex items-center gap-1 text-xs font-medium text-teal-fg hover:text-teal-400">
+      <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add proxy
+    </button>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Storage Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'storage' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Storage</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">WAL, memtable, and hot tier settings. Requires restart.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Data Directory</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Path for WAL and SST files. Default: ./data</p>
+      <input type="text" :value="getVal('storage.data_dir', '')" @input="setVal('storage.data_dir', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('storage.data_dir'))">
+      <p x-show="errors['storage.data_dir']" x-text="errors['storage.data_dir']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">WAL Max Size (bytes)</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Max WAL file size before rotation. Default: 268435456 (256 MiB).</p>
+      <input type="number" min="0" :value="getVal('storage.wal_max_size_bytes', '')" @input="setVal('storage.wal_max_size_bytes', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('storage.wal_max_size_bytes'))">
+      <p x-show="errors['storage.wal_max_size_bytes']" x-text="errors['storage.wal_max_size_bytes']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Memtable Flush (bytes)</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Memtable size threshold before SST flush. Default: 67108864 (64 MiB).</p>
+      <input type="number" min="0" :value="getVal('storage.memtable_flush_bytes', '')" @input="setVal('storage.memtable_flush_bytes', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('storage.memtable_flush_bytes'))">
+      <p x-show="errors['storage.memtable_flush_bytes']" x-text="errors['storage.memtable_flush_bytes']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Hot Tier Capacity</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Max entries in hot tier cache. Default: 10000.</p>
+      <input type="number" min="0" :value="getVal('storage.hot_tier_capacity', '')" @input="setVal('storage.hot_tier_capacity', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('storage.hot_tier_capacity'))">
+      <p x-show="errors['storage.hot_tier_capacity']" x-text="errors['storage.hot_tier_capacity']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">fsync Writes</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">MUST be true in production. Ensures WAL durability.</p>
+      <select @change="setVal('storage.fsync', $el.value === 'true' ? true : $el.value === 'false' ? false : null)"
+              :class="(Object.keys(errors).length, fieldClass('storage.fsync'))">
+        <option value="" :selected="getVal('storage.fsync', null) === null">— not set —</option>
+        <option value="true" :selected="getVal('storage.fsync', null) === true">Enabled</option>
+        <option value="false" :selected="getVal('storage.fsync', null) === false">Disabled</option>
+      </select>
+      <p x-show="errors['storage.fsync']" x-text="errors['storage.fsync']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Logging Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'observability' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Logging</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Observability and tracing configuration.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Log Level</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Tracing filter level.</p>
+      <select :value="getVal('observability.log_level', 'info')" @change="setVal('observability.log_level', $el.value)"
+              :class="(Object.keys(errors).length, fieldClass('observability.log_level'))">
+        <option value="trace">trace</option>
+        <option value="debug">debug</option>
+        <option value="info">info</option>
+        <option value="warn">warn</option>
+        <option value="error">error</option>
+      </select>
+      <p x-show="errors['observability.log_level']" x-text="errors['observability.log_level']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Log Format</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Output format: human-readable or structured JSON.</p>
+      <select :value="getVal('observability.log_format', 'text')" @change="setVal('observability.log_format', $el.value)"
+              :class="(Object.keys(errors).length, fieldClass('observability.log_format'))">
+        <option value="text">text</option>
+        <option value="json">json</option>
+      </select>
+      <p x-show="errors['observability.log_format']" x-text="errors['observability.log_format']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Limits Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'operational' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Limits</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Operational timeouts and connection limits.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Request Timeout (sec)</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Per-request timeout in seconds. Default: 30.</p>
+      <input type="number" min="0" :value="getVal('operational.request_timeout_secs', '')" @input="setVal('operational.request_timeout_secs', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('operational.request_timeout_secs'))">
+      <p x-show="errors['operational.request_timeout_secs']" x-text="errors['operational.request_timeout_secs']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Shutdown Timeout (sec)</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Graceful shutdown timeout in seconds. Default: 10.</p>
+      <input type="number" min="0" :value="getVal('operational.shutdown_timeout_secs', '')" @input="setVal('operational.shutdown_timeout_secs', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('operational.shutdown_timeout_secs'))">
+      <p x-show="errors['operational.shutdown_timeout_secs']" x-text="errors['operational.shutdown_timeout_secs']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Max Connections</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Maximum concurrent connections. Default: 1024.</p>
+      <input type="number" min="0" :value="getVal('operational.max_connections', '')" @input="setVal('operational.max_connections', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('operational.max_connections'))">
+      <p x-show="errors['operational.max_connections']" x-text="errors['operational.max_connections']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Queue Depth</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Internal work queue depth. Default: 4096.</p>
+      <input type="number" min="0" :value="getVal('operational.queue_depth', '')" @input="setVal('operational.queue_depth', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('operational.queue_depth'))">
+      <p x-show="errors['operational.queue_depth']" x-text="errors['operational.queue_depth']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Branding Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'branding' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Branding</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Product name, logo, theme, and custom CSS.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Product Name</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Shown in UI and email subjects. Default: Hearth.</p>
+      <input type="text" :value="getVal('branding.product_name', '')" @input="setVal('branding.product_name', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('branding.product_name'))">
+      <p x-show="errors['branding.product_name']" x-text="errors['branding.product_name']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Logo URL</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">URL or file path for the logo image.</p>
+      <input type="text" :value="getVal('branding.logo_url', '')" @input="setVal('branding.logo_url', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('branding.logo_url'))">
+      <p x-show="errors['branding.logo_url']" x-text="errors['branding.logo_url']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Theme</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Named UI theme: ember, ocean, midnight, forest, cloud, parchment.</p>
+      <input type="text" :value="getVal('branding.theme', '')" @input="setVal('branding.theme', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('branding.theme'))"
+             placeholder="ember">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Custom CSS Path</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Path to a custom CSS file appended after the theme.</p>
+      <input type="text" :value="getVal('branding.custom_css', '')" @input="setVal('branding.custom_css', $el.value)"
+             class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Email Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'email' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Email</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Transactional email delivery configuration.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Transport</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Email delivery provider.</p>
+      <select :value="getVal('email.transport', 'log')" @change="setVal('email.transport', $el.value)"
+              class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+        <option value="log">log (dev only)</option>
+        <option value="smtp">smtp</option>
+        <option value="sendgrid">sendgrid</option>
+        <option value="postmark">postmark</option>
+        <option value="mailgun">mailgun</option>
+        <option value="mailtrap">mailtrap</option>
+      </select>
+      <p x-show="errors['branding.theme']" x-text="errors['branding.theme']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">From Address</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Sender address for the From: header. Required for non-log transports.</p>
+      <input type="text" :value="getVal('email.from', '')" @input="setVal('email.from', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('email.from'))">
+      <p x-show="errors['email.from']" x-text="errors['email.from']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+
+  {# SMTP fields #}
+  <template x-if="getVal('email.transport', 'log') === 'smtp'">
+    <div class="mt-5 space-y-4 border-l-2 border-divider-subtle pl-4">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">SMTP Settings</p>
+      <div class="grid gap-5 sm:grid-cols-2">
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Host</label>
+          <input type="text" :value="getVal('email.smtp.host', '')" @input="ensure('email.smtp'); setVal('email.smtp.host', $el.value)"
+                 :class="(Object.keys(errors).length, fieldClass('email.smtp.host'))">
+      <p x-show="errors['email.smtp.host']" x-text="errors['email.smtp.host']" class="mt-1 text-xs text-danger-fg"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Port</label>
+          <input type="number" min="1" max="65535" :value="getVal('email.smtp.port', '')" @input="ensure('email.smtp'); setVal('email.smtp.port', $el.value)"
+                 :class="(Object.keys(errors).length, fieldClass('email.smtp.port'))">
+      <p x-show="errors['email.smtp.port']" x-text="errors['email.smtp.port']" class="mt-1 text-xs text-danger-fg"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Encryption</label>
+          <select :value="getVal('email.smtp.encryption', 'starttls')" @change="ensure('email.smtp'); setVal('email.smtp.encryption', $el.value)"
+                  :class="(Object.keys(errors).length, fieldClass('email.smtp.encryption'))">
+            <option value="none">none</option>
+            <option value="starttls">starttls</option>
+            <option value="tls">tls</option>
+          </select>
+          <p x-show="errors['email.smtp.encryption']" x-text="errors['email.smtp.encryption']" class="mt-1 text-xs text-danger-fg"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Username</label>
+          <input type="text" :value="getVal('email.smtp.username', '')" @input="ensure('email.smtp'); setVal('email.smtp.username', $el.value)"
+                 :class="(Object.keys(errors).length, fieldClass('email.smtp.username'))">
+      <p x-show="errors['email.smtp.username']" x-text="errors['email.smtp.username']" class="mt-1 text-xs text-danger-fg"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Password</label>
+          <input type="text" :value="getVal('email.smtp.password', '')" @input="ensure('email.smtp'); setVal('email.smtp.password', $el.value)"
+                 :class="(Object.keys(errors).length, fieldClass('email.smtp.password'))"
+                 placeholder="Supports ${'{'}VAR{'}'}">
+        </div>
+      </div>
+    </div>
+  </template>
+
+  {# SendGrid fields #}
+  <template x-if="getVal('email.transport', 'log') === 'sendgrid'">
+    <div class="mt-5 space-y-4 border-l-2 border-divider-subtle pl-4">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">SendGrid Settings</p>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">API Key</label>
+        <input type="text" :value="getVal('email.sendgrid.api_key', '')" @input="ensure('email.sendgrid'); setVal('email.sendgrid.api_key', $el.value)"
+               class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+      </div>
+    </div>
+  </template>
+
+  {# Postmark fields #}
+  <template x-if="getVal('email.transport', 'log') === 'postmark'">
+    <div class="mt-5 space-y-4 border-l-2 border-divider-subtle pl-4">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">Postmark Settings</p>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Server Token</label>
+        <input type="text" :value="getVal('email.postmark.server_token', '')" @input="ensure('email.postmark'); setVal('email.postmark.server_token', $el.value)"
+               class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+      </div>
+    </div>
+  </template>
+
+  {# Mailgun fields #}
+  <template x-if="getVal('email.transport', 'log') === 'mailgun'">
+    <div class="mt-5 space-y-4 border-l-2 border-divider-subtle pl-4">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">Mailgun Settings</p>
+      <div class="grid gap-5 sm:grid-cols-2">
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">API Key</label>
+          <input type="text" :value="getVal('email.mailgun.api_key', '')" @input="ensure('email.mailgun'); setVal('email.mailgun.api_key', $el.value)"
+                 class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Domain</label>
+          <input type="text" :value="getVal('email.mailgun.domain', '')" @input="ensure('email.mailgun'); setVal('email.mailgun.domain', $el.value)"
+                 class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Region</label>
+          <select :value="getVal('email.mailgun.region', 'us')" @change="ensure('email.mailgun'); setVal('email.mailgun.region', $el.value)"
+                  class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+            <option value="us">US</option>
+            <option value="eu">EU</option>
+          </select>
+          <p x-show="errors['email.smtp.password']" x-text="errors['email.smtp.password']" class="mt-1 text-xs text-danger-fg"></p>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  {# Mailtrap fields #}
+  <template x-if="getVal('email.transport', 'log') === 'mailtrap'">
+    <div class="mt-5 space-y-4 border-l-2 border-divider-subtle pl-4">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">Mailtrap Settings</p>
+      <div class="grid gap-5 sm:grid-cols-2">
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">API Key</label>
+          <input type="text" :value="getVal('email.mailtrap.api_key', '')" @input="ensure('email.mailtrap'); setVal('email.mailtrap.api_key', $el.value)"
+                 :class="(Object.keys(errors).length, fieldClass('email.mailtrap.api_key'))">
+      <p x-show="errors['email.mailtrap.api_key']" x-text="errors['email.mailtrap.api_key']" class="mt-1 text-xs text-danger-fg"></p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Inbox ID</label>
+          <input type="text" :value="getVal('email.mailtrap.inbox_id', '')" @input="ensure('email.mailtrap'); setVal('email.mailtrap.inbox_id', $el.value)"
+                 :class="(Object.keys(errors).length, fieldClass('email.mailtrap.inbox_id'))"
+                 placeholder="For sandbox/testing mode">
+        </div>
+      </div>
+    </div>
+  </template>
+
+  {# Email branding #}
+  <div class="mt-6">
+    <h3 class="text-sm font-semibold text-ht-content-secondary">Email Branding</h3>
+    <p class="mt-0.5 text-xs text-ht-content-muted">Global email template branding defaults.</p>
+    <div class="mt-4 grid gap-5 sm:grid-cols-2">
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Company Name</label>
+        <input type="text" :value="getVal('email.branding.company_name', '')" @input="ensure('email.branding'); setVal('email.branding.company_name', $el.value)"
+               class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Support Email</label>
+        <input type="text" :value="getVal('email.branding.support_email', '')" @input="ensure('email.branding'); setVal('email.branding.support_email', $el.value)"
+               class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Logo URL</label>
+        <input type="text" :value="getVal('email.branding.logo_url', '')" @input="ensure('email.branding'); setVal('email.branding.logo_url', $el.value)"
+               class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Primary Color</label>
+        <input type="text" :value="getVal('email.branding.primary_color', '')" @input="ensure('email.branding'); setVal('email.branding.primary_color', $el.value)"
+               class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+      </div>
+    </div>
+  </div>
+  <div class="mt-5">
+    <label class="block text-sm font-medium text-ht-content-secondary">Templates Directory</label>
+    <p class="mt-0.5 text-xs text-ht-content-muted">Custom Tera email template directory (optional).</p>
+    <input type="text" :value="getVal('email.templates_dir', '')" @input="setVal('email.templates_dir', $el.value)"
+           class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   OIDC Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'oidc' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">OIDC</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">OpenID Connect discovery and authorization settings.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Issuer</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">URL for discovery docs and ID tokens (e.g. https://auth.example.com).</p>
+      <input type="text" :value="getVal('oidc.issuer', '')" @input="setVal('oidc.issuer', $el.value)"
+             class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Auth Code TTL</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Authorization code lifetime (e.g. 10m). Default: 10m.</p>
+      <input type="text" :value="getVal('oidc.authorization_code_ttl', '')" @input="setVal('oidc.authorization_code_ttl', $el.value)"
+             class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Enforce Nonces</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Require nonce uniqueness in authorization requests.</p>
+      <select @change="setVal('oidc.enforce_nonces', $el.value === 'true' ? true : $el.value === 'false' ? false : null)"
+              class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+        <option value="" :selected="getVal('oidc.enforce_nonces', null) === null">— not set —</option>
+        <option value="true" :selected="getVal('oidc.enforce_nonces', null) === true">Enabled</option>
+        <option value="false" :selected="getVal('oidc.enforce_nonces', null) === false">Disabled</option>
+      </select>
+      <p x-show="errors['email.mailtrap.inbox_id']" x-text="errors['email.mailtrap.inbox_id']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Tokens Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'token' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Tokens</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">JWT issuance parameters.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Issuer</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">The iss claim value. Defaults to oidc.issuer.</p>
+      <input type="text" :value="getVal('token.issuer', '')" @input="setVal('token.issuer', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('token.issuer'))">
+      <p x-show="errors['token.issuer']" x-text="errors['token.issuer']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Audience</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">The aud claim value.</p>
+      <input type="text" :value="getVal('token.audience', '')" @input="setVal('token.audience', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('token.audience'))">
+      <p x-show="errors['token.audience']" x-text="errors['token.audience']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Access Token TTL</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Duration string (e.g. 15m). Default: 15m.</p>
+      <input type="text" :value="getVal('token.access_token_ttl', '')" @input="setVal('token.access_token_ttl', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('token.access_token_ttl'))">
+      <p x-show="errors['token.access_token_ttl']" x-text="errors['token.access_token_ttl']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Refresh Token TTL</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Duration string (e.g. 7d). Default: 7d.</p>
+      <input type="text" :value="getVal('token.refresh_token_ttl', '')" @input="setVal('token.refresh_token_ttl', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('token.refresh_token_ttl'))">
+      <p x-show="errors['token.refresh_token_ttl']" x-text="errors['token.refresh_token_ttl']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Auth Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'auth' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Auth</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Global authentication defaults. Per-realm overrides live under each realm.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Session TTL</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Default session lifetime (e.g. 24h, 30m).</p>
+      <input type="text" :value="getVal('auth.session_ttl', '')" @input="setVal('auth.session_ttl', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('auth.session_ttl'))">
+      <p x-show="errors['auth.session_ttl']" x-text="errors['auth.session_ttl']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Password Memory Cost</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Argon2id memory cost in KiB.</p>
+      <input type="number" min="0" :value="getVal('auth.password_memory_cost', '')" @input="setVal('auth.password_memory_cost', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('auth.password_memory_cost'))">
+      <p x-show="errors['auth.password_memory_cost']" x-text="errors['auth.password_memory_cost']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Password Time Cost</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Argon2id time cost (iterations).</p>
+      <input type="number" min="0" :value="getVal('auth.password_time_cost', '')" @input="setVal('auth.password_time_cost', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('auth.password_time_cost'))">
+      <p x-show="errors['auth.password_time_cost']" x-text="errors['auth.password_time_cost']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">MFA Required</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Require MFA for all users (global default).</p>
+      <select @change="setVal('auth.mfa_required', $el.value === 'true' ? true : $el.value === 'false' ? false : null)"
+              :class="(Object.keys(errors).length, fieldClass('auth.mfa_required'))">
+        <option value="" :selected="getVal('auth.mfa_required', null) === null">— not set —</option>
+        <option value="true" :selected="getVal('auth.mfa_required', null) === true">Enabled</option>
+        <option value="false" :selected="getVal('auth.mfa_required', null) === false">Disabled</option>
+      </select>
+      <p x-show="errors['auth.mfa_required']" x-text="errors['auth.mfa_required']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Passkey Requires MFA</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Require TOTP after passkey login (for regulated environments).</p>
+      <select @change="setVal('auth.passkey_requires_mfa', $el.value === 'true' ? true : $el.value === 'false' ? false : null)"
+              :class="(Object.keys(errors).length, fieldClass('auth.passkey_requires_mfa'))">
+        <option value="" :selected="getVal('auth.passkey_requires_mfa', null) === null">— not set —</option>
+        <option value="true" :selected="getVal('auth.passkey_requires_mfa', null) === true">Enabled</option>
+        <option value="false" :selected="getVal('auth.passkey_requires_mfa', null) === false">Disabled</option>
+      </select>
+      <p x-show="errors['auth.passkey_requires_mfa']" x-text="errors['auth.passkey_requires_mfa']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Onboarding Section
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'onboarding' && !activeRealm">
+  <h2 class="font-display text-lg font-medium text-ht-content-primary">Onboarding</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">First-run setup configuration.</p>
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Enabled</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Enable first-run setup flow at /ui/setup.</p>
+      <select @change="setVal('onboarding.enabled', $el.value === 'true' ? true : $el.value === 'false' ? false : null)"
+              :class="(Object.keys(errors).length, fieldClass('onboarding.enabled'))">
+        <option value="" :selected="getVal('onboarding.enabled', null) === null">— not set —</option>
+        <option value="true" :selected="getVal('onboarding.enabled', null) === true">Enabled</option>
+        <option value="false" :selected="getVal('onboarding.enabled', null) === false">Disabled</option>
+      </select>
+      <p x-show="errors['onboarding.enabled']" x-text="errors['onboarding.enabled']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Base URL</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Public URL for verification emails (e.g. https://auth.example.com).</p>
+      <input type="text" :value="getVal('onboarding.base_url', '')" @input="setVal('onboarding.base_url', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('onboarding.base_url'))">
+      <p x-show="errors['onboarding.base_url']" x-text="errors['onboarding.base_url']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Notification Email</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Email address for setup URL delivery at startup.</p>
+      <input type="text" :value="getVal('onboarding.notification_email', '')" @input="setVal('onboarding.notification_email', $el.value)"
+             :class="(Object.keys(errors).length, fieldClass('onboarding.notification_email'))">
+      <p x-show="errors['onboarding.notification_email']" x-text="errors['onboarding.notification_email']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════
+   Realm Detail Section (dynamic)
+   ═══════════════════════════════════════════════════════ #}
+<div x-show="activeSection === 'realm' && activeRealm">
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="font-display text-lg font-medium text-ht-content-primary">
+        Realm: <span x-text="activeRealm" class="font-mono text-brand-ember"></span>
+      </h2>
+      <p class="mt-1 text-sm text-ht-content-muted">Per-realm configuration overrides.</p>
+    </div>
+    <button @click="removeRealm(activeRealm)" type="button"
+            class="rounded border border-danger/30 px-3 py-1.5 text-xs font-medium text-danger-fg hover:bg-danger/[0.12]">
+      Remove Realm
+    </button>
+  </div>
+
+  {# Realm-level overrides #}
+  <div class="mt-6 grid gap-5 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Session TTL</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Override for this realm (e.g. 12h).</p>
+      <input type="text" :value="config.realms?.[activeRealm]?.session_ttl || ''"
+             @input="ensure('realms.' + activeRealm); config.realms[activeRealm].session_ttl = $el.value || undefined"
+             class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Password Memory Cost</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Argon2id memory cost override (KiB).</p>
+      <input type="text" :value="config.realms?.[activeRealm]?.password_memory_cost || ''"
+             @input="ensure('realms.' + activeRealm); config.realms[activeRealm].password_memory_cost = $el.value ? Number($el.value) || $el.value : undefined"
+             class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Password Time Cost</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Argon2id time cost override (iterations).</p>
+      <input type="text" :value="config.realms?.[activeRealm]?.password_time_cost || ''"
+             @input="ensure('realms.' + activeRealm); config.realms[activeRealm].password_time_cost = $el.value ? Number($el.value) || $el.value : undefined"
+             class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+    </div>
+  </div>
+
+  {# ── Auth Policy ── #}
+  <details class="mt-6 group" open>
+    <summary class="cursor-pointer font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted hover:text-ht-content-secondary">
+      Auth Policy
+    </summary>
+    <div class="mt-4 grid gap-5 sm:grid-cols-2">
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">MFA Required</label>
+        <select @change="ensure('realms.' + activeRealm + '.auth'); config.realms[activeRealm].auth.mfa_required = $el.value === 'true' ? true : $el.value === 'false' ? false : undefined"
+                class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+          <option value="" :selected="config.realms?.[activeRealm]?.auth?.mfa_required == null">— inherit —</option>
+          <option value="true" :selected="config.realms?.[activeRealm]?.auth?.mfa_required === true">Enabled</option>
+          <option value="false" :selected="config.realms?.[activeRealm]?.auth?.mfa_required === false">Disabled</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Passkey Requires MFA</label>
+        <select @change="ensure('realms.' + activeRealm + '.auth'); config.realms[activeRealm].auth.passkey_requires_mfa = $el.value === 'true' ? true : $el.value === 'false' ? false : undefined"
+                class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+          <option value="" :selected="config.realms?.[activeRealm]?.auth?.passkey_requires_mfa == null">— inherit —</option>
+          <option value="true" :selected="config.realms?.[activeRealm]?.auth?.passkey_requires_mfa === true">Enabled</option>
+          <option value="false" :selected="config.realms?.[activeRealm]?.auth?.passkey_requires_mfa === false">Disabled</option>
+        </select>
+      </div>
+    </div>
+    {# Token TTL overrides #}
+    <div class="mt-5">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">Token TTLs</p>
+      <div class="mt-3 grid gap-5 sm:grid-cols-2">
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Access Token TTL</label>
+          <input type="text" :value="config.realms?.[activeRealm]?.auth?.token?.access_token_ttl || ''"
+                 @input="ensure('realms.' + activeRealm + '.auth.token'); config.realms[activeRealm].auth.token.access_token_ttl = $el.value || undefined"
+                 class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember"
+                 placeholder="e.g. 15m">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Refresh Token TTL</label>
+          <input type="text" :value="config.realms?.[activeRealm]?.auth?.token?.refresh_token_ttl || ''"
+                 @input="ensure('realms.' + activeRealm + '.auth.token'); config.realms[activeRealm].auth.token.refresh_token_ttl = $el.value || undefined"
+                 class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember"
+                 placeholder="e.g. 7d">
+        </div>
+      </div>
+    </div>
+    {# Rate limits #}
+    <div class="mt-5">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">Rate Limits</p>
+      <div class="mt-3 grid gap-5 sm:grid-cols-2">
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Max Failed Logins</label>
+          <input type="text" :value="config.realms?.[activeRealm]?.auth?.rate_limit?.max_failed_logins || ''"
+                 @input="ensure('realms.' + activeRealm + '.auth.rate_limit'); config.realms[activeRealm].auth.rate_limit.max_failed_logins = $el.value ? Number($el.value) || undefined : undefined"
+                 class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Lockout Duration</label>
+          <input type="text" :value="config.realms?.[activeRealm]?.auth?.rate_limit?.lockout_duration || ''"
+                 @input="ensure('realms.' + activeRealm + '.auth.rate_limit'); config.realms[activeRealm].auth.rate_limit.lockout_duration = $el.value || undefined"
+                 class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember"
+                 placeholder="e.g. 15m">
+        </div>
+      </div>
+    </div>
+  </details>
+
+  {# ── Applications ── #}
+  <details class="mt-6">
+    <summary class="cursor-pointer font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted hover:text-ht-content-secondary">
+      Applications
+    </summary>
+    <div class="mt-4 space-y-4">
+      <template x-for="appKey in Object.keys(config.realms?.[activeRealm]?.applications || {})" :key="appKey">
+        <div class="rounded-md border border-divider-subtle p-4">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-sm font-medium text-ht-content-primary" x-text="appKey"></span>
+            <button @click="removeApp(activeRealm, appKey)" type="button" class="text-xs text-danger-fg hover:underline">Remove</button>
+          </div>
+          <div class="mt-3 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="block text-xs font-medium text-ht-content-secondary">Name</label>
+              <input type="text" x-model="config.realms[activeRealm].applications[appKey].name"
+                     class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-ht-content-secondary">Client Secret</label>
+              <input type="text" :value="config.realms[activeRealm].applications[appKey].client_secret || ''"
+                     @input="config.realms[activeRealm].applications[appKey].client_secret = $el.value || undefined"
+                     class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+            </div>
+          </div>
+          {# Redirect URIs #}
+          <div class="mt-3">
+            <label class="block text-xs font-medium text-ht-content-secondary">Redirect URIs</label>
+            <template x-for="(uri, ri) in (config.realms[activeRealm].applications[appKey].redirect_uris || [])" :key="ri">
+              <div class="mt-1 flex gap-2">
+                <input type="text" x-model="config.realms[activeRealm].applications[appKey].redirect_uris[ri]"
+                       class="flex-1 rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+                <button @click="config.realms[activeRealm].applications[appKey].redirect_uris.splice(ri, 1)" type="button"
+                        class="rounded border border-strong px-2 py-1 text-xs text-ht-content-muted hover:text-danger-fg">&times;</button>
+              </div>
+            </template>
+            <button @click="if (!config.realms[activeRealm].applications[appKey].redirect_uris) config.realms[activeRealm].applications[appKey].redirect_uris = []; config.realms[activeRealm].applications[appKey].redirect_uris.push('')"
+                    type="button" class="mt-1 text-xs font-medium text-teal-fg">+ Add URI</button>
+          </div>
+          {# Grant Types #}
+          <div class="mt-3">
+            <label class="block text-xs font-medium text-ht-content-secondary">Grant Types</label>
+            <template x-for="(gt, gi) in (config.realms[activeRealm].applications[appKey].grant_types || [])" :key="gi">
+              <div class="mt-1 flex gap-2">
+                <input type="text" x-model="config.realms[activeRealm].applications[appKey].grant_types[gi]"
+                       class="flex-1 rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+                <button @click="config.realms[activeRealm].applications[appKey].grant_types.splice(gi, 1)" type="button"
+                        class="rounded border border-strong px-2 py-1 text-xs text-ht-content-muted hover:text-danger-fg">&times;</button>
+              </div>
+            </template>
+            <button @click="if (!config.realms[activeRealm].applications[appKey].grant_types) config.realms[activeRealm].applications[appKey].grant_types = []; config.realms[activeRealm].applications[appKey].grant_types.push('')"
+                    type="button" class="mt-1 text-xs font-medium text-teal-fg">+ Add grant type</button>
+          </div>
+        </div>
+      </template>
+      <button @click="addApp(activeRealm)" type="button"
+              class="flex items-center gap-1.5 text-xs font-medium text-teal-fg hover:text-teal-400">
+        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add Application
+      </button>
+    </div>
+  </details>
+
+  {# ── Organizations ── #}
+  <details class="mt-6">
+    <summary class="cursor-pointer font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted hover:text-ht-content-secondary">
+      Organizations
+    </summary>
+    <div class="mt-4 space-y-4">
+      <template x-for="orgKey in Object.keys(config.realms?.[activeRealm]?.organizations || {})" :key="orgKey">
+        <div class="rounded-md border border-divider-subtle p-4">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-sm font-medium text-ht-content-primary" x-text="orgKey"></span>
+            <button @click="removeOrg(activeRealm, orgKey)" type="button" class="text-xs text-danger-fg hover:underline">Remove</button>
+          </div>
+          <div class="mt-3 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="block text-xs font-medium text-ht-content-secondary">Name</label>
+              <input type="text" x-model="config.realms[activeRealm].organizations[orgKey].name"
+                     class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-ht-content-secondary">Description</label>
+              <input type="text" :value="config.realms[activeRealm].organizations[orgKey].description || ''"
+                     @input="config.realms[activeRealm].organizations[orgKey].description = $el.value || undefined"
+                     class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-ht-content-secondary">Max Members</label>
+              <input type="text" :value="config.realms[activeRealm].organizations[orgKey].config?.max_members || ''"
+                     @input="if (!config.realms[activeRealm].organizations[orgKey].config) config.realms[activeRealm].organizations[orgKey].config = {}; config.realms[activeRealm].organizations[orgKey].config.max_members = $el.value ? Number($el.value) || undefined : undefined"
+                     class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember"
+                     placeholder="Unlimited if empty">
+            </div>
+          </div>
+        </div>
+      </template>
+      <button @click="addOrg(activeRealm)" type="button"
+              class="flex items-center gap-1.5 text-xs font-medium text-teal-fg hover:text-teal-400">
+        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add Organization
+      </button>
+    </div>
+  </details>
+</div>

@@ -1,0 +1,122 @@
+{# HTMX partial: member picker modal body (paginated user table with multi-select) #}
+<div id="member-picker-overlay"
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+     @keydown.escape.window="document.getElementById('member-picker-overlay')?.remove()">
+  <div class="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg bg-ht-surface-elevated shadow-xl ring-1 ring-divider-subtle"
+       @click.outside="document.getElementById('member-picker-overlay')?.remove()">
+    {# Header #}
+    <div class="flex items-center justify-between border-b border-divider px-6 py-4">
+      <h2 class="text-lg font-semibold text-ht-content-primary">Add Members</h2>
+      <button type="button"
+              onclick="document.getElementById('member-picker-overlay')?.remove()"
+              class="text-ht-content-muted hover:text-ht-content-secondary">&times;</button>
+    </div>
+
+    {# Search bar #}
+    <div class="border-b border-divider-faint px-6 py-3">
+      <input type="text"
+             name="q"
+             placeholder="Search users by name or email..."
+             hx-get="/ui/admin/organizations/{{ org_id }}/members/picker"
+             hx-trigger="input changed delay:300ms, search"
+             hx-target="#picker-results"
+             hx-include="[name='q']"
+             class="block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus"
+             value="{{ query }}">
+    </div>
+
+    {# Results body — this is replaced by HTMX on search/pagination #}
+    <div id="picker-results" class="flex-1 overflow-y-auto">
+      {% include "ui/admin/organizations/_member_picker_rows.html" %}
+    </div>
+
+    {# Footer with role + submit #}
+    <div class="border-t border-divider px-6 py-4">
+      <form method="post" action="/ui/admin/organizations/{{ org_id }}/members/bulk">
+        {% match csrf %}
+          {% when Some with (token) %}
+            <input type="hidden" name="_csrf" value="{{ token }}">
+          {% when None %}
+        {% endmatch %}
+        <div id="picker-selected-ids"></div>
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <label class="text-xs font-medium text-ht-content-secondary">Role</label>
+            <select name="role"
+                    class="rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+              <option value="Member">Member</option>
+              <option value="Admin">Admin</option>
+              <option value="Owner">Owner</option>
+            </select>
+            <span id="picker-count" class="text-xs text-ht-content-muted">0 selected</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <button type="button"
+                    onclick="document.getElementById('member-picker-overlay')?.remove()"
+                    class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+              Cancel
+            </button>
+            <button type="submit" id="picker-submit-btn"
+                    disabled
+                    class="btn-ember rounded px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">
+              Add selected
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Manages checkbox selection state across paginated results
+  const overlay = document.getElementById('member-picker-overlay');
+  if (!overlay) return;
+  const selected = new Map(); // id -> name
+
+  function updateUI() {
+    const container = document.getElementById('picker-selected-ids');
+    const countEl = document.getElementById('picker-count');
+    const btn = document.getElementById('picker-submit-btn');
+    if (!container || !countEl || !btn) return;
+
+    container.innerHTML = '';
+    for (const [id] of selected) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'user_ids';
+      input.value = id;
+      container.appendChild(input);
+    }
+    const n = selected.size;
+    countEl.textContent = n === 1 ? '1 selected' : n + ' selected';
+    btn.disabled = n === 0;
+  }
+
+  overlay.addEventListener('change', function(e) {
+    if (e.target.matches('.picker-checkbox')) {
+      const id = e.target.value;
+      const name = e.target.dataset.name || id;
+      if (e.target.checked) {
+        selected.set(id, name);
+      } else {
+        selected.delete(id);
+      }
+      updateUI();
+    }
+  });
+
+  // After HTMX swaps in new rows, re-check boxes that were previously selected
+  document.body.addEventListener('htmx:afterSwap', function(e) {
+    if (e.detail.target && e.detail.target.id === 'picker-results') {
+      const checkboxes = e.detail.target.querySelectorAll('.picker-checkbox');
+      for (const cb of checkboxes) {
+        if (selected.has(cb.value)) {
+          cb.checked = true;
+        }
+      }
+    }
+  });
+})();
+</script>

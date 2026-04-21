@@ -1,0 +1,19 @@
+{# HTMX partial: diff preview for config editor #}
+{% if error.is_some() %}
+<div class="rounded-md bg-danger/[0.12] px-6 py-4 ring-1 ring-danger/30">
+  <h3 class="text-sm font-semibold text-danger-fg">Validation Error</h3>
+  <p class="mt-1 font-mono text-xs text-danger-fg">{{ error.as_deref().unwrap_or("") }}</p>
+</div>
+{% else if diff.is_empty() %}
+<div class="rounded-md bg-ht-surface-elevated px-6 py-4 ring-1 ring-divider-subtle">
+  <p class="text-sm text-ht-content-muted">No changes detected.</p>
+</div>
+{% else %}
+<div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
+  <div class="border-b border-divider-subtle px-6 py-3">
+    <span class="font-mono text-xs font-medium text-ht-content-muted">Changes to apply</span>
+  </div>
+  <pre class="overflow-x-auto px-6 py-4 font-mono text-xs leading-relaxed">{% for line in diff_lines %}<span class="{% if line.starts_with('+') && !line.starts_with("+++") %}text-success-fg{% else if line.starts_with('-') && !line.starts_with("---") %}text-danger-fg{% else if line.starts_with("@@") %}text-teal-fg{% else %}text-ht-content-secondary{% endif %}">{{ line }}</span>
+{% endfor %}</pre>
+</div>
+{% endif %}

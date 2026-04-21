@@ -1,0 +1,60 @@
+{# Raw YAML editor tab — textarea for full-file editing #}
+<div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
+  {# Title bar #}
+  <div class="flex items-center justify-between px-6 py-3">
+    <div class="flex items-center gap-2">
+      <svg class="h-3.5 w-3.5 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      <span class="font-mono text-xs font-medium text-ht-content-muted">hearth.yaml</span>
+    </div>
+    {% if !read_only %}
+    <button type="button"
+            @click="preview()"
+            class="inline-flex items-center gap-1.5 rounded border border-strong px-3 py-1 text-xs font-medium text-ht-content-secondary hover-bg-divider">
+      <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      Preview diff
+    </button>
+    {% endif %}
+  </div>
+
+  {# Editor area — sunken background for code feel #}
+  <div class="border-y border-divider-subtle bg-ht-surface-raised">
+    <form id="apply-form" method="post" action="/ui/admin/settings/editor/apply">
+      {% match csrf %}
+        {% when Some with (token) %}
+          <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+      <textarea id="yaml-editor" name="yaml"
+                {% if read_only %}readonly{% endif %}
+                spellcheck="false"
+                wrap="off"
+                class="yaml-editor block w-full resize-y border-0 bg-transparent px-6 py-4 font-mono text-sm leading-relaxed text-ht-content-primary placeholder:text-ht-content-muted focus:outline-none"
+                style="tab-size: 2; -moz-tab-size: 2;"
+                rows="32">{{ yaml_content }}</textarea>
+    </form>
+  </div>
+
+  {# Action bar — attached to bottom of editor card #}
+  {% if !read_only %}
+  <div class="flex items-center justify-between px-6 py-3">
+    <p class="text-xs text-ht-content-muted">
+      Writes to disk and triggers a hot-reload. Server/storage changes require a restart.
+    </p>
+    <div class="flex items-center gap-3">
+      <button type="button"
+              onclick="document.getElementById('yaml-editor').value = document.getElementById('yaml-editor').defaultValue; document.getElementById('diff-output').innerHTML = '';"
+              class="rounded border border-strong px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover-bg-divider">
+        Reset
+      </button>
+      <button type="button" @click="preview()"
+              class="rounded border border-strong px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover-bg-divider">
+        Preview Diff
+      </button>
+      <button type="submit" form="apply-form"
+              class="btn-ember rounded px-3 py-1.5 text-xs font-semibold">
+        Apply Changes
+      </button>
+    </div>
+  </div>
+  {% endif %}
+</div>

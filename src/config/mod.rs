@@ -27,6 +27,18 @@ fn invalid(field: &str, reason: impl Into<String>) -> ConfigError {
     }
 }
 
+/// A single validation issue with its field path and human-readable reason.
+///
+/// Used by [`Config::validate_all`] to report all problems at once rather
+/// than short-circuiting on the first error.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ValidationIssue {
+    /// Dot-delimited config field path (e.g. `"server.port"`).
+    pub field: String,
+    /// Human-readable reason this value is invalid.
+    pub reason: String,
+}
+
 use serde::Deserialize;
 use std::path::Path;
 
@@ -159,6 +171,142 @@ impl Config {
             dev_mode: true,
             config_warnings: Vec::new(),
         }
+    }
+
+    /// Parses a YAML string into a [`Config`] *without* running validation.
+    ///
+    /// Use this when you want to run [`validate_all`] yourself to collect
+    /// all issues rather than short-circuiting on the first error.
+    ///
+    /// Environment variables are still substituted.
+    pub fn from_yaml_str_unchecked(yaml: &str) -> Result<Self, ConfigError> {
+        let (substituted, warnings) = env::substitute_env_vars(yaml);
+        let mut config: Self = serde_yaml::from_str(&substituted)
+            .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        config.config_warnings = warnings;
+        Ok(config)
+    }
+
+    /// Validates all configuration values, collecting every issue.
+    ///
+    /// Unlike [`validate`], this does **not** short-circuit — all validation
+    /// rules are checked and every problem is returned.
+    pub fn validate_all(&self) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+
+        // Port
+        if self.server.port == 0 {
+            issues.push(ValidationIssue {
+                field: "server.port".to_string(),
+                reason: "must be between 1 and 65535".to_string(),
+            });
+        }
+
+        // TLS cert/key pairing
+        match (&self.server.tls_cert_path, &self.server.tls_key_path) {
+            (Some(_), None) => issues.push(ValidationIssue {
+                field: "server.tls_key_path".to_string(),
+                reason: "tls_key_path is required when tls_cert_path is set".to_string(),
+            }),
+            (None, Some(_)) => issues.push(ValidationIssue {
+                field: "server.tls_cert_path".to_string(),
+                reason: "tls_cert_path is required when tls_key_path is set".to_string(),
+            }),
+            _ => {}
+        }
+
+        // mTLS
+        if self.server.tls_require_client_cert && self.server.tls_client_ca_path.is_none() {
+            issues.push(ValidationIssue {
+                field: "server.tls_client_ca_path".to_string(),
+                reason: "tls_client_ca_path is required when tls_require_client_cert is true"
+                    .to_string(),
+            });
+        }
+
+        // Data directory
+        if !self.dev_mode && self.storage.data_dir.is_empty() {
+            issues.push(ValidationIssue {
+                field: "storage.data_dir".to_string(),
+                reason: "must not be empty".to_string(),
+            });
+        }
+
+        // Log level
+        if !ObservabilityConfig::VALID_LOG_LEVELS.contains(&self.observability.log_level.as_str()) {
+            issues.push(ValidationIssue {
+                field: "observability.log_level".to_string(),
+                reason: format!(
+                    "must be one of: {}",
+                    ObservabilityConfig::VALID_LOG_LEVELS.join(", ")
+                ),
+            });
+        }
+
+        // Log format
+        if !ObservabilityConfig::VALID_LOG_FORMATS
+            .contains(&self.observability.log_format.as_str())
+        {
+            issues.push(ValidationIssue {
+                field: "observability.log_format".to_string(),
+                reason: format!(
+                    "must be one of: {}",
+                    ObservabilityConfig::VALID_LOG_FORMATS.join(", ")
+                ),
+            });
+        }
+
+        // Operational timeouts and limits
+        if self.operational.request_timeout_secs == 0 {
+            issues.push(ValidationIssue {
+                field: "operational.request_timeout_secs".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if self.operational.shutdown_timeout_secs == 0 {
+            issues.push(ValidationIssue {
+                field: "operational.shutdown_timeout_secs".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if self.operational.max_connections == 0 {
+            issues.push(ValidationIssue {
+                field: "operational.max_connections".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if self.operational.queue_depth == 0 {
+            issues.push(ValidationIssue {
+                field: "operational.queue_depth".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+
+        // OIDC
+        validate_oidc_all(&self.oidc, &mut issues);
+        // Token
+        validate_token_all(&self.token, &mut issues);
+        // Email
+        validate_email_all(&self.email, &mut issues);
+        // Branding
+        validate_branding_all(&self.branding, &mut issues);
+        // Realm configs
+        validate_realm_web_configs_all(self.realms.as_ref(), &mut issues);
+        validate_realm_auth_configs_all(self.realms.as_ref(), &mut issues);
+        validate_realm_applications_all(self.realms.as_ref(), &mut issues);
+        validate_realm_organizations_all(self.realms.as_ref(), &mut issues);
+
+        // Notification email
+        if let Some(addr) = &self.onboarding.notification_email {
+            if addr.parse::<lettre::message::Mailbox>().is_err() {
+                issues.push(ValidationIssue {
+                    field: "onboarding.notification_email".to_string(),
+                    reason: "could not parse as an RFC 5322 mailbox".to_string(),
+                });
+            }
+        }
+
+        issues
     }
 
     /// Validates configuration values.
@@ -726,6 +874,442 @@ fn validate_from_address(email: &EmailConfig) -> Result<(), ConfigError> {
         )
     })?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Accumulating validators (used by `validate_all`)
+// ---------------------------------------------------------------------------
+
+/// Collects OIDC validation issues without short-circuiting.
+fn validate_oidc_all(oidc: &OidcYamlConfig, issues: &mut Vec<ValidationIssue>) {
+    if let Some(issuer) = &oidc.issuer {
+        if issuer.is_empty() {
+            issues.push(ValidationIssue {
+                field: "oidc.issuer".to_string(),
+                reason: "must not be empty".to_string(),
+            });
+        } else if !issuer.starts_with("https://") && !issuer.starts_with("http://") {
+            issues.push(ValidationIssue {
+                field: "oidc.issuer".to_string(),
+                reason: "must be a URL starting with https:// or http://".to_string(),
+            });
+        }
+    }
+    if let Some(ttl) = &oidc.authorization_code_ttl {
+        if types::parse_duration_to_micros(ttl).is_err() {
+            issues.push(ValidationIssue {
+                field: "oidc.authorization_code_ttl".to_string(),
+                reason: "invalid duration format".to_string(),
+            });
+        }
+    }
+}
+
+/// Collects token validation issues without short-circuiting.
+fn validate_token_all(token: &TokenYamlConfig, issues: &mut Vec<ValidationIssue>) {
+    if let Some(issuer) = &token.issuer {
+        if issuer.is_empty() {
+            issues.push(ValidationIssue {
+                field: "token.issuer".to_string(),
+                reason: "must not be empty".to_string(),
+            });
+        }
+    }
+    if let Some(ttl) = &token.access_token_ttl {
+        if types::parse_duration_to_micros(ttl).is_err() {
+            issues.push(ValidationIssue {
+                field: "token.access_token_ttl".to_string(),
+                reason: "invalid duration format".to_string(),
+            });
+        }
+    }
+    if let Some(ttl) = &token.refresh_token_ttl {
+        if types::parse_duration_to_micros(ttl).is_err() {
+            issues.push(ValidationIssue {
+                field: "token.refresh_token_ttl".to_string(),
+                reason: "invalid duration format".to_string(),
+            });
+        }
+    }
+}
+
+/// Collects email validation issues without short-circuiting.
+#[allow(clippy::too_many_lines)]
+fn validate_email_all(email: &EmailConfig, issues: &mut Vec<ValidationIssue>) {
+    if matches!(email.transport, EmailTransport::Log) {
+        return;
+    }
+
+    // from address required for all non-log transports
+    match &email.from {
+        None => issues.push(ValidationIssue {
+            field: "email.from".to_string(),
+            reason: format!(
+                "from address is required when email.transport is {:?}",
+                email.transport
+            ),
+        }),
+        Some(addr) => {
+            if addr.parse::<lettre::message::Mailbox>().is_err() {
+                issues.push(ValidationIssue {
+                    field: "email.from".to_string(),
+                    reason: "could not parse as an RFC 5322 mailbox".to_string(),
+                });
+            }
+        }
+    }
+
+    match email.transport {
+        EmailTransport::Smtp => {
+            if let Some(smtp) = &email.smtp {
+                if smtp.host.is_empty() {
+                    issues.push(ValidationIssue {
+                        field: "email.smtp.host".to_string(),
+                        reason: "must not be empty".to_string(),
+                    });
+                }
+                if smtp.port == 0 {
+                    issues.push(ValidationIssue {
+                        field: "email.smtp.port".to_string(),
+                        reason: "must be between 1 and 65535".to_string(),
+                    });
+                }
+            } else {
+                issues.push(ValidationIssue {
+                    field: "email.smtp".to_string(),
+                    reason: "smtp block is required when email.transport is smtp".to_string(),
+                });
+            }
+        }
+        EmailTransport::Sendgrid => {
+            if let Some(sg) = &email.sendgrid {
+                if sg.api_key.is_empty() {
+                    issues.push(ValidationIssue {
+                        field: "email.sendgrid.api_key".to_string(),
+                        reason: "must not be empty".to_string(),
+                    });
+                }
+            } else {
+                issues.push(ValidationIssue {
+                    field: "email.sendgrid".to_string(),
+                    reason: "sendgrid block is required when email.transport is sendgrid"
+                        .to_string(),
+                });
+            }
+        }
+        EmailTransport::Postmark => {
+            if let Some(pm) = &email.postmark {
+                if pm.server_token.is_empty() {
+                    issues.push(ValidationIssue {
+                        field: "email.postmark.server_token".to_string(),
+                        reason: "must not be empty".to_string(),
+                    });
+                }
+            } else {
+                issues.push(ValidationIssue {
+                    field: "email.postmark".to_string(),
+                    reason: "postmark block is required when email.transport is postmark"
+                        .to_string(),
+                });
+            }
+        }
+        EmailTransport::Mailgun => {
+            if let Some(mg) = &email.mailgun {
+                if mg.api_key.is_empty() {
+                    issues.push(ValidationIssue {
+                        field: "email.mailgun.api_key".to_string(),
+                        reason: "must not be empty".to_string(),
+                    });
+                }
+                if mg.domain.is_empty() {
+                    issues.push(ValidationIssue {
+                        field: "email.mailgun.domain".to_string(),
+                        reason: "must not be empty".to_string(),
+                    });
+                }
+            } else {
+                issues.push(ValidationIssue {
+                    field: "email.mailgun".to_string(),
+                    reason: "mailgun block is required when email.transport is mailgun".to_string(),
+                });
+            }
+        }
+        EmailTransport::Mailtrap => {
+            if let Some(mt) = &email.mailtrap {
+                if mt.api_key.is_empty() {
+                    issues.push(ValidationIssue {
+                        field: "email.mailtrap.api_key".to_string(),
+                        reason: "must not be empty".to_string(),
+                    });
+                }
+            } else {
+                issues.push(ValidationIssue {
+                    field: "email.mailtrap".to_string(),
+                    reason: "mailtrap block is required when email.transport is mailtrap"
+                        .to_string(),
+                });
+            }
+        }
+        EmailTransport::Log => unreachable!(),
+    }
+}
+
+/// Collects branding validation issues without short-circuiting.
+fn validate_branding_all(branding: &BrandingConfig, issues: &mut Vec<ValidationIssue>) {
+    if let Some(theme) = &branding.theme {
+        let lower = theme.to_ascii_lowercase();
+        if !VALID_UI_THEMES.contains(&lower.as_str()) {
+            issues.push(ValidationIssue {
+                field: "branding.theme".to_string(),
+                reason: format!(
+                    "unknown theme '{}'; valid themes are: {}",
+                    theme,
+                    VALID_UI_THEMES.join(", ")
+                ),
+            });
+        }
+    }
+    if let Some(path) = &branding.custom_css {
+        if !std::fs::metadata(path)
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
+            issues.push(ValidationIssue {
+                field: "branding.custom_css".to_string(),
+                reason: format!("file not found or not readable: {path}"),
+            });
+        }
+    }
+}
+
+/// Collects per-realm web config validation issues.
+fn validate_realm_web_configs_all(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(realms) = realms else { return };
+    for (name, cfg) in realms {
+        let Some(web) = &cfg.web else { continue };
+        if let Some(theme) = &web.theme {
+            let lower = theme.to_ascii_lowercase();
+            if !VALID_UI_THEMES.contains(&lower.as_str()) {
+                issues.push(ValidationIssue {
+                    field: format!("realms.{name}.web.theme"),
+                    reason: format!(
+                        "unknown theme '{}'; valid themes are: {}",
+                        theme,
+                        VALID_UI_THEMES.join(", ")
+                    ),
+                });
+            }
+        }
+        if let Some(path) = &web.custom_css {
+            if !std::fs::metadata(path)
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+            {
+                issues.push(ValidationIssue {
+                    field: format!("realms.{name}.web.custom_css"),
+                    reason: format!("file not found or not readable: {path}"),
+                });
+            }
+        }
+    }
+}
+
+/// Collects per-realm auth config validation issues.
+fn validate_realm_auth_configs_all(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(realms) = realms else { return };
+    for (name, cfg) in realms {
+        let Some(auth) = &cfg.auth else { continue };
+        if let Some(methods) = &auth.mfa_methods {
+            for m in methods {
+                if !VALID_MFA_METHODS.contains(&m.as_str()) {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.mfa_methods"),
+                        reason: format!(
+                            "unknown MFA method '{}'; valid methods are: {}",
+                            m,
+                            VALID_MFA_METHODS.join(", ")
+                        ),
+                    });
+                }
+            }
+        }
+        if let Some(methods) = &auth.allowed_auth_methods {
+            for m in methods {
+                if !VALID_AUTH_METHODS.contains(&m.as_str()) {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.allowed_auth_methods"),
+                        reason: format!(
+                            "unknown auth method '{}'; valid methods are: {}",
+                            m,
+                            VALID_AUTH_METHODS.join(", ")
+                        ),
+                    });
+                }
+            }
+        }
+        if let Some(pp) = &auth.password_policy {
+            if let Some(len) = pp.min_length {
+                if len == 0 {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.password_policy.min_length"),
+                        reason: "must be >= 1".to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(token) = &auth.token {
+            if let Some(ttl) = &token.access_token_ttl {
+                if types::parse_duration_to_micros(ttl).is_err() {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.token.access_token_ttl"),
+                        reason: "invalid duration format".to_string(),
+                    });
+                }
+            }
+            if let Some(ttl) = &token.refresh_token_ttl {
+                if types::parse_duration_to_micros(ttl).is_err() {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.token.refresh_token_ttl"),
+                        reason: "invalid duration format".to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(rl) = &auth.rate_limit {
+            if let Some(dur) = &rl.lockout_duration {
+                if types::parse_duration_to_micros(dur).is_err() {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.rate_limit.lockout_duration"),
+                        reason: "invalid duration format".to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Collects per-realm application validation issues.
+fn validate_realm_applications_all(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(realms) = realms else { return };
+    for (realm_name, cfg) in realms {
+        let Some(apps) = &cfg.applications else {
+            continue;
+        };
+        for (app_key, app) in apps {
+            let prefix = format!("realms.{realm_name}.applications.{app_key}");
+            if app.name.trim().is_empty() {
+                issues.push(ValidationIssue {
+                    field: format!("{prefix}.name"),
+                    reason: "must not be empty".to_string(),
+                });
+            }
+            if let Some(grant_types) = &app.grant_types {
+                for gt in grant_types {
+                    if !VALID_GRANT_TYPES.contains(&gt.as_str()) {
+                        issues.push(ValidationIssue {
+                            field: format!("{prefix}.grant_types"),
+                            reason: format!(
+                                "unknown grant type '{}'; valid types are: {}",
+                                gt,
+                                VALID_GRANT_TYPES.join(", ")
+                            ),
+                        });
+                    }
+                }
+            }
+            match &app.redirect_uris {
+                None => {
+                    issues.push(ValidationIssue {
+                        field: format!("{prefix}.redirect_uris"),
+                        reason: "at least one redirect URI is required".to_string(),
+                    });
+                }
+                Some(uris) if uris.is_empty() => {
+                    issues.push(ValidationIssue {
+                        field: format!("{prefix}.redirect_uris"),
+                        reason: "at least one redirect URI is required".to_string(),
+                    });
+                }
+                Some(uris) => {
+                    for uri in uris {
+                        if uri.is_empty() {
+                            issues.push(ValidationIssue {
+                                field: format!("{prefix}.redirect_uris"),
+                                reason: "redirect URIs must not be empty strings".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            let is_confidential = app.confidential.unwrap_or(false);
+            if is_confidential && app.client_secret.is_none() {
+                issues.push(ValidationIssue {
+                    field: format!("{prefix}.client_secret"),
+                    reason: "client_secret is required when confidential is true".to_string(),
+                });
+            }
+            if !is_confidential && app.client_secret.is_some() {
+                issues.push(ValidationIssue {
+                    field: format!("{prefix}.confidential"),
+                    reason: "confidential must be true when client_secret is provided".to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Collects per-realm organization validation issues.
+fn validate_realm_organizations_all(
+    realms: Option<&std::collections::HashMap<String, RealmYamlConfig>>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(realms) = realms else { return };
+    for (realm_name, cfg) in realms {
+        let Some(orgs) = &cfg.organizations else {
+            continue;
+        };
+        for (slug, org) in orgs {
+            let prefix = format!("realms.{realm_name}.organizations.{slug}");
+            if org.name.trim().is_empty() {
+                issues.push(ValidationIssue {
+                    field: format!("{prefix}.name"),
+                    reason: "must not be empty".to_string(),
+                });
+            }
+            if slug.len() < 3 || slug.len() > 63 {
+                issues.push(ValidationIssue {
+                    field: prefix.clone(),
+                    reason: format!("slug '{slug}' must be 3-63 characters"),
+                });
+            }
+            if !slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                issues.push(ValidationIssue {
+                    field: prefix.clone(),
+                    reason: format!(
+                        "slug '{slug}' must contain only lowercase letters, digits, and hyphens"
+                    ),
+                });
+            }
+            if slug.starts_with('-') || slug.ends_with('-') {
+                issues.push(ValidationIssue {
+                    field: prefix,
+                    reason: format!("slug '{slug}' must not start or end with a hyphen"),
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]

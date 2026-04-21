@@ -1,0 +1,381 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Config Editor{% endblock %}
+{% block breadcrumb %}
+  <span class="text-ht-content-muted">Admin</span>
+  <span class="mx-1 text-ht-content-muted">/</span>
+  <a href="/ui/admin/settings" class="text-ht-content-secondary hover:text-ht-content-primary">Settings</a>
+  <span class="mx-1 text-ht-content-muted">/</span>
+  <span class="text-ht-content-secondary">Editor</span>
+{% endblock %}
+{% block body %}
+<div x-data="configEditor()" x-cloak>
+  {# Header with mode tabs #}
+  <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <h1 class="font-display text-2xl font-medium text-ht-content-primary">Config Editor</h1>
+      <p class="mt-1 text-sm text-ht-content-muted">
+        Edit <code class="rounded-sm bg-ht-surface-elevated px-1 py-0.5 font-mono text-xs">hearth.yaml</code> directly.
+        Changes are validated before applying.
+        {% if read_only %}
+          <span class="font-medium text-warning-fg">Read-only — no config file path available.</span>
+        {% endif %}
+      </p>
+      {# Mode toggle #}
+      <div class="mt-3 inline-flex rounded-sm border border-divider overflow-hidden">
+        <button @click="mode = 'visual'" :class="mode === 'visual' ? 'bg-divider text-ht-content-primary' : 'text-ht-content-secondary hover-bg-divider'" class="px-3 py-1.5 text-xs font-medium transition-colors">
+          Visual
+        </button>
+        <button @click="mode = 'raw'" :class="mode === 'raw' ? 'bg-divider text-ht-content-primary' : 'text-ht-content-secondary hover-bg-divider'" class="border-l border-divider px-3 py-1.5 text-xs font-medium transition-colors">
+          Raw YAML
+        </button>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <a href="/ui/admin/settings" class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+        System Info
+      </a>
+      <a href="/ui/admin/settings/editor/export"
+         class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Export YAML
+      </a>
+    </div>
+  </div>
+
+  {% match flash %}
+    {% when Some with (f) %}
+      <div class="mb-4 rounded-lg px-4 py-3 text-sm font-medium {% if f.kind == "error" %}bg-danger/[0.12] text-danger-fg{% else %}bg-success/[0.12] text-success-fg{% endif %}" role="alert">{{ f.message }}</div>
+    {% when None %}
+  {% endmatch %}
+
+  {# ── Visual Editor ── #}
+  <div x-show="mode === 'visual'" x-transition>
+    <div class="flex gap-6">
+      {# Section sidebar nav #}
+      <nav class="w-44 shrink-0 space-y-1">
+        <p class="mb-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Sections</p>
+        <template x-for="sec in sections" :key="sec.key">
+          <button @click="activeSection = sec.key; activeRealm = null"
+                  :class="activeSection === sec.key && !activeRealm ? 'bg-divider text-ht-content-primary' : 'text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary'"
+                  class="block w-full rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors"
+                  x-text="sec.label"></button>
+        </template>
+
+        {# Realms section #}
+        <div class="mt-4 border-t border-divider-subtle pt-3">
+          <p class="mb-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Realms</p>
+          <template x-for="rk in realmKeys" :key="rk">
+            <button @click="activeSection = 'realm'; activeRealm = rk"
+                    :class="activeSection === 'realm' && activeRealm === rk ? 'bg-divider text-ht-content-primary' : 'text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary'"
+                    class="block w-full rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors"
+                    x-text="rk"></button>
+          </template>
+          {% if !read_only %}
+          <button @click="addRealm()" class="mt-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs font-medium text-teal-fg hover-bg-divider">
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Realm
+          </button>
+          {% endif %}
+        </div>
+      </nav>
+
+      {# Main form area #}
+      <div class="min-w-0 flex-1">
+        <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+          {% include "ui/admin/settings/_editor_sections.html" %}
+        </div>
+      </div>
+    </div>
+
+    {# Validation result banners (visual mode) #}
+    <div x-show="validationPassed" x-cloak x-transition.opacity
+         class="mt-4 flex items-center gap-2 rounded-md bg-success/[0.08] px-4 py-2.5 ring-1 ring-success/20">
+      <svg class="h-4 w-4 shrink-0 text-success-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      <p class="text-xs font-medium text-success-fg">Configuration is valid. Ready to apply.</p>
+    </div>
+    <div x-show="Object.keys(errors).length > 0" x-cloak
+         class="mt-4 flex items-center gap-2 rounded-md bg-danger/[0.08] px-4 py-2.5 ring-1 ring-danger/20">
+      <svg class="h-4 w-4 shrink-0 text-danger-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <p class="text-xs font-medium text-danger-fg">
+        <span x-text="Object.keys(errors).length"></span> validation error(s). Fix highlighted fields before applying.
+      </p>
+    </div>
+
+    {# Action bar (visual mode) #}
+    {% if !read_only %}
+    <div class="mt-4 flex items-center justify-between rounded-md bg-ht-surface-elevated px-6 py-3 ring-1 ring-divider-subtle">
+      <p class="text-xs text-ht-content-muted">
+        Validated before applying. Server/storage changes require a restart.
+      </p>
+      <div class="flex items-center gap-3">
+        <button @click="reset()" type="button"
+                class="rounded border border-strong px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover-bg-divider">
+          Reset
+        </button>
+        <button @click="preview()" type="button"
+                class="rounded border border-strong px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover-bg-divider">
+          Preview Diff
+        </button>
+        <button @click="validate()" type="button" :disabled="validating"
+                class="rounded border border-strong px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover-bg-divider disabled:opacity-50">
+          <span x-show="!validating">Validate</span>
+          <span x-show="validating">Checking…</span>
+        </button>
+        <button @click="apply()" type="button" :disabled="saving"
+                class="btn-ember rounded px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
+          <span x-show="!saving">Apply Changes</span>
+          <span x-show="saving">Applying…</span>
+        </button>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Raw YAML Editor ── #}
+  <div x-show="mode === 'raw'" x-transition>
+    {% include "ui/admin/settings/_raw_editor.html" %}
+  </div>
+
+  {# Diff output (shared between modes) #}
+  <div id="diff-output" class="mt-4"></div>
+</div>
+
+<script>
+function configEditor() {
+  const initialConfig = {{ config_json|safe }};
+  return {
+    mode: 'visual',
+    activeSection: 'server',
+    activeRealm: null,
+    config: JSON.parse(JSON.stringify(initialConfig || {})),
+    originalConfig: JSON.stringify(initialConfig || {}),
+    csrf: document.querySelector('meta[name="csrf"]')?.content || '',
+    saving: false,
+    errors: {},
+    validating: false,
+    validationPassed: false,
+
+    sections: [
+      { key: 'server', label: 'Server' },
+      { key: 'storage', label: 'Storage' },
+      { key: 'observability', label: 'Logging' },
+      { key: 'operational', label: 'Limits' },
+      { key: 'branding', label: 'Branding' },
+      { key: 'email', label: 'Email' },
+      { key: 'oidc', label: 'OIDC' },
+      { key: 'token', label: 'Tokens' },
+      { key: 'auth', label: 'Auth' },
+      { key: 'onboarding', label: 'Onboarding' },
+    ],
+
+    get realmKeys() {
+      return Object.keys(this.config.realms || {});
+    },
+
+    // Ensure a nested path exists in config
+    ensure(path) {
+      const parts = path.split('.');
+      let obj = this.config;
+      for (const p of parts) {
+        if (obj[p] === undefined || obj[p] === null) obj[p] = {};
+        obj = obj[p];
+      }
+    },
+
+    // Get nested value safely
+    getVal(path, fallback) {
+      const parts = path.split('.');
+      let obj = this.config;
+      for (const p of parts) {
+        if (obj === undefined || obj === null) return fallback;
+        obj = obj[p];
+      }
+      return obj !== undefined && obj !== null ? obj : fallback;
+    },
+
+    // Set nested value (with type coercion for numeric fields)
+    setVal(path, value) {
+      const parts = path.split('.');
+      let obj = this.config;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (obj[parts[i]] === undefined || obj[parts[i]] === null) obj[parts[i]] = {};
+        obj = obj[parts[i]];
+      }
+      const key = parts[parts.length - 1];
+      if (value === '' || value === null) {
+        delete obj[key];
+      } else if (typeof value === 'string' && !value.includes('${')) {
+        // HTML inputs always return strings — restore numeric types
+        if (/^-?\d+$/.test(value)) obj[key] = parseInt(value, 10);
+        else if (/^-?\d+\.\d+$/.test(value)) obj[key] = parseFloat(value);
+        else obj[key] = value;
+      } else {
+        obj[key] = value;
+      }
+      // Clear field-level error on edit
+      delete this.errors[path];
+    },
+
+    // Realm management
+    addRealm() {
+      const name = prompt('Realm slug (lowercase, hyphens):');
+      if (!name) return;
+      if (!this.config.realms) this.config.realms = {};
+      this.config.realms[name] = {};
+      this.activeSection = 'realm';
+      this.activeRealm = name;
+    },
+    removeRealm(key) {
+      if (!confirm('Remove realm "' + key + '" from config?')) return;
+      delete this.config.realms[key];
+      if (this.activeRealm === key) {
+        this.activeRealm = null;
+        this.activeSection = 'server';
+      }
+    },
+
+    // Application management within a realm
+    addApp(realm) {
+      const key = prompt('Application key (lowercase, hyphens):');
+      if (!key) return;
+      if (!this.config.realms[realm].applications) this.config.realms[realm].applications = {};
+      this.config.realms[realm].applications[key] = { name: key, redirect_uris: [], grant_types: ['authorization_code'] };
+    },
+    removeApp(realm, key) {
+      if (confirm('Remove application "' + key + '"?')) {
+        delete this.config.realms[realm].applications[key];
+      }
+    },
+
+    // Organization management within a realm
+    addOrg(realm) {
+      const slug = prompt('Organization slug (lowercase, hyphens):');
+      if (!slug) return;
+      if (!this.config.realms[realm].organizations) this.config.realms[realm].organizations = {};
+      this.config.realms[realm].organizations[slug] = { name: slug };
+    },
+    removeOrg(realm, key) {
+      if (confirm('Remove organization "' + key + '"?')) {
+        delete this.config.realms[realm].organizations[key];
+      }
+    },
+
+    // List helpers (for Vec<String> fields)
+    getList(path) {
+      return this.getVal(path, []) || [];
+    },
+    addListItem(path) {
+      this.ensure(path.split('.').slice(0, -1).join('.'));
+      const parts = path.split('.');
+      let obj = this.config;
+      for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+      const key = parts[parts.length - 1];
+      if (!Array.isArray(obj[key])) obj[key] = [];
+      obj[key].push('');
+    },
+    removeListItem(path, idx) {
+      const parts = path.split('.');
+      let obj = this.config;
+      for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+      obj[parts[parts.length - 1]].splice(idx, 1);
+    },
+
+    // Returns CSS classes for an input field — red border if error exists.
+    fieldClass(path) {
+      if (this.errors[path]) {
+        return 'mt-1.5 block w-full rounded-sm border border-danger/60 ring-1 ring-danger/30 bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-danger/60 focus:outline-none focus:ring-1 focus:ring-danger/30';
+      }
+      return 'mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember';
+    },
+
+    // Calls the backend validate endpoint and populates errors map.
+    async validate() {
+      this.validating = true;
+      this.validationPassed = false;
+      try {
+        const resp = await fetch('/ui/admin/settings/editor/visual/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': this.csrf },
+          body: JSON.stringify(this.config),
+        });
+        const result = await resp.json();
+        const newErrors = {};
+        if (!result.valid && result.errors) {
+          for (const e of result.errors) {
+            newErrors[e.field] = e.reason;
+          }
+        }
+        this.errors = newErrors;
+        if (result.valid) {
+          this.validationPassed = true;
+          setTimeout(() => { this.validationPassed = false; }, 4000);
+        }
+        return result.valid;
+      } finally {
+        this.validating = false;
+      }
+    },
+
+    reset() {
+      this.config = JSON.parse(this.originalConfig);
+      this.errors = {};
+      document.getElementById('diff-output').innerHTML = '';
+    },
+
+    async preview() {
+      if (this.mode === 'visual') {
+        const resp = await fetch('/ui/admin/settings/editor/visual/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': this.csrf },
+          body: JSON.stringify(this.config),
+        });
+        document.getElementById('diff-output').innerHTML = await resp.text();
+      } else {
+        htmx.ajax('POST', '/ui/admin/settings/editor/preview',
+          { target: '#diff-output', values: { yaml: document.getElementById('yaml-editor').value } });
+      }
+    },
+
+    async apply() {
+      if (this.saving) return;
+      this.saving = true;
+      try {
+        if (this.mode === 'visual') {
+          // Pre-apply validation gate
+          const valid = await this.validate();
+          if (!valid) {
+            this.saving = false;
+            return;
+          }
+          const resp = await fetch('/ui/admin/settings/editor/visual/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': this.csrf },
+            body: JSON.stringify(this.config),
+          });
+          const result = await resp.json();
+          if (result.ok) {
+            window.location.href = '/ui/admin/settings/editor?flash=' + encodeURIComponent(result.message || 'Applied') + '&flash_kind=success';
+          } else {
+            // If backend returns field errors, populate them
+            if (result.errors) {
+              const newErrors = {};
+              for (const e of result.errors) {
+                newErrors[e.field] = e.reason;
+              }
+              this.errors = newErrors;
+            }
+            document.getElementById('diff-output').innerHTML =
+              '<div class="rounded-md bg-danger/[0.12] px-6 py-4 text-sm text-danger-fg ring-1 ring-danger/30">' +
+              '<h3 class="font-semibold">Error</h3><p class="mt-1 font-mono text-xs">' + result.error + '</p></div>';
+          }
+        } else {
+          document.getElementById('apply-form').submit();
+        }
+      } finally {
+        this.saving = false;
+      }
+    },
+  };
+}
+</script>
+{% endblock %}

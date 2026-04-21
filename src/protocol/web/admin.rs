@@ -39,7 +39,7 @@ use axum::Form;
 use base64::Engine as _;
 use serde::Deserialize;
 
-use crate::config::Config;
+use crate::config::{Config, ValidationIssue};
 use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId};
 use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
@@ -3077,6 +3077,8 @@ pub async fn admin_system_info(
 #[allow(dead_code, clippy::struct_excessive_bools)]
 struct ConfigEditorTemplate {
     yaml_content: String,
+    /// JSON representation of the raw YAML tree (for the visual editor).
+    config_json: String,
     read_only: bool,
     chrome: bool,
     active: &'static str,
@@ -3130,6 +3132,7 @@ pub async fn admin_config_editor(
     Query(params): Query<ConfigEditorParams>,
 ) -> Response {
     let (yaml_content, read_only) = read_config_yaml(&state);
+    let config_json = yaml_to_editor_json(&yaml_content).unwrap_or_else(|_| "{}".to_string());
 
     let flash = params.flash.map(|msg| {
         let kind = params.flash_kind.as_deref().unwrap_or("success");
@@ -3142,6 +3145,7 @@ pub async fn admin_config_editor(
 
     render(&ConfigEditorTemplate {
         yaml_content,
+        config_json,
         read_only,
         chrome: true,
         active: "settings",
@@ -3291,8 +3295,10 @@ fn render_config_editor_with_flash(
     flash: Flash,
 ) -> Response {
     let read_only = state.config_path.is_none();
+    let config_json = yaml_to_editor_json(yaml_content).unwrap_or_else(|_| "{}".to_string());
     render(&ConfigEditorTemplate {
         yaml_content: yaml_content.to_string(),
+        config_json,
         read_only,
         chrome: true,
         active: "settings",
@@ -3306,6 +3312,218 @@ fn render_config_editor_with_flash(
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
     })
+}
+
+// --- Visual config editor helpers ---
+
+/// Parses raw YAML (without env substitution) into a JSON string for the
+/// visual editor. Env var references like `${PORT:-8420}` stay as literal
+/// strings in the JSON.
+fn yaml_to_editor_json(yaml_str: &str) -> Result<String, String> {
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(yaml_str).map_err(|e| format!("YAML parse error: {e}"))?;
+    serde_json::to_string(&value).map_err(|e| format!("JSON serialization error: {e}"))
+}
+
+/// Try to extract a dotted field path from a serde_yaml parse error.
+///
+/// serde_yaml errors for type mismatches typically look like:
+/// `server.port: invalid type: string "asdf", expected u16 at line 3 column 9`
+///
+/// Returns the extracted field path, or `"_yaml"` if no path can be parsed.
+fn field_from_parse_error(msg: &str) -> &str {
+    if let Some(pos) = msg.find(": ") {
+        let candidate = &msg[..pos];
+        if !candidate.is_empty()
+            && candidate.contains('.')
+            && candidate
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+        {
+            return candidate;
+        }
+    }
+    "_yaml"
+}
+
+/// Converts editor JSON back to a YAML string. The resulting YAML is
+/// machine-generated (no comments, consistent ordering).
+fn editor_json_to_yaml(json: &serde_json::Value) -> Result<String, String> {
+    let value: serde_yaml::Value =
+        serde_json::from_value(json.clone()).map_err(|e| format!("JSON→YAML conversion: {e}"))?;
+    serde_yaml::to_string(&value).map_err(|e| format!("YAML serialization error: {e}"))
+}
+
+/// `POST /ui/admin/settings/editor/visual/preview` — JSON-based diff preview.
+///
+/// Accepts the visual editor's config state as a JSON body, converts to YAML,
+/// validates via the full `Config::from_yaml_str` pipeline, and returns a
+/// diff preview HTML partial.
+pub async fn admin_config_editor_visual_preview(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    axum::Json(json): axum::Json<serde_json::Value>,
+) -> Response {
+    let new_yaml = match editor_json_to_yaml(&json) {
+        Ok(y) => y,
+        Err(e) => {
+            return render(&DiffPreviewTemplate {
+                diff: String::new(),
+                diff_lines: Vec::new(),
+                error: Some(e),
+                product_name: String::new(),
+                logo_url: String::new(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: None,
+            });
+        }
+    };
+
+    let validation_error = Config::from_yaml_str(&new_yaml).err().map(|e| e.to_string());
+
+    let diff = if validation_error.is_some() {
+        String::new()
+    } else {
+        let (old_yaml, _) = read_config_yaml(&state);
+        compute_unified_diff(&old_yaml, &new_yaml)
+    };
+
+    let diff_lines: Vec<String> = diff.lines().map(String::from).collect();
+
+    render(&DiffPreviewTemplate {
+        diff,
+        diff_lines,
+        error: validation_error,
+        product_name: String::new(),
+        logo_url: String::new(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: None,
+    })
+}
+
+/// `POST /ui/admin/settings/editor/visual/validate` — JSON-based validation.
+///
+/// Accepts the visual editor's config state as JSON, converts to YAML,
+/// parses without validation, then runs `validate_all()` to collect every
+/// issue. Returns a JSON response with field-level errors.
+pub async fn admin_config_editor_visual_validate(
+    State(_state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    axum::Json(json): axum::Json<serde_json::Value>,
+) -> Response {
+    let new_yaml = match editor_json_to_yaml(&json) {
+        Ok(y) => y,
+        Err(e) => {
+            return axum::response::Json(serde_json::json!({
+                "valid": false,
+                "errors": [{ "field": "_yaml", "reason": e }],
+            }))
+            .into_response();
+        }
+    };
+
+    let config = match Config::from_yaml_str_unchecked(&new_yaml) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = e.to_string();
+            let field = field_from_parse_error(&msg);
+            return axum::response::Json(serde_json::json!({
+                "valid": false,
+                "errors": [{ "field": field, "reason": msg }],
+            }))
+            .into_response();
+        }
+    };
+
+    let issues = config.validate_all();
+    let valid = issues.is_empty();
+
+    axum::response::Json(serde_json::json!({
+        "valid": valid,
+        "errors": issues,
+    }))
+    .into_response()
+}
+
+/// `POST /ui/admin/settings/editor/visual/apply` — JSON-based apply.
+///
+/// Accepts the visual editor's config state as JSON, converts to YAML,
+/// validates (collecting all errors), writes to disk, and triggers a
+/// hot-reload.
+pub async fn admin_config_editor_visual_apply(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    axum::Json(json): axum::Json<serde_json::Value>,
+) -> Response {
+    // Convert JSON → YAML
+    let new_yaml = match editor_json_to_yaml(&json) {
+        Ok(y) => y,
+        Err(e) => {
+            return axum::response::Json(serde_json::json!({
+                "ok": false,
+                "error": e,
+            }))
+            .into_response();
+        }
+    };
+
+    // Parse without validation so we can run validate_all()
+    let config = match Config::from_yaml_str_unchecked(&new_yaml) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = e.to_string();
+            let field = field_from_parse_error(&msg);
+            return axum::response::Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Parse error: {msg}"),
+                "errors": [{ "field": field, "reason": msg }],
+            }))
+            .into_response();
+        }
+    };
+
+    // Run full validation and report all issues
+    let issues: Vec<ValidationIssue> = config.validate_all();
+    if !issues.is_empty() {
+        let count = issues.len();
+        return axum::response::Json(serde_json::json!({
+            "ok": false,
+            "error": format!("{count} validation error(s)"),
+            "errors": issues,
+        }))
+        .into_response();
+    }
+
+    // Write to disk
+    let Some(config_path) = &state.config_path else {
+        return axum::response::Json(serde_json::json!({
+            "ok": false,
+            "error": "No config file path configured — cannot write",
+        }))
+        .into_response();
+    };
+
+    if let Err(e) = std::fs::write(config_path, &new_yaml) {
+        tracing::error!(error = %e, "failed to write config file (visual editor)");
+        return axum::response::Json(serde_json::json!({
+            "ok": false,
+            "error": format!("Failed to write file: {e}"),
+        }))
+        .into_response();
+    }
+
+    // Trigger hot-reload
+    if let Some(notify) = &state.reload_notify {
+        notify.notify_one();
+    }
+
+    tracing::info!("config file updated via visual editor, reload triggered");
+
+    axum::response::Json(serde_json::json!({
+        "ok": true,
+        "message": "Configuration applied successfully",
+    }))
+    .into_response()
 }
 
 /// Computes a simple unified diff between two YAML strings.
