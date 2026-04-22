@@ -409,14 +409,13 @@ impl OnboardingService {
         //    is guaranteed to exist here. See `memory/admin_realm.md`.
         let realm_id = crate::identity::keys::system_realm_id();
 
-        // 2. Create admin user.
-        let user = self.identity.create_user(
-            &realm_id,
-            &CreateUserRequest {
-                email: admin_email.to_string(),
-                display_name: admin_display_name.to_string(),
-            },
-        )?;
+        // 2. Create admin user. `create_admin_user` is the only path
+        //    that may write into the system realm; the plain
+        //    `create_user` rejects it with `SystemRealmProtected`.
+        let user = self.identity.create_admin_user(&CreateUserRequest {
+            email: admin_email.to_string(),
+            display_name: admin_display_name.to_string(),
+        })?;
         let user_id = user.id().clone();
 
         // 3. Force status = PendingVerification (create_user uses the

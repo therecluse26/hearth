@@ -84,6 +84,12 @@ struct UserListTemplate {
     users: Vec<User>,
     next_cursor: Option<String>,
     search_query: String,
+    // Realm-workspace context. `Some` for `/admin/users?realm=<name>`
+    // views (tenant workspace); `None` for `/admin/admin-users` which
+    // is explicitly cross-workspace system-realm scope.
+    target_realm_name: Option<String>,
+    target_realm_id_hex: Option<String>,
+    active_tab: &'static str,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -125,8 +131,11 @@ pub async fn admin_users_list(
             users: page.items,
             next_cursor: page.next_cursor,
             search_query,
+            target_realm_name: Some(target.0.name().to_string()),
+            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            active_tab: "users",
             chrome: true,
-            active: "users",
+            active: "realm-workspace",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -139,6 +148,60 @@ pub async fn admin_users_list(
         }),
         Err(e) => {
             tracing::warn!(error = %e, "list_users failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// `GET /ui/admin/admin-users`.
+///
+/// Lists users in the reserved system realm — the operators who can
+/// sign into `/ui/admin/*`. Mirrors the tenant-realm user-list handler
+/// but pins the scope to the system realm and renders under the
+/// `admin-users` sidebar slot so the two surfaces cannot be confused.
+pub async fn admin_admin_users_list(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Query(params): Query<UserListParams>,
+) -> Response {
+    let system_realm = crate::identity::keys::system_realm_id();
+    let search_query = params.q.clone().unwrap_or_default();
+    let result = if search_query.len() >= 2 {
+        state
+            .identity
+            .search_users(&system_realm, &search_query, 20)
+            .map(|users| Page {
+                items: users,
+                next_cursor: None,
+            })
+    } else {
+        state
+            .identity
+            .list_users(&system_realm, params.cursor.as_deref(), 20)
+    };
+
+    match result {
+        Ok(page) => render(&UserListTemplate {
+            users: page.items,
+            next_cursor: page.next_cursor,
+            search_query,
+            target_realm_name: None,
+            target_realm_id_hex: None,
+            active_tab: "",
+            chrome: true,
+            active: "admin-users",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        }),
+        Err(e) => {
+            tracing::warn!(error = %e, "admin_admin_users_list failed");
             super::handlers_common::server_error()
         }
     }
@@ -1028,7 +1091,7 @@ pub async fn admin_realm_detail(
                 is_admin: true,
                 flash: None,
                 csrf: session.csrf.clone(),
-                narrow: true,
+                narrow: false,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
@@ -1136,6 +1199,9 @@ fn audit_realm_event(
 struct AppListTemplate {
     applications: Vec<OAuthClient>,
     next_cursor: Option<String>,
+    target_realm_name: Option<String>,
+    target_realm_id_hex: Option<String>,
+    active_tab: &'static str,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1163,8 +1229,11 @@ pub async fn admin_apps_list(
         Ok(page) => render(&AppListTemplate {
             applications: page.items,
             next_cursor: page.next_cursor,
+            target_realm_name: Some(target.0.name().to_string()),
+            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            active_tab: "applications",
             chrome: true,
-            active: "applications",
+            active: "realm-workspace",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -1353,6 +1422,9 @@ pub struct SessionRow {
 struct SessionListTemplate {
     sessions: Vec<SessionRow>,
     next_cursor: Option<String>,
+    target_realm_name: Option<String>,
+    target_realm_id_hex: Option<String>,
+    active_tab: &'static str,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1551,8 +1623,11 @@ pub async fn admin_sessions_list(
             render(&SessionListTemplate {
                 sessions: rows,
                 next_cursor: page.next_cursor,
+                target_realm_name: Some(target.0.name().to_string()),
+                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+                active_tab: "sessions",
                 chrome: true,
-                active: "sessions",
+                active: "realm-workspace",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -1937,6 +2012,9 @@ pub async fn admin_test_email(
 struct OrgListTemplate {
     organizations: Vec<Organization>,
     next_cursor: Option<String>,
+    target_realm_name: Option<String>,
+    target_realm_id_hex: Option<String>,
+    active_tab: &'static str,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1964,8 +2042,11 @@ pub async fn admin_orgs_list(
         Ok(page) => render(&OrgListTemplate {
             organizations: page.items,
             next_cursor: page.next_cursor,
+            target_realm_name: Some(target.0.name().to_string()),
+            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            active_tab: "organizations",
             chrome: true,
-            active: "organizations",
+            active: "realm-workspace",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -2980,11 +3061,16 @@ pub async fn admin_switch_realm(
         return (StatusCode::BAD_REQUEST, "invalid realm name").into_response();
     }
 
+    // Default landing page after a switch is the realm workspace's
+    // Users tab with `?realm=<name>` so the operator sees the workspace
+    // chrome (breadcrumb + tab bar) instead of a flat "Users" view that
+    // hides the scope.
+    let default_return_to = format!("/ui/admin/users?realm={}", form.realm);
     let return_to = form
         .return_to
         .as_deref()
         .and_then(super::auth::sanitize_return_to)
-        .unwrap_or_else(|| "/ui/admin/users".to_string());
+        .unwrap_or(default_return_to);
 
     let cookie = format!(
         "{}={}; HttpOnly; Path=/ui; SameSite=Lax",

@@ -1459,7 +1459,28 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &CreateUserRequest,
     ) -> Result<User, IdentityError> {
+        // The system realm is reserved for Hearth admins and must be
+        // reached only through `create_admin_user`, which also provisions
+        // the `hearth#admin` Zanzibar tuple atomically. Without this
+        // guard an operator could create a non-admin account in the
+        // system realm and gain a session bound to it but without the
+        // admin tuple — harmless today (the tuple check would reject the
+        // session) but a trap for future refactors.
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "create_user",
+            });
+        }
         self.create_user_with_status(realm_id, request, self.config.default_status)
+    }
+
+    fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError> {
+        // Bypasses the `create_user` system-realm guard deliberately.
+        // This is the sole public entry point that may create a record
+        // in the system realm; callers are responsible for writing the
+        // `hearth#admin` Zanzibar tuple after the user is persisted.
+        let realm_id = keys::system_realm_id();
+        self.create_user_with_status(&realm_id, request, self.config.default_status)
     }
 
     fn get_user(
@@ -4397,6 +4418,23 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         request: &CreateRealmRequest,
         requested_id: Option<RealmId>,
     ) -> Result<Realm, IdentityError> {
+        // The reserved system realm is never an import target. An
+        // external dump can legitimately be named "system" (Keycloak's
+        // default realm is called `master`, not `system`, but we
+        // defend against any collision anyway) — refuse rather than
+        // silently rename.
+        if request.name == keys::SYSTEM_REALM_NAME {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "import_realm",
+            });
+        }
+        if let Some(ref id) = requested_id {
+            if keys::is_system_realm(id) {
+                return Err(IdentityError::SystemRealmProtected {
+                    operation: "import_realm",
+                });
+            }
+        }
         // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. Mirrors `create_realm`.
@@ -4456,6 +4494,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &ImportUserRequest,
     ) -> Result<User, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "import_user",
+            });
+        }
         // 1. Validate and normalize input (same invariants as create_user)
         let email = validation::validate_email(&request.email)?;
         let display_name = validation::validate_display_name(&request.display_name)?;
@@ -4536,6 +4579,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &ImportClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "import_client",
+            });
+        }
         let client_name = validation::validate_client_name(&request.client_name)?;
 
         let has_client_credentials = request
@@ -4717,6 +4765,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         org_id: &OrganizationId,
         request: &UpdateOrganizationRequest,
     ) -> Result<Organization, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "update_organization",
+            });
+        }
         let mut org = self
             .get_organization(realm_id, org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;

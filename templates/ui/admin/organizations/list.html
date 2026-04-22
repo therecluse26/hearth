@@ -1,9 +1,10 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · Organizations{% endblock %}
 {% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <h1 class="text-2xl font-semibold text-ht-content-primary">Organizations</h1>
-  <a href="/ui/admin/organizations/new"
+  <a href="{% match target_realm_name %}{% when Some with (name) %}/ui/admin/organizations/new?realm={{ name }}{% when None %}/ui/admin/organizations/new{% endmatch %}"
      class="btn-ember inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     Create organization

@@ -822,6 +822,13 @@ fn login_submit_impl(
             let mut response = Redirect::to(location).into_response();
             append_cookie(&mut response, &session_cookie);
             append_cookie(&mut response, &csrf_cookie);
+            append_cookie(
+                &mut response,
+                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
+                    state.identity.as_ref(),
+                    realm.id(),
+                )),
+            );
             response
         }
         Err(IdentityError::UserNotVerified) => {
@@ -1132,6 +1139,13 @@ fn passkey_complete_for_user(
             .into_response();
             append_cookie(&mut response, &session_cookie);
             append_cookie(&mut response, &csrf_cookie);
+            append_cookie(
+                &mut response,
+                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
+                    state.identity.as_ref(),
+                    realm.id(),
+                )),
+            );
             response
         }
         Err(IdentityError::UserNotVerified) => axum::Json(serde_json::json!({
@@ -1266,6 +1280,13 @@ pub async fn mfa_challenge_submit(
             append_cookie(&mut response, &session_cookie);
             append_cookie(&mut response, &csrf_cookie);
             append_cookie(&mut response, &clear_mfa_pending_cookie());
+            append_cookie(
+                &mut response,
+                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
+                    state.identity.as_ref(),
+                    &pending.realm_id,
+                )),
+            );
             response
         }
         Err(e) => {
@@ -1396,6 +1417,24 @@ pub async fn logout_submit(
         return resp;
     }
 
+    // Resolve the realm *before* revoking — the session record is about
+    // to disappear. System-realm sessions route back to /ui/admin/login;
+    // tenant sessions route back to /ui/realms/{name}/login.
+    let redirect_realm: Option<String> =
+        if session.realm_id == crate::identity::keys::system_realm_id() {
+            Some(super::auth::SYSTEM_REALM_SENTINEL.to_string())
+        } else {
+            // Look up the realm name. If the lookup fails for any
+            // reason (deleted mid-session, engine error) we fall back to
+            // the last-realm cookie, which we refresh below.
+            state
+                .identity
+                .get_realm(&session.realm_id)
+                .ok()
+                .flatten()
+                .map(|r| r.name().to_string())
+        };
+
     match state
         .identity
         .revoke_session(&session.realm_id, &session.session_id)
@@ -1408,9 +1447,15 @@ pub async fn logout_submit(
         }
     }
 
-    let mut response = Redirect::to("/ui/login").into_response();
+    let login_url = super::auth::login_url_for_realm(redirect_realm.as_deref());
+    let mut response = Redirect::to(&login_url).into_response();
     for cookie in super::auth::clearing_cookies() {
         append_cookie(&mut response, &cookie);
+    }
+    // Refresh the last-realm cookie so the user returns here on the
+    // next unauthenticated request even if they clear other cookies.
+    if let Some(ref name) = redirect_realm {
+        append_cookie(&mut response, &super::auth::last_realm_cookie(name));
     }
     response
 }

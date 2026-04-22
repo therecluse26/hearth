@@ -1,0 +1,41 @@
+{# Shared realm-workspace header.
+   Renders a compact breadcrumb + tab bar pinning the active realm above
+   any list/detail page inside a tenant realm. The `active_tab` variable
+   (set by the including template) decides which tab gets the highlight.
+
+   Required struct fields on the caller:
+     - target_realm_name: Option<String>
+     - target_realm_id_hex: Option<String>
+     - active_tab: &'static str   // "overview" | "users" | "organizations"
+                                  // | "applications" | "sessions"
+#}
+{% match target_realm_name %}
+  {% when Some with (realm_name) %}
+    {% match target_realm_id_hex %}
+      {% when Some with (realm_hex) %}
+        <div class="mb-4 flex flex-wrap items-center gap-2 text-sm">
+          <a href="/ui/admin/realms" class="text-ht-content-muted hover:text-ht-content-primary">Realms</a>
+          <span class="text-ht-content-muted">›</span>
+          <a href="/ui/admin/realms/{{ realm_hex }}" class="font-medium text-ht-content-secondary hover:text-ht-content-primary">{{ realm_name }}</a>
+        </div>
+        <nav class="mb-6 flex flex-wrap gap-1 border-b border-divider" aria-label="Realm workspace">
+          <a href="/ui/admin/realms/{{ realm_hex }}"
+             {% if active_tab == "overview" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "overview" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Overview</a>
+          <a href="/ui/admin/users?realm={{ realm_name }}"
+             {% if active_tab == "users" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "users" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Users</a>
+          <a href="/ui/admin/organizations?realm={{ realm_name }}"
+             {% if active_tab == "organizations" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "organizations" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Organizations</a>
+          <a href="/ui/admin/applications?realm={{ realm_name }}"
+             {% if active_tab == "applications" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "applications" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Applications</a>
+          <a href="/ui/admin/sessions?realm={{ realm_name }}"
+             {% if active_tab == "sessions" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "sessions" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Sessions</a>
+        </nav>
+      {% when None %}
+    {% endmatch %}
+  {% when None %}
+{% endmatch %}

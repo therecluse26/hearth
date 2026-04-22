@@ -522,6 +522,10 @@ pub fn router(state: WebState) -> Router {
             "/account/sessions/{sid}/revoke",
             axum::routing::post(account::revoke_session),
         )
+        .route(
+            "/admin/admin-users",
+            axum::routing::get(admin::admin_admin_users_list),
+        )
         .route("/admin/users", axum::routing::get(admin::admin_users_list))
         .route(
             "/admin/users/new",

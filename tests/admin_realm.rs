@@ -134,6 +134,65 @@ async fn register_client_rejects_system_realm() {
 }
 
 #[tokio::test]
+async fn create_user_rejects_system_realm() {
+    use hearth::identity::CreateUserRequest;
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+    let result = identity.create_user(
+        &system_realm_id(),
+        &CreateUserRequest {
+            email: "sneaky@example.com".to_string(),
+            display_name: "Sneaky".to_string(),
+        },
+    );
+    assert!(
+        matches!(result, Err(IdentityError::SystemRealmProtected { .. })),
+        "create_user must reject the system realm; use create_admin_user instead. got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn create_admin_user_succeeds_on_system_realm() {
+    use hearth::identity::CreateUserRequest;
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+    let user = identity
+        .create_admin_user(&CreateUserRequest {
+            email: "second-admin@example.com".to_string(),
+            display_name: "Second Admin".to_string(),
+        })
+        .expect("create_admin_user");
+    // The user is persisted in the system realm.
+    let fetched = identity
+        .get_user(&system_realm_id(), user.id())
+        .expect("get_user")
+        .expect("user exists");
+    assert_eq!(fetched.email(), "second-admin@example.com");
+}
+
+#[tokio::test]
+async fn update_organization_rejects_system_realm() {
+    use hearth::core::OrganizationId;
+    use hearth::identity::UpdateOrganizationRequest;
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+    let result = identity.update_organization(
+        &system_realm_id(),
+        &OrganizationId::generate(),
+        &UpdateOrganizationRequest {
+            name: Some("Renamed".to_string()),
+            description: None,
+            status: None,
+            config: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(IdentityError::SystemRealmProtected { .. })),
+        "update_organization must reject the system realm, got {result:?}"
+    );
+}
+
+#[tokio::test]
 async fn create_organization_rejects_system_realm() {
     let harness = common::TestHarness::embedded().await.expect("harness");
     let identity = harness.identity();

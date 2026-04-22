@@ -110,11 +110,23 @@ pub trait IdentityEngine: Send + Sync {
     /// Validates input, normalizes the email, checks uniqueness, generates
     /// a `UserId`, and persists the user record with both primary and email
     /// index entries.
+    ///
+    /// Rejects the reserved system realm with `SystemRealmProtected`.
+    /// To create an administrator, use [`Self::create_admin_user`].
     fn create_user(
         &self,
         realm_id: &RealmId,
         request: &CreateUserRequest,
     ) -> Result<User, IdentityError>;
+
+    /// Creates a new user record in the reserved system realm.
+    ///
+    /// This is the only public entry point that writes into the system
+    /// realm. It does *not* grant the `hearth#admin` authz relation —
+    /// callers (onboarding, admin UI) must issue the corresponding
+    /// `write_tuples` call themselves so the two writes sit next to each
+    /// other at the call site rather than hidden inside the engine.
+    fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError>;
 
     /// Retrieves a user by ID. Returns `None` if not found.
     fn get_user(&self, realm_id: &RealmId, user_id: &UserId)

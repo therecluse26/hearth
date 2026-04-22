@@ -70,6 +70,34 @@ pub const ADMIN_TARGET_COOKIE: &str = "hearth_ui_admin_target";
 /// TTL: 5 minutes.
 pub const MFA_PENDING_COOKIE: &str = "hearth_ui_mfa_pending";
 
+/// Name of the long-lived cookie that remembers the last realm a user
+/// successfully signed in to.
+///
+/// Written by every successful sign-in handler (password, MFA, passkey,
+/// magic-link) and refreshed on logout. Read by [`redirect_to_login`]
+/// and [`login_url_for_realm`] so that an unauthenticated user is sent
+/// back to the login page for their *previous* realm instead of the
+/// ambiguous top-level `/ui/login` page (which errors out in multi-realm
+/// deployments without a `default_realm_name`).
+///
+/// Not security-sensitive: a tampered value just produces a different
+/// login page, never an auth bypass. The login form itself validates the
+/// realm name against storage before proceeding.
+///
+/// Value: realm name (slug), or the [`SYSTEM_REALM_SENTINEL`] literal
+/// when the user last signed in via `/ui/admin/login`.
+pub const LAST_REALM_COOKIE: &str = "hearth_ui_last_realm";
+
+/// Sentinel value stored in the `hearth_ui_last_realm` cookie when the
+/// user's last sign-in was through the admin login (system realm).
+///
+/// Cannot collide with any real realm name because realm names are
+/// validated as slugs (`^[a-z][a-z0-9-]*$`) and never contain `__`.
+pub const SYSTEM_REALM_SENTINEL: &str = "__system__";
+
+/// TTL for the last-realm cookie in seconds (1 year).
+const LAST_REALM_TTL_SECS: u64 = 31_536_000;
+
 /// TTL for the MFA pending cookie in seconds (5 minutes).
 const MFA_PENDING_TTL_SECS: u64 = 300;
 
@@ -320,6 +348,55 @@ pub fn clearing_cookies() -> [String; 2] {
     ]
 }
 
+/// Builds a `Set-Cookie` value that records the realm the user last
+/// signed in to.
+///
+/// Pass [`SYSTEM_REALM_SENTINEL`] for admin (system-realm) sign-ins.
+/// For regular sign-ins, pass the realm's slug/name.
+#[must_use]
+pub fn last_realm_cookie(realm_name: &str) -> String {
+    format!(
+        "{LAST_REALM_COOKIE}={realm_name}; Path=/ui; SameSite=Lax; Max-Age={LAST_REALM_TTL_SECS}"
+    )
+}
+
+/// Resolves the value to store in the `hearth_ui_last_realm` cookie
+/// for a given realm id.
+///
+/// Returns the [`SYSTEM_REALM_SENTINEL`] for the system realm, or the
+/// realm's configured name for tenant realms. On engine errors (which
+/// should not happen for a realm the caller is actively authenticating
+/// against) falls back to the sentinel so future unauthenticated
+/// requests land on a page that always renders.
+#[must_use]
+pub fn last_realm_value(
+    identity: &dyn crate::identity::IdentityEngine,
+    realm_id: &RealmId,
+) -> String {
+    if realm_id == &crate::identity::keys::system_realm_id() {
+        return SYSTEM_REALM_SENTINEL.to_string();
+    }
+    match identity.get_realm(realm_id) {
+        Ok(Some(realm)) => realm.name().to_string(),
+        _ => SYSTEM_REALM_SENTINEL.to_string(),
+    }
+}
+
+/// Builds the scoped login URL for a realm, or the unscoped
+/// realm-required page if no realm context is known.
+///
+/// * `Some(name) == SYSTEM_REALM_SENTINEL` → `/ui/admin/login`
+/// * `Some(name)` → `/ui/realms/{name}/login`
+/// * `None` → `/ui/login` (realm-required landing page)
+#[must_use]
+pub fn login_url_for_realm(realm_name: Option<&str>) -> String {
+    match realm_name {
+        Some(name) if name == SYSTEM_REALM_SENTINEL => "/ui/admin/login".to_string(),
+        Some(name) => format!("/ui/realms/{name}/login"),
+        None => "/ui/login".to_string(),
+    }
+}
+
 /// Parses `Cookie` header(s) on a request and returns the value of the
 /// named cookie, if present.
 fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
@@ -485,6 +562,23 @@ impl TargetRealm {
     pub fn id(&self) -> &crate::core::RealmId {
         self.0.id()
     }
+
+    /// Resolves a target realm by name against the identity engine.
+    ///
+    /// Used by handlers under `/ui/admin/realms/{realm_name}/*` that
+    /// already extracted the path segment via
+    /// [`axum::extract::Path`] and need a validated realm in hand.
+    /// Rejects the reserved system realm name and any non-existent realm
+    /// with a 404 response; handlers should `?`-bubble the error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a rendered 404 `Response` for an unknown or reserved
+    /// realm name, and a 500 `Response` on engine error.
+    #[allow(clippy::result_large_err)]
+    pub fn from_name(state: &Arc<WebState>, name: &str) -> Result<Self, Response> {
+        resolve_named_realm(state, name)
+    }
 }
 
 impl<S> FromRequestParts<S> for TargetRealm
@@ -496,6 +590,16 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let web_state = Arc::<WebState>::from_ref(state);
+
+        // Highest-priority source: the canonical
+        // `/ui/admin/realms/{name}/...` path segment. When the URL names
+        // a realm, it is the realm — no cookie or query override can
+        // redirect the request elsewhere. This is what makes a
+        // workspace URL share-able: two admins looking at the same link
+        // see the same realm regardless of their individual cookies.
+        if let Some(name) = path_realm_segment(parts.uri.path()) {
+            return resolve_named_realm(&web_state, &name);
+        }
 
         // Parse `?realm=<name>` from the URL query string. We don't
         // use axum's Query<T> extractor here so we can gracefully
@@ -557,6 +661,43 @@ where
             }
         }
     }
+}
+
+/// Extracts the realm name from a URL path of the form
+/// `/ui/admin/realms/{name}/...`.
+///
+/// Returns `None` for:
+/// * The bare realm list at `/ui/admin/realms`.
+/// * Admin realm detail at `/ui/admin/realms/{id}` where `{id}` is a
+///   UUID (the legacy flat realm-detail page — realm names cannot look
+///   like UUIDs because slug validation rejects them).
+/// * Anything outside the `/ui/admin/realms/` prefix.
+///
+/// The returned name is not validated against storage; the caller must
+/// still funnel it through [`resolve_named_realm`], which rejects the
+/// reserved `system` name and unknown realms.
+fn path_realm_segment(path: &str) -> Option<String> {
+    // Accept both `/ui/admin/realms/{name}/...` and the nested form
+    // where axum mounts `/admin/...` under `/ui`.
+    let rest = path
+        .strip_prefix("/ui/admin/realms/")
+        .or_else(|| path.strip_prefix("/admin/realms/"))?;
+    let name = rest.split('/').next()?;
+    if name.is_empty() {
+        return None;
+    }
+    // UUIDs indicate the legacy `/admin/realms/{id}` detail route.
+    // Realm names cannot parse as UUIDs because the slug validator
+    // rejects dashes-only / hex-only strings of that length.
+    if uuid::Uuid::parse_str(name).is_ok() {
+        return None;
+    }
+    // Only match paths that name a *sub-resource* under the realm —
+    // the pattern is `/admin/realms/{name}/{sub}/...`. A bare
+    // `/admin/realms/{name}` without a trailing segment is the
+    // workspace overview page, which is handled separately.
+    rest.find('/')?;
+    Some(name.to_string())
 }
 
 /// Resolves a realm by name for the `TargetRealm` extractor. Rejects
@@ -757,16 +898,74 @@ fn csrf_failure_response() -> Response {
     render_status(&tmpl, StatusCode::FORBIDDEN)
 }
 
-/// Builds a 303 redirect to `/ui/login?return_to=<current_path>`.
+/// Builds a 303 redirect to the best-fit login page for the current
+/// request, preserving the original URL as `?return_to=`.
+///
+/// Resolution order for which login page to target:
+///
+/// 1. Request path starts with `/ui/admin/` → `/ui/admin/login`.
+/// 2. Request path starts with `/ui/realms/{name}/` → that realm's
+///    login page. The realm name is *not* validated here (the downstream
+///    login handler does that) — mis-typed realm names fail loudly on
+///    the login page itself, which is the right UX.
+/// 3. `hearth_ui_last_realm` cookie is set → login page for that realm
+///    (or the admin login if the sentinel is present).
+/// 4. Fall back to `/ui/login`, which renders the
+///    realm-required page in multi-realm deployments.
+///
+/// `return_to` is sanitized via [`sanitize_return_to`] and dropped if
+/// unsafe; no open-redirect risk.
 fn redirect_to_login(parts: &Parts) -> Response {
-    let path_and_query = parts
-        .uri
-        .path_and_query()
-        .map_or_else(|| "/ui".to_string(), |p| p.as_str().to_string());
+    let path = parts.uri.path();
+    // The nested router under `/ui` strips the mount prefix before
+    // handlers see the path. Re-prepend it for the `return_to` value so
+    // the login form can safely round-trip it as a same-site absolute
+    // path — `sanitize_return_to` requires the `/ui` prefix.
+    let path_and_query = {
+        let raw = parts
+            .uri
+            .path_and_query()
+            .map_or_else(|| "/".to_string(), |p| p.as_str().to_string());
+        if raw.starts_with("/ui") {
+            raw
+        } else if raw == "/" {
+            "/ui".to_string()
+        } else {
+            format!("/ui{raw}")
+        }
+    };
+
+    // Pick the login URL based on context. axum's nested router strips
+    // the mount prefix before handlers see `parts.uri.path()`, so the
+    // admin surface appears as `/admin/*` even though it's mounted at
+    // `/ui/admin/*`. Accept both prefixes to handle nested and top-
+    // level mounts uniformly.
+    let is_admin = path.starts_with("/ui/admin/")
+        || path == "/ui/admin"
+        || path.starts_with("/admin/")
+        || path == "/admin";
+    let realm_in_path = path
+        .strip_prefix("/ui/realms/")
+        .or_else(|| path.strip_prefix("/realms/"));
+    let login_path = if is_admin {
+        login_url_for_realm(Some(SYSTEM_REALM_SENTINEL))
+    } else if let Some(rest) = realm_in_path {
+        // `/realms/{name}/...` — strip the first segment as the realm
+        // name. Empty or missing segment falls through to the cookie
+        // default below.
+        let name = rest.split('/').next().unwrap_or("");
+        if name.is_empty() {
+            login_url_for_realm(realm_from_last_realm_cookie(parts).as_deref())
+        } else {
+            login_url_for_realm(Some(name))
+        }
+    } else {
+        login_url_for_realm(realm_from_last_realm_cookie(parts).as_deref())
+    };
 
     let sanitized = sanitize_return_to(&path_and_query).unwrap_or_else(|| "/ui".to_string());
     let encoded = url_encode(&sanitized);
-    let location = format!("/ui/login?return_to={encoded}");
+    let location = format!("{login_path}?return_to={encoded}");
 
     let mut response = Redirect::to(&location).into_response();
     // 303 is already what axum::Redirect::to uses.
@@ -774,6 +973,14 @@ fn redirect_to_login(parts: &Parts) -> Response {
         response.headers_mut().insert(header::CACHE_CONTROL, v);
     }
     response
+}
+
+/// Extracts the `hearth_ui_last_realm` cookie value as an owned string.
+/// Returns `None` if the cookie is absent or empty.
+fn realm_from_last_realm_cookie(parts: &Parts) -> Option<String> {
+    cookie_value(parts, LAST_REALM_COOKIE)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
 }
 
 /// Normalises a `return_to` value so attackers cannot use it as an open

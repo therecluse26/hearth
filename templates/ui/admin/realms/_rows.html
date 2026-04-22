@@ -22,10 +22,10 @@
             {% when None %}
           {% endmatch %}
           <input type="hidden" name="realm" value="{{ t.name() }}">
-          <input type="hidden" name="return_to" value="/ui/admin/users">
+          <input type="hidden" name="return_to" value="/ui/admin/realms/{{ t.id().as_uuid() }}">
           <button type="submit"
                   class="text-xs font-medium text-ht-content-brand hover:text-ht-brand-deep">
-            Administer this realm →
+            Open workspace →
           </button>
         </form>
       {% endif %}

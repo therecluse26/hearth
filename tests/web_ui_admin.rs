@@ -102,13 +102,10 @@ fn build_rig() -> TestRig {
     // realm when `?realm=<name>` is absent.
     let admin_realm_id = hearth::core::RealmId::new(uuid::Uuid::nil());
     let admin_user = identity
-        .create_user(
-            &admin_realm_id,
-            &CreateUserRequest {
-                email: "admin@acme.test".to_string(),
-                display_name: "Admin".to_string(),
-            },
-        )
+        .create_admin_user(&CreateUserRequest {
+            email: "admin@acme.test".to_string(),
+            display_name: "Admin".to_string(),
+        })
         .expect("create admin user");
     let pw = CleartextPassword::from_string("correct-horse-battery-staple".to_string());
     identity
@@ -972,5 +969,213 @@ async fn admin_audit_page_shows_events_after_user_create() {
     assert!(
         body.contains("user_created"),
         "expected user_created event in audit log"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Realm-aware redirects + admin-users surface
+// ---------------------------------------------------------------------------
+
+fn location_of(resp: &axum::http::Response<Body>) -> String {
+    resp.headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn set_cookie_with(resp: &axum::http::Response<Body>, prefix: &str) -> Option<String> {
+    resp.headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|c| c.starts_with(prefix))
+        .map(str::to_string)
+}
+
+#[tokio::test]
+async fn unauthenticated_admin_path_redirects_to_admin_login() {
+    let rig = build_rig();
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/users")
+                .body(Body::empty())
+                .expect("build"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let loc = location_of(&response);
+    assert!(
+        loc.starts_with("/ui/admin/login"),
+        "admin-path unauthenticated redirect must target /ui/admin/login, got {loc}"
+    );
+}
+
+#[tokio::test]
+async fn unauthenticated_last_realm_cookie_targets_tenant_login() {
+    let rig = build_rig();
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/account")
+                .header(header::COOKIE, "hearth_ui_last_realm=acme")
+                .body(Body::empty())
+                .expect("build"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let loc = location_of(&response);
+    assert!(
+        loc.starts_with("/ui/realms/acme/login"),
+        "last-realm cookie should drive realm-scoped login redirect, got {loc}"
+    );
+}
+
+#[tokio::test]
+async fn admin_logout_redirects_to_admin_login_and_sets_last_realm() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-logout");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/logout")
+                .header(header::COOKIE, &cookie)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("_csrf=csrf-logout"))
+                .expect("build"),
+        )
+        .await
+        .expect("oneshot");
+    assert!(
+        response.status().is_redirection(),
+        "logout should redirect, got {}",
+        response.status()
+    );
+    let loc = location_of(&response);
+    assert!(
+        loc.starts_with("/ui/admin/login"),
+        "admin logout must return to admin login, got {loc}"
+    );
+    let last_realm = set_cookie_with(&response, "hearth_ui_last_realm=").unwrap_or_default();
+    assert!(
+        last_realm.contains("hearth_ui_last_realm=__system__"),
+        "admin logout must set last-realm sentinel, got {last_realm}"
+    );
+}
+
+#[tokio::test]
+async fn tenant_logout_redirects_to_realm_login() {
+    let rig = build_rig();
+    let cookie = non_admin_cookie(&rig, "csrf-tenant-logout");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/logout")
+                .header(header::COOKIE, &cookie)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("_csrf=csrf-tenant-logout"))
+                .expect("build"),
+        )
+        .await
+        .expect("oneshot");
+    assert!(response.status().is_redirection());
+    let loc = location_of(&response);
+    let realm_name = rig
+        .identity
+        .get_realm(&rig.realm_id)
+        .expect("get realm")
+        .expect("realm exists")
+        .name()
+        .to_string();
+    assert_eq!(
+        loc,
+        format!("/ui/realms/{realm_name}/login"),
+        "tenant logout must target the realm's login page"
+    );
+    let last_realm = set_cookie_with(&response, "hearth_ui_last_realm=").unwrap_or_default();
+    assert!(
+        last_realm.contains(&format!("hearth_ui_last_realm={realm_name}")),
+        "tenant logout must set last-realm to realm name, got {last_realm}"
+    );
+}
+
+#[tokio::test]
+async fn admin_users_page_lists_only_system_realm_users() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-admin-users");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/admin-users")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("build"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1 << 20).await.expect("body");
+    let body = String::from_utf8_lossy(&body_bytes);
+    assert!(
+        body.contains("admin@acme.test"),
+        "admin-users page should list system-realm admin"
+    );
+    assert!(
+        !body.contains("bob@acme.test"),
+        "admin-users page must not leak tenant-realm users"
+    );
+    assert!(
+        body.contains("Admin users"),
+        "admin-users page header must differ from tenant Users header"
+    );
+}
+
+#[tokio::test]
+async fn tenant_users_list_renders_realm_breadcrumb() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-tenant-users");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/users")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .expect("build"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1 << 20).await.expect("body");
+    let body = String::from_utf8_lossy(&body_bytes);
+    // Workspace breadcrumb: link to Realms list.
+    assert!(
+        body.contains("href=\"/ui/admin/realms\""),
+        "tenant users list must link back to Realms"
+    );
+    // Tab bar must mark Users as the active page.
+    assert!(
+        body.contains("aria-current=\"page\""),
+        "tenant users list must mark active tab"
     );
 }
