@@ -2,180 +2,372 @@
 
 ## Overview
 
-Hearth has completed Phase 0 (148 scenarios, 351 tests) and Phase 1 (135 scenarios, 671+ Rust tests, 27 simulation tests, SDK tests). The system provides authentication (password, TOTP, WebAuthn, magic link), OAuth 2.0 / OIDC, Zanzibar authorization, multi-tenancy, audit logging, TLS termination, an admin API, and a Keycloak migration path.
+Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-This document inventories **features not yet implemented** that would block or hinder production adoption. Each gap is categorized by deployment impact.
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+
+This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
 ## Priority Tiers
 
 | Tier | Meaning |
 |------|---------|
 | **P0** | Blocks production deployment. Without these, an operator cannot safely run Hearth for real users. |
-| **P1** | Expected for enterprise adoption. Enterprises will evaluate Hearth against incumbents (Keycloak, Auth0, Okta) and expect these capabilities. |
-| **P2** | Enhances operational maturity. Not blocking, but significantly improves day-to-day operations, observability, and resilience. |
+| **P1** | Expected for competitive parity. Enterprises and developers evaluating Hearth against Keycloak, Auth0, or Okta will expect these. |
+| **P2** | Enhances operational maturity. Not blocking, but significantly improves operations, observability, and resilience. |
+| **P3** | Post-release enhancements. Explicitly deferred in the Vision roadmap or listed as open questions. |
 
 ---
 
 ## P0 — Blocks Production Deployment
 
-### Password Reset / Account Recovery
+### 1. User Self-Registration
 
-- **Current State:** Users can authenticate via password (`src/identity/engine.rs`), enroll TOTP recovery codes (`src/identity/totp.rs`), and use magic links for passwordless login (`src/identity/magic_link.rs`). There is no password reset flow.
+- **Vision ref:** §8.1 "Five-minute on-ramp" — a developer should have "a working login flow" in minutes.
+- **Current State:** Users can only be created by administrators (`POST /admin/users`) or as a side-effect of magic link authentication for unknown emails. There is no public registration form, signup API endpoint, or registration policy system.
 - **What's Missing:**
-  - Forgot-password endpoint that issues a time-limited, single-use reset token (similar to magic link token but bound to password change).
-  - Token validation + new-password submission endpoint.
+  - Public signup endpoint: email + password registration with email verification.
+  - Configurable registration policy per realm (open, invite-only, domain-restricted).
+  - CAPTCHA or proof-of-work integration to prevent automated account creation.
+  - Welcome email with verification link (email templates exist but the flow doesn't).
+  - Custom profile fields during registration.
+  - Rate limiting on registration attempts (IP-based, per-realm).
+- **Why It Matters:** Any application with public users cannot use Hearth without building external signup infrastructure. This is table-stakes for every auth system.
+- **Priority Rationale:** P0 because magic link auto-create is a workaround, not a feature. No production application ships without a signup flow.
+
+### 2. Self-Service Session Management
+
+- **Vision ref:** §5.3 "Session management with revocation and device tracking."
+- **Current State:** The identity engine has `list_sessions_by_user()` and session revocation. These are exposed only through the **admin** API and admin web UI (`/admin/users/{id}/sessions/{sid}/revoke`). No user-facing session visibility exists.
+- **What's Missing:**
+  - User-facing "My Sessions" page listing active sessions (device, IP, user-agent, last-active timestamp).
+  - User-facing "Revoke" button per session ("log out my phone").
+  - "Revoke all other sessions" action ("log out everywhere else").
+  - Session metadata enrichment: user-agent parsing, approximate geolocation hint from IP.
+  - API endpoints (`GET /account/sessions`, `DELETE /account/sessions/{id}`, `DELETE /account/sessions?all_others=true`).
+- **Why It Matters:** Compromised sessions can only be revoked by administrators. Every modern auth provider (Auth0, Clerk, Google) gives users control over their own sessions. This is a baseline security expectation.
+- **Priority Rationale:** P0 because session self-management is a fundamental user security control.
+
+### 3. OAuth Consent Screen
+
+- **Vision ref:** §5.3 "OIDC / OAuth 2.0" — implementing the full protocol implies consent per RFC 6749 §4.1.1.
+- **Current State:** The authorization code flow (`src/identity/oidc.rs`) issues tokens after authentication. There is no consent prompt — users are never asked whether they approve sharing data with the requesting client. No consent is stored or revocable.
+- **What's Missing:**
+  - Consent prompt UI: display the requesting client name, logo, and requested scopes.
+  - Scope selection: allow users to approve some scopes and deny others.
+  - Consent persistence: store per-user, per-client, per-scope approvals to avoid re-prompting.
+  - Consent revocation: user-facing page to review and revoke granted consents.
+  - Admin visibility into consents granted per user.
+  - First-party client bypass: skip consent for clients marked as trusted/first-party.
+- **Why It Matters:** OAuth 2.0 best practices and GDPR require explicit user consent before sharing data with third-party clients. Without this, every OAuth client silently receives all requested scopes — a security and compliance gap.
+- **Priority Rationale:** P0 for any deployment with third-party OAuth clients. Deferrable only for first-party-only setups.
+
+### 4. Password Reset / Account Recovery
+
+- **Vision ref:** Implied by §5.3 password hashing support and §8.1 onboarding.
+- **Current State:** Users can authenticate via password, use TOTP recovery codes, and use magic links. Password reset templates and handlers exist in the web UI (`forgot_password.html`, `reset_password.html`, handlers in `src/protocol/web/handlers.rs`), suggesting partial or recent implementation.
+- **What's Missing (verify against current code):**
+  - Confirm the forgot-password → email token → reset flow is end-to-end functional.
   - Rate limiting on reset requests per email (enumeration resistance).
-  - Optional notification to the user's other verified channels when a password is changed.
-- **Why It Matters:** Password reset is the single most common support request for any auth system. Without it, locked-out users have no self-service path — operators must manually intervene.
-- **Priority Rationale:** P0 because every production deployment with password-based auth requires this flow.
-
-### Production Email Provider Integration — COMPLETED
-
-- **Status:** Implemented. The email subsystem (`src/identity/email/`) now supports five transports: Log (dev), SMTP, `SendGrid`, `Postmark`, and `Mailgun`.
-- **What Was Delivered:**
-  - HTTP-based provider adapters (`SendGrid` v3, `Postmark`, `Mailgun` with EU region) via injectable `HttpTransport` trait.
-  - Branded email templates (Askama compiled into binary) with per-realm branding overrides (`EmailBranding` on `RealmConfig`).
-  - Optional disk-based template override via Tera (`email.templates_dir` config).
-  - `EmailService` orchestration layer separating transport from content (branding + template rendering).
-  - `ApiKey` zeroize-on-drop wrapper for provider credentials.
-  - Config validation for all provider types.
-- **What Remains (future enhancements):**
-  - AWS SES adapter (requires Sig v4 signing).
-  - Delivery status tracking / bounce handling.
-  - Per-realm email provider configuration (multi-realm SaaS operators using different sender domains per realm).
-
-### Self-Service Session Management
-
-- **Current State:** The identity engine supports `list_sessions_by_user()` (`src/identity/mod.rs`, `src/identity/engine.rs`) and session revocation. The admin API (`src/protocol/http.rs`) exposes session management for administrators.
-- **What's Missing:**
-  - User-facing endpoints to list their own active sessions (device, IP, last-active).
-  - User-facing endpoint to revoke a specific session (e.g., "log out my phone").
-  - User-facing endpoint to revoke all other sessions ("log out everywhere else").
-  - Session metadata enrichment (user-agent parsing, geolocation hint).
-- **Why It Matters:** Users expect to see and control their active sessions. This is a baseline security feature in every modern auth provider. Without it, a compromised session can only be revoked by an admin.
-- **Priority Rationale:** P0 because session visibility is a fundamental security control for end users.
+  - Optional notification to other verified channels when password changes.
+  - Integration tests covering the full reset cycle.
+- **Why It Matters:** Password reset is the #1 support request for any auth system. Without it, locked-out users require admin intervention.
+- **Priority Rationale:** P0 — may be partially implemented (templates exist). Verify completeness.
 
 ---
 
-## P1 — Expected for Enterprise Adoption
+## P1 — Expected for Competitive Parity
 
-### SAML 2.0 IdP / SP Support
+### 5. Social Login / External IdP Federation
 
-- **Current State:** The protocol layer reserves a slot for SAML (`src/protocol/mod.rs`), and SAML is mentioned in the architecture (`docs/specs/ARCHITECTURE.md`) and vision (`docs/vision/VISION.md`). No SAML code exists.
+- **Vision ref:** §5.3 "Multi-tenancy with per-realm identity provider configuration."
+- **Current State:** Hearth functions exclusively as an identity **provider**. It issues OAuth 2.0/OIDC tokens but cannot **consume** tokens from external IdPs. There is no upstream OIDC RP flow, no social login, no account linking.
+- **What's Missing:**
+  - External IdP connector framework: register upstream OIDC providers (Google, GitHub, Microsoft, Apple, Okta, Azure AD) per realm.
+  - OIDC RP flow: redirect → callback → token exchange → claim extraction.
+  - Account linking: match external identity to existing Hearth user by email, or JIT-provision a new account.
+  - Per-realm IdP configuration (realm A uses Google + GitHub, realm B uses corporate Okta).
+  - UI: provider buttons on the login page, account linking in user settings.
+  - Token mapping: translate external IdP claims into Hearth user attributes.
+- **Why It Matters:** "Sign in with Google/GitHub" is Keycloak's most-used feature and the first thing developers evaluate. Without social login, Hearth cannot replace Keycloak for the majority of real-world deployments. Enterprise realms need OIDC federation with corporate IdPs as the modern alternative to SAML.
+- **Priority Rationale:** P1 but arguably the single most impactful missing feature. This is the #1 blocker for Keycloak migration.
+
+### 6. SAML 2.0 IdP / SP Support
+
+- **Vision ref:** §5.3 explicitly lists "SAML 2.0 (SP-initiated and IdP-initiated)." §6.1 architecture diagram shows SAML as a protocol layer component.
+- **Current State:** The protocol layer reserves a conceptual slot for SAML. No SAML code exists anywhere in the codebase.
 - **What's Missing:**
   - SAML 2.0 IdP: issue SAML assertions for SP-initiated and IdP-initiated SSO.
-  - SAML 2.0 SP: consume assertions from external IdPs (corporate AD FS, Okta, etc.).
-  - Metadata exchange (XML descriptor generation and parsing).
-  - Assertion signing (reuse existing Ed25519 infrastructure or add RSA-SHA256 for SAML compat).
+  - SAML 2.0 SP: consume assertions from external IdPs (corporate AD FS, Okta, PingFederate).
+  - Metadata exchange: XML descriptor generation (`/saml/metadata`) and parsing.
+  - Assertion signing: RSA-SHA256 is the SAML standard (Ed25519 is not widely supported by SAML SPs). May need RSA key management alongside existing Ed25519.
   - Single Logout (SLO) support.
-- **Why It Matters:** Large enterprises mandate SAML for SSO integration with legacy and compliance-driven systems. Without SAML, Hearth cannot replace incumbent IdPs in enterprise environments.
-- **Priority Rationale:** P1 because OIDC covers most modern integrations, but enterprise procurement often gates on SAML.
+  - Attribute mapping between SAML assertions and Hearth user attributes.
+- **Why It Matters:** Enterprise procurement gates on SAML. Corporate IT departments integrating with AD FS, Okta, or PingFederate require SAML. Without it, Hearth is excluded from enterprise evaluation shortlists.
+- **Priority Rationale:** P1 because OIDC covers modern integrations, but enterprise deals require SAML.
 
-### SCIM 2.0 Provisioning
+### 7. SCIM 2.0 Provisioning
 
-- **Current State:** SCIM is referenced in the architecture and vision documents. The protocol layer lists it as a future wire adapter. No SCIM code exists.
+- **Vision ref:** §5.3 explicitly lists "SCIM 2.0 provisioning." §6.1 architecture diagram shows SCIM as a protocol layer component.
+- **Current State:** SCIM is referenced in architecture and vision documents. No SCIM code exists.
 - **What's Missing:**
-  - SCIM 2.0 server endpoints: `/Users` and `/Groups` CRUD with filtering, pagination, and patch.
-  - Schema discovery (`/Schemas`, `/ResourceTypes`, `/ServiceProviderConfig`).
-  - Mapping SCIM User attributes to Hearth's `User` type.
-  - Mapping SCIM Groups to Zanzibar relations or Hearth roles.
-  - Event hooks for provisioning lifecycle (user created/deprovisioned via SCIM).
-- **Why It Matters:** Enterprises use SCIM to sync their HR directory (Workday, BambooHR) or IdP (Okta, Azure AD) into downstream systems. Without SCIM, user provisioning is manual or requires custom API integration.
+  - SCIM 2.0 server endpoints: `/Users` and `/Groups` CRUD with filtering (`filter=userName eq "john"`), pagination, and PATCH.
+  - Schema discovery endpoints (`/Schemas`, `/ResourceTypes`, `/ServiceProviderConfig`).
+  - SCIM User → Hearth User attribute mapping.
+  - SCIM Group → Zanzibar relation / organization membership mapping.
+  - Event hooks: audit when users are provisioned/deprovisioned via SCIM.
+  - Bearer token or OAuth authentication for SCIM endpoints.
+- **Why It Matters:** Enterprises sync HR directories (Workday, BambooHR) and IdPs (Okta, Azure AD) via SCIM. Without SCIM, user provisioning is manual or requires custom API integration.
 - **Priority Rationale:** P1 because automated provisioning is a procurement requirement for mid-to-large enterprises.
 
-### Social Login / External IdP Federation
+### 8. gRPC Management API
 
-- **Current State:** Hearth issues OAuth 2.0 / OIDC tokens as an IdP. The Keycloak migration module (`src/identity/migration/keycloak.rs`) handles imported users. There is no mechanism to *consume* tokens from external IdPs.
+- **Vision ref:** §6.1 "The protocol layer also exposes a gRPC and REST management API."
+- **Current State:** Protobuf definitions exist in `proto/hearth/` (identity, oauth, authz, audit). Code generation via `buf` produces Rust, Go, and TypeScript types. REST/HTTP endpoints are fully implemented. **No gRPC server handlers exist** — the generated types are used only for serialization/deserialization in the REST layer.
 - **What's Missing:**
-  - External IdP connector framework: register upstream OIDC providers (Google, GitHub, Microsoft, Apple) per realm.
-  - Authorization code flow as an OIDC RP (redirect → callback → token exchange → user linking).
-  - Account linking: match external identity to existing Hearth user by email, or create a new account.
-  - JIT (Just-In-Time) provisioning from external IdP claims.
-  - Per-realm IdP configuration (realm A uses Google, realm B uses Okta).
-- **Why It Matters:** "Sign in with Google/GitHub" is expected by developers and consumers. Enterprise realms need to federate with their corporate IdP (Okta, Azure AD) without SAML.
-- **Priority Rationale:** P1 because social login drives conversion for consumer apps, and OIDC federation is the modern enterprise alternative to SAML.
+  - `tonic`-based gRPC server with service implementations for all proto-defined RPCs.
+  - gRPC reflection for tooling (grpcurl, Postman).
+  - gRPC health checking protocol (for load balancer probes).
+  - mTLS support on the gRPC listener (may share TLS config with HTTP).
+  - Documentation: which operations are available via gRPC vs REST vs both.
+- **Why It Matters:** The Vision promises gRPC alongside REST. Machine-to-machine integrations, SDKs, and infrastructure tools (Terraform providers, Kubernetes operators) prefer gRPC for type safety and code generation. The proto files are a promise without delivery.
+- **Priority Rationale:** P1 because REST covers most use cases, but the Vision explicitly commits to gRPC.
 
-### OAuth Consent Management
+### 9. Documentation Site
 
-- **Current State:** OAuth authorization code flow is implemented (`src/identity/oidc.rs`, `src/identity/engine.rs`). Tokens are issued after authentication. There is no consent screen or consent persistence.
+- **Vision ref:** Phase 1 exit criteria include "Documentation site" as a deliverable.
+- **Current State:** Documentation exists as raw markdown files in `docs/` (specs, vision, gaps, theme). There is no built documentation site — no mdbook, docusaurus, or equivalent. No getting-started guide beyond code-level docs.
 - **What's Missing:**
-  - Consent prompt: display requested scopes to the user and collect explicit approval.
-  - Consent storage: persist per-user, per-client scope approvals to avoid re-prompting.
-  - Consent revocation: user-facing endpoint to revoke consent for a specific client.
-  - Admin visibility into granted consents per user.
-  - Granular scope selection (user can approve some scopes but deny others).
-- **Why It Matters:** OAuth 2.0 best practices (and some regulatory frameworks like GDPR) require explicit user consent before sharing data with third-party clients. Without consent management, all authorized clients implicitly receive all requested scopes.
-- **Priority Rationale:** P1 because first-party-only deployments can defer this, but any deployment exposing OAuth to third-party clients needs consent.
+  - Static site generator setup (mdbook for Rust projects, or docusaurus for broader reach).
+  - Getting started guide: install → configure → first login flow.
+  - API reference: auto-generated from proto definitions and/or OpenAPI spec.
+  - SDK documentation for TypeScript and Go.
+  - Configuration reference (exists as markdown, needs to be in the site).
+  - Migration guides (Keycloak, and eventually Auth0/Clerk).
+  - Architecture overview for contributors.
+  - Search functionality.
+  - Deployment to a public URL (e.g., docs.hearth.dev via GitHub Pages or Vercel).
+- **Why It Matters:** Developer adoption requires discoverable, navigable documentation. Raw markdown in a Git repository is not a documentation site. This is explicitly a Phase 1 deliverable that was not completed.
+- **Priority Rationale:** P1 — Phase 1 exit criteria explicitly lists this. Open-source projects without documentation don't get adopted.
 
-### User Self-Registration
+### 10. Additional Migration Tools
 
-- **Current State:** Magic link flow auto-creates accounts for unknown emails (`tests/magic_link.rs`). The admin API supports user creation. There is no public registration form or API endpoint.
+- **Vision ref:** §8.3 describes migration paths for Auth0, Clerk, Cognito, Firebase Auth, and generic SCIM/CSV/JSON import.
+- **Current State:** Only Keycloak migration is implemented (`src/identity/migration/keycloak.rs`, `hearth migrate keycloak` CLI).
 - **What's Missing:**
-  - Public signup endpoint (email + password, or email-only with magic link).
-  - CAPTCHA or proof-of-work integration to prevent automated account creation.
-  - Configurable registration policy per realm (open, invite-only, domain-restricted).
-  - Welcome email with verification link.
-  - Custom fields / profile data collection during registration.
-- **Why It Matters:** Applications need a self-service onboarding path for new users. Currently, users can only be created by admins or through the magic link side-effect.
-- **Priority Rationale:** P1 because the magic link auto-create partially covers this, but a dedicated registration flow with policy controls is expected.
+  - Auth0 migration: import users, connections, and applications via Auth0 Management API.
+  - Clerk migration: import users and organizations via Clerk API.
+  - Generic import: CSV/JSON bulk import for custom user databases.
+  - SCIM-based bulk import for systems with SCIM export.
+  - Shadow mode: run Hearth alongside existing auth, replaying traffic to validate correctness before cutover (Vision §5.5).
+  - Export tools: full realm export to standard formats.
+- **Why It Matters:** Migration friction is the #1 barrier to adoption. Keycloak is one source among many. Teams on Auth0, Clerk, or homegrown systems need a path in.
+- **Priority Rationale:** P1 for Auth0/Clerk (large addressable market). P2 for Cognito/Firebase. Shadow mode is P2.
 
 ---
 
 ## P2 — Enhances Operational Maturity
 
-### Prometheus / OpenTelemetry Metrics
+### 11. Prometheus / OpenTelemetry Observability
 
-- **Current State:** Hearth uses `tracing` for structured logging throughout all layers. There is no metrics exporter. Benchmarks exist for critical paths (`benches/`) but are dev-only.
+- **Vision ref:** Phase 2 deliverable: "Prometheus metrics and OpenTelemetry tracing."
+- **Current State:** Hearth uses `tracing` for structured logging throughout all layers. Benchmarks exist (`benches/`) but are dev-only. No metrics exporter, no trace exporter.
 - **What's Missing:**
-  - Prometheus metrics endpoint (`/metrics`) with standard auth-system counters:
-    - `hearth_auth_total{method,status}` — authentication attempts by method and outcome.
-    - `hearth_token_issued_total{grant_type}` — tokens issued by grant type.
-    - `hearth_authz_check_total{result}` — authorization checks by result.
-    - `hearth_session_active` — gauge of active sessions.
-    - `hearth_storage_*` — WAL size, memtable entries, SST count, compaction stats.
-  - OpenTelemetry trace export (OTLP) for distributed tracing.
-  - `tracing-opentelemetry` integration for automatic span export.
-  - Request duration histograms on protocol endpoints.
-- **Why It Matters:** Production operators need dashboards and alerting. Without metrics, detecting degradation, capacity planning, and incident response require log parsing.
-- **Priority Rationale:** P2 because structured `tracing` logs provide a baseline, but metrics are the standard for production monitoring.
+  - Prometheus metrics endpoint (`/metrics`) with counters, gauges, and histograms:
+    - `hearth_auth_total{method,realm,status}` — authentication attempts.
+    - `hearth_token_issued_total{grant_type,realm}` — tokens issued.
+    - `hearth_authz_check_total{result,realm}` — authorization checks.
+    - `hearth_session_active{realm}` — gauge of active sessions.
+    - `hearth_request_duration_seconds{endpoint,method}` — request latency histograms.
+    - `hearth_storage_wal_bytes`, `hearth_storage_memtable_entries`, `hearth_storage_sst_count`.
+  - OpenTelemetry trace export (OTLP) via `tracing-opentelemetry`.
+  - Grafana dashboard template.
+- **Why It Matters:** Production operators need dashboards and alerting. Without metrics, detecting degradation, capacity planning, and incident response require log parsing. Every comparable system (Keycloak, Ory, Zitadel) exposes Prometheus metrics.
+- **Priority Rationale:** P2 per Vision roadmap. Practically essential for any production deployment.
 
-### Webhook Event Delivery
+### 12. Backup / Restore / Snapshots
 
-- **Current State:** Audit events are recorded internally (`src/audit/engine.rs`) with hash-chain integrity. There is no external notification mechanism. Webhooks are mentioned in the architecture (`docs/specs/ARCHITECTURE.md`) and vision (`docs/vision/VISION.md`).
-- **What's Missing:**
-  - Webhook subscription management: register per-realm HTTPS endpoints with event filters.
-  - Reliable delivery: at-least-once semantics with exponential backoff retry.
-  - Payload signing (HMAC-SHA256) so recipients can verify authenticity.
-  - Delivery log with status tracking (success, retry, failed, disabled).
-  - Event types: user.created, user.deleted, session.created, session.revoked, permission.changed, realm.updated.
-- **Why It Matters:** Downstream systems (billing, analytics, compliance SIEM) need real-time event feeds. Without webhooks, operators must poll the audit API or build custom integrations.
-- **Priority Rationale:** P2 because the audit log provides queryable history, but push-based integration is expected for operational workflows.
-
-### Backup / Restore / Snapshots
-
-- **Current State:** The storage engine writes a WAL (`src/storage/wal.rs`) and SSTables (`src/storage/tiered.rs`). The cluster layer mentions Raft snapshots (`src/cluster/mod.rs`). There is no user-facing backup/restore mechanism.
+- **Vision ref:** §6.1 cluster layer mentions snapshot-based recovery. §3.1 mentions S3 for snapshots.
+- **Current State:** WAL + SST provides crash recovery (survive `kill -9`). No user-facing backup, restore, or snapshot mechanism. No S3 integration.
 - **What's Missing:**
   - Online snapshot: consistent point-in-time capture without stopping writes.
-  - Snapshot export to object storage (S3, GCS, local filesystem).
-  - Restore from snapshot: cold start from a backup.
-  - `hearth backup` / `hearth restore` CLI subcommands.
-  - Incremental backup (ship WAL segments since last snapshot).
-  - Per-realm export/import for realm migration between clusters.
-- **Why It Matters:** Data durability is non-negotiable. While the WAL provides crash recovery, operators need disaster recovery (DC failure, corruption, accidental deletion) and migration capabilities.
-- **Priority Rationale:** P2 because WAL + SST provides crash safety, but operational backup/restore is essential for production confidence.
+  - Snapshot export to local filesystem or S3-compatible object storage.
+  - `hearth backup` and `hearth restore` CLI subcommands.
+  - Incremental backup: ship WAL segments since last snapshot.
+  - Per-realm export/import for migration between Hearth instances.
+  - Restore validation: checksum verification on restore.
+- **Why It Matters:** WAL provides crash safety, not disaster recovery. Operators need protection against DC failure, disk corruption, accidental deletion, and the ability to migrate data between environments.
+- **Priority Rationale:** P2 because crash safety exists, but no production team deploys a database without backup/restore.
 
-### Cross-Cutting Configurable Rate Limiter
+### 13. Webhook / Event Delivery
 
-- **Current State:** Rate limiting exists in two places:
-  - Password authentication: per-user lockout after 5 failed attempts, 15-minute window (`src/identity/engine.rs`, line 76–91).
-  - Admin API: 100 requests/minute per admin user (`src/protocol/http.rs`, line 133).
-  - TOTP: 5 attempts, 5-minute lockout (`src/identity/engine.rs`, line 185).
-  - Magic link: per-email rate limiting (`tests/magic_link.rs`).
+- **Vision ref:** §A Open Question #3: "Should Hearth provide a built-in event system?"
+- **Current State:** Audit events are recorded internally with SHA-256 hash chain integrity. No external push notification mechanism exists.
 - **What's Missing:**
-  - Global rate limiter middleware (IP-based, configurable per endpoint).
-  - Configurable rate limit policies per realm (e.g., realm A gets 1000 req/s, realm B gets 100 req/s).
+  - Webhook subscription management: register per-realm HTTPS endpoints with event type filters.
+  - Reliable delivery: at-least-once semantics with exponential backoff retry.
+  - Payload signing (HMAC-SHA256) for recipient verification.
+  - Delivery log: status tracking (pending, delivered, retrying, failed, disabled).
+  - Event types: `user.created`, `user.deleted`, `session.created`, `session.revoked`, `permission.changed`, `realm.updated`, `org.member.added`.
+  - Admin UI for managing webhook subscriptions and viewing delivery logs.
+- **Why It Matters:** Downstream systems (billing, analytics, SIEM, Slack notifications) need real-time event feeds. Without webhooks, operators must poll the audit API.
+- **Priority Rationale:** P2 — the audit log provides queryable history, but push-based integration is the modern standard.
+
+### 14. Encryption at Rest
+
+- **Vision ref:** §5.4 "Encryption at rest: credentials and sensitive fields are encrypted with per-realm keys. Compromising the storage layer does not compromise credentials."
+- **Current State:** Credentials are hashed (Argon2id), sensitive fields use `Zeroize`-on-drop. The storage engine writes plaintext keys and values to WAL and SST files. There is **no encryption of data on disk** and no per-realm encryption key management.
+- **What's Missing:**
+  - Per-realm data encryption keys (DEKs) for encrypting stored values.
+  - Key encryption key (KEK) hierarchy: master key wraps per-realm DEKs.
+  - Transparent encryption/decryption in the storage engine write/read path.
+  - Key rotation without re-encrypting all data (envelope encryption pattern).
+  - Optional HSM/KMS integration for master key storage (Vision §A Open Question #6).
+  - `hearth rotate-keys` CLI subcommand.
+- **Why It Matters:** The Vision explicitly commits to this feature. Compliance-sensitive deployments (healthcare, finance, government) require encryption at rest. Password hashes alone don't satisfy this — user profiles, session data, audit logs, and relationship tuples are all stored in cleartext on disk.
+- **Priority Rationale:** P2 for general use (hashed credentials are the primary defense). P1 for compliance-regulated environments.
+
+### 15. CI/CD Pipelines
+
+- **Current State:** No `.github/workflows/` directory. No automated testing, linting, or release pipeline. All testing is manual (`cargo nextest run`).
+- **What's Missing:**
+  - GitHub Actions workflow: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo nextest run` on every PR.
+  - CI tiers matching TESTING.md: Fast (every commit), Standard (merge), Extended (nightly), Full (weekly).
+  - Release pipeline: build binaries for Linux/macOS/Windows, publish Docker images, create GitHub releases.
+  - Security scanning: `cargo audit`, `cargo deny check`.
+  - Benchmark regression detection (compare against baseline).
+- **Why It Matters:** Open-source credibility requires visible CI badges. Contributors need automated feedback. Release engineering requires automation.
+- **Priority Rationale:** P2 per typical project lifecycle, but practically P0 for open-source project launch.
+
+### 16. Global Configurable Rate Limiter
+
+- **Current State:** Rate limiting exists per-feature: password auth (5 attempts/15min), admin API (100/min), TOTP (5 attempts/5min), magic link (per-email). No unified middleware.
+- **What's Missing:**
+  - Global rate limiter middleware: IP-based, configurable per endpoint and per realm.
   - Token bucket or sliding window algorithm with configurable parameters.
-  - Rate limit headers in responses (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`).
-  - DDoS mitigation: connection-level limits, request body size already enforced (Step 31).
-- **Why It Matters:** The existing per-feature rate limits protect against specific abuse vectors, but a global configurable limiter is needed for fair multi-realm resource allocation and general API protection.
-- **Priority Rationale:** P2 because critical paths (password, TOTP, admin) are already protected. The gap is a unified, configurable system for all endpoints.
+  - Rate limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`).
+  - Per-realm quota allocation (realm A: 1000 req/s, realm B: 100 req/s).
+  - Connection-level limits (max concurrent connections per IP).
+- **Why It Matters:** Per-feature limits protect specific abuse vectors. A unified system is needed for fair multi-tenant resource allocation and general API protection.
+- **Priority Rationale:** P2 because critical paths are already protected.
+
+### 17. Deployment Artifacts
+
+- **Vision ref:** Phase 2: "Helm chart and systemd service file."
+- **Current State:** Dockerfile and docker-compose.yaml exist. No Kubernetes or bare-metal deployment artifacts.
+- **What's Missing:**
+  - Helm chart: configurable values for single-node and future cluster mode.
+  - systemd service file with proper sandboxing (`ProtectSystem=strict`, `PrivateTmp=true`).
+  - Kubernetes manifests (StatefulSet for persistence, Service, ConfigMap, Secret).
+  - Example Terraform module for cloud VM deployment.
+- **Why It Matters:** Production teams deploy to Kubernetes or Linux VMs. Without official deployment artifacts, every team writes their own.
+- **Priority Rationale:** P2 per Vision roadmap.
+
+---
+
+## P3 — Post-Release Enhancements
+
+### 18. Authorization Schema Language
+
+- **Vision ref:** §A Open Question #1: "How closely should Hearth follow SpiceDB's schema language vs. designing a bespoke DSL?"
+- **Current State:** Namespace config is stored as raw JSON per realm. Relationship tuples are written via API with no schema validation beyond optional namespace config.
+- **What's Missing:**
+  - Schema definition language for permission models (types, relations, permissions).
+  - Schema validation: reject tuples that don't match the schema.
+  - IDE support: syntax highlighting, autocompletion for schema files.
+  - Schema versioning and migration tooling.
+- **Priority Rationale:** P3 — functional without it, but DX and correctness would benefit significantly.
+
+### 19. Expression Language for Conditions (CEL)
+
+- **Vision ref:** §A Open Question #2: "CEL is the obvious candidate."
+- **Current State:** Conditional relationships (caveats) exist in the authorization engine, but no expression evaluator is integrated. Conditions are limited to what's hard-coded.
+- **What's Missing:**
+  - CEL (Common Expression Language) or equivalent evaluator.
+  - Integration with caveat evaluation at permission check time.
+  - Expression validation at write time (reject invalid expressions).
+- **Priority Rationale:** P3 — current caveat system is functional for basic conditions.
+
+### 20. Additional SDKs
+
+- **Vision ref:** §8.2 lists priority order: TypeScript, Go, Python, Rust, PHP, Java, C#, Ruby, Elixir.
+- **Current State:** TypeScript and Go SDKs exist with tests.
+- **What's Missing:** Python, Rust, PHP, Java/Kotlin, C#, Ruby, Elixir SDKs.
+- **Priority Rationale:** P3 for most. Python and Rust are Phase 2 deliverables per Vision roadmap.
+
+### 21. Raft Clustering
+
+- **Vision ref:** Phase 2 (v1.0): "Raft-based consensus and log replication."
+- **Current State:** `src/cluster/mod.rs` is a 4-line stub. No Raft, no replication, no failover.
+- **What's Missing:** Full Raft consensus (openraft), leader election, log replication, membership changes, snapshot recovery.
+- **Priority Rationale:** P3 — explicitly Phase 2 / v1.0 scope. Single-node is the Phase 1 target.
+
+### 22. Embedded Mode API Documentation
+
+- **Vision ref:** §6.2 describes embedded mode as a key differentiator: "linked directly into the application process as a library."
+- **Current State:** `src/lib.rs` exists as a library root. Trait-based APIs are used internally. No public documentation, no usage examples, no API stability guarantees.
+- **What's Missing:**
+  - Documented public API surface for embedded usage.
+  - Example project showing embedded Hearth in a Rust application.
+  - C ABI or language-specific bindings (Vision mentions "C ABI or language-specific bindings").
+  - API stability policy for the library interface.
+- **Priority Rationale:** P3 — server mode is the primary target. Embedded mode is a future differentiator.
+
+---
+
+## Completed Items (Previously Listed as Gaps)
+
+### Production Email Provider Integration — COMPLETED ✅
+
+Implemented in Phase 1.5. Five transports: Log (dev), SMTP, SendGrid, Postmark, Mailgun. Per-realm branding overrides, Askama + Tera templates, `ApiKey` zeroize-on-drop wrapper. Module: `src/identity/email/`.
+
+**Remaining enhancements (not blocking):**
+- AWS SES adapter (requires SigV4 signing).
+- Delivery status tracking / bounce handling.
+- Per-realm email provider configuration.
+
+---
+
+## Gap Summary Matrix
+
+| # | Gap | Priority | Vision Ref | Effort Estimate |
+|---|-----|----------|------------|-----------------|
+| 1 | User self-registration | P0 | §8.1 | Medium |
+| 2 | Self-service session management | P0 | §5.3 | Small |
+| 3 | OAuth consent screen | P0 | §5.3 | Medium |
+| 4 | Password reset (verify completeness) | P0 | §5.3 | Small (may be done) |
+| 5 | Social login / external IdP | P1 | §5.3 | Large |
+| 6 | SAML 2.0 | P1 | §5.3, §6.1 | Large |
+| 7 | SCIM 2.0 | P1 | §5.3, §6.1 | Large |
+| 8 | gRPC management API | P1 | §6.1 | Medium |
+| 9 | Documentation site | P1 | Phase 1 exit | Medium |
+| 10 | Additional migration tools | P1 | §8.3 | Medium per tool |
+| 11 | Prometheus / OpenTelemetry | P2 | Phase 2 | Medium |
+| 12 | Backup / restore / snapshots | P2 | §6.1 | Large |
+| 13 | Webhook event delivery | P2 | §A Q#3 | Medium |
+| 14 | Encryption at rest | P2 | §5.4 | Large |
+| 15 | CI/CD pipelines | P2 | — | Small |
+| 16 | Global rate limiter | P2 | — | Medium |
+| 17 | Deployment artifacts | P2 | Phase 2 | Small |
+| 18 | Authorization schema language | P3 | §A Q#1 | Large |
+| 19 | Expression language (CEL) | P3 | §A Q#2 | Medium |
+| 20 | Additional SDKs | P3 | §8.2 | Medium per SDK |
+| 21 | Raft clustering | P3 | Phase 2 | Very Large |
+| 22 | Embedded mode API docs | P3 | §6.2 | Small |
+
+---
+
+## Recommended Release Sequence
+
+**Minimum viable public release (v0.1-alpha):**
+Gaps 1, 2, 4, 15 — self-registration, session self-service, password reset verification, CI/CD.
+
+**Production-ready single-node (v0.x per Phase 1 exit criteria):**
+Add gaps 3, 5, 9, 11 — consent screen, social login, documentation site, Prometheus metrics.
+
+**Enterprise-ready (v1.0 per Phase 2 exit criteria):**
+Add gaps 6, 7, 8, 10, 12, 14, 17, 21 — SAML, SCIM, gRPC, migration tools, backup, encryption, deployment artifacts, Raft.
+
+---
+
+*Last updated: 2026-04-21. Generated by comparing VISION.md (§1–§12), ARCHITECTURE.md, IMPLEMENTATION_ORDER.md (steps 1–31), and codebase exploration against actual implementation.*
