@@ -4,7 +4,7 @@
 
 Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
 
 This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
@@ -326,6 +326,34 @@ Verified end-to-end functional: `request_password_reset` + `reset_password_with_
 **Remaining enhancements (not blocking):**
 - Dedicated end-to-end integration test for the full forgot → email → reset flow (core methods covered indirectly).
 - Optional notification to secondary verified channels on password change.
+
+### Explicit Realm Routing in the Web UI — COMPLETED ✅
+
+Discovered while testing self-registration: pre-auth `/ui/*` handlers had no explicit realm binding — they walked every realm until one matched. That leaked realm existence and prevented per-realm policy (like `RegistrationPolicy`) from applying correctly when the wrong realm was picked first.
+
+The fix introduces explicit path-segment routes and a centralized resolver:
+
+- **New route family:** `/ui/realms/<name>/login`, `/register`, `/forgot-password`, `/reset-password`, `/verify-email`, `/accept-invitation`, `/login/passkey-begin`, `/login/passkey-complete`, plus their `/sent` confirmation pages. Each scoped variant resolves the realm from the URL path.
+- **Bare `/ui/*` resolution rules** (in [`src/protocol/web/realm_resolver.rs`](../../src/protocol/web/realm_resolver.rs)):
+  1. Single-realm deployment → implicit use of the sole realm (no config needed).
+  2. Multi-realm + `server.default_realm` set → the declared default is used.
+  3. Multi-realm + `default_realm` unset → GETs render a picker (`templates/ui/choose_realm.html`); POSTs return 400.
+- **Walk-all-realms fallback eliminated** from `login_submit`, `forgot_password_submit`, `reset_password_submit`, `verify_email`, `passkey_login_begin`, `passkey_login_complete`, `register_*`, and `accept_invitation_page`. All delegate to the shared `resolve_pre_auth_realm` helper in `src/protocol/web/handlers.rs`.
+- **Startup validation:** if `server.default_realm` is set, the named realm MUST exist after reconciliation, else `main.rs` refuses to start.
+- **Admin config editor:** new "Default Realm" field under the Server section of `/ui/admin/settings/editor`.
+
+**Key files:**
+- `src/config/types.rs` — `ServerConfig::default_realm: Option<String>`
+- `src/protocol/web/realm_resolver.rs` — `resolve()` function returning `Resolved::Realm | NotFound | MustChoose | Storage`
+- `src/protocol/web/handlers.rs` — `resolve_pre_auth_realm`, `PreAuthRealm`, `ChooseRealmTemplate`, plus `_impl` + `_scoped` variants of every pre-auth handler
+- `src/protocol/web/mod.rs` — new `/ui/realms/{realm}/*` route family; `WebState::default_realm_name`, `with_default_realm`, `realm_theme_css_for`
+- `templates/ui/choose_realm.html` (new), `templates/ui/admin/settings/_editor_sections.html` (default-realm input)
+- `tests/web_ui_realm_routing.rs` — 10 integration tests covering single-realm, multi-realm with default, multi-realm picker, path-scoped routes, unknown realm, no-walk regression, and per-realm verify-email scoping.
+
+**Remaining enhancements (not blocking):**
+- Subdomain-per-realm routing (orthogonal; layer on top of path segments later if needed).
+- Email-based home realm discovery (lookup email domain → realm) for enterprise SSO scenarios.
+- Per-realm `primary: true` flag (YAGNI until a concrete use case appears).
 
 ---
 

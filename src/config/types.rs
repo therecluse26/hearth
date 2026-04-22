@@ -35,6 +35,20 @@ pub struct ServerConfig {
     /// ignored — the safe default for direct-to-internet deployments.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Name of the realm to use when a bare `/ui/*` URL is hit on a
+    /// multi-realm deployment.
+    ///
+    /// Resolution order for pre-auth pages:
+    /// 1. Explicit `/ui/realms/<name>/...` path wins.
+    /// 2. On single-realm deployments the sole realm is used implicitly.
+    /// 3. Multi-realm + `default_realm` set → that realm is used.
+    /// 4. Multi-realm + `default_realm` unset → `/ui/login` (etc.) shows
+    ///    a realm picker; POSTs return 400.
+    ///
+    /// Validated at startup: if set, the named realm MUST exist after
+    /// realm reconciliation runs, else the server refuses to start.
+    #[serde(default)]
+    pub default_realm: Option<String>,
 }
 
 impl ServerConfig {
@@ -57,6 +71,7 @@ impl Default for ServerConfig {
             tls_client_ca_path: None,
             tls_require_client_cert: false,
             trusted_proxies: Vec::new(),
+            default_realm: None,
         }
     }
 }

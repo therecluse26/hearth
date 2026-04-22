@@ -75,6 +75,17 @@
       Add proxy
     </button>
   </div>
+  {# default_realm — name of the realm used for bare /ui/* URLs #}
+  <div class="mt-5">
+    <label class="block text-sm font-medium text-ht-content-secondary">Default Realm</label>
+    <p class="mt-0.5 text-xs text-ht-content-muted">
+      Name of the realm that bare <code class="font-mono">/ui/login</code>, <code class="font-mono">/ui/register</code>, etc. resolve to on multi-realm deployments. Leave blank to force users onto explicit <code class="font-mono">/ui/realms/&lt;name&gt;/...</code> URLs. Ignored when only one realm exists.
+    </p>
+    <input type="text" :value="getVal('server.default_realm', '')"
+           @input="setVal('server.default_realm', $el.value || null)"
+           placeholder="(none)"
+           class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+  </div>
 </div>
 
 {# ═══════════════════════════════════════════════════════

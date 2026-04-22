@@ -53,6 +53,7 @@ pub mod admin;
 pub mod auth;
 pub mod handlers;
 pub(crate) mod handlers_common;
+pub mod realm_resolver;
 pub(crate) mod templates;
 pub mod themes;
 
@@ -135,6 +136,13 @@ pub struct WebState {
     /// re-reads the config file + runs reconciliation. `None` in test
     /// contexts.
     pub reload_notify: Option<Arc<tokio::sync::Notify>>,
+    /// Name of the default realm for pre-auth URLs when the request URL
+    /// doesn't carry an explicit realm path segment. See the resolver
+    /// in [`super::realm_resolver`] for how this is used.
+    ///
+    /// `None` means "no default"; on multi-realm deployments that forces
+    /// users to visit `/ui/realms/<name>/...` explicitly.
+    pub default_realm_name: Option<String>,
     /// Path to the config file for the config editor. `None` in test or
     /// dev-mode contexts where no file was loaded.
     pub config_path: Option<PathBuf>,
@@ -183,6 +191,7 @@ impl WebState {
             realm_theme_etags: HashMap::new(),
             trusted_proxies: Vec::new(),
             reload_notify: None,
+            default_realm_name: None,
             config_path: None,
         }
     }
@@ -273,6 +282,23 @@ impl WebState {
     pub fn with_config_path(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
         self
+    }
+
+    /// Sets the default realm name used for bare `/ui/*` pre-auth URLs
+    /// on multi-realm deployments. See [`super::realm_resolver`].
+    #[must_use]
+    pub fn with_default_realm(mut self, name: Option<String>) -> Self {
+        self.default_realm_name = name;
+        self
+    }
+
+    /// Looks up the per-realm theme CSS for a specific realm, bypassing
+    /// the process-global `current_realm` cache. Prefer this in pre-auth
+    /// handlers where the realm is resolved from the URL or cookie.
+    #[must_use]
+    pub fn realm_theme_css_for(&self, realm_id: &RealmId) -> Option<String> {
+        let id = realm_id.as_uuid().to_string();
+        self.realm_themes.get(&id).cloned()
     }
 
     /// Pins a realm as the "current" one for this process. Called by
@@ -387,6 +413,52 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/register/sent",
             axum::routing::get(handlers::register_sent),
+        )
+        // Realm-scoped pre-auth routes. Always resolve via the URL path,
+        // bypassing the default_realm / single-realm fallbacks that apply
+        // to bare `/ui/*` URLs. See `realm_resolver` for the full model.
+        .route(
+            "/realms/{realm}/login",
+            axum::routing::get(handlers::login_form_scoped).post(handlers::login_submit_scoped),
+        )
+        .route(
+            "/realms/{realm}/login/passkey-begin",
+            axum::routing::get(handlers::passkey_login_begin_scoped),
+        )
+        .route(
+            "/realms/{realm}/login/passkey-complete",
+            axum::routing::post(handlers::passkey_login_complete_scoped),
+        )
+        .route(
+            "/realms/{realm}/register",
+            axum::routing::get(handlers::register_form_scoped)
+                .post(handlers::register_submit_scoped),
+        )
+        .route(
+            "/realms/{realm}/register/sent",
+            axum::routing::get(handlers::register_sent_scoped),
+        )
+        .route(
+            "/realms/{realm}/forgot-password",
+            axum::routing::get(handlers::forgot_password_form_scoped)
+                .post(handlers::forgot_password_submit_scoped),
+        )
+        .route(
+            "/realms/{realm}/forgot-password/sent",
+            axum::routing::get(handlers::forgot_password_sent_scoped),
+        )
+        .route(
+            "/realms/{realm}/reset-password",
+            axum::routing::get(handlers::reset_password_form_scoped)
+                .post(handlers::reset_password_submit_scoped),
+        )
+        .route(
+            "/realms/{realm}/verify-email",
+            axum::routing::get(handlers::verify_email_scoped),
+        )
+        .route(
+            "/realms/{realm}/accept-invitation",
+            axum::routing::get(handlers::accept_invitation_page_scoped),
         )
         .route("/", axum::routing::get(handlers::dashboard))
         .route(

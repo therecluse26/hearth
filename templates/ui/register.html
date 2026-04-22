@@ -10,7 +10,7 @@
     <h1 class="mb-2 text-center text-lg font-semibold text-ht-content-primary">Registration unavailable</h1>
     <p class="mb-4 text-center text-sm text-ht-content-secondary">Self-service registration is not enabled for this realm. Contact an administrator to request an account.</p>
     <div class="mt-6 text-center">
-      <a href="/ui/login" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">Back to sign in</a>
+      <a href="{{ login_url }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">Back to sign in</a>
     </div>
   {% else %}
     <h1 class="mb-2 text-center text-lg font-semibold text-ht-content-primary">Create your account</h1>
@@ -22,7 +22,7 @@
       {% when None %}
     {% endmatch %}
 
-    <form method="post" action="/ui/register" class="space-y-4">
+    <form method="post" action="{{ form_action }}" class="space-y-4">
       <div>
         <label for="email" class="block text-sm font-medium text-ht-content-secondary">Email</label>
         <input type="email" id="email" name="email" required autocomplete="email" value="{{ email_prefill }}"
@@ -62,7 +62,7 @@
     </form>
 
     <div class="mt-4 text-center">
-      <a href="/ui/login" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">Already have an account? Sign in</a>
+      <a href="{{ login_url }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">Already have an account? Sign in</a>
     </div>
   {% endif %}
 </div>

@@ -148,6 +148,7 @@ impl Config {
                 tls_client_ca_path: None,
                 tls_require_client_cert: false,
                 trusted_proxies: Vec::new(),
+                default_realm: None,
             },
             storage: StorageSection {
                 data_dir: String::new(),

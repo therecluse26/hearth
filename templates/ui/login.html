@@ -21,7 +21,7 @@
        class="mb-4 rounded-lg bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert"
        x-text="passkeyError"></div>
 
-  <form method="post" action="/ui/login" class="space-y-4">
+  <form method="post" action="{{ form_action }}" class="space-y-4">
     {% match return_to %}
       {% when Some with (r) %}
         <input type="hidden" name="return_to" value="{{ r }}">
@@ -72,9 +72,9 @@
   </template>
 
   <div class="mt-4 flex justify-center gap-4 text-sm font-medium">
-    <a href="/ui/forgot-password" class="text-ht-content-brand hover:text-ht-brand-deep">Forgot password?</a>
+    <a href="{{ forgot_url }}" class="text-ht-content-brand hover:text-ht-brand-deep">Forgot password?</a>
     <span class="text-ht-content-muted" aria-hidden="true">·</span>
-    <a href="/ui/register" class="text-ht-content-brand hover:text-ht-brand-deep">Create account</a>
+    <a href="{{ register_url }}" class="text-ht-content-brand hover:text-ht-brand-deep">Create account</a>
   </div>
 </div>
 
@@ -144,7 +144,7 @@ function passkeyLogin() {
     },
 
     async fetchBeginOptions() {
-      const resp = await fetch('/ui/login/passkey-begin');
+      const resp = await fetch('{{ passkey_begin_url }}');
       if (!resp.ok) return null;
       const data = await resp.json();
       // Decode base64url challenge
@@ -170,7 +170,7 @@ function passkeyLogin() {
         body.user_handle = this.b64urlEncode(assertion.response.userHandle);
       }
 
-      const resp = await fetch('/ui/login/passkey-complete', {
+      const resp = await fetch('{{ passkey_complete_url }}', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

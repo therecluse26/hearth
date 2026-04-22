@@ -171,6 +171,7 @@ Copy [`hearth.example.yaml`](hearth.example.yaml) to `hearth.yaml` and edit. Eve
 | `server` | `tls_key_path` | path? | — | Requires `tls_cert_path` |
 | `server` | `tls_client_ca_path` | path? | — | For mTLS |
 | `server` | `tls_require_client_cert` | bool | `false` | Requires `tls_client_ca_path` |
+| `server` | `default_realm` | string? | — | Realm name used for bare `/ui/*` URLs on multi-realm deployments. See [Web UI realm routing](#web-ui-realm-routing). Must name an existing realm; validated at startup. |
 | `storage` | `data_dir` | string | `./data` | |
 | `storage` | `wal_max_size_bytes` | u64 | `268435456` | 256 MiB |
 | `storage` | `memtable_flush_bytes` | u64 | `67108864` | 64 MiB |
@@ -438,6 +439,45 @@ server:
   tls_client_ca_path: "/etc/hearth/clients-ca.crt"
   tls_require_client_cert: true
 ```
+
+---
+
+## Web UI realm routing
+
+Every `/ui/*` page belongs to exactly one realm — that's where the user's session, credentials, and policy live. Hearth resolves the realm for each pre-auth request *before* touching the identity engine, and never walks realms looking for a match. Which realm applies depends on the URL shape and how many realms exist.
+
+| Realm count | `server.default_realm` | Bare `/ui/login` etc. behavior |
+|---|---|---|
+| 1 | — (ignored) | Implicit — the sole realm is used. Zero config needed. |
+| >1 | Set | Resolves to the declared default. Forms POST back to the bare URL. |
+| >1 | Unset | GETs render a realm picker (`templates/ui/choose_realm.html`) listing active realms; POSTs return 400. |
+
+Explicit **`/ui/realms/<name>/...`** URLs bypass the fallback chain entirely. Unknown realm names return 404.
+
+Pre-auth route families (each has a bare and a path-scoped form):
+
+```
+/ui/{login, register, register/sent, forgot-password, forgot-password/sent,
+     reset-password, verify-email, accept-invitation,
+     login/passkey-begin, login/passkey-complete}
+
+/ui/realms/<name>/{...same set...}
+```
+
+Bare URLs are convenient; path-scoped URLs are canonical. Email verification links, password-reset links, and form POSTs generated on a path-scoped page all stay path-scoped so the realm binding survives the round trip. Authenticated pages (`/ui/admin/*`, `/ui/account/*`, `/ui`) resolve the realm from the session cookie and need no path segment.
+
+Operators opt in per deployment:
+
+```yaml
+server:
+  bind_address: 0.0.0.0
+  port: 8420
+  default_realm: public    # optional; only needed when you host >1 realm
+```
+
+Startup hard-fails if `server.default_realm` names a realm that doesn't exist after reconciliation — it's a config bug, not a runtime fallback. Leave it unset on a multi-realm deployment to force every user through an explicit `/ui/realms/<name>/...` URL.
+
+For the exact resolution rules see [`src/protocol/web/realm_resolver.rs`](src/protocol/web/realm_resolver.rs).
 
 ---
 

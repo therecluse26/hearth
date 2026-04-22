@@ -404,6 +404,25 @@ async fn run_serve(
         }
     }
 
+    // Validate server.default_realm after reconciliation so auto-created
+    // or YAML-declared realms are visible to the lookup.
+    if let Some(name) = config.server.default_realm.as_deref() {
+        match identity_engine.get_realm_by_name(name) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                error!(
+                    realm_name = %name,
+                    "server.default_realm names a realm that does not exist; refusing to start"
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                error!(error = %e, "server.default_realm lookup failed");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         AuthzConfig::default(),
@@ -460,6 +479,7 @@ async fn run_serve(
     .with_email_log_transport(config.email.transport == EmailTransport::Log)
     .with_product_name(config.branding.product_name_or_default().to_string())
     .with_logo_url(web_logo_url)
+    .with_default_realm(config.server.default_realm.clone())
     .with_config(Arc::new(config.clone()));
 
     // Parse trusted proxy IPs from config for real client IP extraction.
