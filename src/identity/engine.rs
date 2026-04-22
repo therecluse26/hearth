@@ -59,12 +59,13 @@ use crate::identity::tokens::{
 };
 use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
-    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest,
-    CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, Organization,
-    OrganizationInvitation, OrganizationMembership, OrganizationRole, OrganizationStatus, Page,
-    Realm, RealmStatus, RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session,
-    SessionContext, UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User,
-    UserStatus,
+    BulkResult, ConsentListEntry, ConsentRecord, CreateInvitationRequest,
+    CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest, ImportClientRequest,
+    ImportUserRequest, InvitationStatus, Organization, OrganizationInvitation,
+    OrganizationMembership, OrganizationRole, OrganizationStatus, Page,
+    PendingAuthorizationRequest, Realm, RealmStatus, RegisterUserRequest, RegisterUserResponse,
+    RegistrationPolicy, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
+    UpdateUserRequest, User, UserStatus,
 };
 use crate::identity::validation;
 use crate::identity::webauthn::{
@@ -1414,6 +1415,38 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .map_err(Self::storage_err)?;
         }
 
+        // 8a. Delete all OAuth consent records in this realm.
+        let consent_prefix = keys::oauth_consent_scan_prefix();
+        let consent_end = keys::prefix_end(&consent_prefix);
+        let consents = self
+            .storage
+            .scan(realm_id, &consent_prefix, &consent_end)
+            .map_err(Self::storage_err)?;
+        if !consents.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &consents {
+            self.storage
+                .delete(realm_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 8b. Delete all in-flight pending-authorization tickets.
+        let pending_prefix = keys::oauth_pending_auth_scan_prefix();
+        let pending_end = keys::prefix_end(&pending_prefix);
+        let pendings = self
+            .storage
+            .scan(realm_id, &pending_prefix, &pending_end)
+            .map_err(Self::storage_err)?;
+        if !pendings.is_empty() {
+            cascade_work_done = true;
+        }
+        for entry in &pendings {
+            self.storage
+                .delete(realm_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
         // 9. Delete realm signing key (check existence first so we can attribute
         //    cascade work even when only the signing key survives a prior crash).
         let key_storage_key = keys::encode_realm_signing_key(realm_id);
@@ -1703,6 +1736,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     .map_err(Self::storage_err)?;
             }
             // Delete reverse index entry (user → org)
+            self.storage
+                .delete(realm_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 7. Cascade: scrub all OAuth consent records for this user.
+        let consent_prefix = keys::encode_consent_prefix_for_user(user_id);
+        let consent_end = keys::prefix_end(&consent_prefix);
+        let consent_entries = self
+            .storage
+            .scan(realm_id, &consent_prefix, &consent_end)
+            .map_err(Self::storage_err)?;
+        for entry in &consent_entries {
             self.storage
                 .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
@@ -2206,7 +2252,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             request.grant_types.clone()
         };
 
-        let client = if let Some(ref secret) = request.client_secret {
+        let mut client = if let Some(ref secret) = request.client_secret {
             // Confidential client — hash the secret with Argon2id
             let secret_hash =
                 credentials::hash_raw_secret(secret.as_bytes(), &self.config.credential)?;
@@ -2229,6 +2275,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             c.set_grant_types(grant_types);
             c
         };
+
+        // Apply consent policy fields from the request.
+        client.set_require_consent(request.require_consent);
+        client.set_client_logo_url(request.client_logo_url.clone());
 
         // Serialize and persist
         let client_bytes =
@@ -4282,6 +4332,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
             client.set_grant_types(grant_types.clone());
         }
+        if let Some(require) = request.require_consent {
+            client.set_require_consent(require);
+        }
+        if let Some(logo) = &request.client_logo_url {
+            client.set_client_logo_url(logo.clone());
+        }
 
         let updated_bytes =
             serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
@@ -4357,7 +4413,272 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .delete(realm_id, &key)
             .map_err(Self::storage_err)?;
+
+        // Cascade: scrub every consent record referencing this client.
+        // Consent keys are `oauth:consent:{user_uuid}:{client_uuid}`, so
+        // we scan the whole namespace and match the trailing client segment.
+        let consent_prefix = keys::oauth_consent_scan_prefix();
+        let consent_end = keys::prefix_end(&consent_prefix);
+        let consent_entries = self
+            .storage
+            .scan(realm_id, &consent_prefix, &consent_end)
+            .map_err(Self::storage_err)?;
+        let client_uuid_str = client_id.as_uuid().to_string();
+        for entry in &consent_entries {
+            if let Ok(key_str) = std::str::from_utf8(&entry.key) {
+                if key_str.ends_with(&client_uuid_str) {
+                    self.storage
+                        .delete(realm_id, &entry.key)
+                        .map_err(Self::storage_err)?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    // ===== OAuth consent =====
+
+    fn get_consent(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &ClientId,
+    ) -> Result<Option<ConsentRecord>, IdentityError> {
+        let key = keys::encode_consent_key(user_id, client_id);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        let rec: ConsentRecord =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        Ok(Some(rec))
+    }
+
+    fn list_consents_by_user(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<ConsentListEntry>, IdentityError> {
+        let prefix = keys::encode_consent_prefix_for_user(user_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let rec: ConsentRecord =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            // Join with current client. Orphaned consents (client deleted)
+            // are filtered out — callers see only actionable entries.
+            let client_key = keys::encode_oauth_client(&rec.client_id);
+            let Some(client_bytes) = self
+                .storage
+                .get(realm_id, &client_key)
+                .map_err(Self::storage_err)?
+            else {
+                continue;
+            };
+            let client: OAuthClient = serde_json::from_slice(&client_bytes).map_err(|e| {
+                IdentityError::Serialization {
+                    reason: e.to_string(),
+                }
+            })?;
+            out.push(ConsentListEntry {
+                record: rec,
+                client_name: client.client_name().to_string(),
+                client_logo_url: client.client_logo_url().map(str::to_string),
+            });
+        }
+        Ok(out)
+    }
+
+    fn grant_consent(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &ClientId,
+        approved_scopes: &[String],
+    ) -> Result<ConsentRecord, IdentityError> {
+        // Verify the client exists — avoids orphan consents.
+        let client_key = keys::encode_oauth_client(client_id);
+        self.storage
+            .get(realm_id, &client_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::ClientNotFound)?;
+
+        let now = self.clock.now();
+        let key = keys::encode_consent_key(user_id, client_id);
+        let existing = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?;
+        let record = if let Some(bytes) = existing {
+            let mut rec: ConsentRecord =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            rec.merge_scopes(approved_scopes, now);
+            rec
+        } else {
+            ConsentRecord::new(
+                user_id.clone(),
+                client_id.clone(),
+                approved_scopes.to_vec(),
+                now,
+            )
+        };
+        let bytes = serde_json::to_vec(&record).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(realm_id, &key, &bytes)
+            .map_err(Self::storage_err)?;
+        Ok(record)
+    }
+
+    fn revoke_consent(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &ClientId,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_consent_key(user_id, client_id);
+        let existed = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+            .is_some();
+        if !existed {
+            return Err(IdentityError::ConsentNotFound);
+        }
+        self.storage
+            .delete(realm_id, &key)
+            .map_err(Self::storage_err)?;
+        Ok(())
+    }
+
+    fn revoke_all_consents_for_user(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<usize, IdentityError> {
+        let prefix = keys::encode_consent_prefix_for_user(user_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+        let count = entries.len();
+        for entry in &entries {
+            self.storage
+                .delete(realm_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+        Ok(count)
+    }
+
+    fn put_pending_authorization(
+        &self,
+        realm_id: &RealmId,
+        request: &PendingAuthorizationRequest,
+    ) -> Result<String, IdentityError> {
+        let ticket = uuid::Uuid::new_v4().to_string();
+        let key = keys::encode_pending_auth_key(&ticket);
+        let bytes = serde_json::to_vec(request).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(realm_id, &key, &bytes)
+            .map_err(Self::storage_err)?;
+        Ok(ticket)
+    }
+
+    fn get_pending_authorization(
+        &self,
+        realm_id: &RealmId,
+        ticket: &str,
+    ) -> Result<Option<PendingAuthorizationRequest>, IdentityError> {
+        let key = keys::encode_pending_auth_key(ticket);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        let pending: PendingAuthorizationRequest =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        if self.clock.now().as_micros() >= pending.expires_at.as_micros() {
+            return Err(IdentityError::ConsentTicketExpired);
+        }
+        Ok(Some(pending))
+    }
+
+    fn take_pending_authorization(
+        &self,
+        realm_id: &RealmId,
+        ticket: &str,
+    ) -> Result<PendingAuthorizationRequest, IdentityError> {
+        let key = keys::encode_pending_auth_key(ticket);
+        let bytes = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::ConsentTicketNotFound)?;
+        // Single-use: delete before we even validate expiry so callers can
+        // never replay the same ticket twice even on a narrow race.
+        self.storage
+            .delete(realm_id, &key)
+            .map_err(Self::storage_err)?;
+        let pending: PendingAuthorizationRequest =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        if self.clock.now().as_micros() >= pending.expires_at.as_micros() {
+            return Err(IdentityError::ConsentTicketExpired);
+        }
+        Ok(pending)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn issue_authorization_code(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &ClientId,
+        redirect_uri: &str,
+        scope: &str,
+        state: &str,
+        code_challenge: Option<String>,
+        code_challenge_method: Option<CodeChallengeMethod>,
+        nonce: Option<String>,
+    ) -> Result<AuthorizationResponse, IdentityError> {
+        // Reuse the canonical path by constructing an AuthorizationRequest
+        // and delegating to `authorize`. This keeps PKCE rules, nonce
+        // enforcement, client/redirect_uri validation, and code storage
+        // all in one place.
+        let request = AuthorizationRequest {
+            client_id: client_id.clone(),
+            redirect_uri: redirect_uri.to_string(),
+            scope: scope.to_string(),
+            state: state.to_string(),
+            response_type: "code".to_string(),
+            user_id: user_id.clone(),
+            code_challenge,
+            code_challenge_method,
+            nonce,
+        };
+        self.authorize(realm_id, &request)
     }
 
     fn bulk_create_users(
@@ -6858,6 +7179,8 @@ mod tests {
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
                     client_secret: None,
                     grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register client")
@@ -7927,6 +8250,8 @@ mod tests {
                     redirect_uris: vec![],
                     client_secret: Some(secret.to_string()),
                     grant_types: vec!["client_credentials".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register confidential client")
@@ -8012,6 +8337,8 @@ mod tests {
                     redirect_uris: vec!["https://app.example.com/cb".to_string()],
                     client_secret: None,
                     grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register public client");
@@ -8049,6 +8376,8 @@ mod tests {
                     redirect_uris: vec!["https://app.example.com/cb".to_string()],
                     client_secret: None,
                     grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register client");
@@ -8094,6 +8423,8 @@ mod tests {
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
                     client_secret: None,
                     grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register client");
@@ -8215,6 +8546,8 @@ mod tests {
                     redirect_uris: vec!["https://app.example.com/callback".to_string()],
                     client_secret: None,
                     grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register client");
@@ -8389,6 +8722,8 @@ mod tests {
                     redirect_uris: vec!["https://app.example.com/cb".to_string()],
                     client_secret: None,
                     grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register client");
@@ -8475,6 +8810,8 @@ mod tests {
                     redirect_uris: vec![],
                     client_secret: Some("correct-secret-123".to_string()),
                     grant_types: vec!["client_credentials".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register client");
@@ -8541,6 +8878,8 @@ mod tests {
                     redirect_uris: vec![],
                     client_secret: None,
                     grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
                 },
             )
             .expect("register client");
@@ -8605,6 +8944,8 @@ mod tests {
                         redirect_uris: vec!["https://app.example.com/cb".to_string()],
                         client_secret: None,
                         grant_types: vec!["authorization_code".to_string()],
+                        require_consent: true,
+                        client_logo_url: None,
                     },
                 ).expect("register client");
 
@@ -8721,6 +9062,8 @@ mod tests {
                         redirect_uris: vec!["https://app.example.com/cb".to_string()],
                         client_secret: None,
                         grant_types: vec!["authorization_code".to_string()],
+                        require_consent: true,
+                        client_logo_url: None,
                     },
                 ).expect("register client");
 
@@ -9070,5 +9413,278 @@ mod tests {
             matches!(err, IdentityError::MagicLinkTokenInvalid),
             "should be MagicLinkTokenInvalid, got: {err:?}"
         );
+    }
+
+    // ===== OAuth Consent engine tests =====
+
+    fn setup_consent_env() -> (
+        tempfile::TempDir,
+        EmbeddedIdentityEngine,
+        Arc<FakeClock>,
+        RealmId,
+        UserId,
+        ClientId,
+    ) {
+        let (dir, engine, clock) = setup_engine();
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "Consent Realm".to_string(),
+                config: None,
+            })
+            .expect("create realm");
+        let user = engine
+            .create_user(
+                realm.id(),
+                &CreateUserRequest {
+                    email: "alice@example.com".to_string(),
+                    display_name: "Alice".to_string(),
+                },
+            )
+            .expect("create user");
+        let client = engine
+            .register_client(
+                realm.id(),
+                &RegisterClientRequest {
+                    client_name: "Consent Test App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                },
+            )
+            .expect("register client");
+        (
+            dir,
+            engine,
+            clock,
+            realm.id().clone(),
+            user.id().clone(),
+            client.client_id().clone(),
+        )
+    }
+
+    #[test]
+    fn grant_and_get_consent_round_trip() {
+        let (_dir, engine, _clock, realm, user, client) = setup_consent_env();
+        let rec = engine
+            .grant_consent(
+                &realm,
+                &user,
+                &client,
+                &["profile".to_string(), "email".to_string()],
+            )
+            .expect("grant");
+        assert_eq!(rec.granted_scopes, vec!["email", "profile"]);
+
+        let loaded = engine
+            .get_consent(&realm, &user, &client)
+            .expect("get")
+            .expect("present");
+        assert_eq!(loaded.granted_scopes, vec!["email", "profile"]);
+        assert!(loaded.covers(&["profile".to_string()]));
+        assert!(!loaded.covers(&["admin".to_string()]));
+    }
+
+    #[test]
+    fn grant_consent_merges_into_existing_record() {
+        let (_dir, engine, clock, realm, user, client) = setup_consent_env();
+        engine
+            .grant_consent(&realm, &user, &client, &["profile".to_string()])
+            .expect("grant 1");
+        clock.advance(1_000_000);
+        let rec = engine
+            .grant_consent(&realm, &user, &client, &["email".to_string()])
+            .expect("grant 2");
+        assert_eq!(rec.granted_scopes, vec!["email", "profile"]);
+        assert!(rec.updated_at.as_micros() > rec.granted_at.as_micros());
+    }
+
+    #[test]
+    fn grant_consent_requires_existing_client() {
+        let (_dir, engine, _clock, realm, user, _client) = setup_consent_env();
+        let bogus = ClientId::generate();
+        let err = engine
+            .grant_consent(&realm, &user, &bogus, &["profile".to_string()])
+            .expect_err("client not found");
+        assert!(matches!(err, IdentityError::ClientNotFound), "got: {err:?}");
+    }
+
+    #[test]
+    fn list_consents_by_user_returns_joined_entries() {
+        let (_dir, engine, _clock, realm, user, client) = setup_consent_env();
+        engine
+            .grant_consent(&realm, &user, &client, &["profile".to_string()])
+            .expect("grant");
+        let list = engine.list_consents_by_user(&realm, &user).expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].client_name, "Consent Test App");
+        assert_eq!(list[0].record.granted_scopes, vec!["profile"]);
+    }
+
+    #[test]
+    fn list_consents_filters_orphaned_client_records() {
+        let (_dir, engine, _clock, realm, user, client) = setup_consent_env();
+        engine
+            .grant_consent(&realm, &user, &client, &["profile".to_string()])
+            .expect("grant");
+        engine
+            .delete_client(&realm, &client)
+            .expect("delete client");
+        // delete_client cascades consent away — verify list is empty.
+        let list = engine.list_consents_by_user(&realm, &user).expect("list");
+        assert!(list.is_empty(), "expected no live consents, got {list:?}");
+    }
+
+    #[test]
+    fn revoke_consent_returns_not_found_when_absent() {
+        let (_dir, engine, _clock, realm, user, client) = setup_consent_env();
+        let err = engine
+            .revoke_consent(&realm, &user, &client)
+            .expect_err("no record yet");
+        assert!(
+            matches!(err, IdentityError::ConsentNotFound),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn revoke_consent_removes_record_entirely() {
+        let (_dir, engine, _clock, realm, user, client) = setup_consent_env();
+        engine
+            .grant_consent(&realm, &user, &client, &["profile".to_string()])
+            .expect("grant");
+        engine
+            .revoke_consent(&realm, &user, &client)
+            .expect("revoke");
+        assert!(engine
+            .get_consent(&realm, &user, &client)
+            .expect("get")
+            .is_none());
+    }
+
+    #[test]
+    fn revoke_all_consents_drops_every_user_record() {
+        let (_dir, engine, _clock, realm, user, client1) = setup_consent_env();
+        let client2 = engine
+            .register_client(
+                &realm,
+                &RegisterClientRequest {
+                    client_name: "Second Client".to_string(),
+                    redirect_uris: vec!["https://other.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                },
+            )
+            .expect("register 2");
+        engine
+            .grant_consent(&realm, &user, &client1, &["profile".to_string()])
+            .expect("grant 1");
+        engine
+            .grant_consent(&realm, &user, client2.client_id(), &["email".to_string()])
+            .expect("grant 2");
+        let count = engine
+            .revoke_all_consents_for_user(&realm, &user)
+            .expect("revoke all");
+        assert_eq!(count, 2);
+        assert!(engine
+            .list_consents_by_user(&realm, &user)
+            .expect("list")
+            .is_empty());
+    }
+
+    #[test]
+    fn pending_authorization_ticket_is_single_use() {
+        let (_dir, engine, _clock, realm, user, client) = setup_consent_env();
+        let now = engine.clock.now();
+        let pending = PendingAuthorizationRequest {
+            user_id: user.clone(),
+            client_id: client.clone(),
+            redirect_uri: "https://app.example.com/cb".to_string(),
+            requested_scopes: vec!["profile".to_string()],
+            state: "xyz".to_string(),
+            response_type: "code".to_string(),
+            code_challenge: None,
+            code_challenge_method: None,
+            nonce: None,
+            created_at: now,
+            expires_at: now.add_micros(600_000_000),
+        };
+        let ticket = engine
+            .put_pending_authorization(&realm, &pending)
+            .expect("put");
+        let first = engine
+            .take_pending_authorization(&realm, &ticket)
+            .expect("take 1");
+        assert_eq!(first.user_id, user);
+        let err = engine
+            .take_pending_authorization(&realm, &ticket)
+            .expect_err("take 2 should fail");
+        assert!(matches!(err, IdentityError::ConsentTicketNotFound));
+    }
+
+    #[test]
+    fn pending_authorization_ticket_expires() {
+        let (_dir, engine, clock, realm, user, client) = setup_consent_env();
+        let now = engine.clock.now();
+        let pending = PendingAuthorizationRequest {
+            user_id: user,
+            client_id: client,
+            redirect_uri: "https://app.example.com/cb".to_string(),
+            requested_scopes: vec!["profile".to_string()],
+            state: "xyz".to_string(),
+            response_type: "code".to_string(),
+            code_challenge: None,
+            code_challenge_method: None,
+            nonce: None,
+            created_at: now,
+            expires_at: now.add_micros(600_000_000),
+        };
+        let ticket = engine
+            .put_pending_authorization(&realm, &pending)
+            .expect("put");
+        // advance past expiry
+        clock.advance(600_000_001);
+        let err = engine
+            .take_pending_authorization(&realm, &ticket)
+            .expect_err("expired");
+        assert!(
+            matches!(err, IdentityError::ConsentTicketExpired),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn delete_user_cascades_consent_records() {
+        let (_dir, engine, _clock, realm, user, client) = setup_consent_env();
+        engine
+            .grant_consent(&realm, &user, &client, &["profile".to_string()])
+            .expect("grant");
+        engine.delete_user(&realm, &user).expect("delete user");
+        assert!(engine
+            .get_consent(&realm, &user, &client)
+            .expect("get")
+            .is_none());
+    }
+
+    #[test]
+    fn consent_records_are_realm_isolated() {
+        let (_dir, engine, _clock, realm_a, user, client) = setup_consent_env();
+        let realm_b = engine
+            .create_realm(&CreateRealmRequest {
+                name: "Other".to_string(),
+                config: None,
+            })
+            .expect("create realm B");
+        engine
+            .grant_consent(&realm_a, &user, &client, &["profile".to_string()])
+            .expect("grant");
+        // Same (user, client) key in realm_b must not find realm_a's record.
+        let other = engine
+            .get_consent(realm_b.id(), &user, &client)
+            .expect("get");
+        assert!(other.is_none());
     }
 }

@@ -134,6 +134,13 @@ impl CookieSecret {
     }
 }
 
+/// Exposes the raw secret bytes for sibling modules that need to compute
+/// their own HMAC tags (e.g. the OAuth consent ticket cookie). Kept
+/// `pub(super)` so it does not leak outside the web adapter.
+pub(super) fn cookie_secret_bytes(secret: &CookieSecret) -> &[u8] {
+    secret.as_bytes()
+}
+
 impl std::fmt::Debug for CookieSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CookieSecret(<redacted>)")

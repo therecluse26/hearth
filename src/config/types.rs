@@ -715,6 +715,19 @@ pub struct ApplicationYamlConfig {
     /// Required when `confidential: true`. Hashed with Argon2id before storage.
     #[serde(default)]
     pub client_secret: Option<String>,
+    /// Whether this client is trusted to skip the OAuth consent screen.
+    ///
+    /// `None` (the default) or `Some(true)` keeps the standard
+    /// prompt-before-code behaviour. `Some(false)` marks the client as
+    /// trusted / first-party — users will be redirected directly to the
+    /// `redirect_uri` without a consent prompt on first authorization.
+    /// Only set this for clients where the user's consent is already
+    /// implicit (e.g. first-party SSO inside an enterprise realm).
+    #[serde(default)]
+    pub require_consent: Option<bool>,
+    /// URL to a logo displayed on the consent screen. Optional.
+    #[serde(default)]
+    pub client_logo_url: Option<String>,
 }
 
 /// Per-realm email branding overrides in YAML.

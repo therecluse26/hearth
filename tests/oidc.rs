@@ -48,6 +48,8 @@ async fn oidc_authorization_code_flow_roundtrip() {
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");
@@ -336,6 +338,8 @@ async fn oidc_pkce_s256_flow() {
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");
@@ -641,6 +645,8 @@ async fn conformance_token_endpoint_rfc6749() {
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
 use crate::identity::credentials::CleartextPassword;
 use crate::identity::email::EmailBranding;
 
@@ -955,6 +955,130 @@ pub struct MigrationReport {
     pub warnings: Vec<String>,
 }
 
+// ===== OAuth Consent =====
+
+/// A user's persisted consent to share a set of scopes with an OAuth client.
+///
+/// Stored per `(realm, user, client)`. `granted_scopes` is the canonical,
+/// sorted, deduplicated set of scopes the user has approved. Subsequent
+/// authorization requests that ask only for a subset of these scopes skip
+/// the consent prompt; requests that add a new scope re-prompt.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConsentRecord {
+    /// The subject user.
+    pub user_id: UserId,
+    /// The OAuth client the consent applies to.
+    pub client_id: ClientId,
+    /// Canonicalized (sorted + deduplicated) scopes the user has approved.
+    pub granted_scopes: Vec<String>,
+    /// When consent was first recorded.
+    pub granted_at: Timestamp,
+    /// When the scope set was last updated.
+    pub updated_at: Timestamp,
+}
+
+impl ConsentRecord {
+    /// Creates a new consent record. `scopes` will be canonicalized.
+    pub fn new(user_id: UserId, client_id: ClientId, scopes: Vec<String>, now: Timestamp) -> Self {
+        Self {
+            user_id,
+            client_id,
+            granted_scopes: canonicalize_scopes(scopes),
+            granted_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Returns `true` iff every requested scope is already in `granted_scopes`.
+    ///
+    /// Empty `requested` yields `true` — a client can always ask for nothing.
+    pub fn covers(&self, requested: &[String]) -> bool {
+        requested
+            .iter()
+            .all(|s| self.granted_scopes.iter().any(|g| g == s))
+    }
+
+    /// Merges `additional` into `granted_scopes`, canonicalizing and
+    /// updating `updated_at`.
+    pub fn merge_scopes(&mut self, additional: &[String], now: Timestamp) {
+        let mut all = self.granted_scopes.clone();
+        all.extend(additional.iter().cloned());
+        self.granted_scopes = canonicalize_scopes(all);
+        self.updated_at = now;
+    }
+}
+
+/// Sorts and deduplicates a list of scopes. Empty strings are dropped.
+///
+/// Canonical form makes consent comparisons deterministic and makes the
+/// stored record stable regardless of submission order.
+pub fn canonicalize_scopes(mut scopes: Vec<String>) -> Vec<String> {
+    scopes.retain(|s| !s.trim().is_empty());
+    for s in &mut scopes {
+        *s = s.trim().to_string();
+    }
+    scopes.sort();
+    scopes.dedup();
+    scopes
+}
+
+/// Listing entry for consents shown to the user or to an admin.
+///
+/// Joins the `ConsentRecord` with human-readable fields from the OAuth
+/// client so callers can render a useful page without a second round-trip.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConsentListEntry {
+    /// The underlying consent record.
+    pub record: ConsentRecord,
+    /// Client display name at list time.
+    pub client_name: String,
+    /// Client logo URL at list time, if set.
+    pub client_logo_url: Option<String>,
+}
+
+/// Pending authorization request captured while the user decides consent.
+///
+/// Stored under `oauth:pending_auth:{ticket}` with a short TTL. The
+/// consent form submits the ticket back; the server validates the ticket
+/// matches the current user, checks approved scopes are a subset of
+/// `requested_scopes`, issues an authorization code, and deletes the
+/// ticket (single-use).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingAuthorizationRequest {
+    /// The user who owns this pending request. Prevents cross-user replay.
+    pub user_id: UserId,
+    /// The client requesting authorization.
+    pub client_id: ClientId,
+    /// Registered redirect URI (already validated against the client).
+    pub redirect_uri: String,
+    /// Scopes requested by the client, canonicalized.
+    pub requested_scopes: Vec<String>,
+    /// OAuth `state` parameter — echoed back to the client on redirect.
+    pub state: String,
+    /// OAuth `response_type` (must be `code`).
+    pub response_type: String,
+    /// PKCE code challenge, if present.
+    pub code_challenge: Option<String>,
+    /// PKCE code challenge method, if present. Domain string ("S256").
+    pub code_challenge_method: Option<String>,
+    /// OIDC nonce echoed into the ID token.
+    pub nonce: Option<String>,
+    /// When the ticket was created.
+    pub created_at: Timestamp,
+    /// When the ticket expires. Past this point `take_pending_authorization`
+    /// returns `ConsentTicketExpired`.
+    pub expires_at: Timestamp,
+}
+
+/// The user's decision on the consent prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsentDecision {
+    /// User approved the listed scopes.
+    Approve,
+    /// User denied the authorization entirely.
+    Deny,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1334,5 +1458,106 @@ mod tests {
         assert!(req.description.is_none());
         assert!(req.status.is_none());
         assert!(req.config.is_none());
+    }
+
+    // ===== Consent record tests =====
+
+    #[test]
+    fn consent_record_scope_union_is_deduped_and_sorted() {
+        let now = Timestamp::from_micros(1_000_000);
+        let mut rec = ConsentRecord::new(
+            UserId::generate(),
+            ClientId::generate(),
+            vec!["profile".to_string(), "email".to_string()],
+            now,
+        );
+        // Canonical at construction.
+        assert_eq!(rec.granted_scopes, vec!["email", "profile"]);
+
+        let later = Timestamp::from_micros(2_000_000);
+        rec.merge_scopes(
+            &[
+                "openid".to_string(),
+                "profile".to_string(),
+                "  ".to_string(),
+            ],
+            later,
+        );
+        assert_eq!(rec.granted_scopes, vec!["email", "openid", "profile"]);
+        assert_eq!(rec.updated_at, later);
+        assert_ne!(rec.updated_at, rec.granted_at);
+    }
+
+    #[test]
+    fn consent_covers_requested_scopes_returns_true_when_superset() {
+        let now = Timestamp::from_micros(1_000_000);
+        let rec = ConsentRecord::new(
+            UserId::generate(),
+            ClientId::generate(),
+            vec!["profile".to_string(), "email".to_string()],
+            now,
+        );
+        assert!(rec.covers(&["profile".to_string()]));
+        assert!(rec.covers(&["email".to_string(), "profile".to_string()]));
+        assert!(rec.covers(&[])); // empty request is always covered
+    }
+
+    #[test]
+    fn consent_covers_returns_false_when_scope_missing() {
+        let now = Timestamp::from_micros(1_000_000);
+        let rec = ConsentRecord::new(
+            UserId::generate(),
+            ClientId::generate(),
+            vec!["profile".to_string()],
+            now,
+        );
+        assert!(!rec.covers(&["profile".to_string(), "email".to_string()]));
+        assert!(!rec.covers(&["admin".to_string()]));
+    }
+
+    #[test]
+    fn canonicalize_scopes_trims_dedupes_sorts() {
+        let out = canonicalize_scopes(vec![
+            "profile".to_string(),
+            " email ".to_string(),
+            "profile".to_string(),
+            String::new(),
+            "   ".to_string(),
+        ]);
+        assert_eq!(out, vec!["email", "profile"]);
+    }
+
+    #[test]
+    fn consent_record_serde_round_trip() {
+        let now = Timestamp::from_micros(1_000_000);
+        let rec = ConsentRecord::new(
+            UserId::generate(),
+            ClientId::generate(),
+            vec!["profile".to_string(), "email".to_string()],
+            now,
+        );
+        let json = serde_json::to_string(&rec).expect("serialize");
+        let back: ConsentRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rec, back);
+    }
+
+    #[test]
+    fn pending_authorization_request_serde_round_trip() {
+        let pending = PendingAuthorizationRequest {
+            user_id: UserId::generate(),
+            client_id: ClientId::generate(),
+            redirect_uri: "https://app.example.com/cb".to_string(),
+            requested_scopes: vec!["openid".to_string(), "email".to_string()],
+            state: "xyz".to_string(),
+            response_type: "code".to_string(),
+            code_challenge: Some("abc".to_string()),
+            code_challenge_method: Some("S256".to_string()),
+            nonce: Some("n-0".to_string()),
+            created_at: Timestamp::from_micros(1_000_000),
+            expires_at: Timestamp::from_micros(1_600_000_000),
+        };
+        let json = serde_json::to_string(&pending).expect("serialize");
+        let back: PendingAuthorizationRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(pending, back);
     }
 }

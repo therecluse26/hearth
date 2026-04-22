@@ -59,6 +59,27 @@ pub struct RegisterClientRequest {
     ///
     /// Defaults to `["authorization_code"]` if not specified.
     pub grant_types: Vec<String>,
+    /// Whether user consent is required before issuing authorization codes.
+    ///
+    /// Defaults to `true`. Set to `false` only for first-party / trusted
+    /// clients where the user has an implicit trust relationship with the
+    /// client (e.g. first-party SSO inside an enterprise realm).
+    pub require_consent: bool,
+    /// Optional URL to a client logo displayed on the consent screen.
+    pub client_logo_url: Option<String>,
+}
+
+impl Default for RegisterClientRequest {
+    fn default() -> Self {
+        Self {
+            client_name: String::new(),
+            redirect_uris: Vec::new(),
+            client_secret: None,
+            grant_types: Vec::new(),
+            require_consent: true,
+            client_logo_url: None,
+        }
+    }
 }
 
 /// A registered OAuth 2.0 client.
@@ -81,6 +102,19 @@ pub struct OAuthClient {
     /// OAuth 2.0 grant types this client is allowed to use.
     #[serde(default)]
     grant_types: Vec<String>,
+    /// Whether user consent is required before issuing authorization codes.
+    ///
+    /// Defaults to `true` for backward compatibility with records persisted
+    /// before consent was introduced.
+    #[serde(default = "default_require_consent")]
+    require_consent: bool,
+    /// Optional URL to a client logo displayed on the consent screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_logo_url: Option<String>,
+}
+
+fn default_require_consent() -> bool {
+    true
 }
 
 impl OAuthClient {
@@ -98,6 +132,8 @@ impl OAuthClient {
             created_at,
             client_secret_hash: None,
             grant_types: vec!["authorization_code".to_string()],
+            require_consent: true,
+            client_logo_url: None,
         }
     }
 
@@ -117,6 +153,8 @@ impl OAuthClient {
             created_at,
             client_secret_hash: Some(client_secret_hash),
             grant_types,
+            require_consent: true,
+            client_logo_url: None,
         }
     }
 
@@ -174,6 +212,27 @@ impl OAuthClient {
     pub(crate) fn set_client_secret_hash(&mut self, hash: String) {
         self.client_secret_hash = Some(hash);
     }
+
+    /// Returns whether user consent is required before this client can
+    /// receive an authorization code. Trusted first-party clients opt out.
+    pub fn require_consent(&self) -> bool {
+        self.require_consent
+    }
+
+    /// Sets whether user consent is required. Used during admin updates.
+    pub(crate) fn set_require_consent(&mut self, require: bool) {
+        self.require_consent = require;
+    }
+
+    /// Returns the optional logo URL displayed on the consent screen.
+    pub fn client_logo_url(&self) -> Option<&str> {
+        self.client_logo_url.as_deref()
+    }
+
+    /// Sets the client logo URL. `None` clears it. Used during admin updates.
+    pub(crate) fn set_client_logo_url(&mut self, url: Option<String>) {
+        self.client_logo_url = url;
+    }
 }
 
 /// Request to update an existing OAuth 2.0 client.
@@ -187,6 +246,11 @@ pub struct UpdateClientRequest {
     pub redirect_uris: Option<Vec<String>>,
     /// New set of allowed grant types.
     pub grant_types: Option<Vec<String>>,
+    /// Whether user consent is required (trusted-client bypass).
+    pub require_consent: Option<bool>,
+    /// Logo URL for the consent screen. Passing `Some(None)` clears it;
+    /// `None` leaves it untouched.
+    pub client_logo_url: Option<Option<String>>,
 }
 
 /// The PKCE code challenge method.

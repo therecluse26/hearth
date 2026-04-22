@@ -42,13 +42,14 @@ pub use tokens::{
 };
 pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
-    BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest,
-    CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
-    Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
-    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Realm, RealmConfig,
-    RealmStatus, RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session,
-    SessionContext, UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User,
-    UserStatus,
+    canonicalize_scopes, BulkResult, ConsentDecision, ConsentListEntry, ConsentRecord,
+    CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest,
+    ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport, Organization,
+    OrganizationConfig, OrganizationInvitation, OrganizationMembership, OrganizationRole,
+    OrganizationStatus, Page, PasswordPolicy, PendingAuthorizationRequest, RawCredential, Realm,
+    RealmConfig, RealmStatus, RegisterUserRequest, RegisterUserResponse, RegistrationPolicy,
+    Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest,
+    User, UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
@@ -893,6 +894,110 @@ pub trait IdentityEngine: Send + Sync {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<OrganizationInvitation>, IdentityError>;
+
+    // ===== OAuth Consent =====
+
+    /// Returns the user's consent record for a specific OAuth client, if any.
+    fn get_consent(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<Option<ConsentRecord>, IdentityError>;
+
+    /// Lists every consent the given user has granted in this realm.
+    ///
+    /// Each entry is joined with the current client name and logo URL for
+    /// UI rendering. Clients that no longer exist (orphaned consents) are
+    /// filtered out — callers see only live consents.
+    fn list_consents_by_user(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<ConsentListEntry>, IdentityError>;
+
+    /// Upserts a consent record, merging `approved_scopes` into any
+    /// pre-existing granted scopes. Returns the resulting canonical record.
+    fn grant_consent(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &crate::core::ClientId,
+        approved_scopes: &[String],
+    ) -> Result<ConsentRecord, IdentityError>;
+
+    /// Revokes the user's consent for a specific client. Returns
+    /// `ConsentNotFound` if no record existed. Idempotent from the
+    /// caller's perspective — the HTTP layer translates to 404.
+    fn revoke_consent(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &crate::core::ClientId,
+    ) -> Result<(), IdentityError>;
+
+    /// Revokes every consent granted by the user in this realm. Returns
+    /// the number of records deleted.
+    fn revoke_all_consents_for_user(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<usize, IdentityError>;
+
+    /// Stores an in-flight pending authorization request awaiting consent.
+    ///
+    /// The ticket is an opaque, single-use identifier. The engine generates
+    /// it and persists the request under `oauth:pending_auth:{ticket}` with
+    /// a short TTL (typically 10 minutes). Returns the ticket.
+    fn put_pending_authorization(
+        &self,
+        realm_id: &RealmId,
+        request: &PendingAuthorizationRequest,
+    ) -> Result<String, IdentityError>;
+
+    /// Retrieves and deletes the pending authorization request for `ticket`.
+    ///
+    /// Single-use: the record is deleted whether or not the caller
+    /// succeeds in using it. Returns `ConsentTicketNotFound` if the ticket
+    /// doesn't exist or was already consumed; `ConsentTicketExpired` if
+    /// past `expires_at`.
+    fn take_pending_authorization(
+        &self,
+        realm_id: &RealmId,
+        ticket: &str,
+    ) -> Result<PendingAuthorizationRequest, IdentityError>;
+
+    /// Non-destructive read of a pending authorization ticket. Used by
+    /// the consent page to render client name + scope list without
+    /// consuming the ticket. Returns `Ok(None)` when the ticket does not
+    /// exist or has been consumed. Returns `Err(ConsentTicketExpired)`
+    /// when the ticket exists but is past its `expires_at` — in that
+    /// case the caller should treat it as invalid (the POST path will
+    /// delete the stale record on next take).
+    fn get_pending_authorization(
+        &self,
+        realm_id: &RealmId,
+        ticket: &str,
+    ) -> Result<Option<PendingAuthorizationRequest>, IdentityError>;
+
+    /// Issues an authorization code for a previously-approved authorization
+    /// request. Unlike [`IdentityEngine::authorize`], this variant skips
+    /// the consent gating and is called only after consent has been
+    /// recorded (or explicitly bypassed for a trusted client). Returns
+    /// the authorization code response.
+    #[allow(clippy::too_many_arguments)]
+    fn issue_authorization_code(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &crate::core::ClientId,
+        redirect_uri: &str,
+        scope: &str,
+        state: &str,
+        code_challenge: Option<String>,
+        code_challenge_method: Option<CodeChallengeMethod>,
+        nonce: Option<String>,
+    ) -> Result<AuthorizationResponse, IdentityError>;
 
     // ===== Migration / import (Phase 1 Step 30) =====
 

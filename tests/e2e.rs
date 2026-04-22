@@ -58,6 +58,8 @@ async fn developer_onramp_realm_app_oidc_login() {
                 redirect_uris: vec!["https://app.startup.io/callback".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");

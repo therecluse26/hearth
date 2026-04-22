@@ -35,6 +35,9 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::OrgCreated => pb::AuditAction::OrgCreated,
         domain::AuditAction::OrgUpdated => pb::AuditAction::OrgUpdated,
         domain::AuditAction::OrgDeleted => pb::AuditAction::OrgDeleted,
+        domain::AuditAction::ConsentGranted => pb::AuditAction::ConsentGranted,
+        domain::AuditAction::ConsentDenied => pb::AuditAction::ConsentDenied,
+        domain::AuditAction::ConsentRevoked => pb::AuditAction::ConsentRevoked,
     }
 }
 
@@ -114,6 +117,9 @@ mod tests {
             domain::AuditAction::OrgCreated,
             domain::AuditAction::OrgUpdated,
             domain::AuditAction::OrgDeleted,
+            domain::AuditAction::ConsentGranted,
+            domain::AuditAction::ConsentDenied,
+            domain::AuditAction::ConsentRevoked,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

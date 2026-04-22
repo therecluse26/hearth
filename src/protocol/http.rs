@@ -284,6 +284,14 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .put(admin_update_client)
                 .delete(admin_delete_client),
         )
+        .route(
+            "/users/{id}/consents",
+            axum::routing::get(admin_list_user_consents),
+        )
+        .route(
+            "/users/{id}/consents/{client_id}",
+            axum::routing::delete(admin_revoke_user_consent),
+        )
         .route("/audit", axum::routing::get(admin_list_audit));
 
     Router::new()
@@ -312,6 +320,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(device_authorization),
         )
         .route("/userinfo", axum::routing::get(userinfo))
+        .route("/oauth/consents", axum::routing::get(self_list_consents))
+        .route(
+            "/oauth/consents/{client_id}",
+            axum::routing::delete(self_revoke_consent),
+        )
         .nest("/admin", admin_routes)
         .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
@@ -734,6 +747,14 @@ fn identity_error_to_response(
         IdentityError::RegistrationRequiresInvitation => {
             (StatusCode::FORBIDDEN, "invitation required")
         }
+        IdentityError::ConsentRequired => (StatusCode::FORBIDDEN, "consent required"),
+        IdentityError::ConsentTicketNotFound | IdentityError::ConsentTicketExpired => {
+            (StatusCode::BAD_REQUEST, "consent ticket invalid")
+        }
+        IdentityError::ConsentScopeNotRequested => {
+            (StatusCode::BAD_REQUEST, "scope not in original request")
+        }
+        IdentityError::ConsentNotFound => (StatusCode::NOT_FOUND, "consent not found"),
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)
         | IdentityError::Serialization { .. } => {
@@ -1800,6 +1821,212 @@ async fn admin_list_audit(
             )
                 .into_response()
         }
+    }
+}
+
+// === OAuth Consent (self-service + admin) ===
+
+/// Extracts the authenticated user from a Bearer access token. Returns
+/// the user's [`UserId`] on success, or the appropriate error response.
+fn extract_user_auth(
+    headers: &HeaderMap,
+    state: &AppState,
+    realm_id: &RealmId,
+) -> Result<UserId, (StatusCode, Json<serde_json::Value>)> {
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid_token"})),
+        ));
+    };
+
+    let claims = state
+        .identity
+        .validate_token(realm_id, token)
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid_token"})),
+            )
+        })?;
+
+    uuid::Uuid::parse_str(&claims.sub)
+        .map(UserId::new)
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid_token"})),
+            )
+        })
+}
+
+/// `GET /oauth/consents` — lists the current user's consents.
+async fn self_list_consents(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let realm_id = match extract_realm_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+    let user_id = match extract_user_auth(&headers, &state, &realm_id) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    match state.identity.list_consents_by_user(&realm_id, &user_id) {
+        Ok(entries) => {
+            let body = serde_json::json!({
+                "items": entries.iter().map(|e| serde_json::json!({
+                    "client_id": e.record.client_id.as_uuid().to_string(),
+                    "client_name": e.client_name,
+                    "client_logo_url": e.client_logo_url,
+                    "scopes": e.record.granted_scopes,
+                    "granted_at": e.record.granted_at.as_micros(),
+                    "updated_at": e.record.updated_at.as_micros(),
+                })).collect::<Vec<_>>(),
+            });
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// `DELETE /oauth/consents/{client_id}` — revokes the current user's
+/// consent for a specific client.
+async fn self_revoke_consent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(client_id_str): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let realm_id = match extract_realm_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+    let user_id = match extract_user_auth(&headers, &state, &realm_id) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    let Ok(uuid) = client_id_str.parse::<uuid::Uuid>() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid client_id"})),
+        )
+            .into_response();
+    };
+    let client_id = crate::core::ClientId::new(uuid);
+    match state
+        .identity
+        .revoke_consent(&realm_id, &user_id, &client_id)
+    {
+        Ok(()) => {
+            let _ = state.audit.append(&crate::audit::CreateAuditEvent {
+                realm_id: realm_id.clone(),
+                actor: user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::ConsentRevoked,
+                resource_type: "oauth_client".to_string(),
+                resource_id: client_id.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({
+                    "via": "self",
+                    "client_id": client_id.as_uuid().to_string(),
+                })),
+            });
+            (StatusCode::NO_CONTENT, ()).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// `GET /admin/users/{id}/consents` — admin: list any user's consents in
+/// the admin's current realm.
+async fn admin_list_user_consents(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(user_id_str): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let Ok(uuid) = user_id_str.parse::<uuid::Uuid>() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid user_id"})),
+        )
+            .into_response();
+    };
+    let user_id = UserId::new(uuid);
+    match state
+        .identity
+        .list_consents_by_user(&auth.realm_id, &user_id)
+    {
+        Ok(entries) => {
+            let body = serde_json::json!({
+                "items": entries.iter().map(|e| serde_json::json!({
+                    "client_id": e.record.client_id.as_uuid().to_string(),
+                    "client_name": e.client_name,
+                    "client_logo_url": e.client_logo_url,
+                    "scopes": e.record.granted_scopes,
+                    "granted_at": e.record.granted_at.as_micros(),
+                    "updated_at": e.record.updated_at.as_micros(),
+                })).collect::<Vec<_>>(),
+            });
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/users/{id}/consents/{client_id}` — admin revoke on
+/// behalf of a user.
+async fn admin_revoke_user_consent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path((user_id_str, client_id_str)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let Ok(uuid_u) = user_id_str.parse::<uuid::Uuid>() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid user_id"})),
+        )
+            .into_response();
+    };
+    let Ok(uuid_c) = client_id_str.parse::<uuid::Uuid>() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid client_id"})),
+        )
+            .into_response();
+    };
+    let user_id = UserId::new(uuid_u);
+    let client_id = crate::core::ClientId::new(uuid_c);
+    match state
+        .identity
+        .revoke_consent(&auth.realm_id, &user_id, &client_id)
+    {
+        Ok(()) => {
+            let _ = state.audit.append(&crate::audit::CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::ConsentRevoked,
+                resource_type: "oauth_client".to_string(),
+                resource_id: client_id.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({
+                    "via": "admin",
+                    "target_user": user_id.as_uuid().to_string(),
+                    "client_id": client_id.as_uuid().to_string(),
+                })),
+            });
+            (StatusCode::NO_CONTENT, ()).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
 

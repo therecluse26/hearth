@@ -4,7 +4,7 @@
 
 Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection) with a **browser-facing consent screen** (per-scope checkboxes, trusted-client bypass, self-service + admin consent management, `prompt=none|consent` semantics), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
 
 This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
@@ -21,19 +21,7 @@ This document inventories **features not yet implemented** that would block or h
 
 ## P0 — Blocks Production Deployment
 
-### 3. OAuth Consent Screen
-
-- **Vision ref:** §5.3 "OIDC / OAuth 2.0" — implementing the full protocol implies consent per RFC 6749 §4.1.1.
-- **Current State:** The authorization code flow (`src/identity/oidc.rs`) issues tokens after authentication. There is no consent prompt — users are never asked whether they approve sharing data with the requesting client. No consent is stored or revocable.
-- **What's Missing:**
-  - Consent prompt UI: display the requesting client name, logo, and requested scopes.
-  - Scope selection: allow users to approve some scopes and deny others.
-  - Consent persistence: store per-user, per-client, per-scope approvals to avoid re-prompting.
-  - Consent revocation: user-facing page to review and revoke granted consents.
-  - Admin visibility into consents granted per user.
-  - First-party client bypass: skip consent for clients marked as trusted/first-party.
-- **Why It Matters:** OAuth 2.0 best practices and GDPR require explicit user consent before sharing data with third-party clients. Without this, every OAuth client silently receives all requested scopes — a security and compliance gap.
-- **Priority Rationale:** P0 for any deployment with third-party OAuth clients. Deferrable only for first-party-only setups.
+*(All P0 gaps now closed. See "Completed Items" below — gap #3 OAuth Consent Screen was the last remaining P0.)*
 
 ---
 
@@ -336,6 +324,40 @@ Implemented as the `/ui/account/sessions` page backed by the pre-existing `list_
 - JSON/REST and gRPC API variants of these endpoints (gap #8 tracks the management-API surface separately).
 - HTMX/AJAX revoke-in-place UX (current implementation is PRG).
 
+### OAuth Consent Screen — COMPLETED ✅
+
+Implemented feature-complete:
+
+- **Browser-facing authorize endpoint**: `GET /ui/oauth/authorize` (bare + `/ui/realms/{realm}/oauth/authorize` scoped). The existing JSON `POST /authorize` at `src/protocol/http.rs` stays as-is for SDK/machine clients. The browser endpoint validates query parameters, requires a `UiSession`, loads the `OAuthClient`, and — when the existing `ConsentRecord` covers every requested scope or the client has `require_consent=false` — skips straight to code issuance. Otherwise it persists a `PendingAuthorizationRequest` under an opaque 10-minute TTL ticket and redirects to the consent page.
+- **Consent interstitial**: `templates/ui/oauth/consent.html` renders the client name, optional logo, and per-scope checkboxes. Submitting with `decision=approve` performs a **subset check** (approved scopes must be ⊆ requested), upserts the consent record (merging with any prior-granted scopes), emits `AuditAction::ConsentGranted`, and redirects to `redirect_uri?code=...&state=...`. `decision=deny` emits `ConsentDenied` and redirects with `error=access_denied&state=...` per RFC 6749 §4.1.2.1.
+- **Self-service management**: `GET /ui/account/consents` lists every consent the signed-in user has granted (client name + logo + scopes), with per-client revoke and "revoke all" actions. Revoking emits `ConsentRevoked` with `metadata.via = "self"`.
+- **Admin visibility**: `GET /ui/admin/users/{id}/consents` shows any user's consents within the admin's target realm. `POST .../consents/{client_id}/revoke` performs admin revoke-on-behalf, emitting `ConsentRevoked` with `metadata.via = "admin"` and `target_user` set to distinguish from self-revokes.
+- **REST / JSON surface**: `GET /oauth/consents` + `DELETE /oauth/consents/{client_id}` (Bearer-token, current user) and `GET /admin/users/{id}/consents` + `DELETE .../consents/{client_id}` (admin). Matches the self-service/admin split used by sessions and organizations.
+- **Trusted client bypass**: new `OAuthClient.require_consent: bool` (default `true`) and `client_logo_url: Option<String>`. Exposed through `RegisterClientRequest`, `UpdateClientRequest`, and the YAML `applications.{name}.require_consent` / `.client_logo_url` fields — YAML reconciliation creates the client then applies consent-policy fields via `update_client`.
+- **OIDC `prompt` semantics**: `prompt=none` without sufficient consent returns `error=consent_required` per OIDC Core §3.1.2.1; `prompt=consent` forces the prompt even if a matching record exists.
+- **Cascading deletes**: `delete_user` scrubs `oauth:consent:{user}:*`; `delete_client` scans `oauth:consent:*` and removes every record ending with the deleted client's UUID; `delete_realm` adds `oauth:consent:*` and `oauth:pending_auth:*` to the existing 11-prefix sweep.
+- **Ticket security**: the in-flight ticket cookie is HMAC-SHA256-bound to the signed-in user's `UserId` and the ticket UUID. Cross-user replay fails MAC verification; the engine `take_pending_authorization` then independently re-checks the user_id embedded in the stored pending record. Tickets are single-use and expire after 10 minutes.
+- **Audit**: three new variants — `AuditAction::{ConsentGranted, ConsentDenied, ConsentRevoked}` — wired through `proto/hearth/events/v1/audit.proto`, the `From<&domain>` mapping in `src/protocol/convert/audit.rs`, and the AS_STR / FROM_STR round-trips.
+
+**Key files:**
+- Engine: `src/identity/engine.rs` (`grant_consent`, `get_consent`, `list_consents_by_user`, `revoke_consent`, `revoke_all_consents_for_user`, `put_pending_authorization`, `get_pending_authorization`, `take_pending_authorization`, `issue_authorization_code`; cascades in `delete_user`, `delete_client`, `delete_realm`)
+- Types: `src/identity/types.rs` (`ConsentRecord`, `ConsentListEntry`, `PendingAuthorizationRequest`, `ConsentDecision`, `canonicalize_scopes`)
+- Trait: `src/identity/mod.rs` (8 new methods on `IdentityEngine`)
+- Errors: `src/identity/error.rs` (`ConsentRequired`, `ConsentTicketNotFound`, `ConsentTicketExpired`, `ConsentScopeNotRequested`, `ConsentNotFound`)
+- Storage keys: `src/identity/keys.rs` (`encode_consent_key`, `encode_consent_prefix_for_user`, `oauth_consent_scan_prefix`, `encode_pending_auth_key`, `oauth_pending_auth_scan_prefix`)
+- OAuth client fields: `src/identity/oidc.rs` (`OAuthClient::{require_consent, client_logo_url, set_require_consent, set_client_logo_url}`; `RegisterClientRequest` / `UpdateClientRequest` fields)
+- Web UI: `src/protocol/web/oauth_consent.rs` (`authorize_get` + scoped + `consent_page` + `consent_submit`), `src/protocol/web/account_consents.rs` (`consents_index` + revoke + revoke-all), `src/protocol/web/admin.rs::admin_user_consents_list` + `admin_user_consent_revoke`
+- Templates: `templates/ui/oauth/consent.html`, `templates/ui/account/consents.html`, `templates/ui/admin/users/consents.html`
+- REST/JSON: `src/protocol/http.rs` (`self_list_consents`, `self_revoke_consent`, `admin_list_user_consents`, `admin_revoke_user_consent`, `extract_user_auth`)
+- Audit: `src/audit/types.rs`, `proto/hearth/events/v1/audit.proto`, `src/protocol/convert/audit.rs`
+- YAML: `src/config/types.rs::ApplicationYamlConfig.{require_consent, client_logo_url}` + `src/identity/reconcile.rs`
+- Tests: `tests/oauth_consent.rs` (26 integration + adversarial + conformance + admin RBAC tests); engine-layer unit tests in `src/identity/engine.rs` (11) and `src/identity/types.rs` (6)
+
+**Remaining enhancements (not blocking):**
+- Admin UI toggle for `require_consent` on the application edit page (the YAML path ships with this PR; the in-UI form is deferred until the applications edit handler itself is implemented — current admin UI is read-only from YAML).
+- HTMX/AJAX consent-decision UX (current flow is PRG).
+- Per-scope human-readable descriptions (the UI currently renders the raw scope string — e.g. `profile`, `email`).
+
 ### Explicit Realm Routing in the Web UI — COMPLETED ✅
 
 Discovered while testing self-registration: pre-auth `/ui/*` handlers had no explicit realm binding — they walked every realm until one matched. That leaked realm existence and prevented per-realm policy (like `RegistrationPolicy`) from applying correctly when the wrong realm was picked first.
@@ -410,7 +432,7 @@ Addresses two admin-setup bugs on multi-realm deployments: verification links hi
 |---|-----|----------|------------|-----------------|
 | 1 | ~~User self-registration~~ — **DONE** | P0 | §8.1 | Medium |
 | 2 | ~~Self-service session management~~ — **DONE** | P0 | §5.3 | — |
-| 3 | OAuth consent screen | P0 | §5.3 | Medium |
+| 3 | ~~OAuth consent screen~~ — **DONE** | P0 | §5.3 | — |
 | 4 | ~~Password reset~~ — **DONE** (verified) | P0 | §5.3 | — |
 | 5 | Social login / external IdP | P1 | §5.3 | Large |
 | 6 | SAML 2.0 | P1 | §5.3, §6.1 | Large |
@@ -436,13 +458,17 @@ Addresses two admin-setup bugs on multi-realm deployments: verification links hi
 ## Recommended Release Sequence
 
 **Minimum viable public release (v0.1-alpha):**
-Gaps 1 ✅, 2 ✅, and 4 ✅ complete. Remaining: 15 — CI/CD.
+Gaps 1 ✅, 2 ✅, 3 ✅, and 4 ✅ complete. Remaining: 15 — CI/CD.
 
 **Production-ready single-node (v0.x per Phase 1 exit criteria):**
-Add gaps 3, 5, 9, 11 — consent screen, social login, documentation site, Prometheus metrics.
+Add gaps 5, 9, 11 — social login, documentation site, Prometheus metrics. (Consent screen ✅.)
 
 **Enterprise-ready (v1.0 per Phase 2 exit criteria):**
 Add gaps 6, 7, 8, 10, 12, 14, 17, 21 — SAML, SCIM, gRPC, migration tools, backup, encryption, deployment artifacts, Raft.
+
+---
+
+*Last updated: 2026-04-22. Revised to mark gap #3 (OAuth consent screen) as completed — zero remaining P0 gaps.*
 
 ---
 

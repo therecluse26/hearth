@@ -42,6 +42,8 @@ fn setup_oidc() -> (
                 redirect_uris: vec!["https://bench.example.com/callback".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");

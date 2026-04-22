@@ -51,6 +51,9 @@ const (
 	AuditAction_AUDIT_ACTION_ORG_CREATED                  AuditAction = 23
 	AuditAction_AUDIT_ACTION_ORG_UPDATED                  AuditAction = 24
 	AuditAction_AUDIT_ACTION_ORG_DELETED                  AuditAction = 25
+	AuditAction_AUDIT_ACTION_CONSENT_GRANTED              AuditAction = 26
+	AuditAction_AUDIT_ACTION_CONSENT_DENIED               AuditAction = 27
+	AuditAction_AUDIT_ACTION_CONSENT_REVOKED              AuditAction = 28
 )
 
 // Enum value maps for AuditAction.
@@ -82,6 +85,9 @@ var (
 		23: "AUDIT_ACTION_ORG_CREATED",
 		24: "AUDIT_ACTION_ORG_UPDATED",
 		25: "AUDIT_ACTION_ORG_DELETED",
+		26: "AUDIT_ACTION_CONSENT_GRANTED",
+		27: "AUDIT_ACTION_CONSENT_DENIED",
+		28: "AUDIT_ACTION_CONSENT_REVOKED",
 	}
 	AuditAction_value = map[string]int32{
 		"AUDIT_ACTION_UNSPECIFIED":                  0,
@@ -110,6 +116,9 @@ var (
 		"AUDIT_ACTION_ORG_CREATED":                  23,
 		"AUDIT_ACTION_ORG_UPDATED":                  24,
 		"AUDIT_ACTION_ORG_DELETED":                  25,
+		"AUDIT_ACTION_CONSENT_GRANTED":              26,
+		"AUDIT_ACTION_CONSENT_DENIED":               27,
+		"AUDIT_ACTION_CONSENT_REVOKED":              28,
 	}
 )
 
@@ -461,7 +470,7 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\t_end_timeB\b\n" +
 	"\x06_actorB\t\n" +
 	"\a_actionB\b\n" +
-	"\x06_limit*\xff\x06\n" +
+	"\x06_limit*\xe4\a\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -489,7 +498,10 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	" AUDIT_ACTION_BULK_USERS_DISABLED\x10\x16\x12\x1c\n" +
 	"\x18AUDIT_ACTION_ORG_CREATED\x10\x17\x12\x1c\n" +
 	"\x18AUDIT_ACTION_ORG_UPDATED\x10\x18\x12\x1c\n" +
-	"\x18AUDIT_ACTION_ORG_DELETED\x10\x19BAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
+	"\x18AUDIT_ACTION_ORG_DELETED\x10\x19\x12 \n" +
+	"\x1cAUDIT_ACTION_CONSENT_GRANTED\x10\x1a\x12\x1f\n" +
+	"\x1bAUDIT_ACTION_CONSENT_DENIED\x10\x1b\x12 \n" +
+	"\x1cAUDIT_ACTION_CONSENT_REVOKED\x10\x1cBAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
 
 var (
 	file_hearth_events_v1_audit_proto_rawDescOnce sync.Once

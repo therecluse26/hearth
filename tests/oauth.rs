@@ -60,6 +60,8 @@ async fn client_credentials_full_flow() {
                 redirect_uris: vec![],
                 client_secret: Some("super-secret-value-123!".to_string()),
                 grant_types: vec!["client_credentials".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register confidential client");
@@ -156,6 +158,8 @@ async fn device_authorization_full_flow() {
                 redirect_uris: vec![],
                 client_secret: None,
                 grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register device client");
@@ -240,6 +244,8 @@ async fn refresh_token_rotation_e2e() {
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");
@@ -339,6 +345,8 @@ async fn conformance_rfc7662_introspection_response() {
                 redirect_uris: vec!["https://app.example.com/cb".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");
@@ -489,6 +497,8 @@ async fn conformance_rfc8628_device_authorization() {
                 redirect_uris: vec![],
                 client_secret: None,
                 grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register device client");
