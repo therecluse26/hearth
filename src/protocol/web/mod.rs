@@ -346,6 +346,9 @@ impl WebState {
 /// | `/ui/account/totp` | GET | MFA enrol / disable page |
 /// | `/ui/account/totp/activate` | POST | Activate pending TOTP enrolment |
 /// | `/ui/account/totp/disable` | POST | Disable MFA |
+/// | `/ui/account/sessions` | GET | List the signed-in user's active sessions |
+/// | `/ui/account/sessions/{sid}/revoke` | POST | Revoke one of the user's own sessions |
+/// | `/ui/account/sessions/revoke-others` | POST | Revoke every session except the current one |
 /// | `/ui/admin/users` | GET | Admin users list |
 /// | `/ui/admin/users/new` | GET/POST | Create user |
 /// | `/ui/admin/users/{id}` | GET | User detail |
@@ -494,6 +497,18 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/account/passkeys/{cred_id}/delete",
             axum::routing::post(account::passkey_delete),
+        )
+        .route(
+            "/account/sessions",
+            axum::routing::get(account::sessions_index),
+        )
+        .route(
+            "/account/sessions/revoke-others",
+            axum::routing::post(account::revoke_other_sessions),
+        )
+        .route(
+            "/account/sessions/{sid}/revoke",
+            axum::routing::post(account::revoke_session),
         )
         .route("/admin/users", axum::routing::get(admin::admin_users_list))
         .route(

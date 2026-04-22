@@ -4,7 +4,7 @@
 
 Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
 
 This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
@@ -20,19 +20,6 @@ This document inventories **features not yet implemented** that would block or h
 ---
 
 ## P0 — Blocks Production Deployment
-
-### 2. Self-Service Session Management
-
-- **Vision ref:** §5.3 "Session management with revocation and device tracking."
-- **Current State:** The identity engine has `list_sessions_by_user()` and session revocation. These are exposed only through the **admin** API and admin web UI (`/admin/users/{id}/sessions/{sid}/revoke`). No user-facing session visibility exists.
-- **What's Missing:**
-  - User-facing "My Sessions" page listing active sessions (device, IP, user-agent, last-active timestamp).
-  - User-facing "Revoke" button per session ("log out my phone").
-  - "Revoke all other sessions" action ("log out everywhere else").
-  - Session metadata enrichment: user-agent parsing, approximate geolocation hint from IP.
-  - API endpoints (`GET /account/sessions`, `DELETE /account/sessions/{id}`, `DELETE /account/sessions?all_others=true`).
-- **Why It Matters:** Compromised sessions can only be revoked by administrators. Every modern auth provider (Auth0, Clerk, Google) gives users control over their own sessions. This is a baseline security expectation.
-- **Priority Rationale:** P0 because session self-management is a fundamental user security control.
 
 ### 3. OAuth Consent Screen
 
@@ -327,6 +314,28 @@ Verified end-to-end functional: `request_password_reset` + `reset_password_with_
 - Dedicated end-to-end integration test for the full forgot → email → reset flow (core methods covered indirectly).
 - Optional notification to secondary verified channels on password change.
 
+### Self-Service Session Management — COMPLETED ✅
+
+Implemented as the `/ui/account/sessions` page backed by the pre-existing `list_sessions_by_user` + `revoke_session` engine primitives. Signed-in users can now review every active session (device label, client IP, created/last-active/expires timestamps), revoke any individual session, or revoke every session except the current one. Revoking the current session acts as an implicit logout: session cookie cleared, redirect to `/ui/login`.
+
+**Key behaviors:**
+- **Ownership enforcement:** the revoke handler loads the target session and compares its `user_id` against the authenticated user before calling `revoke_session`. A cross-user revoke attempt returns 404 (not 403), which also hides session-id existence across users. Covered by `revoke_other_users_session_is_rejected` in `tests/web_ui_account_sessions.rs`.
+- **Current-session handling:** the current row in the table carries a "This device" badge and `data-current-session="true"` attribute; its action button says "Log out this device". Revoking it clears both UI cookies via the shared `clearing_cookies()` helper.
+- **Audit trail:** every self-service revocation emits `AuditAction::SessionRevoked` with `actor = user_id` and `metadata = {"via": "self"}` (batch operations add `"batch": true`). Admin revocations continue to tag `metadata.via = "ui"`, so the two channels are cleanly distinguishable in the audit query API.
+- **No proto / engine changes:** the entire feature is a new protocol-layer surface — no new trait methods, no new `AuditAction` variants, no new storage keys.
+
+**Key files:**
+- Handlers: `src/protocol/web/account.rs` (`sessions_index`, `revoke_session`, `revoke_other_sessions`, `audit_self_session_revoke`)
+- Routes: `src/protocol/web/mod.rs` (`/account/sessions`, `/account/sessions/{sid}/revoke`, `/account/sessions/revoke-others`)
+- Template: `templates/ui/account/sessions.html`; entry-point link added to `templates/ui/account/index.html`
+- Shared helper promoted: `append_cookie` in `src/protocol/web/handlers.rs` is now `pub(super)` so both `logout_submit` and `revoke_session` can reuse the cookie-clearing idiom
+- Tests: `tests/web_ui_account_sessions.rs` (7 integration tests — listing isolation, current-session marker, own-revoke + audit, cross-user rejection, current-session logout, revoke-all-others, CSRF enforcement)
+
+**Remaining enhancements (not blocking):**
+- Approximate geolocation hint from IP (requires a GeoIP dataset — previously listed under this gap's "what's missing"; deferred to keep the dependency footprint small).
+- JSON/REST and gRPC API variants of these endpoints (gap #8 tracks the management-API surface separately).
+- HTMX/AJAX revoke-in-place UX (current implementation is PRG).
+
 ### Explicit Realm Routing in the Web UI — COMPLETED ✅
 
 Discovered while testing self-registration: pre-auth `/ui/*` handlers had no explicit realm binding — they walked every realm until one matched. That leaked realm existence and prevented per-realm policy (like `RegistrationPolicy`) from applying correctly when the wrong realm was picked first.
@@ -362,7 +371,7 @@ The fix introduces explicit path-segment routes and a centralized resolver:
 | # | Gap | Priority | Vision Ref | Effort Estimate |
 |---|-----|----------|------------|-----------------|
 | 1 | ~~User self-registration~~ — **DONE** | P0 | §8.1 | Medium |
-| 2 | Self-service session management | P0 | §5.3 | Small |
+| 2 | ~~Self-service session management~~ — **DONE** | P0 | §5.3 | — |
 | 3 | OAuth consent screen | P0 | §5.3 | Medium |
 | 4 | ~~Password reset~~ — **DONE** (verified) | P0 | §5.3 | — |
 | 5 | Social login / external IdP | P1 | §5.3 | Large |
@@ -389,7 +398,7 @@ The fix introduces explicit path-segment routes and a centralized resolver:
 ## Recommended Release Sequence
 
 **Minimum viable public release (v0.1-alpha):**
-Gaps 1 ✅ and 4 ✅ complete. Remaining: 2, 15 — session self-service, CI/CD.
+Gaps 1 ✅, 2 ✅, and 4 ✅ complete. Remaining: 15 — CI/CD.
 
 **Production-ready single-node (v0.x per Phase 1 exit criteria):**
 Add gaps 3, 5, 9, 11 — consent screen, social login, documentation site, Prometheus metrics.
@@ -399,4 +408,4 @@ Add gaps 6, 7, 8, 10, 12, 14, 17, 21 — SAML, SCIM, gRPC, migration tools, back
 
 ---
 
-*Last updated: 2026-04-21. Generated by comparing VISION.md (§1–§12), ARCHITECTURE.md, IMPLEMENTATION_ORDER.md (steps 1–31), and codebase exploration against actual implementation. Revised 2026-04-21 to mark gaps #1 (self-registration) and #4 (password reset) as completed.*
+*Last updated: 2026-04-22. Generated by comparing VISION.md (§1–§12), ARCHITECTURE.md, IMPLEMENTATION_ORDER.md (steps 1–31), and codebase exploration against actual implementation. Revised 2026-04-22 to mark gap #2 (self-service session management) as completed.*

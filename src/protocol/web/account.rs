@@ -29,9 +29,12 @@ use serde::Deserialize;
 use qrcode::render::svg;
 use qrcode::QrCode;
 
+use crate::core::{SessionId, Timestamp};
 use crate::identity::{CleartextPassword, IdentityError, RegistrationOptions};
 
-use super::auth::{verify_csrf_form_field, UiSession};
+use super::auth::{clearing_cookies, verify_csrf_form_field, UiSession};
+use super::handlers::append_cookie;
+use super::handlers_common;
 use super::templates::{render, Flash};
 use super::WebState;
 
@@ -851,4 +854,301 @@ pub async fn passkey_delete(
     }
 
     Redirect::to("/ui/account").into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Self-service session management
+// ---------------------------------------------------------------------------
+
+/// A single row rendered on the "My Sessions" page.
+struct AccountSessionRow {
+    /// UUID (string form) — used in form action URLs.
+    id: String,
+    /// Best-effort device descriptor (browser + OS, e.g., "Chrome, macOS").
+    device_label: String,
+    /// Client IP (or em-dash if unknown).
+    ip_address: String,
+    /// Human-readable creation timestamp.
+    created_at: String,
+    /// Human-readable last-refreshed timestamp (same as created on fresh sessions).
+    last_active: String,
+    /// Human-readable expiration timestamp.
+    expires_at: String,
+    /// `true` iff this row matches the session that made the current request.
+    is_current: bool,
+}
+
+/// Template rendered by `GET /ui/account/sessions`.
+#[derive(Template)]
+#[template(path = "ui/account/sessions.html")]
+#[allow(clippy::struct_excessive_bools)]
+struct AccountSessionsTemplate {
+    sessions: Vec<AccountSessionRow>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl AccountSessionsTemplate {
+    fn new(
+        session: &UiSession,
+        sessions: Vec<AccountSessionRow>,
+        is_admin: bool,
+        product_name: String,
+        logo_url: String,
+    ) -> Self {
+        Self {
+            sessions,
+            chrome: true,
+            active: "account",
+            user_email: Some(session.user_email.clone()),
+            is_admin,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: true,
+            product_name,
+            logo_url,
+            theme_css: String::new(),
+            realm_theme_css: None,
+        }
+    }
+}
+
+/// `GET /ui/account/sessions` — lists the signed-in user's active sessions.
+pub async fn sessions_index(State(state): State<Arc<WebState>>, session: UiSession) -> Response {
+    let rows = load_session_rows(&state, &session);
+    let admin = super::handlers::is_admin(&state, &session);
+    let mut tmpl = AccountSessionsTemplate::new(
+        &session,
+        rows,
+        admin,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    );
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.realm_theme_css = state.realm_theme_css();
+    render(&tmpl)
+}
+
+/// CSRF-only form body for session revocation endpoints.
+#[derive(Debug, Deserialize)]
+pub struct RevokeSessionForm {
+    /// CSRF double-submit token.
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/account/sessions/{sid}/revoke` — revokes a single session
+/// belonging to the signed-in user.
+///
+/// The target session id is parsed from the path and must belong to the
+/// authenticated user — otherwise the handler returns 404 to avoid
+/// leaking session-id existence across users. Revoking the *current*
+/// session clears both UI cookies and redirects to `/ui/login`.
+pub async fn revoke_session(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    axum::extract::Path(sid): axum::extract::Path<String>,
+    Form(form): Form<RevokeSessionForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let Ok(uuid) = sid.parse::<uuid::Uuid>() else {
+        return handlers_common::not_found("Session not found");
+    };
+    let target = SessionId::new(uuid);
+
+    // Ownership check: fetch the target and confirm it belongs to the
+    // authenticated user. Returning 404 (rather than 403) hides whether
+    // a given session id even exists in the realm.
+    let target_session = match state.identity.get_session(&session.realm_id, &target) {
+        Ok(Some(s)) if s.user_id() == &session.user_id => s,
+        Ok(_) => return handlers_common::not_found("Session not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "sessions: get_session failed");
+            return handlers_common::server_error();
+        }
+    };
+
+    let is_current = target_session.id() == &session.session_id;
+
+    match state.identity.revoke_session(&session.realm_id, &target) {
+        Ok(()) | Err(IdentityError::SessionNotFound) => {
+            audit_self_session_revoke(&state, &session, &target, false);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "revoke_session failed");
+            return handlers_common::server_error();
+        }
+    }
+
+    if is_current {
+        let mut response = Redirect::to("/ui/login").into_response();
+        for cookie in clearing_cookies() {
+            append_cookie(&mut response, &cookie);
+        }
+        response
+    } else {
+        Redirect::to("/ui/account/sessions").into_response()
+    }
+}
+
+/// `POST /ui/account/sessions/revoke-others` — revokes every session
+/// belonging to the signed-in user *except* the one that made this
+/// request. Pages through `list_sessions_by_user` to cover users with
+/// more sessions than fit in a single page.
+pub async fn revoke_other_sessions(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    Form(form): Form<RevokeSessionForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = match state.identity.list_sessions_by_user(
+            &session.realm_id,
+            &session.user_id,
+            cursor.as_deref(),
+            100,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "revoke_other: list_sessions_by_user failed");
+                return handlers_common::server_error();
+            }
+        };
+        for s in &page.items {
+            if s.id() == &session.session_id || s.is_revoked() {
+                continue;
+            }
+            let sid = s.id().clone();
+            match state.identity.revoke_session(&session.realm_id, &sid) {
+                Ok(()) | Err(IdentityError::SessionNotFound) => {
+                    audit_self_session_revoke(&state, &session, &sid, true);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, session_id = %sid.as_uuid(), "revoke_session failed in batch");
+                }
+            }
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+
+    Redirect::to("/ui/account/sessions").into_response()
+}
+
+/// Appends a `SessionRevoked` audit event for a self-service revocation.
+///
+/// The `metadata.via` field is set to `"self"` so operators can
+/// distinguish user-initiated revocations from admin-initiated ones
+/// (which emit `metadata.via == "ui"`).
+fn audit_self_session_revoke(
+    state: &Arc<WebState>,
+    session: &UiSession,
+    target: &SessionId,
+    batch: bool,
+) {
+    use crate::audit::{AuditAction, CreateAuditEvent};
+    let metadata = if batch {
+        serde_json::json!({ "via": "self", "batch": true })
+    } else {
+        serde_json::json!({ "via": "self" })
+    };
+    if let Err(e) = state.audit.append(&CreateAuditEvent {
+        realm_id: session.realm_id.clone(),
+        actor: session.user_id.as_uuid().to_string(),
+        action: AuditAction::SessionRevoked,
+        resource_type: "session".to_string(),
+        resource_id: target.as_uuid().to_string(),
+        metadata: Some(metadata),
+    }) {
+        tracing::warn!(error = %e, "self session revoke audit append failed");
+    }
+}
+
+/// Loads the signed-in user's active sessions into template rows,
+/// flagging the row whose id matches the current request's session.
+fn load_session_rows(state: &Arc<WebState>, session: &UiSession) -> Vec<AccountSessionRow> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = match state.identity.list_sessions_by_user(
+            &session.realm_id,
+            &session.user_id,
+            cursor.as_deref(),
+            50,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "list_sessions_by_user failed");
+                break;
+            }
+        };
+        for s in page.items {
+            if s.is_revoked() {
+                continue;
+            }
+            out.push(AccountSessionRow {
+                id: s.id().as_uuid().to_string(),
+                device_label: s
+                    .device_label()
+                    .map_or_else(|| "Unknown device".to_string(), str::to_string),
+                ip_address: s
+                    .ip_address()
+                    .map_or_else(|| "—".to_string(), str::to_string),
+                created_at: format_ts(s.created_at()),
+                last_active: format_ts(s.last_refreshed_at()),
+                expires_at: format_ts(s.expires_at()),
+                is_current: s.id() == &session.session_id,
+            });
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    out
+}
+
+/// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
+fn format_ts(ts: Timestamp) -> String {
+    let secs = ts.as_micros() / 1_000_000;
+    let rem = secs.rem_euclid(86_400);
+    let days = secs.div_euclid(86_400);
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let (y, mo, d) = civil_from_days(days);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02} UTC")
+}
+
+/// Converts days since the Unix epoch into `(year, month, day)` using
+/// Howard Hinnant's `civil_from_days` algorithm (proleptic Gregorian).
+#[allow(clippy::similar_names)] // `doe`/`doy` are the canonical names in Hinnant's algorithm
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }

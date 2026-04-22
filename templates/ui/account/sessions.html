@@ -1,0 +1,68 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · My sessions{% endblock %}
+{% block body %}
+<div class="mb-8 flex items-start justify-between gap-6">
+  <div>
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">My sessions</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">Every device currently signed into your account. Revoke any you don't recognise.</p>
+  </div>
+  <a href="/ui/account" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Back to account</a>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <div class="mb-4 flex items-center justify-between">
+    <h2 class="text-base font-semibold text-ht-content-primary">Active sessions</h2>
+    {% if sessions.len() > 1 %}
+    <form method="post" action="/ui/account/sessions/revoke-others">
+      {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+      <button type="submit"
+              class="rounded border border-divider px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover:border-danger-fg hover:text-danger-fg">
+        Revoke all other devices
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Device</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">IP</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Signed in</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Last active</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Expires</th>
+        <th class="px-3 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr class="border-b border-divider-faint"{% if s.is_current %} data-current-session="true"{% endif %}>
+        <td class="px-3 py-2 text-sm text-ht-content-secondary">
+          {{ s.device_label }}
+          {% if s.is_current %}
+          <span class="ml-2 inline-flex items-center rounded-full bg-ht-content-brand/[0.18] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ht-content-brand">This device</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 font-mono text-xs text-ht-content-muted">{{ s.ip_address }}</td>
+        <td class="px-3 py-2 text-sm text-ht-content-muted">{{ s.created_at }}</td>
+        <td class="px-3 py-2 text-sm text-ht-content-muted">{{ s.last_active }}</td>
+        <td class="px-3 py-2 text-sm text-ht-content-muted">{{ s.expires_at }}</td>
+        <td class="px-3 py-2 text-right">
+          <form method="post" action="/ui/account/sessions/{{ s.id }}/revoke">
+            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+            {% if s.is_current %}
+            <button type="submit" class="text-xs font-medium text-ht-content-muted hover:text-danger-fg">Log out this device</button>
+            {% else %}
+            <button type="submit" class="text-xs font-medium text-danger-fg hover:text-red-300">Revoke</button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if sessions.is_empty() %}
+      <tr><td colspan="6" class="px-3 py-6 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

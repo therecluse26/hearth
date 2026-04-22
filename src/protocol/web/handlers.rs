@@ -1398,7 +1398,7 @@ pub async fn logout_submit(
 // ============================================================================
 
 /// Appends a `Set-Cookie` header without overwriting existing ones.
-fn append_cookie(response: &mut Response, value: &str) {
+pub(super) fn append_cookie(response: &mut Response, value: &str) {
     if let Ok(v) = header::HeaderValue::from_str(value) {
         response.headers_mut().append(header::SET_COOKIE, v);
     }
