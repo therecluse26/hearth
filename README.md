@@ -121,6 +121,15 @@ curl -fsS http://127.0.0.1:8420/health
 curl -fsS http://127.0.0.1:8420/.well-known/openid-configuration | head
 ```
 
+### 4. Try it end-to-end
+
+Want to see the OAuth consent flow from a client's perspective? There's
+a runnable example at [`examples/oauth-consent-flow/`](examples/oauth-consent-flow/)
+— a small Express app that demonstrates the consent screen, per-scope
+approval, trusted-client bypass, and user-driven revocation in a
+real browser. See [`examples/`](examples/) for the full list of
+runnable demos.
+
 ---
 
 ## Bootstrap an Admin (dev mode only)

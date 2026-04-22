@@ -1,0 +1,13 @@
+# Runtime artifacts
+data/
+.env
+*.log
+
+# Node.js
+client-ts/node_modules/
+client-ts/dist/
+client-ts/.env
+
+# Editor
+.idea/
+.vscode/

@@ -352,6 +352,7 @@ Implemented feature-complete:
 - Audit: `src/audit/types.rs`, `proto/hearth/events/v1/audit.proto`, `src/protocol/convert/audit.rs`
 - YAML: `src/config/types.rs::ApplicationYamlConfig.{require_consent, client_logo_url}` + `src/identity/reconcile.rs`
 - Tests: `tests/oauth_consent.rs` (26 integration + adversarial + conformance + admin RBAC tests); engine-layer unit tests in `src/identity/engine.rs` (11) and `src/identity/types.rs` (6)
+- Runnable example: `examples/oauth-consent-flow/` — browser-visible Express client that drives the flow end-to-end, demonstrating the prompt, trusted-client bypass, partial-scope approval, `prompt=consent` re-prompting, and user + admin revocation with audit trail
 
 **Remaining enhancements (not blocking):**
 - Admin UI toggle for `require_consent` on the application edit page (the YAML path ships with this PR; the in-UI form is deferred until the applications edit handler itself is implemented — current admin UI is read-only from YAML).

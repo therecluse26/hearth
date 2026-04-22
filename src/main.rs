@@ -875,21 +875,37 @@ fn load_config(
     dev: bool,
     config_path: Option<&std::path::Path>,
 ) -> Result<Config, Box<dyn std::error::Error>> {
+    // Load the user's file if given (takes precedence over the default
+    // location). `--dev` without `-c` falls back to the pure dev preset.
+    let mut config = if let Some(path) = config_path {
+        Config::from_file(path)?
+    } else {
+        let default_path = std::path::Path::new("hearth.yaml");
+        if default_path.exists() {
+            Config::from_file(default_path)?
+        } else if dev {
+            return Ok(Config::dev());
+        } else {
+            Config::default()
+        }
+    };
+
+    // `--dev` applied on top of a real config: keep every declaration
+    // (realms, applications, organizations, branding, auth policy) and
+    // flip just the knobs dev mode needs — ephemeral storage, no fsync,
+    // debug logging, dev bootstrap endpoint. This is what lets
+    // `hearth serve --dev -c examples/.../hearth.yaml` work the way
+    // most readers expect.
     if dev {
-        return Ok(Config::dev());
+        config.dev_mode = true;
+        config.storage.fsync = false;
+        config.storage.data_dir = String::new();
+        if config.observability.log_level.as_str() == "info" {
+            config.observability.log_level = "debug".to_string();
+        }
     }
 
-    if let Some(path) = config_path {
-        return Ok(Config::from_file(path)?);
-    }
-
-    // Try default config file location
-    let default_path = std::path::Path::new("hearth.yaml");
-    if default_path.exists() {
-        return Ok(Config::from_file(default_path)?);
-    }
-
-    Ok(Config::default())
+    Ok(config)
 }
 
 /// Re-loads the config file and runs full reconciliation (realms + applications).
