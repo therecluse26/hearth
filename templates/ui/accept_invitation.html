@@ -9,7 +9,7 @@
     </div>
     <h1 class="font-display text-xl font-medium text-ht-content-primary">You've joined {{ org_name }}!</h1>
     <p class="mt-2 text-sm text-ht-content-muted">Your membership is now active.</p>
-    <a href="/ui/login" class="mt-6 inline-block btn-ember rounded px-6 py-2 text-sm font-semibold">
+    <a href="{{ login_url }}" class="mt-6 inline-block btn-ember rounded px-6 py-2 text-sm font-semibold">
       Go to login
     </a>
   </div>
@@ -20,7 +20,7 @@
     </div>
     <h1 class="font-display text-xl font-medium text-ht-content-primary">Invalid invitation</h1>
     <p class="mt-2 text-sm text-ht-content-muted">{{ error_message }}</p>
-    <a href="/ui/login" class="mt-6 inline-block rounded border border-strong bg-ht-surface-elevated px-6 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+    <a href="{{ login_url }}" class="mt-6 inline-block rounded border border-strong bg-ht-surface-elevated px-6 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
       Go to login
     </a>
   </div>

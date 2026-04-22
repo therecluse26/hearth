@@ -1,10 +1,31 @@
 {% extends "ui/_layout.html" %}
 {% block title %}Hearth · {{ realm.name() }}{% endblock %}
+{% block breadcrumb %}
+<nav class="flex items-center gap-2 text-sm" aria-label="Breadcrumb">
+  <a href="/ui/admin/realms" class="text-ht-content-muted hover:text-ht-content-primary">Realms</a>
+  <span class="text-ht-content-muted">›</span>
+  <span class="font-medium text-ht-content-secondary">{{ realm.name() }}</span>
+</nav>
+{% endblock %}
 {% block body %}
-<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+<div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ realm.name() }}</h1>
   <span class="text-sm text-ht-content-muted">Configured in hearth.yaml</span>
 </div>
+
+{# Workspace tabs — all resources in this realm are reachable from here. #}
+<nav class="mb-6 flex flex-wrap gap-1 border-b border-divider" aria-label="Realm workspace">
+  <a href="/ui/admin/realms/{{ realm.id().as_uuid() }}" aria-current="page"
+     class="border-b-2 border-brand px-3 py-2 text-sm font-medium text-ht-content-primary">Overview</a>
+  <a href="/ui/admin/users?realm={{ realm.name() }}"
+     class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Users</a>
+  <a href="/ui/admin/organizations?realm={{ realm.name() }}"
+     class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Organizations</a>
+  <a href="/ui/admin/applications?realm={{ realm.name() }}"
+     class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Applications</a>
+  <a href="/ui/admin/sessions?realm={{ realm.name() }}"
+     class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Sessions</a>
+</nav>
 
 <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <dl class="grid gap-4 sm:grid-cols-2">

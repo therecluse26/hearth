@@ -203,13 +203,41 @@ pub(crate) fn encode_oauth_code(code_hash: &str) -> Vec<u8> {
 
 // ===== Realm key encoding =====
 
-/// The well-known system `RealmId` used for storing realm metadata.
+/// The well-known system `RealmId`.
 ///
 /// Uses the nil UUID (`00000000-0000-0000-0000-000000000000`) as a
-/// reserved namespace. Real realms use random v4 UUIDs and will
-/// never collide with this.
+/// reserved namespace. Real realms use random v4 UUIDs and will never
+/// collide with this.
+///
+/// Historically this realm held only Hearth-owned metadata (realm
+/// records, per-realm signing keys). It is now **also the home of all
+/// Hearth administrator users**: admins authenticate against this
+/// realm, and the `hearth#admin` Zanzibar tuple lives here. Operators
+/// administer application realms via a `TargetRealm` parameter (see
+/// `src/protocol/web/auth.rs`) while their session always belongs to
+/// the system realm.
+///
+/// The system realm is deliberately invisible on public surfaces:
+/// [`EmbeddedIdentityEngine::list_realms`] filters it out,
+/// [`EmbeddedIdentityEngine::get_realm_by_name`] returns `None` for
+/// the reserved name, and YAML `realms:` blocks reject it at parse
+/// time. Operators cannot target it via API; it is managed entirely
+/// by the server.
 pub(crate) fn system_realm_id() -> RealmId {
     RealmId::new(uuid::Uuid::nil())
+}
+
+/// Reserved name for the invisible system realm. YAML `realms:` may
+/// not declare it; `get_realm_by_name` filters it; admin UI realm
+/// switchers skip it.
+pub(crate) const SYSTEM_REALM_NAME: &str = "system";
+
+/// Returns `true` when the given `RealmId` is the reserved system
+/// realm (nil UUID). Use this at every API boundary that accepts a
+/// `RealmId` from operator input to guard against accidental writes
+/// to Hearth's internal realm.
+pub(crate) fn is_system_realm(realm_id: &RealmId) -> bool {
+    *realm_id == system_realm_id()
 }
 
 /// Encodes the primary key for a realm record.

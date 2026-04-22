@@ -75,6 +75,17 @@
       Add proxy
     </button>
   </div>
+  {# default_realm — name of the realm used for bare /ui/* URLs #}
+  <div class="mt-5">
+    <label class="block text-sm font-medium text-ht-content-secondary">Default Realm</label>
+    <p class="mt-0.5 text-xs text-ht-content-muted">
+      Name of the realm that bare <code class="font-mono">/ui/login</code>, <code class="font-mono">/ui/register</code>, etc. resolve to on multi-realm deployments. Leave blank to force users onto explicit <code class="font-mono">/ui/realms/&lt;name&gt;/...</code> URLs. Ignored when only one realm exists.
+    </p>
+    <input type="text" :value="getVal('server.default_realm', '')"
+           @input="setVal('server.default_realm', $el.value || null)"
+           placeholder="(none)"
+           class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+  </div>
 </div>
 
 {# ═══════════════════════════════════════════════════════
@@ -677,6 +688,33 @@
                  @input="ensure('realms.' + activeRealm + '.auth.rate_limit'); config.realms[activeRealm].auth.rate_limit.lockout_duration = $el.value || undefined"
                  class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember"
                  placeholder="e.g. 15m">
+        </div>
+      </div>
+    </div>
+    {# Self-service registration #}
+    <div class="mt-5">
+      <p class="font-mono text-xs font-medium text-ht-content-muted">Self-service Registration</p>
+      <div class="mt-3 grid gap-5 sm:grid-cols-2">
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">Registration Mode</label>
+          <select @change="ensure('realms.' + activeRealm + '.auth.registration'); config.realms[activeRealm].auth.registration.mode = $el.value || undefined"
+                  class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+            <option value="" :selected="config.realms?.[activeRealm]?.auth?.registration?.mode == null">— inherit —</option>
+            <option value="disabled" :selected="config.realms?.[activeRealm]?.auth?.registration?.mode === 'disabled'">Disabled — admin-only user creation</option>
+            <option value="open" :selected="config.realms?.[activeRealm]?.auth?.registration?.mode === 'open'">Open — anyone may register</option>
+            <option value="domain_restricted" :selected="config.realms?.[activeRealm]?.auth?.registration?.mode === 'domain_restricted'">Domain-restricted</option>
+            <option value="invite_only" :selected="config.realms?.[activeRealm]?.auth?.registration?.mode === 'invite_only'">Invite-only</option>
+          </select>
+          <p class="mt-1 text-xs text-ht-content-muted">Controls the public <code class="font-mono">/ui/register</code> endpoint. Defaults to disabled when unset.</p>
+        </div>
+        <div x-show="config.realms?.[activeRealm]?.auth?.registration?.mode === 'domain_restricted'">
+          <label class="block text-sm font-medium text-ht-content-secondary">Allowed Domains</label>
+          <input type="text"
+                 :value="(config.realms?.[activeRealm]?.auth?.registration?.allowed_domains || []).join(', ')"
+                 @input="ensure('realms.' + activeRealm + '.auth.registration'); config.realms[activeRealm].auth.registration.allowed_domains = $el.value.split(',').map(s => s.trim()).filter(s => s) || undefined"
+                 class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember"
+                 placeholder="example.com, corp.example.com">
+          <p class="mt-1 text-xs text-ht-content-muted">Comma-separated list. Required when mode is domain-restricted.</p>
         </div>
       </div>
     </div>

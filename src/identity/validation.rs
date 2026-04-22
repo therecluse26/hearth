@@ -6,6 +6,7 @@
 use unicode_normalization::UnicodeNormalization;
 
 use crate::identity::error::IdentityError;
+use crate::identity::types::PasswordPolicy;
 
 /// Maximum length for an email address (RFC 5321).
 const MAX_EMAIL_LENGTH: usize = 254;
@@ -125,6 +126,48 @@ pub(crate) fn validate_display_name(name: &str) -> Result<String, IdentityError>
     }
 
     Ok(normalized)
+}
+
+/// Enforces a realm's [`PasswordPolicy`] against a candidate password.
+///
+/// Complements `validate_password_length` (which only guards against the
+/// hashing `DoS` bound). Used by self-service registration; admin-created
+/// users bypass this check intentionally, because operators may set weak
+/// interim passwords that the user must rotate on first login.
+pub(crate) fn validate_password_against_policy(
+    password_bytes: &[u8],
+    policy: &PasswordPolicy,
+) -> Result<(), IdentityError> {
+    if let Some(min) = policy.min_length {
+        if password_bytes.len() < min {
+            return Err(IdentityError::InvalidInput {
+                reason: format!("password must be at least {min} characters"),
+            });
+        }
+    }
+    let as_str = std::str::from_utf8(password_bytes).map_err(|_| IdentityError::InvalidInput {
+        reason: "password must be valid UTF-8".to_string(),
+    })?;
+    if matches!(policy.require_uppercase, Some(true))
+        && !as_str.chars().any(|c| c.is_ascii_uppercase())
+    {
+        return Err(IdentityError::InvalidInput {
+            reason: "password must contain an uppercase letter".to_string(),
+        });
+    }
+    if matches!(policy.require_number, Some(true)) && !as_str.chars().any(|c| c.is_ascii_digit()) {
+        return Err(IdentityError::InvalidInput {
+            reason: "password must contain a digit".to_string(),
+        });
+    }
+    if matches!(policy.require_special, Some(true))
+        && !as_str.chars().any(|c| !c.is_ascii_alphanumeric())
+    {
+        return Err(IdentityError::InvalidInput {
+            reason: "password must contain a special character".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Validates a password length.

@@ -335,12 +335,22 @@ async fn logout_with_csrf_clears_cookies_and_revokes_session() {
         .expect("oneshot");
 
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    // Logout now routes the user back to their realm's login page so
+    // the next sign-in attempt lands on a page that renders. The
+    // `build_rig` test harness names its tenant realm "Acme".
+    let realm_name = rig
+        .identity
+        .get_realm(&rig.realm_id)
+        .expect("get realm")
+        .expect("realm exists")
+        .name()
+        .to_string();
     assert_eq!(
         response
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
-        Some("/ui/login")
+        Some(format!("/ui/realms/{realm_name}/login").as_str())
     );
 
     // Both clearing cookies must be present.

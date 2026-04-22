@@ -46,8 +46,9 @@ pub use types::{
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
     Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
     OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Realm, RealmConfig,
-    RealmStatus, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
-    UpdateUserRequest, User, UserStatus,
+    RealmStatus, RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session,
+    SessionContext, UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User,
+    UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
@@ -109,11 +110,23 @@ pub trait IdentityEngine: Send + Sync {
     /// Validates input, normalizes the email, checks uniqueness, generates
     /// a `UserId`, and persists the user record with both primary and email
     /// index entries.
+    ///
+    /// Rejects the reserved system realm with `SystemRealmProtected`.
+    /// To create an administrator, use [`Self::create_admin_user`].
     fn create_user(
         &self,
         realm_id: &RealmId,
         request: &CreateUserRequest,
     ) -> Result<User, IdentityError>;
+
+    /// Creates a new user record in the reserved system realm.
+    ///
+    /// This is the only public entry point that writes into the system
+    /// realm. It does *not* grant the `hearth#admin` authz relation —
+    /// callers (onboarding, admin UI) must issue the corresponding
+    /// `write_tuples` call themselves so the two writes sit next to each
+    /// other at the call site rather than hidden inside the engine.
+    fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError>;
 
     /// Retrieves a user by ID. Returns `None` if not found.
     fn get_user(&self, realm_id: &RealmId, user_id: &UserId)
@@ -536,6 +549,24 @@ pub trait IdentityEngine: Send + Sync {
     /// enumeration resistance.
     fn validate_magic_link(&self, realm_id: &RealmId, token: &str)
         -> Result<UserId, IdentityError>;
+
+    // ===== Self-service registration =====
+
+    /// Registers a new user via the public signup flow.
+    ///
+    /// Enforces the realm's [`RegistrationPolicy`], applies per-email
+    /// (3/hr) and per-IP (10/hr) rate limits, creates the user in
+    /// [`UserStatus::PendingVerification`], sets their password, and
+    /// issues an email-verification token. The plaintext token is
+    /// returned exactly once so the caller can email it to the user.
+    ///
+    /// For enumeration resistance, a request targeting an already-registered
+    /// email returns `Ok` with an unusable token rather than an error.
+    fn register_user(
+        &self,
+        realm_id: &RealmId,
+        request: &RegisterUserRequest,
+    ) -> Result<RegisterUserResponse, IdentityError>;
 
     // ===== Password reset =====
 

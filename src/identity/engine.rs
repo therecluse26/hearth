@@ -62,8 +62,9 @@ use crate::identity::types::{
     BulkResult, CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest,
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, Organization,
     OrganizationInvitation, OrganizationMembership, OrganizationRole, OrganizationStatus, Page,
-    Realm, RealmStatus, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
-    UpdateUserRequest, User, UserStatus,
+    Realm, RealmStatus, RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session,
+    SessionContext, UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User,
+    UserStatus,
 };
 use crate::identity::validation;
 use crate::identity::webauthn::{
@@ -200,6 +201,17 @@ pub struct EmbeddedIdentityEngine {
     /// Limits the number of password reset requests per email per hour.
     /// Key format: `reset:{realm}:{email}`.
     password_reset_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Per-email self-registration rate trackers.
+    ///
+    /// Limits the number of registration attempts per email per hour.
+    /// Key format: `reg-email:{realm}:{email}`.
+    registration_email_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Per-IP self-registration rate trackers.
+    ///
+    /// Limits the number of registration attempts per source IP per hour,
+    /// across all realms and emails.
+    /// Key format: raw IP string.
+    registration_ip_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Pending `WebAuthn` challenges awaiting completion.
     webauthn_challenges: WebAuthnChallengeStore,
     /// Serializes realm-record lifecycle mutations (create/update/delete).
@@ -234,7 +246,7 @@ impl EmbeddedIdentityEngine {
     ) -> Result<Self, IdentityError> {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let signing_key = Arc::new(SigningKey::generate()?);
-        Ok(Self {
+        let engine = Self {
             storage,
             clock,
             config,
@@ -245,10 +257,14 @@ impl EmbeddedIdentityEngine {
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
             password_reset_rate_trackers: Mutex::new(HashMap::new()),
+            registration_email_rate_trackers: Mutex::new(HashMap::new()),
+            registration_ip_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
-        })
+        };
+        engine.seed_system_realm_if_absent()?;
+        Ok(engine)
     }
 
     /// Creates a new identity engine with a pre-existing signing key.
@@ -261,7 +277,7 @@ impl EmbeddedIdentityEngine {
         signing_key: Arc<SigningKey>,
     ) -> Self {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
-        Self {
+        let engine = Self {
             storage,
             clock,
             config,
@@ -272,10 +288,69 @@ impl EmbeddedIdentityEngine {
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
             password_reset_rate_trackers: Mutex::new(HashMap::new()),
+            registration_email_rate_trackers: Mutex::new(HashMap::new()),
+            registration_ip_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
+        };
+        // Best-effort: if seeding fails here, tests that expect a system
+        // realm will notice and surface it. `new()` panics on failure; this
+        // constructor swallows so existing test harnesses don't break.
+        let _ = engine.seed_system_realm_if_absent();
+        engine
+    }
+
+    /// Ensures the reserved system realm exists in storage. Called from
+    /// both constructors. Idempotent — safe to run on every startup.
+    ///
+    /// The system realm is Hearth's private admin-user home. See
+    /// [`crate::identity::keys::system_realm_id`] for the invariants.
+    fn seed_system_realm_if_absent(&self) -> Result<(), IdentityError> {
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+        let sys_realm = keys::system_realm_id();
+        let realm_key = keys::encode_realm_id(&sys_realm);
+
+        // Already seeded? Skip.
+        if self
+            .storage
+            .get(&sys_realm, &realm_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Ok(());
         }
+
+        let now = self.clock.now();
+        let realm = Realm::new(
+            sys_realm.clone(),
+            keys::SYSTEM_REALM_NAME.to_string(),
+            RealmStatus::Active,
+            crate::identity::types::RealmConfig::default(),
+            now,
+            now,
+        );
+        let realm_bytes = Self::serialize_realm(&realm)?;
+        let realm_signing_key = SigningKey::generate()?;
+        let key_storage_key = keys::encode_realm_signing_key(&sys_realm);
+        let key_bytes = realm_signing_key.pkcs8_bytes().to_vec();
+        // Note: we intentionally do NOT write a name index entry — that
+        // would let `get_realm_by_name("system")` find it, violating the
+        // "invisible to lookups" invariant.
+
+        self.storage
+            .put_batch(
+                &sys_realm,
+                &[(realm_key, realm_bytes), (key_storage_key, key_bytes)],
+            )
+            .map_err(Self::storage_err)?;
+
+        {
+            let mut key_cache = self.realm_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(sys_realm.as_uuid().to_string(), Arc::new(realm_signing_key));
+        }
+
+        Ok(())
     }
 
     /// Returns a reference to the signing key.
@@ -486,6 +561,100 @@ impl EmbeddedIdentityEngine {
         tracker.last_failure_micros = now;
     }
 
+    // ===== Self-service registration rate limiting helpers =====
+
+    /// Registration rate limit: 3 attempts per email per hour.
+    const REGISTRATION_EMAIL_MAX_REQUESTS: u32 = 3;
+    /// Registration rate limit: 10 attempts per IP per hour across realms.
+    const REGISTRATION_IP_MAX_REQUESTS: u32 = 10;
+    /// Registration rate limit window: 1 hour in microseconds.
+    const REGISTRATION_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
+
+    /// Builds a registration email rate tracker key from realm and email.
+    fn registration_email_tracker_key(realm_id: &RealmId, email: &str) -> String {
+        format!("reg-email:{}:{email}", realm_id.as_uuid())
+    }
+
+    /// Checks per-email and per-IP rate limits for a registration attempt.
+    fn check_registration_rate_limit(
+        &self,
+        realm_id: &RealmId,
+        email: &str,
+        client_ip: Option<&str>,
+    ) -> Result<(), IdentityError> {
+        let now = self.clock.now().as_micros();
+
+        // Email bucket
+        let email_key = Self::registration_email_tracker_key(realm_id, email);
+        {
+            let trackers = self
+                .registration_email_rate_trackers
+                .lock()
+                .expect("registration email tracker lock");
+            if let Some(tracker) = trackers.get(&email_key) {
+                if tracker.failed_count >= Self::REGISTRATION_EMAIL_MAX_REQUESTS
+                    && now - tracker.last_failure_micros < Self::REGISTRATION_RATE_WINDOW_MICROS
+                {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+
+        // IP bucket (skipped if caller has no IP)
+        if let Some(ip) = client_ip {
+            let trackers = self
+                .registration_ip_rate_trackers
+                .lock()
+                .expect("registration ip tracker lock");
+            if let Some(tracker) = trackers.get(ip) {
+                if tracker.failed_count >= Self::REGISTRATION_IP_MAX_REQUESTS
+                    && now - tracker.last_failure_micros < Self::REGISTRATION_RATE_WINDOW_MICROS
+                {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Records a registration attempt against both email and IP buckets.
+    fn record_registration_attempt(
+        &self,
+        realm_id: &RealmId,
+        email: &str,
+        client_ip: Option<&str>,
+    ) {
+        let now = self.clock.now().as_micros();
+
+        let email_key = Self::registration_email_tracker_key(realm_id, email);
+        {
+            let mut trackers = self
+                .registration_email_rate_trackers
+                .lock()
+                .expect("registration email tracker lock");
+            let tracker = trackers.entry(email_key).or_insert(AttemptTracker {
+                failed_count: 0,
+                last_failure_micros: now,
+            });
+            tracker.failed_count += 1;
+            tracker.last_failure_micros = now;
+        }
+
+        if let Some(ip) = client_ip {
+            let mut trackers = self
+                .registration_ip_rate_trackers
+                .lock()
+                .expect("registration ip tracker lock");
+            let tracker = trackers.entry(ip.to_string()).or_insert(AttemptTracker {
+                failed_count: 0,
+                last_failure_micros: now,
+            });
+            tracker.failed_count += 1;
+            tracker.last_failure_micros = now;
+        }
+    }
+
     /// Loads the stored MFA state for a user.
     fn load_mfa_state(
         &self,
@@ -523,6 +692,52 @@ impl EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &key, &bytes)
             .map_err(Self::storage_err)
+    }
+
+    /// Creates a user with an explicit initial status, bypassing the
+    /// engine-wide `default_status`. Used by self-service registration
+    /// (always `PendingVerification`) while ordinary `create_user` continues
+    /// to honor the default.
+    fn create_user_with_status(
+        &self,
+        realm_id: &RealmId,
+        request: &CreateUserRequest,
+        status: UserStatus,
+    ) -> Result<User, IdentityError> {
+        let email = validation::validate_email(&request.email)?;
+        let display_name = validation::validate_display_name(&request.display_name)?;
+
+        let email_key = keys::encode_user_email(&email);
+        let existing = self
+            .storage
+            .get(realm_id, &email_key)
+            .map_err(Self::storage_err)?;
+        if existing.is_some() {
+            return Err(IdentityError::DuplicateEmail);
+        }
+
+        let user_id = UserId::generate();
+        let now = self.clock.now();
+        let user = User::new(
+            user_id.clone(),
+            email.clone(),
+            display_name,
+            status,
+            now,
+            now,
+        );
+
+        let user_bytes = Self::serialize_user(&user)?;
+        let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
+        self.storage
+            .put(realm_id, &email_key, &user_id_bytes)
+            .map_err(Self::storage_err)?;
+        let id_key = keys::encode_user_id(&user_id);
+        self.storage
+            .put(realm_id, &id_key, &user_bytes)
+            .map_err(Self::storage_err)?;
+
+        Ok(user)
     }
 
     /// Serializes a user to JSON bytes.
@@ -807,6 +1022,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     // ===== Realm lifecycle (Phase 1 Step 19) =====
 
     fn create_realm(&self, request: &CreateRealmRequest) -> Result<Realm, IdentityError> {
+        // Reserved name — the system realm is Hearth-managed.
+        if request.name == keys::SYSTEM_REALM_NAME {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "create_realm",
+            });
+        }
         // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. See `realm_ops_lock` docs.
@@ -873,6 +1094,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     fn get_realm_by_name(&self, name: &str) -> Result<Option<Realm>, IdentityError> {
+        // The reserved system realm is invisible to name lookups. Even
+        // though its record is in storage, we refuse to surface it here
+        // so that realm resolvers, registration policies, and admin UI
+        // dropdowns can never accidentally route into it.
+        if name == keys::SYSTEM_REALM_NAME {
+            return Ok(None);
+        }
         let sys_realm = keys::system_realm_id();
         let name_key = keys::encode_realm_name(name);
         let id_bytes = self
@@ -901,6 +1129,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &UpdateRealmRequest,
     ) -> Result<Realm, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "update_realm",
+            });
+        }
+        if matches!(request.name.as_deref(), Some(n) if n == keys::SYSTEM_REALM_NAME) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "update_realm",
+            });
+        }
         // Serialize against create/delete so an in-flight delete can't
         // race with this read-modify-write and resurrect an orphaned
         // record after its signing key has already been removed.
@@ -951,6 +1189,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     #[allow(clippy::too_many_lines)]
     fn delete_realm(&self, realm_id: &RealmId) -> Result<(), IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "delete_realm",
+            });
+        }
         // Serialize against create/update so a concurrent update can't
         // re-put a realm record after we've already removed its signing
         // key. Without this lock, `record=Some key=None` would leak out
@@ -1216,50 +1459,28 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &CreateUserRequest,
     ) -> Result<User, IdentityError> {
-        // 1. Validate and normalize input
-        let email = validation::validate_email(&request.email)?;
-        let display_name = validation::validate_display_name(&request.display_name)?;
-
-        // 2. Check email uniqueness
-        let email_key = keys::encode_user_email(&email);
-        let existing = self
-            .storage
-            .get(realm_id, &email_key)
-            .map_err(Self::storage_err)?;
-        if existing.is_some() {
-            return Err(IdentityError::DuplicateEmail);
+        // The system realm is reserved for Hearth admins and must be
+        // reached only through `create_admin_user`, which also provisions
+        // the `hearth#admin` Zanzibar tuple atomically. Without this
+        // guard an operator could create a non-admin account in the
+        // system realm and gain a session bound to it but without the
+        // admin tuple — harmless today (the tuple check would reject the
+        // session) but a trap for future refactors.
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "create_user",
+            });
         }
+        self.create_user_with_status(realm_id, request, self.config.default_status)
+    }
 
-        // 3. Generate ID and timestamps
-        let user_id = UserId::generate();
-        let now = self.clock.now();
-
-        // 4. Build user record
-        let user = User::new(
-            user_id.clone(),
-            email.clone(),
-            display_name,
-            self.config.default_status,
-            now,
-            now,
-        );
-
-        // 5. Serialize
-        let user_bytes = Self::serialize_user(&user)?;
-
-        // 6. Write email index (UserId UUID string bytes)
-        let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
-        self.storage
-            .put(realm_id, &email_key, &user_id_bytes)
-            .map_err(Self::storage_err)?;
-
-        // 7. Write primary record
-        let id_key = keys::encode_user_id(&user_id);
-        self.storage
-            .put(realm_id, &id_key, &user_bytes)
-            .map_err(Self::storage_err)?;
-
-        Ok(user)
+    fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError> {
+        // Bypasses the `create_user` system-realm guard deliberately.
+        // This is the sole public entry point that may create a record
+        // in the system realm; callers are responsible for writing the
+        // `hearth#admin` Zanzibar tuple after the user is persisted.
+        let realm_id = keys::system_realm_id();
+        self.create_user_with_status(&realm_id, request, self.config.default_status)
     }
 
     fn get_user(
@@ -1943,6 +2164,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &RegisterClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
+        // OAuth clients never target the admin realm. This is the
+        // strongest structural guarantee that the admin surface and
+        // application auth surfaces cannot be conflated.
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "register_client",
+            });
+        }
         // Validate client name (non-empty, length limit)
         let client_name = validation::validate_client_name(&request.client_name)?;
 
@@ -3393,6 +3622,131 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
     }
 
+    // ===== Self-service registration =====
+
+    fn register_user(
+        &self,
+        realm_id: &RealmId,
+        request: &RegisterUserRequest,
+    ) -> Result<RegisterUserResponse, IdentityError> {
+        // The system realm never accepts self-registration — it is
+        // Hearth's admin home, not an application realm.
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "register_user",
+            });
+        }
+        // 1. Load realm and enforce active status.
+        let realm = self
+            .get_realm(realm_id)?
+            .ok_or(IdentityError::RealmNotFound)?;
+        if realm.status() != RealmStatus::Active {
+            return Err(IdentityError::RealmSuspended);
+        }
+        let policy = realm
+            .config()
+            .registration_policy
+            .clone()
+            .unwrap_or_default();
+
+        // 2. Normalize and validate basic inputs before any storage.
+        let email = validation::validate_email(&request.email)?;
+        let display_name = validation::validate_display_name(&request.display_name)?;
+        validation::validate_password_length(request.password.as_bytes())?;
+        if let Some(pw_policy) = realm.config().password_policy.as_ref() {
+            validation::validate_password_against_policy(request.password.as_bytes(), pw_policy)?;
+        }
+
+        // 3. Enforce registration policy.
+        match &policy {
+            RegistrationPolicy::Disabled => {
+                return Err(IdentityError::RegistrationDisabled);
+            }
+            RegistrationPolicy::Open => {}
+            RegistrationPolicy::DomainRestricted(allowed) => {
+                let at = email.find('@').ok_or_else(|| IdentityError::InvalidInput {
+                    reason: "email must contain '@'".to_string(),
+                })?;
+                let domain = &email[at + 1..];
+                let ok = allowed.iter().any(|d| d.eq_ignore_ascii_case(domain));
+                if !ok {
+                    return Err(IdentityError::RegistrationDomainNotAllowed {
+                        domain: domain.to_string(),
+                    });
+                }
+            }
+            RegistrationPolicy::InviteOnly => {
+                let Some(token) = request.invitation_token.as_deref() else {
+                    return Err(IdentityError::RegistrationRequiresInvitation);
+                };
+                // Minimum viable: token must correspond to a pending invitation
+                // for this realm whose invited email matches.
+                let token_hash = Self::sha256_hex(token.as_bytes());
+                let key = keys::encode_invitation_token(&token_hash);
+                let bytes = self
+                    .storage
+                    .get(realm_id, &key)
+                    .map_err(Self::storage_err)?
+                    .ok_or(IdentityError::RegistrationRequiresInvitation)?;
+                let invitation: OrganizationInvitation =
+                    serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                if !invitation.email().eq_ignore_ascii_case(&email)
+                    || invitation.status() != InvitationStatus::Pending
+                {
+                    return Err(IdentityError::RegistrationRequiresInvitation);
+                }
+            }
+        }
+
+        // 4. Rate limit on both buckets BEFORE any write.
+        self.check_registration_rate_limit(realm_id, &email, request.client_ip.as_deref())?;
+
+        // 5. Record the attempt unconditionally — duplicates and successes
+        // both count so brute-force enumeration is capped.
+        self.record_registration_attempt(realm_id, &email, request.client_ip.as_deref());
+
+        // 6. SECURITY: enumeration resistance. If the email is already
+        // registered, return a plausible-looking response with an unusable
+        // token rather than `DuplicateEmail`. A legitimate user retrying
+        // their own signup sees a harmless no-op; an attacker cannot
+        // distinguish registered emails via this endpoint.
+        let email_key = keys::encode_user_email(&email);
+        let existing = self
+            .storage
+            .get(realm_id, &email_key)
+            .map_err(Self::storage_err)?;
+        if existing.is_some() {
+            let fake = magic_link::generate_magic_link_token()?;
+            return Ok(RegisterUserResponse {
+                user_id: UserId::generate(),
+                verification_token: fake.as_str().to_string(),
+            });
+        }
+
+        // 7. Create the user in PendingVerification status.
+        let user = self.create_user_with_status(
+            realm_id,
+            &CreateUserRequest {
+                email: email.clone(),
+                display_name,
+            },
+            UserStatus::PendingVerification,
+        )?;
+
+        // 8. Store the password.
+        self.set_password(realm_id, user.id(), &request.password)?;
+
+        // 9. Issue a verification token.
+        let verification_token = self.issue_email_verification_token(realm_id, user.id())?;
+
+        Ok(RegisterUserResponse {
+            user_id: user.id().clone(),
+            verification_token,
+        })
+    }
+
     // ===== Password reset =====
 
     fn request_password_reset(
@@ -3781,13 +4135,25 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .scan(&sys_realm, &start, &end)
             .map_err(Self::storage_err)?;
 
+        // Filter out the reserved system realm: its record lives here
+        // alongside application realms but must never surface on the
+        // admin listing, realm switcher, or resolver's sole-realm
+        // shortcut. We scan with `limit + 1` headroom plus the filter
+        // so a page that happens to straddle the nil realm still
+        // returns `limit` real results.
         let mut items = Vec::new();
-        for entry in entries.iter().take(limit + 1) {
+        for entry in &entries {
             let realm: Realm =
                 serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
                 })?;
+            if keys::is_system_realm(realm.id()) {
+                continue;
+            }
             items.push(realm);
+            if items.len() > limit {
+                break;
+            }
         }
 
         let next_cursor = if items.len() > limit {
@@ -4052,6 +4418,23 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         request: &CreateRealmRequest,
         requested_id: Option<RealmId>,
     ) -> Result<Realm, IdentityError> {
+        // The reserved system realm is never an import target. An
+        // external dump can legitimately be named "system" (Keycloak's
+        // default realm is called `master`, not `system`, but we
+        // defend against any collision anyway) — refuse rather than
+        // silently rename.
+        if request.name == keys::SYSTEM_REALM_NAME {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "import_realm",
+            });
+        }
+        if let Some(ref id) = requested_id {
+            if keys::is_system_realm(id) {
+                return Err(IdentityError::SystemRealmProtected {
+                    operation: "import_realm",
+                });
+            }
+        }
         // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. Mirrors `create_realm`.
@@ -4111,6 +4494,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &ImportUserRequest,
     ) -> Result<User, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "import_user",
+            });
+        }
         // 1. Validate and normalize input (same invariants as create_user)
         let email = validation::validate_email(&request.email)?;
         let display_name = validation::validate_display_name(&request.display_name)?;
@@ -4191,6 +4579,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &ImportClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "import_client",
+            });
+        }
         let client_name = validation::validate_client_name(&request.client_name)?;
 
         let has_client_credentials = request
@@ -4269,6 +4662,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &CreateOrganizationRequest,
     ) -> Result<Organization, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "create_organization",
+            });
+        }
         let slug = validation::validate_slug(&request.slug)?;
         let name = validation::validate_display_name(&request.name)?;
 
@@ -4367,6 +4765,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         org_id: &OrganizationId,
         request: &UpdateOrganizationRequest,
     ) -> Result<Organization, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "update_organization",
+            });
+        }
         let mut org = self
             .get_organization(realm_id, org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;

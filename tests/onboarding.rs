@@ -312,7 +312,10 @@ fn complete_setup_creates_admin_and_sends_email() {
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
-    let seeded = env.seed_realm("Hearth Prod");
+    // Seeding an application realm is no longer required — admins live
+    // in the auto-seeded system realm. We still create one to verify it
+    // is *not* picked (regression test on the old behavior).
+    let _ignored = env.seed_realm("Hearth Prod");
 
     let pw = CleartextPassword::new(b"correct-horse-battery-staple".to_vec());
     let outcome = env
@@ -325,15 +328,12 @@ fn complete_setup_creates_admin_and_sends_email() {
         )
         .expect("complete_setup");
 
-    // Setup used the pre-existing realm from YAML reconciliation.
-    assert_eq!(outcome.realm_id, *seeded.id());
-    let realm = env
-        .identity
-        .get_realm(&outcome.realm_id)
-        .expect("get_realm")
-        .expect("realm exists");
-    assert_eq!(realm.name(), "Hearth Prod");
-
+    // Admin now lives in the system realm, not the YAML-declared app realm.
+    assert_eq!(
+        outcome.realm_id,
+        hearth::core::RealmId::new(uuid::Uuid::nil()),
+        "admin must land in the system realm"
+    );
     let user = env
         .identity
         .get_user(&outcome.realm_id, &outcome.admin_user_id)
@@ -342,7 +342,8 @@ fn complete_setup_creates_admin_and_sends_email() {
     assert_eq!(user.status(), UserStatus::PendingVerification);
     assert_eq!(user.email(), "admin@example.com");
 
-    // Email sent once with a non-empty verification URL.
+    // Email sent once with a non-empty verification URL that routes
+    // through the admin surface.
     assert_eq!(env.email.count(), 1);
     let msg = env.email.last().expect("email sent");
     assert_eq!(msg.to, "admin@example.com");
@@ -354,8 +355,8 @@ fn complete_setup_creates_admin_and_sends_email() {
     assert!(
         outcome
             .verification_url
-            .starts_with("https://auth.example.com/ui/verify-email?token="),
-        "verification URL shape: {}",
+            .starts_with("https://auth.example.com/ui/admin/verify-email?token="),
+        "verification URL must target admin route: {}",
         outcome.verification_url
     );
 
@@ -541,34 +542,35 @@ fn complete_setup_refuses_when_setup_token_absent() {
     );
 }
 
-// ===== Scenario: complete_setup requires a pre-existing realm =====
+// ===== Scenario: complete_setup works even with no application realms =====
+//
+// Under the admin-realm architecture the system realm is auto-seeded at
+// engine construction, so setup no longer depends on reconciliation
+// having created any application realm. A deployment with zero declared
+// realms can still complete setup and produce a usable admin.
 
 #[test]
-fn complete_setup_fails_when_no_realm_exists() {
+fn complete_setup_succeeds_without_app_realms() {
     let env = TestEnv::new();
-    // Setup token exists but no realm was created (reconciliation didn't run).
+    // No application realms created — reconciliation did not run.
     let _ = ensure_setup_token(env.identity.as_ref(), env.data_dir(), None, None, None)
         .expect("ensure")
         .expect("token");
 
-    let pw = CleartextPassword::new(b"pw".to_vec());
-    let err = env
+    let pw = CleartextPassword::new(b"correct-horse-battery-staple".to_vec());
+    let outcome = env
         .service
-        .complete_setup("orphan@example.com", "Orphan", &pw, "http://localhost:8420")
-        .expect_err("no realm");
-    assert!(
-        matches!(
-            err,
-            OnboardingError::Identity(hearth::identity::IdentityError::RealmNotFound)
-        ),
-        "expected RealmNotFound, got {err:?}"
+        .complete_setup("admin@example.com", "Admin", &pw, "http://localhost:8420")
+        .expect("complete_setup");
+
+    // Admin lives in the system realm (nil UUID).
+    assert_eq!(
+        outcome.realm_id,
+        hearth::core::RealmId::new(uuid::Uuid::nil())
     );
 
-    // Setup token should still exist so operator can fix config and retry.
-    assert!(
-        env.setup_token_path().exists(),
-        "token must persist for retry"
-    );
+    // Setup token has been retired so the flow cannot be re-triggered.
+    assert!(!env.setup_token_path().exists());
 }
 
 // ===== Scenario: email failure is surfaced =====

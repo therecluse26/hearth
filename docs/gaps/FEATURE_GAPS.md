@@ -4,7 +4,7 @@
 
 Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
 
 This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
@@ -21,33 +21,6 @@ This document inventories **features not yet implemented** that would block or h
 
 ## P0 — Blocks Production Deployment
 
-### 1. User Self-Registration
-
-- **Vision ref:** §8.1 "Five-minute on-ramp" — a developer should have "a working login flow" in minutes.
-- **Current State:** Users can only be created by administrators (`POST /admin/users`) or as a side-effect of magic link authentication for unknown emails. There is no public registration form, signup API endpoint, or registration policy system.
-- **What's Missing:**
-  - Public signup endpoint: email + password registration with email verification.
-  - Configurable registration policy per realm (open, invite-only, domain-restricted).
-  - CAPTCHA or proof-of-work integration to prevent automated account creation.
-  - Welcome email with verification link (email templates exist but the flow doesn't).
-  - Custom profile fields during registration.
-  - Rate limiting on registration attempts (IP-based, per-realm).
-- **Why It Matters:** Any application with public users cannot use Hearth without building external signup infrastructure. This is table-stakes for every auth system.
-- **Priority Rationale:** P0 because magic link auto-create is a workaround, not a feature. No production application ships without a signup flow.
-
-### 2. Self-Service Session Management
-
-- **Vision ref:** §5.3 "Session management with revocation and device tracking."
-- **Current State:** The identity engine has `list_sessions_by_user()` and session revocation. These are exposed only through the **admin** API and admin web UI (`/admin/users/{id}/sessions/{sid}/revoke`). No user-facing session visibility exists.
-- **What's Missing:**
-  - User-facing "My Sessions" page listing active sessions (device, IP, user-agent, last-active timestamp).
-  - User-facing "Revoke" button per session ("log out my phone").
-  - "Revoke all other sessions" action ("log out everywhere else").
-  - Session metadata enrichment: user-agent parsing, approximate geolocation hint from IP.
-  - API endpoints (`GET /account/sessions`, `DELETE /account/sessions/{id}`, `DELETE /account/sessions?all_others=true`).
-- **Why It Matters:** Compromised sessions can only be revoked by administrators. Every modern auth provider (Auth0, Clerk, Google) gives users control over their own sessions. This is a baseline security expectation.
-- **Priority Rationale:** P0 because session self-management is a fundamental user security control.
-
 ### 3. OAuth Consent Screen
 
 - **Vision ref:** §5.3 "OIDC / OAuth 2.0" — implementing the full protocol implies consent per RFC 6749 §4.1.1.
@@ -61,18 +34,6 @@ This document inventories **features not yet implemented** that would block or h
   - First-party client bypass: skip consent for clients marked as trusted/first-party.
 - **Why It Matters:** OAuth 2.0 best practices and GDPR require explicit user consent before sharing data with third-party clients. Without this, every OAuth client silently receives all requested scopes — a security and compliance gap.
 - **Priority Rationale:** P0 for any deployment with third-party OAuth clients. Deferrable only for first-party-only setups.
-
-### 4. Password Reset / Account Recovery
-
-- **Vision ref:** Implied by §5.3 password hashing support and §8.1 onboarding.
-- **Current State:** Users can authenticate via password, use TOTP recovery codes, and use magic links. Password reset templates and handlers exist in the web UI (`forgot_password.html`, `reset_password.html`, handlers in `src/protocol/web/handlers.rs`), suggesting partial or recent implementation.
-- **What's Missing (verify against current code):**
-  - Confirm the forgot-password → email token → reset flow is end-to-end functional.
-  - Rate limiting on reset requests per email (enumeration resistance).
-  - Optional notification to other verified channels when password changes.
-  - Integration tests covering the full reset cycle.
-- **Why It Matters:** Password reset is the #1 support request for any auth system. Without it, locked-out users require admin intervention.
-- **Priority Rationale:** P0 — may be partially implemented (templates exist). Verify completeness.
 
 ---
 
@@ -326,16 +287,131 @@ Implemented in Phase 1.5. Five transports: Log (dev), SMTP, SendGrid, Postmark, 
 - Delivery status tracking / bounce handling.
 - Per-realm email provider configuration.
 
+### User Self-Registration — COMPLETED ✅
+
+Implemented as the public signup flow with per-realm `RegistrationPolicy` (disabled / open / domain-restricted / invite-only), per-email (3/hr) and per-IP (10/hr) rate limiting, and enumeration-resistant duplicate-email handling. Routes: `GET|POST /ui/register`, `GET /ui/register/sent`. Consumes the existing `issue_email_verification_token` + `verify_email_token` primitives, so registered users land in `PendingVerification` until they click the email link.
+
+**Key files:**
+- Engine: `src/identity/engine.rs` (`register_user`, `create_user_with_status`, `check_registration_rate_limit`)
+- Types: `src/identity/types.rs` (`RegistrationPolicy`, `RegisterUserRequest`, `RegisterUserResponse`)
+- Errors: `src/identity/error.rs` (`RegistrationDisabled`, `RegistrationDomainNotAllowed`, `RegistrationRequiresInvitation`)
+- Validation: `src/identity/validation.rs` (`validate_password_against_policy`)
+- Web: `src/protocol/web/handlers.rs` (`register_form`, `register_submit`, `register_sent`)
+- Templates: `templates/ui/register.html`, `register_sent.html`
+- YAML config: `src/config/types.rs` (`RegistrationPolicyYaml`, `RegistrationModeYaml`)
+- Tests: `tests/self_registration.rs` (9 integration + adversarial tests)
+
+**Remaining enhancements (not blocking):**
+- CAPTCHA / proof-of-work (scope: pluggable anti-abuse). IP rate limit is the minimum viable defense today.
+- Custom profile fields during registration.
+- HTTP-layer handler tests (engine-layer tests cover the critical security paths).
+
+### Password Reset / Account Recovery — COMPLETED ✅
+
+Verified end-to-end functional: `request_password_reset` + `reset_password_with_token` in `src/identity/engine.rs:3400+`, UI handlers in `src/protocol/web/handlers.rs:1500+`, templates at `templates/ui/forgot_password*.html`, `templates/ui/reset_password*.html`, email template at `templates/email/password_reset.html`. Rate-limited (3/hr/email), SHA-256 token hash, 30-min expiry, single-use, enumeration-resistant (silent success for unknown emails).
+
+**Remaining enhancements (not blocking):**
+- Dedicated end-to-end integration test for the full forgot → email → reset flow (core methods covered indirectly).
+- Optional notification to secondary verified channels on password change.
+
+### Self-Service Session Management — COMPLETED ✅
+
+Implemented as the `/ui/account/sessions` page backed by the pre-existing `list_sessions_by_user` + `revoke_session` engine primitives. Signed-in users can now review every active session (device label, client IP, created/last-active/expires timestamps), revoke any individual session, or revoke every session except the current one. Revoking the current session acts as an implicit logout: session cookie cleared, redirect to `/ui/login`.
+
+**Key behaviors:**
+- **Ownership enforcement:** the revoke handler loads the target session and compares its `user_id` against the authenticated user before calling `revoke_session`. A cross-user revoke attempt returns 404 (not 403), which also hides session-id existence across users. Covered by `revoke_other_users_session_is_rejected` in `tests/web_ui_account_sessions.rs`.
+- **Current-session handling:** the current row in the table carries a "This device" badge and `data-current-session="true"` attribute; its action button says "Log out this device". Revoking it clears both UI cookies via the shared `clearing_cookies()` helper.
+- **Audit trail:** every self-service revocation emits `AuditAction::SessionRevoked` with `actor = user_id` and `metadata = {"via": "self"}` (batch operations add `"batch": true`). Admin revocations continue to tag `metadata.via = "ui"`, so the two channels are cleanly distinguishable in the audit query API.
+- **No proto / engine changes:** the entire feature is a new protocol-layer surface — no new trait methods, no new `AuditAction` variants, no new storage keys.
+
+**Key files:**
+- Handlers: `src/protocol/web/account.rs` (`sessions_index`, `revoke_session`, `revoke_other_sessions`, `audit_self_session_revoke`)
+- Routes: `src/protocol/web/mod.rs` (`/account/sessions`, `/account/sessions/{sid}/revoke`, `/account/sessions/revoke-others`)
+- Template: `templates/ui/account/sessions.html`; entry-point link added to `templates/ui/account/index.html`
+- Shared helper promoted: `append_cookie` in `src/protocol/web/handlers.rs` is now `pub(super)` so both `logout_submit` and `revoke_session` can reuse the cookie-clearing idiom
+- Tests: `tests/web_ui_account_sessions.rs` (7 integration tests — listing isolation, current-session marker, own-revoke + audit, cross-user rejection, current-session logout, revoke-all-others, CSRF enforcement)
+
+**Remaining enhancements (not blocking):**
+- Approximate geolocation hint from IP (requires a GeoIP dataset — previously listed under this gap's "what's missing"; deferred to keep the dependency footprint small).
+- JSON/REST and gRPC API variants of these endpoints (gap #8 tracks the management-API surface separately).
+- HTMX/AJAX revoke-in-place UX (current implementation is PRG).
+
+### Explicit Realm Routing in the Web UI — COMPLETED ✅
+
+Discovered while testing self-registration: pre-auth `/ui/*` handlers had no explicit realm binding — they walked every realm until one matched. That leaked realm existence and prevented per-realm policy (like `RegistrationPolicy`) from applying correctly when the wrong realm was picked first.
+
+The fix introduces explicit path-segment routes and a centralized resolver:
+
+- **New route family:** `/ui/realms/<name>/login`, `/register`, `/forgot-password`, `/reset-password`, `/verify-email`, `/accept-invitation`, `/login/passkey-begin`, `/login/passkey-complete`, plus their `/sent` confirmation pages. Each scoped variant resolves the realm from the URL path.
+- **Bare `/ui/*` resolution rules** (in [`src/protocol/web/realm_resolver.rs`](../../src/protocol/web/realm_resolver.rs)):
+  1. Single-realm deployment → implicit use of the sole realm (no config needed).
+  2. Multi-realm + `server.default_realm` set → the declared default is used.
+  3. Multi-realm + `default_realm` unset → **terse 400 page** (`templates/ui/realm_required.html`) with no realm names. Hearth deliberately does not present an anonymous picker; enumerating tenants is a discovery leak.
+- **Walk-all-realms fallback eliminated** from `login_submit`, `forgot_password_submit`, `reset_password_submit`, `verify_email`, `passkey_login_begin`, `passkey_login_complete`, `register_*`, and `accept_invitation_page`. All delegate to the shared `resolve_pre_auth_realm` helper in `src/protocol/web/handlers.rs`.
+- **Startup validation:** if `server.default_realm` is set, the named realm MUST exist after reconciliation, else `main.rs` refuses to start.
+- **Admin config editor:** new "Default Realm" field under the Server section of `/ui/admin/settings/editor`.
+
+**Key files:**
+- `src/config/types.rs` — `ServerConfig::default_realm: Option<String>`
+- `src/protocol/web/realm_resolver.rs` — `resolve()` function returning `Resolved::Realm | NotFound | MustChoose | Storage`
+- `src/protocol/web/handlers.rs` — `resolve_pre_auth_realm`, `PreAuthRealm`, `ChooseRealmTemplate`, plus `_impl` + `_scoped` variants of every pre-auth handler
+- `src/protocol/web/mod.rs` — new `/ui/realms/{realm}/*` route family; `WebState::default_realm_name`, `with_default_realm`, `realm_theme_css_for`
+- `templates/ui/choose_realm.html` (new), `templates/ui/admin/settings/_editor_sections.html` (default-realm input)
+- `tests/web_ui_realm_routing.rs` — 10 integration tests covering single-realm, multi-realm with default, multi-realm picker, path-scoped routes, unknown realm, no-walk regression, and per-realm verify-email scoping.
+
+**Remaining enhancements (not blocking):**
+- Subdomain-per-realm routing (orthogonal; layer on top of path segments later if needed).
+- Email-based home realm discovery (lookup email domain → realm) for enterprise SSO scenarios.
+- Per-realm `primary: true` flag (YAGNI until a concrete use case appears).
+
+### Admin (system) realm — COMPLETED ✅
+
+Addresses two admin-setup bugs on multi-realm deployments: verification links hitting the wrong resolver; admin users bound to whichever application realm sorted first by UUID byte order. The fix introduces an **invisible system realm** (`RealmId::nil()`) that holds all Hearth admins; operators administer application realms via a `TargetRealm` extractor.
+
+**Engine + onboarding:**
+- Singleton system realm auto-seeded at engine construction (`seed_system_realm_if_absent` in `src/identity/engine.rs`).
+- Invisible on public surfaces: `list_realms()` filters it, `get_realm_by_name("system")` returns `None`, YAML `realms.system` rejected at parse time (`src/config/mod.rs` `validate_realm_names`).
+- Structural guardrails via new `IdentityError::SystemRealmProtected { operation }`: `create_realm` rejects name `"system"`; `update_realm` rejects nil UUID + renaming-to-`system`; `delete_realm`, `register_user`, `register_client`, `create_organization` all reject the nil UUID.
+- `onboarding::complete_setup` always targets system realm. Admin user + Zanzibar `hearth#admin` tuple both land there. Verification URL is `/ui/admin/verify-email?token=...`.
+
+**Admin pre-auth surface:**
+- New routes `/ui/admin/login` (GET+POST) and `/ui/admin/verify-email`; admin session cookies carry the nil UUID.
+- `RequireAdmin` asserts `session.realm_id == system_realm_id()` — a tenant session can never pass an admin gate, even if it somehow carried an admin tuple locally.
+
+**Admin UI target-realm refactor:**
+- New `TargetRealm` extractor in `src/protocol/web/auth.rs`: resolution order is `?realm=<name>` query → `hearth_ui_admin_target` cookie → first non-system realm. Rejects `?realm=system`.
+- ~62 references to `session.realm_id` across ~30 admin handlers in `src/protocol/web/admin.rs` switched to `target.id()`. Audit helpers (`audit_user_event`, `audit_app_event`, `audit_session_event`, `audit_org_event`) take an explicit `target_realm: &Realm` so they record audit events in the right realm.
+- `POST /ui/admin/switch-realm` sets the `hearth_ui_admin_target` cookie, allowing persistent per-admin realm selection without URL decoration.
+- Realms list page (`templates/ui/admin/realms/_rows.html`) gets an "Administer this realm →" action that POSTs to the switcher.
+
+**Tests:**
+- `tests/admin_realm.rs` — 13 integration tests covering seeding, invisibility, engine guards, onboarding target, admin login rendering, full e2e setup→verify→login, and switcher authentication.
+- `tests/web_ui_admin.rs` — rig updated to put admin users in the system realm; all 20 existing admin UI tests still pass.
+
+**Shipped file map (21 files modified, 3 new):**
+- Engine/types: `src/identity/keys.rs`, `src/identity/error.rs`, `src/identity/engine.rs`, `src/identity/reconcile.rs`, `src/identity/onboarding.rs`, `src/config/mod.rs`
+- HTTP mapping: `src/protocol/http.rs`
+- Web layer: `src/protocol/web/auth.rs`, `src/protocol/web/handlers.rs`, `src/protocol/web/admin.rs`, `src/protocol/web/mod.rs`
+- Templates: `templates/ui/admin/realms/_rows.html`
+- Tests: `tests/admin_realm.rs` (new), `tests/onboarding.rs`, `tests/web_ui_admin.rs`
+- Docs: `README.md`, `memory/admin_realm.md` (new)
+
+**Remaining enhancements (not blocking):**
+- Visual realm switcher dropdown in admin chrome. Today operators switch via `/ui/admin/realms` (one-click "Administer this realm" button per row) or by typing `?realm=<name>` in the URL.
+- Admin-side auxiliary flows: `/ui/admin/forgot-password`, `/ui/admin/reset-password`, `/ui/admin/login/passkey-*`, `/ui/admin/mfa-challenge`. Admins reset passwords via the identity engine's CLI or directly via storage today.
+- `RequireAdmin` extractor could additionally scope the `hearth#admin` tuple to the system realm explicitly (currently it checks in `session.realm_id` which is always system after the refactor — equivalent but worth making explicit for clarity).
+- Migration CLI for existing deployments (`hearth admin migrate-to-system-realm`). Pre-1.0; wipe data dir for now.
+
 ---
 
 ## Gap Summary Matrix
 
 | # | Gap | Priority | Vision Ref | Effort Estimate |
 |---|-----|----------|------------|-----------------|
-| 1 | User self-registration | P0 | §8.1 | Medium |
-| 2 | Self-service session management | P0 | §5.3 | Small |
+| 1 | ~~User self-registration~~ — **DONE** | P0 | §8.1 | Medium |
+| 2 | ~~Self-service session management~~ — **DONE** | P0 | §5.3 | — |
 | 3 | OAuth consent screen | P0 | §5.3 | Medium |
-| 4 | Password reset (verify completeness) | P0 | §5.3 | Small (may be done) |
+| 4 | ~~Password reset~~ — **DONE** (verified) | P0 | §5.3 | — |
 | 5 | Social login / external IdP | P1 | §5.3 | Large |
 | 6 | SAML 2.0 | P1 | §5.3, §6.1 | Large |
 | 7 | SCIM 2.0 | P1 | §5.3, §6.1 | Large |
@@ -360,7 +436,7 @@ Implemented in Phase 1.5. Five transports: Log (dev), SMTP, SendGrid, Postmark, 
 ## Recommended Release Sequence
 
 **Minimum viable public release (v0.1-alpha):**
-Gaps 1, 2, 4, 15 — self-registration, session self-service, password reset verification, CI/CD.
+Gaps 1 ✅, 2 ✅, and 4 ✅ complete. Remaining: 15 — CI/CD.
 
 **Production-ready single-node (v0.x per Phase 1 exit criteria):**
 Add gaps 3, 5, 9, 11 — consent screen, social login, documentation site, Prometheus metrics.
@@ -370,4 +446,4 @@ Add gaps 6, 7, 8, 10, 12, 14, 17, 21 — SAML, SCIM, gRPC, migration tools, back
 
 ---
 
-*Last updated: 2026-04-21. Generated by comparing VISION.md (§1–§12), ARCHITECTURE.md, IMPLEMENTATION_ORDER.md (steps 1–31), and codebase exploration against actual implementation.*
+*Last updated: 2026-04-22. Generated by comparing VISION.md (§1–§12), ARCHITECTURE.md, IMPLEMENTATION_ORDER.md (steps 1–31), and codebase exploration against actual implementation. Revised 2026-04-22 to mark gap #2 (self-service session management) as completed.*

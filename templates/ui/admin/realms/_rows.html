@@ -12,8 +12,25 @@
       <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Suspended</span>
     {% endif %}
   </td>
-  <td class="px-4 py-3 text-right text-sm text-ht-content-muted">
-    Configured in hearth.yaml
+  <td class="px-4 py-3 text-right">
+    <div class="flex items-center justify-end gap-3">
+      {% if t.status()|fmt("{:?}") == "Active" %}
+        <form method="post" action="/ui/admin/switch-realm" class="inline">
+          {% match csrf %}
+            {% when Some with (tok) %}
+              <input type="hidden" name="_csrf" value="{{ tok }}">
+            {% when None %}
+          {% endmatch %}
+          <input type="hidden" name="realm" value="{{ t.name() }}">
+          <input type="hidden" name="return_to" value="/ui/admin/realms/{{ t.id().as_uuid() }}">
+          <button type="submit"
+                  class="text-xs font-medium text-ht-content-brand hover:text-ht-brand-deep">
+            Open workspace →
+          </button>
+        </form>
+      {% endif %}
+      <span class="text-xs text-ht-content-muted">Configured in hearth.yaml</span>
+    </div>
   </td>
 </tr>
 {% endfor %}

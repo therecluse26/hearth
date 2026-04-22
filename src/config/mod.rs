@@ -148,6 +148,7 @@ impl Config {
                 tls_client_ca_path: None,
                 tls_require_client_cert: false,
                 trusted_proxies: Vec::new(),
+                default_realm: None,
             },
             storage: StorageSection {
                 data_dir: String::new(),
@@ -244,8 +245,7 @@ impl Config {
         }
 
         // Log format
-        if !ObservabilityConfig::VALID_LOG_FORMATS
-            .contains(&self.observability.log_format.as_str())
+        if !ObservabilityConfig::VALID_LOG_FORMATS.contains(&self.observability.log_format.as_str())
         {
             issues.push(ValidationIssue {
                 field: "observability.log_format".to_string(),
@@ -291,6 +291,14 @@ impl Config {
         // Branding
         validate_branding_all(&self.branding, &mut issues);
         // Realm configs
+        if let Some(realms) = self.realms.as_ref() {
+            if realms.contains_key("system") {
+                issues.push(ValidationIssue {
+                    field: "realms.system".to_string(),
+                    reason: "\"system\" is a reserved realm name; managed by Hearth".to_string(),
+                });
+            }
+        }
         validate_realm_web_configs_all(self.realms.as_ref(), &mut issues);
         validate_realm_auth_configs_all(self.realms.as_ref(), &mut issues);
         validate_realm_applications_all(self.realms.as_ref(), &mut issues);
@@ -413,6 +421,7 @@ impl Config {
         validate_token(&self.token)?;
         validate_email(&self.email)?;
         validate_branding(&self.branding)?;
+        validate_realm_names(self.realms.as_ref())?;
         validate_realm_web_configs(self.realms.as_ref())?;
         validate_realm_auth_configs(self.realms.as_ref())?;
         validate_realm_applications(self.realms.as_ref())?;
@@ -430,6 +439,22 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Rejects YAML `realms.system`. The system realm is Hearth-owned; it
+/// must not be declared or reconciled by operators. See the admin-realm
+/// architecture note in `memory/admin_realm.md`.
+fn validate_realm_names(
+    realms: Option<&std::collections::HashMap<String, types::RealmYamlConfig>>,
+) -> Result<(), ConfigError> {
+    let Some(realms) = realms else { return Ok(()) };
+    if realms.contains_key("system") {
+        return Err(invalid(
+            "realms.system",
+            "\"system\" is a reserved realm name; it is managed by Hearth and cannot be declared in YAML",
+        ));
+    }
+    Ok(())
 }
 
 /// Validates the `branding` section.
@@ -577,6 +602,20 @@ fn validate_realm_auth_configs(
                         format!("invalid duration: {e}"),
                     )
                 })?;
+            }
+        }
+        if let Some(reg) = &auth.registration {
+            if matches!(reg.mode, types::RegistrationModeYaml::DomainRestricted) {
+                let missing = reg
+                    .allowed_domains
+                    .as_ref()
+                    .map_or(true, std::vec::Vec::is_empty);
+                if missing {
+                    return Err(invalid(
+                        &format!("realms.{name}.auth.registration.allowed_domains"),
+                        "mode = domain_restricted requires a non-empty allowed_domains list",
+                    ));
+                }
             }
         }
     }
@@ -1187,6 +1226,22 @@ fn validate_realm_auth_configs_all(
                     issues.push(ValidationIssue {
                         field: format!("realms.{name}.auth.rate_limit.lockout_duration"),
                         reason: "invalid duration format".to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(reg) = &auth.registration {
+            if matches!(reg.mode, types::RegistrationModeYaml::DomainRestricted) {
+                let missing = reg
+                    .allowed_domains
+                    .as_ref()
+                    .map_or(true, std::vec::Vec::is_empty);
+                if missing {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.registration.allowed_domains"),
+                        reason:
+                            "mode = domain_restricted requires a non-empty allowed_domains list"
+                                .to_string(),
                     });
                 }
             }

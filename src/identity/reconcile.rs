@@ -131,6 +131,16 @@ fn reconcile_declared_realms(
     config: &Config,
     report: &mut ReconcileReport,
 ) -> Result<(), IdentityError> {
+    // Defense in depth: the YAML parser rejects `realms.system` before
+    // we get here, but guarding again ensures the reconciler can never
+    // accidentally touch the admin realm if the parse-time check is
+    // ever bypassed (e.g. a future alternate config loader).
+    if yaml_realms.contains_key("system") {
+        return Err(IdentityError::SystemRealmProtected {
+            operation: "reconcile_realms",
+        });
+    }
+
     // Build a set of YAML realm names for archive detection
     let yaml_names: std::collections::HashSet<&str> =
         yaml_realms.keys().map(String::as_str).collect();

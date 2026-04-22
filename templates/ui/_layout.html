@@ -65,33 +65,15 @@
           <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Admin</p>
           <ul class="space-y-0.5">
             <li>
-              <a href="/ui/admin/users" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "users" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "users" %} aria-current="page"{% endif %}>
+              <a href="/ui/admin/admin-users" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "admin-users" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "admin-users" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                Users
+                Admin Users
               </a>
             </li>
             <li>
               <a href="/ui/admin/realms" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "realms" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "realms" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
                 Realms
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/organizations" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "organizations" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "organizations" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-                Organizations
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/applications" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "applications" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "applications" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                Applications
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/sessions" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "sessions" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "sessions" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                Sessions
               </a>
             </li>
             <li>

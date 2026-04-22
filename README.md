@@ -171,6 +171,7 @@ Copy [`hearth.example.yaml`](hearth.example.yaml) to `hearth.yaml` and edit. Eve
 | `server` | `tls_key_path` | path? | — | Requires `tls_cert_path` |
 | `server` | `tls_client_ca_path` | path? | — | For mTLS |
 | `server` | `tls_require_client_cert` | bool | `false` | Requires `tls_client_ca_path` |
+| `server` | `default_realm` | string? | — | Realm name used for bare `/ui/*` URLs on multi-realm deployments. See [Web UI realm routing](#web-ui-realm-routing). Must name an existing realm; validated at startup. |
 | `storage` | `data_dir` | string | `./data` | |
 | `storage` | `wal_max_size_bytes` | u64 | `268435456` | 256 MiB |
 | `storage` | `memtable_flush_bytes` | u64 | `67108864` | 64 MiB |
@@ -438,6 +439,60 @@ server:
   tls_client_ca_path: "/etc/hearth/clients-ca.crt"
   tls_require_client_cert: true
 ```
+
+---
+
+## Web UI realm routing
+
+Every `/ui/*` page belongs to exactly one realm — that's where the user's session, credentials, and policy live. Hearth resolves the realm for each pre-auth request *before* touching the identity engine, and never walks realms looking for a match. Which realm applies depends on the URL shape and how many realms exist.
+
+| Realm count | `server.default_realm` | Bare `/ui/login` etc. behavior |
+|---|---|---|
+| 1 | — (ignored) | Implicit — the sole realm is used. Zero config needed. |
+| >1 | Set | Resolves to the declared default. Forms POST back to the bare URL. |
+| >1 | Unset | Returns **400 with a terse "sign-in URL required" page** — no realm names. Users must be handed `/ui/realms/<name>/...` by their administrator. |
+
+By design, Hearth **never presents an anonymous realm picker**. Enumerating tenants to unauthenticated callers is a discovery leak; Auth0, Okta, and similar providers avoid it by using subdomains or email-based home realm discovery. Hearth's answer is: set `default_realm` if you want a bare URL to work, otherwise publish per-realm URLs directly.
+
+Explicit **`/ui/realms/<name>/...`** URLs bypass the fallback chain entirely. Unknown realm names return 404.
+
+Pre-auth route families (each has a bare and a path-scoped form):
+
+```
+/ui/{login, register, register/sent, forgot-password, forgot-password/sent,
+     reset-password, verify-email, accept-invitation,
+     login/passkey-begin, login/passkey-complete}
+
+/ui/realms/<name>/{...same set...}
+```
+
+Bare URLs are convenient; path-scoped URLs are canonical. Email verification links, password-reset links, and form POSTs generated on a path-scoped page all stay path-scoped so the realm binding survives the round trip. Authenticated pages (`/ui/admin/*`, `/ui/account/*`, `/ui`) resolve the realm from the session cookie and need no path segment.
+
+Operators opt in per deployment:
+
+```yaml
+server:
+  bind_address: 0.0.0.0
+  port: 8420
+  default_realm: public    # optional; only needed when you host >1 realm
+```
+
+Startup hard-fails if `server.default_realm` names a realm that doesn't exist after reconciliation — it's a config bug, not a runtime fallback. Leave it unset on a multi-realm deployment to force every user through an explicit `/ui/realms/<name>/...` URL.
+
+For the exact resolution rules see [`src/protocol/web/realm_resolver.rs`](src/protocol/web/realm_resolver.rs).
+
+---
+
+## Admin console
+
+Hearth administrators live in an invisible **system realm** — distinct from any application realm you declare in `hearth.yaml`. That separation means an operator who administers `customer-portal` and `internal-tools` is the same person either way; they authenticate against Hearth itself, not against one of the tenants.
+
+- **Admin sign-in:** `GET /ui/admin/login`. The session cookie is bound to the system realm, not any app realm.
+- **Admin email verification:** `GET /ui/admin/verify-email?token=...` — the link embedded in the first-run setup email.
+- **The system realm is read-only through public APIs.** `realms: { system: {} }` in YAML is a config error at parse time. `create_realm`, `delete_realm`, `register_user`, `register_client`, and `create_organization` all reject the reserved realm's UUID with a 403 `SystemRealmProtected`. The realm does not appear in `list_realms()`, `get_realm_by_name("system")` returns nothing, and `/ui/realms/system/...` URLs return 404.
+- **Operators run the first-run setup exactly once**, regardless of how many application realms they've declared. The admin user is always placed in the system realm; tenant realms stay empty of operators.
+
+Admins administer tenant realms via a `?realm=<name>` query parameter on admin URLs, which persists for the session via the `hearth_ui_admin_target` cookie. Switching realms is done either by visiting `/ui/admin/realms` and clicking "Administer this realm" next to the target, or by typing `?realm=<name>` in the URL. The admin's session cookie is always bound to the system realm; the target realm is orthogonal.
 
 ---
 
