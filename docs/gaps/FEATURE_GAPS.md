@@ -337,7 +337,7 @@ The fix introduces explicit path-segment routes and a centralized resolver:
 - **Bare `/ui/*` resolution rules** (in [`src/protocol/web/realm_resolver.rs`](../../src/protocol/web/realm_resolver.rs)):
   1. Single-realm deployment → implicit use of the sole realm (no config needed).
   2. Multi-realm + `server.default_realm` set → the declared default is used.
-  3. Multi-realm + `default_realm` unset → GETs render a picker (`templates/ui/choose_realm.html`); POSTs return 400.
+  3. Multi-realm + `default_realm` unset → **terse 400 page** (`templates/ui/realm_required.html`) with no realm names. Hearth deliberately does not present an anonymous picker; enumerating tenants is a discovery leak.
 - **Walk-all-realms fallback eliminated** from `login_submit`, `forgot_password_submit`, `reset_password_submit`, `verify_email`, `passkey_login_begin`, `passkey_login_complete`, `register_*`, and `accept_invitation_page`. All delegate to the shared `resolve_pre_auth_realm` helper in `src/protocol/web/handlers.rs`.
 - **Startup validation:** if `server.default_realm` is set, the named realm MUST exist after reconciliation, else `main.rs` refuses to start.
 - **Admin config editor:** new "Default Realm" field under the Server section of `/ui/admin/settings/editor`.

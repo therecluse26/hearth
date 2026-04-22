@@ -150,6 +150,7 @@ impl SetupSentTemplate {
 /// Login form template.
 #[derive(Template)]
 #[template(path = "ui/login.html")]
+#[allow(clippy::struct_excessive_bools)]
 struct LoginTemplate {
     error: Option<String>,
     return_to: Option<String>,
@@ -160,6 +161,10 @@ struct LoginTemplate {
     forgot_url: String,
     /// URL of the register page (scope-matched).
     register_url: String,
+    /// When `false`, the "Create account" link is hidden — set from the
+    /// realm's [`RegistrationPolicy`] so disabled realms don't advertise
+    /// a dead registration URL.
+    show_register: bool,
     /// Endpoint prefix for passkey AJAX calls, scope-matched.
     passkey_begin_url: String,
     passkey_complete_url: String,
@@ -181,6 +186,7 @@ impl LoginTemplate {
         error: Option<String>,
         return_to: Option<String>,
         action_prefix: &str,
+        show_register: bool,
         product_name: String,
         logo_url: String,
     ) -> Self {
@@ -190,6 +196,7 @@ impl LoginTemplate {
             form_action: format!("{action_prefix}/login"),
             forgot_url: format!("{action_prefix}/forgot-password"),
             register_url: format!("{action_prefix}/register"),
+            show_register,
             passkey_begin_url: format!("{action_prefix}/login/passkey-begin"),
             passkey_complete_url: format!("{action_prefix}/login/passkey-complete"),
             chrome: false,
@@ -211,6 +218,11 @@ impl LoginTemplate {
 #[derive(Template)]
 #[template(path = "ui/verify_email_ok.html")]
 struct VerifyOkTemplate {
+    /// URL the "Sign in" button links to. Scope-matched to the realm
+    /// the verification happened in so a user coming through
+    /// `/ui/realms/<name>/verify-email` doesn't fall back onto the
+    /// bare `/ui/login` resolver.
+    login_url: String,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -225,8 +237,9 @@ struct VerifyOkTemplate {
 }
 
 impl VerifyOkTemplate {
-    fn new(product_name: String, logo_url: String) -> Self {
+    fn new(login_url: String, product_name: String, logo_url: String) -> Self {
         Self {
+            login_url,
             chrome: false,
             active: "",
             user_email: None,
@@ -561,14 +574,18 @@ fn verify_email_impl(
         return render_status(&tmpl, StatusCode::BAD_REQUEST);
     };
 
-    let realm = match resolve_pre_auth_realm(&state, path_realm, false) {
-        PreAuthRealm::Ok { realm, .. } => realm,
+    let (realm, action_prefix) = match resolve_pre_auth_realm(&state, path_realm, false) {
+        PreAuthRealm::Ok {
+            realm,
+            action_prefix,
+        } => (realm, action_prefix),
         PreAuthRealm::Handled(resp) => return resp,
     };
 
     match state.identity.verify_email_token(realm.id(), token) {
         Ok(_) => {
-            let mut tmpl = VerifyOkTemplate::new(product_name, logo_url);
+            let login_url = format!("{action_prefix}/login");
+            let mut tmpl = VerifyOkTemplate::new(login_url, product_name, logo_url);
             tmpl.theme_css.clone_from(&state.theme_css);
             tmpl.realm_theme_css = state.realm_theme_css_for(realm.id());
             render(&tmpl)
@@ -633,10 +650,12 @@ fn login_form_impl(
         } => (realm, action_prefix),
         PreAuthRealm::Handled(resp) => return resp,
     };
+    let show_register = registration_enabled(&realm);
     let mut tmpl = LoginTemplate::new(
         None,
         return_to,
         &action_prefix,
+        show_register,
         state.product_name.clone(),
         state.logo_url.clone(),
     );
@@ -681,7 +700,7 @@ pub async fn login_submit_scoped(
 /// When MFA is enabled, redirects to `/ui/mfa-challenge` with a
 /// pending cookie instead. All auth failures collapse into a single
 /// generic error (enumeration resistance).
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn login_submit_impl(
     state: Arc<WebState>,
     headers: HeaderMap,
@@ -704,7 +723,11 @@ fn login_submit_impl(
     let logo_url = state.logo_url.clone();
     let theme_css = state.theme_css.clone();
     let realm_theme = state.realm_theme_css_for(realm.id());
-    let mfa_url = format!("{action_prefix}/mfa-challenge");
+    let show_register = registration_enabled(&realm);
+    // MFA challenge is cookie-driven — the pending cookie carries the
+    // realm_id, so the URL doesn't need to. Bare URL keeps routing simple
+    // and avoids a scoped mirror route that adds no security value.
+    let mfa_url = "/ui/mfa-challenge".to_string();
 
     let generic_error = {
         let action_prefix = action_prefix.clone();
@@ -715,6 +738,7 @@ fn login_submit_impl(
                 Some("Sign-in failed. Check your credentials and try again.".to_string()),
                 return_to.clone(),
                 &action_prefix,
+                show_register,
                 product_name.clone(),
                 logo_url.clone(),
             );
@@ -787,6 +811,7 @@ fn login_submit_impl(
                 ),
                 return_to.clone(),
                 &action_prefix,
+                show_register,
                 state.product_name.clone(),
                 state.logo_url.clone(),
             );
@@ -1467,6 +1492,7 @@ impl ForgotPasswordTemplate {
 #[derive(Template)]
 #[template(path = "ui/forgot_password_sent.html")]
 struct ForgotPasswordSentTemplate {
+    login_url: String,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1481,8 +1507,9 @@ struct ForgotPasswordSentTemplate {
 }
 
 impl ForgotPasswordSentTemplate {
-    fn new(product_name: String, logo_url: String) -> Self {
+    fn new(login_url: String, product_name: String, logo_url: String) -> Self {
         Self {
+            login_url,
             chrome: false,
             active: "",
             user_email: None,
@@ -1549,6 +1576,7 @@ impl ResetPasswordTemplate {
 #[derive(Template)]
 #[template(path = "ui/reset_password_ok.html")]
 struct ResetPasswordOkTemplate {
+    login_url: String,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1563,8 +1591,9 @@ struct ResetPasswordOkTemplate {
 }
 
 impl ResetPasswordOkTemplate {
-    fn new(product_name: String, logo_url: String) -> Self {
+    fn new(login_url: String, product_name: String, logo_url: String) -> Self {
         Self {
+            login_url,
             chrome: false,
             active: "",
             user_email: None,
@@ -1689,10 +1718,7 @@ fn forgot_password_submit_impl(
 
 /// Renders the "check your email" confirmation page at the bare URL.
 pub async fn forgot_password_sent(State(state): State<Arc<WebState>>) -> Response {
-    let mut tmpl =
-        ForgotPasswordSentTemplate::new(state.product_name.clone(), state.logo_url.clone());
-    tmpl.theme_css.clone_from(&state.theme_css);
-    render(&tmpl)
+    forgot_password_sent_impl(state, None)
 }
 
 /// Realm-scoped variant of the forgot-password "sent" page.
@@ -1700,11 +1726,20 @@ pub async fn forgot_password_sent_scoped(
     State(state): State<Arc<WebState>>,
     axum::extract::Path(realm_name): axum::extract::Path<String>,
 ) -> Response {
-    if let PreAuthRealm::Handled(resp) = resolve_pre_auth_realm(&state, Some(realm_name), false) {
-        return resp;
-    }
-    let mut tmpl =
-        ForgotPasswordSentTemplate::new(state.product_name.clone(), state.logo_url.clone());
+    forgot_password_sent_impl(state, Some(realm_name))
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn forgot_password_sent_impl(state: Arc<WebState>, path_realm: Option<String>) -> Response {
+    let action_prefix = match resolve_pre_auth_realm(&state, path_realm, false) {
+        PreAuthRealm::Ok { action_prefix, .. } => action_prefix,
+        PreAuthRealm::Handled(resp) => return resp,
+    };
+    let mut tmpl = ForgotPasswordSentTemplate::new(
+        format!("{action_prefix}/login"),
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    );
     tmpl.theme_css.clone_from(&state.theme_css);
     render(&tmpl)
 }
@@ -1848,7 +1883,8 @@ fn reset_password_submit_impl(
         .reset_password_with_token(realm.id(), &form.token, &password)
     {
         Ok(_user_id) => {
-            let mut tmpl = ResetPasswordOkTemplate::new(product_name, logo_url);
+            let login_url = format!("{action_prefix}/login");
+            let mut tmpl = ResetPasswordOkTemplate::new(login_url, product_name, logo_url);
             tmpl.theme_css.clone_from(&state.theme_css);
             tmpl.realm_theme_css.clone_from(&realm_theme);
             render(&tmpl)
@@ -1936,6 +1972,7 @@ impl RegisterTemplate {
 #[derive(Template)]
 #[template(path = "ui/register_sent.html")]
 struct RegisterSentTemplate {
+    login_url: String,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -1950,8 +1987,9 @@ struct RegisterSentTemplate {
 }
 
 impl RegisterSentTemplate {
-    fn new(product_name: String, logo_url: String) -> Self {
+    fn new(login_url: String, product_name: String, logo_url: String) -> Self {
         Self {
+            login_url,
             chrome: false,
             active: "",
             user_email: None,
@@ -1991,6 +2029,15 @@ fn registration_policy_flags(realm: &Realm) -> (bool, bool) {
         Some(crate::identity::RegistrationPolicy::InviteOnly) => (false, true),
         Some(_) => (false, false),
     }
+}
+
+/// Returns `true` when self-registration is enabled for the realm, i.e.
+/// the policy is anything other than `None` / `Disabled`. Used by the
+/// login page to decide whether to show the "Create account" link at all
+/// — hiding it on disabled realms avoids advertising a URL that would
+/// only show "Registration unavailable".
+fn registration_enabled(realm: &Realm) -> bool {
+    !registration_policy_flags(realm).0
 }
 
 /// Renders the registration form for the bare `/ui/register` URL.
@@ -2199,24 +2246,28 @@ fn register_submit_impl(
 
 /// Renders the post-submission confirmation page for the bare URL.
 pub async fn register_sent(State(state): State<Arc<WebState>>) -> Response {
-    let mut tmpl = RegisterSentTemplate::new(state.product_name.clone(), state.logo_url.clone());
-    tmpl.theme_css.clone_from(&state.theme_css);
-    render(&tmpl)
+    register_sent_impl(state, None)
 }
 
 /// Renders the post-submission confirmation page for a realm-scoped URL.
-///
-/// The confirmation page doesn't need realm resolution beyond verifying
-/// the realm name exists — it's a static "check your email" screen. We
-/// still run the resolver to 404 unknown realms consistently.
 pub async fn register_sent_scoped(
     State(state): State<Arc<WebState>>,
     axum::extract::Path(realm_name): axum::extract::Path<String>,
 ) -> Response {
-    if let PreAuthRealm::Handled(resp) = resolve_pre_auth_realm(&state, Some(realm_name), false) {
-        return resp;
-    }
-    let mut tmpl = RegisterSentTemplate::new(state.product_name.clone(), state.logo_url.clone());
+    register_sent_impl(state, Some(realm_name))
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn register_sent_impl(state: Arc<WebState>, path_realm: Option<String>) -> Response {
+    let action_prefix = match resolve_pre_auth_realm(&state, path_realm, false) {
+        PreAuthRealm::Ok { action_prefix, .. } => action_prefix,
+        PreAuthRealm::Handled(resp) => return resp,
+    };
+    let mut tmpl = RegisterSentTemplate::new(
+        format!("{action_prefix}/login"),
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    );
     tmpl.theme_css.clone_from(&state.theme_css);
     render(&tmpl)
 }
@@ -2237,21 +2288,16 @@ pub(super) fn internal_error_response() -> Response {
 // Pre-auth realm resolution wrapper
 // ============================================================================
 
-/// One entry in the "choose a realm" picker.
-#[derive(Debug, Clone)]
-struct RealmPickerEntry {
-    /// Realm display name.
-    name: String,
-    /// URL to link to — always `/ui/realms/<name>/login`.
-    url: String,
-}
-
-/// Realm picker template (shown on multi-realm deployments when the URL
-/// doesn't specify one and no `default_realm` is configured).
+/// Terse 400 page shown when a bare `/ui/*` URL can't resolve a realm
+/// on a multi-realm deployment with no `default_realm` configured.
+///
+/// Deliberately lists no realm names — presenting a picker would leak
+/// the tenant inventory to anonymous visitors. Users who need to sign
+/// in should be handed a specific `/ui/realms/<name>/...` URL by their
+/// administrator (email, docs, internal portal).
 #[derive(Template)]
-#[template(path = "ui/choose_realm.html")]
-struct ChooseRealmTemplate {
-    entries: Vec<RealmPickerEntry>,
+#[template(path = "ui/realm_required.html")]
+struct RealmRequiredTemplate {
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2265,10 +2311,9 @@ struct ChooseRealmTemplate {
     realm_theme_css: Option<String>,
 }
 
-impl ChooseRealmTemplate {
-    fn new(entries: Vec<RealmPickerEntry>, product_name: String, logo_url: String) -> Self {
+impl RealmRequiredTemplate {
+    fn new(product_name: String, logo_url: String) -> Self {
         Self {
-            entries,
             chrome: false,
             active: "",
             user_email: None,
@@ -2334,53 +2379,22 @@ pub(super) fn resolve_pre_auth_realm(
             }
         }
         Resolved::NotFound => PreAuthRealm::Handled(not_found_response("Realm not found.")),
-        Resolved::MustChoose(realms) => {
-            if is_mutation {
-                PreAuthRealm::Handled(multi_realm_required_response(state))
-            } else {
-                PreAuthRealm::Handled(render_realm_picker(state, &realms))
-            }
+        Resolved::MustChoose(_realms) => {
+            // Same terse 400 for GET and POST. Intentionally ignores
+            // `is_mutation` and the realm list — enumerating realms to
+            // anonymous callers is the bug we're avoiding.
+            let _ = is_mutation;
+            PreAuthRealm::Handled(realm_required_response(state))
         }
         Resolved::Storage => PreAuthRealm::Handled(internal_error_response()),
     }
 }
 
-/// Renders the realm picker. Entries link to `/ui/realms/<name>/login`;
-/// other pages funnel through login because identity state flows cookie-
-/// wise from there anyway.
-fn render_realm_picker(state: &WebState, realms: &[Realm]) -> Response {
-    let entries: Vec<RealmPickerEntry> = realms
-        .iter()
-        .filter(|r| r.status() == crate::identity::RealmStatus::Active)
-        .map(|r| RealmPickerEntry {
-            name: r.name().to_string(),
-            url: format!("/ui/realms/{}/login", r.name()),
-        })
-        .collect();
-    let mut tmpl =
-        ChooseRealmTemplate::new(entries, state.product_name.clone(), state.logo_url.clone());
-    tmpl.theme_css.clone_from(&state.theme_css);
-    render(&tmpl)
-}
-
-/// Response for mutation requests that couldn't pick a realm. Renders
-/// the picker with a 400 status so the caller at least sees options.
-fn multi_realm_required_response(state: &WebState) -> Response {
-    let realms = state
-        .identity
-        .list_realms(None, 100)
-        .map(|p| p.items)
-        .unwrap_or_default();
-    let entries: Vec<RealmPickerEntry> = realms
-        .iter()
-        .filter(|r| r.status() == crate::identity::RealmStatus::Active)
-        .map(|r| RealmPickerEntry {
-            name: r.name().to_string(),
-            url: format!("/ui/realms/{}/login", r.name()),
-        })
-        .collect();
-    let mut tmpl =
-        ChooseRealmTemplate::new(entries, state.product_name.clone(), state.logo_url.clone());
+/// Renders the terse "explicit realm URL required" 400 page. Lists no
+/// realm names. Shown on multi-realm deployments when a bare `/ui/*`
+/// URL is hit without `server.default_realm` configured.
+fn realm_required_response(state: &WebState) -> Response {
+    let mut tmpl = RealmRequiredTemplate::new(state.product_name.clone(), state.logo_url.clone());
     tmpl.theme_css.clone_from(&state.theme_css);
     render_status(&tmpl, StatusCode::BAD_REQUEST)
 }
@@ -2404,6 +2418,7 @@ struct AcceptInvitationTemplate {
     success: bool,
     org_name: String,
     error_message: String,
+    login_url: String,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -2442,25 +2457,39 @@ fn accept_invitation_page_impl(
     params: AcceptInvitationParams,
     path_realm: Option<String>,
 ) -> Response {
-    let render_result =
-        |success: bool, org_name: String, error_message: String, realm_theme: Option<String>| {
-            render(&AcceptInvitationTemplate {
-                success,
-                org_name,
-                error_message,
-                chrome: false,
-                active: "",
-                user_email: None,
-                is_admin: false,
-                flash: None,
-                csrf: None,
-                narrow: true,
-                product_name: state.product_name.clone(),
-                logo_url: state.logo_url.clone(),
-                theme_css: state.theme_css.clone(),
-                realm_theme_css: realm_theme,
-            })
-        };
+    let render_result = |success: bool,
+                         org_name: String,
+                         error_message: String,
+                         login_url: String,
+                         realm_theme: Option<String>| {
+        render(&AcceptInvitationTemplate {
+            success,
+            org_name,
+            error_message,
+            login_url,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: realm_theme,
+        })
+    };
+
+    let (realm, action_prefix) = match resolve_pre_auth_realm(&state, path_realm, false) {
+        PreAuthRealm::Ok {
+            realm,
+            action_prefix,
+        } => (realm, action_prefix),
+        PreAuthRealm::Handled(resp) => return resp,
+    };
+    let realm_theme = state.realm_theme_css_for(realm.id());
+    let login_url = format!("{action_prefix}/login");
 
     let token = match &params.token {
         Some(t) if !t.is_empty() => t.as_str(),
@@ -2469,16 +2498,11 @@ fn accept_invitation_page_impl(
                 false,
                 String::new(),
                 "No invitation token provided.".to_string(),
-                None,
+                login_url,
+                realm_theme,
             );
         }
     };
-
-    let realm = match resolve_pre_auth_realm(&state, path_realm, false) {
-        PreAuthRealm::Ok { realm, .. } => realm,
-        PreAuthRealm::Handled(resp) => return resp,
-    };
-    let realm_theme = state.realm_theme_css_for(realm.id());
 
     match state.identity.accept_invitation(realm.id(), token) {
         Ok(membership) => {
@@ -2488,12 +2512,13 @@ fn accept_invitation_page_impl(
                 .ok()
                 .flatten()
                 .map_or_else(|| "the organization".to_string(), |o| o.name().to_string());
-            render_result(true, org_name, String::new(), realm_theme)
+            render_result(true, org_name, String::new(), login_url, realm_theme)
         }
         Err(_) => render_result(
             false,
             String::new(),
             "This invitation has expired or is invalid.".to_string(),
+            login_url,
             realm_theme,
         ),
     }

@@ -219,18 +219,24 @@ async fn bare_register_resolves_to_default_when_configured() {
 // ============================================================================
 
 #[tokio::test]
-async fn bare_login_falls_back_to_picker_without_default() {
+async fn bare_login_without_default_returns_terse_error() {
+    // Multi-realm + no default_realm → the bare URL MUST NOT enumerate
+    // realms. A "pick a tenant" list is a tenant-inventory leak; the
+    // correct response is a terse 400 telling the user to ask their
+    // admin for the correct URL.
     let rig = build_rig(&["alpha", "beta"], None);
     let (status, body) = get(&rig.app, "/ui/login").await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
-        body.contains("Choose a realm") || body.contains("choose a realm"),
-        "picker template should render: {}",
+        body.contains("Sign-in URL required") || body.contains("explicit realm"),
+        "terse error page should render: {}",
         &body[..body.len().min(400)]
     );
-    // Links to both realms should be present.
-    assert!(body.contains("/ui/realms/alpha/login"));
-    assert!(body.contains("/ui/realms/beta/login"));
+    assert!(
+        !body.contains("alpha") && !body.contains("beta"),
+        "body must not enumerate realm names: {}",
+        &body[..body.len().min(600)]
+    );
 }
 
 #[tokio::test]

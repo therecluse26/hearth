@@ -22,7 +22,9 @@ use hearth::core::RealmId;
 use hearth::core::SystemClock;
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
-use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
+use hearth::identity::{
+    CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
+};
 use hearth::protocol::web::{self, CookieSecret, WebState};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig};
 use tower::ServiceExt;
@@ -46,8 +48,10 @@ fn null_email_service() -> Arc<EmailService> {
     )
 }
 
-/// Builds a minimal `WebState` suitable for static-asset route tests.
-/// No users, realms, or sessions are created — only the engines are wired.
+/// Builds a minimal `WebState` suitable for static-asset and pre-auth
+/// route tests. A single `"default"` realm is created so the realm
+/// resolver's sole-realm shortcut applies — matching what `reconcile::
+/// reconcile_realms` does on first startup of a real deployment.
 fn minimal_web_state() -> WebState {
     let temp = tempfile::tempdir().expect("tempdir");
     let data_dir = temp.path().to_path_buf();
@@ -77,6 +81,13 @@ fn minimal_web_state() -> WebState {
         Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
         Arc::clone(&clock),
     )) as Arc<dyn hearth::audit::AuditEngine>;
+    identity
+        .create_realm(&CreateRealmRequest {
+            name: "default".to_string(),
+            config: None,
+        })
+        .expect("seed default realm");
+
     let email = null_email_service();
     let onboarding = Arc::new(OnboardingService::new(
         Arc::clone(&identity),

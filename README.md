@@ -450,7 +450,9 @@ Every `/ui/*` page belongs to exactly one realm — that's where the user's sess
 |---|---|---|
 | 1 | — (ignored) | Implicit — the sole realm is used. Zero config needed. |
 | >1 | Set | Resolves to the declared default. Forms POST back to the bare URL. |
-| >1 | Unset | GETs render a realm picker (`templates/ui/choose_realm.html`) listing active realms; POSTs return 400. |
+| >1 | Unset | Returns **400 with a terse "sign-in URL required" page** — no realm names. Users must be handed `/ui/realms/<name>/...` by their administrator. |
+
+By design, Hearth **never presents an anonymous realm picker**. Enumerating tenants to unauthenticated callers is a discovery leak; Auth0, Okta, and similar providers avoid it by using subdomains or email-based home realm discovery. Hearth's answer is: set `default_realm` if you want a bare URL to work, otherwise publish per-realm URLs directly.
 
 Explicit **`/ui/realms/<name>/...`** URLs bypass the fallback chain entirely. Unknown realm names return 404.
 

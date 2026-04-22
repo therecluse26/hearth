@@ -73,8 +73,10 @@
 
   <div class="mt-4 flex justify-center gap-4 text-sm font-medium">
     <a href="{{ forgot_url }}" class="text-ht-content-brand hover:text-ht-brand-deep">Forgot password?</a>
+    {% if show_register %}
     <span class="text-ht-content-muted" aria-hidden="true">·</span>
     <a href="{{ register_url }}" class="text-ht-content-brand hover:text-ht-brand-deep">Create account</a>
+    {% endif %}
   </div>
 </div>
 
