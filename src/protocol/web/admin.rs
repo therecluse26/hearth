@@ -3170,7 +3170,9 @@ pub async fn admin_config_editor_preview(
     let new_yaml = form.yaml;
 
     // Validate the new config
-    let validation_error = Config::from_yaml_str(&new_yaml).err().map(|e| e.to_string());
+    let validation_error = Config::from_yaml_str(&new_yaml)
+        .err()
+        .map(|e| e.to_string());
 
     let diff = if validation_error.is_some() {
         String::new()
@@ -3393,7 +3395,9 @@ pub async fn admin_config_editor_visual_preview(
         }
     };
 
-    let validation_error = Config::from_yaml_str(&new_yaml).err().map(|e| e.to_string());
+    let validation_error = Config::from_yaml_str(&new_yaml)
+        .err()
+        .map(|e| e.to_string());
 
     let diff = if validation_error.is_some() {
         String::new()

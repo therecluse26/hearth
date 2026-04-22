@@ -557,6 +557,60 @@ pub struct RealmAuthYaml {
     /// Per-realm rate limit overrides.
     #[serde(default)]
     pub rate_limit: Option<RateLimitYaml>,
+    /// Controls who may self-register. Defaults to `disabled` when absent.
+    #[serde(default)]
+    pub registration: Option<RegistrationPolicyYaml>,
+}
+
+/// Self-service registration policy in YAML.
+///
+/// `mode` is one of: `disabled`, `open`, `invite_only`, `domain_restricted`.
+/// When `mode = domain_restricted`, `allowed_domains` lists the permitted
+/// email domains (case-insensitive).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RegistrationPolicyYaml {
+    /// One of `disabled` (default), `open`, `invite_only`, `domain_restricted`.
+    #[serde(default)]
+    pub mode: RegistrationModeYaml,
+    /// Required when `mode = domain_restricted`. Ignored otherwise.
+    #[serde(default)]
+    pub allowed_domains: Option<Vec<String>>,
+}
+
+/// Valid values for `realms.<name>.auth.registration.mode` in YAML.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationModeYaml {
+    /// No public signup; only admins create users.
+    #[default]
+    Disabled,
+    /// Anyone may register.
+    Open,
+    /// Must present a valid organization invitation.
+    InviteOnly,
+    /// Email domain must be in `allowed_domains`.
+    DomainRestricted,
+}
+
+impl RegistrationPolicyYaml {
+    /// Projects the YAML declaration into the engine-level enum.
+    ///
+    /// An ill-formed combination (e.g. `mode = domain_restricted` with an
+    /// empty `allowed_domains`) collapses to an empty allow-list, which the
+    /// engine correctly rejects as "no domain matches". Validation in
+    /// `src/config/mod.rs` surfaces these cases to the operator at startup.
+    pub(crate) fn to_domain(&self) -> crate::identity::RegistrationPolicy {
+        match self.mode {
+            RegistrationModeYaml::Disabled => crate::identity::RegistrationPolicy::Disabled,
+            RegistrationModeYaml::Open => crate::identity::RegistrationPolicy::Open,
+            RegistrationModeYaml::InviteOnly => crate::identity::RegistrationPolicy::InviteOnly,
+            RegistrationModeYaml::DomainRestricted => {
+                crate::identity::RegistrationPolicy::DomainRestricted(
+                    self.allowed_domains.clone().unwrap_or_default(),
+                )
+            }
+        }
+    }
 }
 
 /// Password complexity policy in YAML.
@@ -789,6 +843,10 @@ impl RealmYamlConfig {
             .and_then(|r| r.lockout_duration.as_deref())
             .and_then(|s| parse_duration_to_micros(s).ok());
 
+        let registration_policy = auth
+            .and_then(|a| a.registration.as_ref())
+            .map(RegistrationPolicyYaml::to_domain);
+
         crate::identity::RealmConfig {
             session_ttl_micros,
             password_memory_cost,
@@ -805,6 +863,7 @@ impl RealmYamlConfig {
             max_failed_logins,
             lockout_duration_micros,
             passkey_requires_mfa,
+            registration_policy,
         }
     }
 }

@@ -380,6 +380,14 @@ pub fn router(state: WebState) -> Router {
             "/reset-password",
             axum::routing::get(handlers::reset_password_form).post(handlers::reset_password_submit),
         )
+        .route(
+            "/register",
+            axum::routing::get(handlers::register_form).post(handlers::register_submit),
+        )
+        .route(
+            "/register/sent",
+            axum::routing::get(handlers::register_sent),
+        )
         .route("/", axum::routing::get(handlers::dashboard))
         .route(
             "/device",

@@ -754,7 +754,6 @@ async fn admin_app_list_renders() {
     assert!(body.contains("Managed via hearth.yaml"));
 }
 
-
 #[tokio::test]
 async fn admin_app_detail_renders() {
     let rig = build_rig();
@@ -797,8 +796,6 @@ async fn admin_app_detail_renders() {
     assert!(body.contains("DetailApp"));
     assert!(body.contains("https://example.com/cb"));
 }
-
-
 
 // ===========================================================================
 // Session tests

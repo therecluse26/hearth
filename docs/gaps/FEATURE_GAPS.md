@@ -4,7 +4,7 @@
 
 Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
 
 This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
@@ -20,20 +20,6 @@ This document inventories **features not yet implemented** that would block or h
 ---
 
 ## P0 — Blocks Production Deployment
-
-### 1. User Self-Registration
-
-- **Vision ref:** §8.1 "Five-minute on-ramp" — a developer should have "a working login flow" in minutes.
-- **Current State:** Users can only be created by administrators (`POST /admin/users`) or as a side-effect of magic link authentication for unknown emails. There is no public registration form, signup API endpoint, or registration policy system.
-- **What's Missing:**
-  - Public signup endpoint: email + password registration with email verification.
-  - Configurable registration policy per realm (open, invite-only, domain-restricted).
-  - CAPTCHA or proof-of-work integration to prevent automated account creation.
-  - Welcome email with verification link (email templates exist but the flow doesn't).
-  - Custom profile fields during registration.
-  - Rate limiting on registration attempts (IP-based, per-realm).
-- **Why It Matters:** Any application with public users cannot use Hearth without building external signup infrastructure. This is table-stakes for every auth system.
-- **Priority Rationale:** P0 because magic link auto-create is a workaround, not a feature. No production application ships without a signup flow.
 
 ### 2. Self-Service Session Management
 
@@ -61,18 +47,6 @@ This document inventories **features not yet implemented** that would block or h
   - First-party client bypass: skip consent for clients marked as trusted/first-party.
 - **Why It Matters:** OAuth 2.0 best practices and GDPR require explicit user consent before sharing data with third-party clients. Without this, every OAuth client silently receives all requested scopes — a security and compliance gap.
 - **Priority Rationale:** P0 for any deployment with third-party OAuth clients. Deferrable only for first-party-only setups.
-
-### 4. Password Reset / Account Recovery
-
-- **Vision ref:** Implied by §5.3 password hashing support and §8.1 onboarding.
-- **Current State:** Users can authenticate via password, use TOTP recovery codes, and use magic links. Password reset templates and handlers exist in the web UI (`forgot_password.html`, `reset_password.html`, handlers in `src/protocol/web/handlers.rs`), suggesting partial or recent implementation.
-- **What's Missing (verify against current code):**
-  - Confirm the forgot-password → email token → reset flow is end-to-end functional.
-  - Rate limiting on reset requests per email (enumeration resistance).
-  - Optional notification to other verified channels when password changes.
-  - Integration tests covering the full reset cycle.
-- **Why It Matters:** Password reset is the #1 support request for any auth system. Without it, locked-out users require admin intervention.
-- **Priority Rationale:** P0 — may be partially implemented (templates exist). Verify completeness.
 
 ---
 
@@ -326,16 +300,43 @@ Implemented in Phase 1.5. Five transports: Log (dev), SMTP, SendGrid, Postmark, 
 - Delivery status tracking / bounce handling.
 - Per-realm email provider configuration.
 
+### User Self-Registration — COMPLETED ✅
+
+Implemented as the public signup flow with per-realm `RegistrationPolicy` (disabled / open / domain-restricted / invite-only), per-email (3/hr) and per-IP (10/hr) rate limiting, and enumeration-resistant duplicate-email handling. Routes: `GET|POST /ui/register`, `GET /ui/register/sent`. Consumes the existing `issue_email_verification_token` + `verify_email_token` primitives, so registered users land in `PendingVerification` until they click the email link.
+
+**Key files:**
+- Engine: `src/identity/engine.rs` (`register_user`, `create_user_with_status`, `check_registration_rate_limit`)
+- Types: `src/identity/types.rs` (`RegistrationPolicy`, `RegisterUserRequest`, `RegisterUserResponse`)
+- Errors: `src/identity/error.rs` (`RegistrationDisabled`, `RegistrationDomainNotAllowed`, `RegistrationRequiresInvitation`)
+- Validation: `src/identity/validation.rs` (`validate_password_against_policy`)
+- Web: `src/protocol/web/handlers.rs` (`register_form`, `register_submit`, `register_sent`)
+- Templates: `templates/ui/register.html`, `register_sent.html`
+- YAML config: `src/config/types.rs` (`RegistrationPolicyYaml`, `RegistrationModeYaml`)
+- Tests: `tests/self_registration.rs` (9 integration + adversarial tests)
+
+**Remaining enhancements (not blocking):**
+- CAPTCHA / proof-of-work (scope: pluggable anti-abuse). IP rate limit is the minimum viable defense today.
+- Custom profile fields during registration.
+- HTTP-layer handler tests (engine-layer tests cover the critical security paths).
+
+### Password Reset / Account Recovery — COMPLETED ✅
+
+Verified end-to-end functional: `request_password_reset` + `reset_password_with_token` in `src/identity/engine.rs:3400+`, UI handlers in `src/protocol/web/handlers.rs:1500+`, templates at `templates/ui/forgot_password*.html`, `templates/ui/reset_password*.html`, email template at `templates/email/password_reset.html`. Rate-limited (3/hr/email), SHA-256 token hash, 30-min expiry, single-use, enumeration-resistant (silent success for unknown emails).
+
+**Remaining enhancements (not blocking):**
+- Dedicated end-to-end integration test for the full forgot → email → reset flow (core methods covered indirectly).
+- Optional notification to secondary verified channels on password change.
+
 ---
 
 ## Gap Summary Matrix
 
 | # | Gap | Priority | Vision Ref | Effort Estimate |
 |---|-----|----------|------------|-----------------|
-| 1 | User self-registration | P0 | §8.1 | Medium |
+| 1 | ~~User self-registration~~ — **DONE** | P0 | §8.1 | Medium |
 | 2 | Self-service session management | P0 | §5.3 | Small |
 | 3 | OAuth consent screen | P0 | §5.3 | Medium |
-| 4 | Password reset (verify completeness) | P0 | §5.3 | Small (may be done) |
+| 4 | ~~Password reset~~ — **DONE** (verified) | P0 | §5.3 | — |
 | 5 | Social login / external IdP | P1 | §5.3 | Large |
 | 6 | SAML 2.0 | P1 | §5.3, §6.1 | Large |
 | 7 | SCIM 2.0 | P1 | §5.3, §6.1 | Large |
@@ -360,7 +361,7 @@ Implemented in Phase 1.5. Five transports: Log (dev), SMTP, SendGrid, Postmark, 
 ## Recommended Release Sequence
 
 **Minimum viable public release (v0.1-alpha):**
-Gaps 1, 2, 4, 15 — self-registration, session self-service, password reset verification, CI/CD.
+Gaps 1 ✅ and 4 ✅ complete. Remaining: 2, 15 — session self-service, CI/CD.
 
 **Production-ready single-node (v0.x per Phase 1 exit criteria):**
 Add gaps 3, 5, 9, 11 — consent screen, social login, documentation site, Prometheus metrics.
@@ -370,4 +371,4 @@ Add gaps 6, 7, 8, 10, 12, 14, 17, 21 — SAML, SCIM, gRPC, migration tools, back
 
 ---
 
-*Last updated: 2026-04-21. Generated by comparing VISION.md (§1–§12), ARCHITECTURE.md, IMPLEMENTATION_ORDER.md (steps 1–31), and codebase exploration against actual implementation.*
+*Last updated: 2026-04-21. Generated by comparing VISION.md (§1–§12), ARCHITECTURE.md, IMPLEMENTATION_ORDER.md (steps 1–31), and codebase exploration against actual implementation. Revised 2026-04-21 to mark gaps #1 (self-registration) and #4 (password reset) as completed.*

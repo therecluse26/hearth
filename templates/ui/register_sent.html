@@ -1,0 +1,18 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Check your email{% endblock %}
+{% block body %}
+<div class="rounded-md bg-ht-surface-elevated p-8 ring-1 ring-divider-subtle">
+  <div class="mb-4 flex justify-center">
+    <div class="flex h-12 w-12 items-center justify-center rounded-full bg-success/[0.12]">
+      <svg class="h-6 w-6 text-success-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+  </div>
+
+  <h1 class="mb-2 text-center text-lg font-semibold text-ht-content-primary">Check your email</h1>
+  <p class="mb-4 text-center text-sm text-ht-content-secondary">If the email address you entered is eligible for registration, we've sent a verification link. The link expires in 24 hours.</p>
+
+  <div class="mt-6 text-center">
+    <a href="/ui/login" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">Back to sign in</a>
+  </div>
+</div>
+{% endblock %}

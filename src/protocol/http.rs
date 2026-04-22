@@ -724,6 +724,13 @@ fn identity_error_to_response(
         }
         IdentityError::InvitationInvalid => (StatusCode::BAD_REQUEST, "invalid invitation"),
         IdentityError::DuplicateInvitation => (StatusCode::CONFLICT, "duplicate invitation"),
+        IdentityError::RegistrationDisabled => (StatusCode::FORBIDDEN, "registration disabled"),
+        IdentityError::RegistrationDomainNotAllowed { .. } => {
+            (StatusCode::FORBIDDEN, "email domain not permitted")
+        }
+        IdentityError::RegistrationRequiresInvitation => {
+            (StatusCode::FORBIDDEN, "invitation required")
+        }
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)
         | IdentityError::Serialization { .. } => {

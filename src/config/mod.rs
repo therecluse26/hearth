@@ -244,8 +244,7 @@ impl Config {
         }
 
         // Log format
-        if !ObservabilityConfig::VALID_LOG_FORMATS
-            .contains(&self.observability.log_format.as_str())
+        if !ObservabilityConfig::VALID_LOG_FORMATS.contains(&self.observability.log_format.as_str())
         {
             issues.push(ValidationIssue {
                 field: "observability.log_format".to_string(),
@@ -577,6 +576,20 @@ fn validate_realm_auth_configs(
                         format!("invalid duration: {e}"),
                     )
                 })?;
+            }
+        }
+        if let Some(reg) = &auth.registration {
+            if matches!(reg.mode, types::RegistrationModeYaml::DomainRestricted) {
+                let missing = reg
+                    .allowed_domains
+                    .as_ref()
+                    .map_or(true, std::vec::Vec::is_empty);
+                if missing {
+                    return Err(invalid(
+                        &format!("realms.{name}.auth.registration.allowed_domains"),
+                        "mode = domain_restricted requires a non-empty allowed_domains list",
+                    ));
+                }
             }
         }
     }
@@ -1187,6 +1200,22 @@ fn validate_realm_auth_configs_all(
                     issues.push(ValidationIssue {
                         field: format!("realms.{name}.auth.rate_limit.lockout_duration"),
                         reason: "invalid duration format".to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(reg) = &auth.registration {
+            if matches!(reg.mode, types::RegistrationModeYaml::DomainRestricted) {
+                let missing = reg
+                    .allowed_domains
+                    .as_ref()
+                    .map_or(true, std::vec::Vec::is_empty);
+                if missing {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.registration.allowed_domains"),
+                        reason:
+                            "mode = domain_restricted requires a non-empty allowed_domains list"
+                                .to_string(),
                     });
                 }
             }

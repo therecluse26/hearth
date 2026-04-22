@@ -1701,6 +1701,295 @@ pub async fn reset_password_submit(
     )
 }
 
+// ============================================================================
+// Self-service registration
+// ============================================================================
+
+/// Registration form template.
+#[derive(Template)]
+#[template(path = "ui/register.html")]
+#[allow(clippy::struct_excessive_bools)]
+struct RegisterTemplate {
+    disabled: bool,
+    invite_only: bool,
+    email_prefill: String,
+    error: Option<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl RegisterTemplate {
+    fn new(
+        disabled: bool,
+        invite_only: bool,
+        email_prefill: String,
+        error: Option<String>,
+        product_name: String,
+        logo_url: String,
+    ) -> Self {
+        Self {
+            disabled,
+            invite_only,
+            email_prefill,
+            error,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+            product_name,
+            logo_url,
+            theme_css: String::new(),
+            realm_theme_css: None,
+        }
+    }
+}
+
+/// Confirmation page after a successful signup submission.
+#[derive(Template)]
+#[template(path = "ui/register_sent.html")]
+struct RegisterSentTemplate {
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl RegisterSentTemplate {
+    fn new(product_name: String, logo_url: String) -> Self {
+        Self {
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+            product_name,
+            logo_url,
+            theme_css: String::new(),
+            realm_theme_css: None,
+        }
+    }
+}
+
+/// Form data for `POST /ui/register`.
+#[derive(Debug, Deserialize)]
+pub struct RegisterForm {
+    /// Email address.
+    pub email: String,
+    /// Display name.
+    pub display_name: String,
+    /// New password.
+    pub password: String,
+    /// Password confirmation.
+    pub password_confirm: String,
+    /// Optional invitation token (required when policy is invite-only).
+    #[serde(default)]
+    pub invitation_token: Option<String>,
+}
+
+/// Picks the single realm under which self-registration runs.
+///
+/// Phase 1 deployments are overwhelmingly single-realm; multi-realm signup
+/// will eventually route via subdomain or `?realm=` but is out of scope
+/// here. We pick the first active realm returned by the engine and fall
+/// back to the first realm overall if none are Active (matches the
+/// `forgot_password_submit` tolerance for mid-suspension edge cases).
+fn pick_registration_realm(state: &WebState) -> Option<crate::identity::Realm> {
+    let realms = state.identity.list_realms(None, 100).ok()?.items;
+    realms
+        .iter()
+        .find(|r| r.status() == crate::identity::RealmStatus::Active)
+        .cloned()
+        .or_else(|| realms.into_iter().next())
+}
+
+/// Returns `(disabled, invite_only)` flags derived from the realm's
+/// registration policy.
+fn registration_policy_flags(realm: Option<&crate::identity::Realm>) -> (bool, bool) {
+    match realm.and_then(|r| r.config().registration_policy.clone()) {
+        None | Some(crate::identity::RegistrationPolicy::Disabled) => (true, false),
+        Some(crate::identity::RegistrationPolicy::InviteOnly) => (false, true),
+        Some(_) => (false, false),
+    }
+}
+
+/// Renders the registration form.
+pub async fn register_form(State(state): State<Arc<WebState>>) -> Response {
+    let realm = pick_registration_realm(&state);
+    let (disabled, invite_only) = registration_policy_flags(realm.as_ref());
+    let mut tmpl = RegisterTemplate::new(
+        disabled,
+        invite_only,
+        String::new(),
+        None,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    );
+    tmpl.theme_css.clone_from(&state.theme_css);
+    render(&tmpl)
+}
+
+/// Maps `IdentityError` values from `register_user` to user-facing banner text.
+fn register_error_message(err: &IdentityError) -> String {
+    match err {
+        IdentityError::InvalidInput { reason } => reason.clone(),
+        IdentityError::RegistrationDomainNotAllowed { .. } => {
+            "That email domain is not permitted for registration.".to_string()
+        }
+        IdentityError::RegistrationRequiresInvitation => {
+            "A valid invitation is required to register in this realm.".to_string()
+        }
+        IdentityError::RegistrationDisabled => {
+            "Registration is not enabled for this realm.".to_string()
+        }
+        IdentityError::RateLimited => {
+            "Too many registration attempts. Please try again later.".to_string()
+        }
+        _ => "Registration failed. Please try again.".to_string(),
+    }
+}
+
+/// Extracts the caller's IP from proxy-aware headers, if present.
+fn register_client_ip(headers: &HeaderMap) -> Option<String> {
+    if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = v.split(',').next() {
+            let trimmed = first.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Handles registration form submission.
+///
+/// On success, creates a `PendingVerification` user, issues a verification
+/// token, emails it, and redirects to `/ui/register/sent`. On any policy or
+/// validation error, re-renders the form with a banner. Duplicate emails
+/// are handled at the engine layer with a fake-success response so we never
+/// see an error on that path — that preserves enumeration resistance.
+pub async fn register_submit(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Form(form): Form<RegisterForm>,
+) -> Response {
+    let product_name = state.product_name.clone();
+    let logo_url = state.logo_url.clone();
+    let theme_css = state.theme_css.clone();
+    let realm = pick_registration_realm(&state);
+    let (disabled, invite_only) = registration_policy_flags(realm.as_ref());
+
+    let render_err = |msg: String, email: String| {
+        let mut tmpl = RegisterTemplate::new(
+            disabled,
+            invite_only,
+            email,
+            Some(msg),
+            product_name.clone(),
+            logo_url.clone(),
+        );
+        tmpl.theme_css.clone_from(&theme_css);
+        render_status(&tmpl, StatusCode::BAD_REQUEST)
+    };
+
+    if disabled {
+        return render_err(
+            "Registration is not enabled for this realm.".to_string(),
+            form.email,
+        );
+    }
+    if form.password != form.password_confirm {
+        return render_err("Passwords do not match.".to_string(), form.email);
+    }
+    if form.password.len() < 8 {
+        return render_err(
+            "Password must be at least 8 characters.".to_string(),
+            form.email,
+        );
+    }
+
+    let Some(realm) = realm else {
+        tracing::error!("register_submit: no realm available for registration");
+        return internal_error_response();
+    };
+
+    let request = crate::identity::RegisterUserRequest {
+        email: form.email.clone(),
+        display_name: form.display_name,
+        password: CleartextPassword::from_string(form.password),
+        client_ip: register_client_ip(&headers),
+        invitation_token: form.invitation_token.clone(),
+    };
+
+    let response = match state.identity.register_user(realm.id(), &request) {
+        Ok(r) => r,
+        Err(e) => {
+            if !matches!(
+                e,
+                IdentityError::InvalidInput { .. }
+                    | IdentityError::RegistrationDomainNotAllowed { .. }
+                    | IdentityError::RegistrationRequiresInvitation
+                    | IdentityError::RegistrationDisabled
+                    | IdentityError::RateLimited
+            ) {
+                tracing::warn!(error = %e, "register_submit: unexpected engine error");
+            }
+            return render_err(register_error_message(&e), form.email);
+        }
+    };
+
+    if let Some(email_service) = state.email.as_ref() {
+        let base = derive_base_url(&headers);
+        let verify_url = format!(
+            "{base}/ui/verify-email?token={}",
+            response.verification_token
+        );
+        let branding = realm.config().email_branding.clone();
+        if let Err(e) =
+            email_service.send_verification_email(&form.email, &verify_url, branding.as_ref())
+        {
+            tracing::warn!(error = %e, "register_submit: failed to send verification email");
+        }
+    } else {
+        tracing::warn!(
+            "register_submit: no email transport configured; verification cannot be delivered"
+        );
+    }
+
+    Redirect::to("/ui/register/sent").into_response()
+}
+
+/// Renders the post-submission confirmation page.
+pub async fn register_sent(State(state): State<Arc<WebState>>) -> Response {
+    let mut tmpl = RegisterSentTemplate::new(state.product_name.clone(), state.logo_url.clone());
+    tmpl.theme_css.clone_from(&state.theme_css);
+    render(&tmpl)
+}
+
 /// Internal — shared 404 renderer used by the setup gate.
 pub(super) fn not_found_response(body: &str) -> Response {
     let tmpl = crate::protocol::web::handlers_common::NotFoundTemplate::new(body.to_string());

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
+use crate::identity::credentials::CleartextPassword;
 use crate::identity::email::EmailBranding;
 
 /// A cursor-based page of results.
@@ -262,6 +263,42 @@ pub struct CreateUserRequest {
     pub display_name: String,
 }
 
+/// Request to self-register a new user via the public signup flow.
+///
+/// Distinct from `CreateUserRequest` (admin-only) because self-registration
+/// carries anti-abuse signals (client IP) and optional invitation tokens,
+/// and the resulting user lands in [`UserStatus::PendingVerification`]
+/// until the email-verification token is consumed.
+#[derive(Debug)]
+pub struct RegisterUserRequest {
+    /// Email address (will be normalized).
+    pub email: String,
+    /// Display name (will be trimmed and NFC-normalized).
+    pub display_name: String,
+    /// The user's chosen password. Subject to the realm's password policy.
+    pub password: CleartextPassword,
+    /// Client IP for anti-abuse rate limiting. `None` skips the IP bucket
+    /// (embedded callers that don't have an IP surface).
+    pub client_ip: Option<String>,
+    /// Organization invitation token. Required when the realm's policy is
+    /// [`RegistrationPolicy::InviteOnly`]; optional otherwise.
+    pub invitation_token: Option<String>,
+}
+
+/// Result of a successful self-registration.
+///
+/// The plaintext `verification_token` is returned exactly once so the caller
+/// can embed it in a verification URL and email it to the user. It is never
+/// persisted in plaintext.
+#[derive(Debug)]
+pub struct RegisterUserResponse {
+    /// The ID of the newly created (or, on duplicate email, a synthetic
+    /// enumeration-resistant) user.
+    pub user_id: UserId,
+    /// Plaintext email-verification token (base64url, one-shot).
+    pub verification_token: String,
+}
+
 /// Request to update an existing user.
 ///
 /// Only `Some` fields are applied; `None` fields are left unchanged.
@@ -290,6 +327,30 @@ pub enum RealmStatus {
     /// Behaves like `Suspended` (auth denied) but additionally signals
     /// that the realm can be permanently deleted from the admin UI.
     Archived,
+}
+
+/// Controls who may self-register in a realm.
+///
+/// When `None` is stored on `RealmConfig.registration_policy`, the engine
+/// treats it as `Disabled` — a safe default so existing deployments don't
+/// silently open registration after upgrade.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "mode", content = "value")]
+pub enum RegistrationPolicy {
+    /// Public signup is disabled. Only admin-created users exist.
+    Disabled,
+    /// Anyone with a valid email may register.
+    Open,
+    /// Only emails whose domain appears in the list may register.
+    DomainRestricted(Vec<String>),
+    /// Users must present a valid organization invitation token.
+    InviteOnly,
+}
+
+impl Default for RegistrationPolicy {
+    fn default() -> Self {
+        Self::Disabled
+    }
 }
 
 /// Password complexity policy stored in a realm's configuration.
@@ -346,6 +407,8 @@ pub struct RealmConfig {
     /// When `Some(true)`, passkey auth is treated like password auth
     /// with respect to MFA gating.
     pub passkey_requires_mfa: Option<bool>,
+    /// Who may self-register in this realm. `None` means `Disabled`.
+    pub registration_policy: Option<RegistrationPolicy>,
 }
 
 /// A realm record.

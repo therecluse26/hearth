@@ -554,12 +554,14 @@ async fn run_serve(
     let reload_notify = Arc::new(Notify::new());
 
     // Resolve the config file path used at startup — needed for hot-reload.
-    let reload_config_path: Option<PathBuf> = config_path
-        .as_deref()
-        .map(PathBuf::from)
-        .or_else(|| {
+    let reload_config_path: Option<PathBuf> =
+        config_path.as_deref().map(PathBuf::from).or_else(|| {
             let default = PathBuf::from("hearth.yaml");
-            if default.exists() { Some(default) } else { None }
+            if default.exists() {
+                Some(default)
+            } else {
+                None
+            }
         });
 
     web_state = web_state
@@ -945,8 +947,7 @@ fn run_config_reload(
         // SIGHUP-based reload
         #[cfg(unix)]
         {
-            let pid_path =
-                pid_file.map_or_else(|| PathBuf::from("data/hearth.pid"), PathBuf::from);
+            let pid_path = pid_file.map_or_else(|| PathBuf::from("data/hearth.pid"), PathBuf::from);
             let pid_str = std::fs::read_to_string(&pid_path)
                 .map_err(|e| format!("cannot read PID file {}: {e}", pid_path.display()))?;
             let pid: i32 = pid_str

@@ -156,6 +156,17 @@ pub enum IdentityError {
     InvitationInvalid,
     /// An invitation for this email already exists for this organization.
     DuplicateInvitation,
+    /// Self-service registration is disabled for this realm.
+    RegistrationDisabled,
+    /// Self-service registration is enabled but the email's domain is not
+    /// in the realm's allow-list.
+    RegistrationDomainNotAllowed {
+        /// The domain that was rejected.
+        domain: String,
+    },
+    /// Self-service registration is enabled in invite-only mode and the
+    /// caller did not present a valid invitation token.
+    RegistrationRequiresInvitation,
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -232,6 +243,14 @@ impl fmt::Display for IdentityError {
             Self::DuplicateInvitation => {
                 write!(f, "an invitation for this email already exists")
             }
+            Self::RegistrationDisabled => write!(f, "self-service registration is disabled"),
+            Self::RegistrationDomainNotAllowed { domain } => write!(
+                f,
+                "email domain is not permitted for self-service registration: {domain}"
+            ),
+            Self::RegistrationRequiresInvitation => {
+                write!(f, "self-service registration requires a valid invitation")
+            }
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -290,6 +309,9 @@ impl std::error::Error for IdentityError {
             | Self::MemberLimitReached
             | Self::InvitationInvalid
             | Self::DuplicateInvitation
+            | Self::RegistrationDisabled
+            | Self::RegistrationDomainNotAllowed { .. }
+            | Self::RegistrationRequiresInvitation
             | Self::Serialization { .. } => None,
         }
     }

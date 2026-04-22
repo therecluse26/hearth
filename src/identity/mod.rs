@@ -46,8 +46,9 @@ pub use types::{
     CreateUserRequest, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
     Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
     OrganizationRole, OrganizationStatus, Page, PasswordPolicy, RawCredential, Realm, RealmConfig,
-    RealmStatus, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
-    UpdateUserRequest, User, UserStatus,
+    RealmStatus, RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session,
+    SessionContext, UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User,
+    UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
@@ -536,6 +537,24 @@ pub trait IdentityEngine: Send + Sync {
     /// enumeration resistance.
     fn validate_magic_link(&self, realm_id: &RealmId, token: &str)
         -> Result<UserId, IdentityError>;
+
+    // ===== Self-service registration =====
+
+    /// Registers a new user via the public signup flow.
+    ///
+    /// Enforces the realm's [`RegistrationPolicy`], applies per-email
+    /// (3/hr) and per-IP (10/hr) rate limits, creates the user in
+    /// [`UserStatus::PendingVerification`], sets their password, and
+    /// issues an email-verification token. The plaintext token is
+    /// returned exactly once so the caller can email it to the user.
+    ///
+    /// For enumeration resistance, a request targeting an already-registered
+    /// email returns `Ok` with an unusable token rather than an error.
+    fn register_user(
+        &self,
+        realm_id: &RealmId,
+        request: &RegisterUserRequest,
+    ) -> Result<RegisterUserResponse, IdentityError>;
 
     // ===== Password reset =====
 
