@@ -3267,6 +3267,20 @@ pub async fn admin_config_editor_export(
         .into_response()
 }
 
+/// `POST /ui/admin/settings/editor/visual/export` — convert the visual editor's
+/// JSON state to YAML and return it as plain text. This lets the export modal
+/// show the *current* editor state rather than the on-disk file, which matters
+/// in read-only / container environments where "Apply" cannot write to disk.
+pub async fn admin_config_editor_visual_export(
+    RequireAdmin(_session): RequireAdmin,
+    axum::Json(json): axum::Json<serde_json::Value>,
+) -> Response {
+    match editor_json_to_yaml(&json) {
+        Ok(yaml) => (StatusCode::OK, yaml).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
 // --- Config editor helpers ---
 
 /// Reads the raw YAML from the config file on disk.
@@ -3325,9 +3339,9 @@ fn yaml_to_editor_json(yaml_str: &str) -> Result<String, String> {
     serde_json::to_string(&value).map_err(|e| format!("JSON serialization error: {e}"))
 }
 
-/// Try to extract a dotted field path from a serde_yaml parse error.
+/// Try to extract a dotted field path from a `serde_yaml` parse error.
 ///
-/// serde_yaml errors for type mismatches typically look like:
+/// `serde_yaml` errors for type mismatches typically look like:
 /// `server.port: invalid type: string "asdf", expected u16 at line 3 column 9`
 ///
 /// Returns the extracted field path, or `"_yaml"` if no path can be parsed.

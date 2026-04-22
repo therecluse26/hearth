@@ -577,6 +577,10 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_config_editor_visual_apply),
         )
         .route(
+            "/admin/settings/editor/visual/export",
+            axum::routing::post(admin::admin_config_editor_visual_export),
+        )
+        .route(
             "/admin/settings/editor/export",
             axum::routing::get(admin::admin_config_editor_export),
         )

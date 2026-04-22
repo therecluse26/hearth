@@ -34,11 +34,11 @@
       <a href="/ui/admin/settings" class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         System Info
       </a>
-      <a href="/ui/admin/settings/editor/export"
-         class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <button @click="openExport()"
+              class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
         Export YAML
-      </a>
+      </button>
     </div>
   </div>
 
@@ -148,6 +148,56 @@
 
   {# Diff output (shared between modes) #}
   <div id="diff-output" class="mt-4"></div>
+
+  {# ── Export YAML Modal ── #}
+  <div x-show="showingExport" x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+       @keydown.escape.window="showingExport = false">
+    <div class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg bg-ht-surface-elevated shadow-xl ring-1 ring-divider-subtle"
+         @click.outside="showingExport = false"
+         x-transition>
+      {# Header #}
+      <div class="flex items-center justify-between border-b border-divider px-6 py-4">
+        <div class="flex items-center gap-2">
+          <svg class="h-4 w-4 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <h2 class="text-lg font-semibold text-ht-content-primary">hearth.yaml</h2>
+        </div>
+        <button type="button" @click="showingExport = false"
+                class="text-ht-content-muted hover:text-ht-content-secondary">&times;</button>
+      </div>
+
+      {# YAML content #}
+      <div class="flex-1 overflow-y-auto px-6 py-4">
+        {# Loading spinner #}
+        <div x-show="exportLoading" class="flex items-center justify-center py-12">
+          <svg class="h-6 w-6 animate-spin text-ht-content-muted" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+          <span class="ml-2 text-sm text-ht-content-muted">Generating YAML…</span>
+        </div>
+        <div x-show="!exportLoading" class="rounded-md bg-ht-surface-base ring-1 ring-divider-subtle overflow-x-auto">
+          <pre class="p-4 font-mono text-xs leading-relaxed"><code id="export-yaml-highlighted"></code></pre>
+        </div>
+      </div>
+
+      {# Footer #}
+      <div class="flex items-center justify-end gap-3 border-t border-divider px-6 py-3">
+        <button @click="showingExport = false" type="button"
+                class="rounded border border-strong px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover-bg-divider">
+          Close
+        </button>
+        <button @click="copyExport()" type="button"
+                class="inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-semibold transition-colors"
+                :class="exportCopied ? 'bg-success/20 text-success-fg' : 'btn-ember'">
+          <template x-if="!exportCopied">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </template>
+          <template x-if="exportCopied">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </template>
+          <span x-text="exportCopied ? 'Copied!' : 'Copy'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -164,6 +214,42 @@ function configEditor() {
     errors: {},
     validating: false,
     validationPassed: false,
+    showingExport: false,
+    exportCopied: false,
+    exportYaml: '',
+    exportLoading: false,
+
+    async openExport() {
+      this.showingExport = true;
+      this.exportLoading = true;
+      this.exportCopied = false;
+      try {
+        if (this.mode === 'raw') {
+          this.exportYaml = document.getElementById('yaml-editor').value;
+        } else {
+          const resp = await fetch('/ui/admin/settings/editor/visual/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': this.csrf },
+            body: JSON.stringify(this.config),
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          this.exportYaml = await resp.text();
+        }
+        this.$nextTick(() => renderExportHighlight(this.exportYaml));
+      } catch (e) {
+        this.exportYaml = '# Error generating YAML:\n# ' + e.message;
+        this.$nextTick(() => renderExportHighlight(this.exportYaml));
+      } finally {
+        this.exportLoading = false;
+      }
+    },
+
+    copyExport() {
+      navigator.clipboard.writeText(this.exportYaml).then(() => {
+        this.exportCopied = true;
+        setTimeout(() => { this.exportCopied = false; }, 2000);
+      });
+    },
 
     sections: [
       { key: 'server', label: 'Server' },
@@ -393,6 +479,75 @@ function configEditor() {
       }
     },
   };
+}
+
+// Lightweight YAML syntax highlighter — regex-based, no dependencies.
+function highlightYaml(raw) {
+  // HTML-escape first to prevent XSS from config values
+  const esc = raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  return esc.split('\n').map(line => {
+    // Comments
+    if (/^\s*#/.test(line)) {
+      return '<span class="text-ht-content-muted italic">' + line + '</span>';
+    }
+    // Key: value lines
+    const m = line.match(/^(\s*)([\w][\w.\-]*)(:)(.*)/);
+    if (m) {
+      const [, indent, key, colon, rest] = m;
+      return indent
+        + '<span class="text-brand-ember">' + key + '</span>'
+        + '<span class="text-ht-content-muted">' + colon + '</span>'
+        + highlightValue(rest);
+    }
+    // List items (- value)
+    const lm = line.match(/^(\s*-\s)(.*)/);
+    if (lm) {
+      return '<span class="text-ht-content-muted">' + lm[1] + '</span>' + highlightValue(lm[2]);
+    }
+    return line;
+  }).join('\n');
+}
+
+function highlightValue(val) {
+  if (!val || !val.trim()) return val;
+  const v = val.trim();
+  const leading = val.slice(0, val.indexOf(v));
+  // Inline comment
+  const commentIdx = v.search(/\s+#/);
+  let main = v, comment = '';
+  if (commentIdx > 0) {
+    main = v.slice(0, commentIdx);
+    comment = '<span class="text-ht-content-muted italic">' + v.slice(commentIdx) + '</span>';
+  }
+  // Quoted strings
+  if (/^(&quot;.*&quot;|&#x27;.*&#x27;|&apos;.*&apos;|".*"|'.*')$/.test(main)) {
+    return leading + '<span class="text-teal-400">' + main + '</span>' + comment;
+  }
+  // Booleans
+  if (/^(true|false|yes|no|on|off)$/i.test(main)) {
+    return leading + '<span class="text-rose-400">' + main + '</span>' + comment;
+  }
+  // Null
+  if (/^(null|~)$/i.test(main)) {
+    return leading + '<span class="text-ht-content-muted">' + main + '</span>' + comment;
+  }
+  // Numbers
+  if (/^-?\d+(\.\d+)?$/.test(main)) {
+    return leading + '<span class="text-violet-400">' + main + '</span>' + comment;
+  }
+  // Plain strings (unquoted)
+  return leading + '<span class="text-teal-400">' + main + '</span>' + comment;
+}
+
+// Render highlighted YAML into the export modal
+function renderExportHighlight(raw) {
+  const target = document.getElementById('export-yaml-highlighted');
+  if (target && raw) target.innerHTML = highlightYaml(raw);
 }
 </script>
 {% endblock %}

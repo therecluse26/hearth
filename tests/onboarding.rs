@@ -630,10 +630,13 @@ fn complete_setup_surfaces_email_delivery_failure() {
         matches!(err, OnboardingError::Email(_)),
         "expected Email(_), got {err:?}"
     );
-    // The failure leaves the setup token in place so the operator can retry.
+    // The setup token is removed before email delivery because all critical
+    // state (user, password, Zanzibar tuple, verification token) is persisted
+    // and the verification URL is logged. This prevents the "first-run setup
+    // required" warning from firing on every restart.
     assert!(
-        temp.path().join(SETUP_TOKEN_FILENAME).exists(),
-        "setup token must persist when email delivery fails so operator can retry"
+        !temp.path().join(SETUP_TOKEN_FILENAME).exists(),
+        "setup token must be removed even when email delivery fails"
     );
 }
 

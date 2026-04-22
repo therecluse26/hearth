@@ -471,15 +471,17 @@ impl OnboardingService {
             "onboarding: verification link (check logs if email delivery fails)"
         );
 
-        // 8a. Send the email. Failure here is fatal for the request but the
-        //     user is already persisted; retrying the setup form will fail with
-        //     DuplicateEmail. The operator can recover using the link above or
-        //     by issuing a new verification token via the admin tools.
+        // 8. Retire the setup token. All critical state (user, password,
+        //    Zanzibar tuple, verification token) is persisted and the
+        //    verification URL is logged above, so the operator can recover
+        //    even if email delivery fails below.
+        remove_setup_token(&self.data_dir);
+
+        // 9. Send the email. Failure is surfaced to the UI but the setup
+        //    token is already removed so restarts won't re-trigger the
+        //    "first-run setup required" warning.
         self.email
             .send_verification_email(admin_email, &verification_url, None)?;
-
-        // 8b. Retire the setup token.
-        remove_setup_token(&self.data_dir);
 
         Ok(SetupOutcome {
             realm_id,
