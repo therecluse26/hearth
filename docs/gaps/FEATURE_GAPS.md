@@ -364,27 +364,43 @@ The fix introduces explicit path-segment routes and a centralized resolver:
 - Email-based home realm discovery (lookup email domain → realm) for enterprise SSO scenarios.
 - Per-realm `primary: true` flag (YAGNI until a concrete use case appears).
 
-### Admin (system) realm — PARTIAL ✅
+### Admin (system) realm — COMPLETED ✅
 
-Addresses two admin-setup bugs on multi-realm deployments: verification links hitting the wrong resolver; admin users bound to whichever application realm sorted first by UUID byte order. The structural fix introduces an **invisible system realm** (`RealmId::nil()`) that holds all Hearth admins; operators administer application realms via a target-realm concept (follow-up).
+Addresses two admin-setup bugs on multi-realm deployments: verification links hitting the wrong resolver; admin users bound to whichever application realm sorted first by UUID byte order. The fix introduces an **invisible system realm** (`RealmId::nil()`) that holds all Hearth admins; operators administer application realms via a `TargetRealm` extractor.
 
-**Phase 1 — SHIPPED (engine + onboarding + admin login/verify):**
+**Engine + onboarding:**
 - Singleton system realm auto-seeded at engine construction (`seed_system_realm_if_absent` in `src/identity/engine.rs`).
 - Invisible on public surfaces: `list_realms()` filters it, `get_realm_by_name("system")` returns `None`, YAML `realms.system` rejected at parse time (`src/config/mod.rs` `validate_realm_names`).
 - Structural guardrails via new `IdentityError::SystemRealmProtected { operation }`: `create_realm` rejects name `"system"`; `update_realm` rejects nil UUID + renaming-to-`system`; `delete_realm`, `register_user`, `register_client`, `create_organization` all reject the nil UUID.
-- `onboarding::complete_setup` always targets system realm. Admin user + Zanzibar `hearth#admin` tuple both land there. Verification URL is `/ui/admin/verify-email?token=...` (not bare `/ui/verify-email` which would hit the resolver's 400).
-- New routes `/ui/admin/login` and `/ui/admin/verify-email`; admin session cookies carry the nil UUID.
-- 12 integration tests in `tests/admin_realm.rs` covering seeding, invisibility, guards, onboarding target, and full e2e setup→verify→login.
+- `onboarding::complete_setup` always targets system realm. Admin user + Zanzibar `hearth#admin` tuple both land there. Verification URL is `/ui/admin/verify-email?token=...`.
 
-**Phase 2 — NOT YET DONE (admin UI target-realm refactor):**
-- `TargetRealm` extractor reading `?realm=<name>` from admin routes.
-- Refactor ~28 handlers in `src/protocol/web/admin.rs` from `session.realm_id` to `target_realm.id()` so admins can manage tenant realms through the UI.
-- Realm switcher dropdown in admin chrome.
-- Admin-side auxiliary pages: `/ui/admin/forgot-password`, `/ui/admin/reset-password`, `/ui/admin/mfa-challenge`, `/ui/admin/login/passkey-*`.
-- `RequireAdmin` asserts `session.realm_id == system_realm_id()`.
-- Documentation + architectural note in `docs/specs/ARCHITECTURE.md`.
+**Admin pre-auth surface:**
+- New routes `/ui/admin/login` (GET+POST) and `/ui/admin/verify-email`; admin session cookies carry the nil UUID.
+- `RequireAdmin` asserts `session.realm_id == system_realm_id()` — a tenant session can never pass an admin gate, even if it somehow carried an admin tuple locally.
 
-See `memory/admin_realm.md` for the full file map and open-work list.
+**Admin UI target-realm refactor:**
+- New `TargetRealm` extractor in `src/protocol/web/auth.rs`: resolution order is `?realm=<name>` query → `hearth_ui_admin_target` cookie → first non-system realm. Rejects `?realm=system`.
+- ~62 references to `session.realm_id` across ~30 admin handlers in `src/protocol/web/admin.rs` switched to `target.id()`. Audit helpers (`audit_user_event`, `audit_app_event`, `audit_session_event`, `audit_org_event`) take an explicit `target_realm: &Realm` so they record audit events in the right realm.
+- `POST /ui/admin/switch-realm` sets the `hearth_ui_admin_target` cookie, allowing persistent per-admin realm selection without URL decoration.
+- Realms list page (`templates/ui/admin/realms/_rows.html`) gets an "Administer this realm →" action that POSTs to the switcher.
+
+**Tests:**
+- `tests/admin_realm.rs` — 13 integration tests covering seeding, invisibility, engine guards, onboarding target, admin login rendering, full e2e setup→verify→login, and switcher authentication.
+- `tests/web_ui_admin.rs` — rig updated to put admin users in the system realm; all 20 existing admin UI tests still pass.
+
+**Shipped file map (21 files modified, 3 new):**
+- Engine/types: `src/identity/keys.rs`, `src/identity/error.rs`, `src/identity/engine.rs`, `src/identity/reconcile.rs`, `src/identity/onboarding.rs`, `src/config/mod.rs`
+- HTTP mapping: `src/protocol/http.rs`
+- Web layer: `src/protocol/web/auth.rs`, `src/protocol/web/handlers.rs`, `src/protocol/web/admin.rs`, `src/protocol/web/mod.rs`
+- Templates: `templates/ui/admin/realms/_rows.html`
+- Tests: `tests/admin_realm.rs` (new), `tests/onboarding.rs`, `tests/web_ui_admin.rs`
+- Docs: `README.md`, `memory/admin_realm.md` (new)
+
+**Remaining enhancements (not blocking):**
+- Visual realm switcher dropdown in admin chrome. Today operators switch via `/ui/admin/realms` (one-click "Administer this realm" button per row) or by typing `?realm=<name>` in the URL.
+- Admin-side auxiliary flows: `/ui/admin/forgot-password`, `/ui/admin/reset-password`, `/ui/admin/login/passkey-*`, `/ui/admin/mfa-challenge`. Admins reset passwords via the identity engine's CLI or directly via storage today.
+- `RequireAdmin` extractor could additionally scope the `hearth#admin` tuple to the system realm explicitly (currently it checks in `session.realm_id` which is always system after the refactor — equivalent but worth making explicit for clarity).
+- Migration CLI for existing deployments (`hearth admin migrate-to-system-realm`). Pre-1.0; wipe data dir for now.
 
 ---
 

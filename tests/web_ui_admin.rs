@@ -95,10 +95,15 @@ fn build_rig() -> TestRig {
         })
         .expect("create realm");
 
-    // Admin user.
+    // Admin user lives in the system realm (nil UUID) — this matches
+    // the invariant enforced by `RequireAdmin`. Tests that exercise
+    // admin routes target the application realm ("Acme") via the
+    // TargetRealm extractor, which defaults to the first non-system
+    // realm when `?realm=<name>` is absent.
+    let admin_realm_id = hearth::core::RealmId::new(uuid::Uuid::nil());
     let admin_user = identity
         .create_user(
-            realm.id(),
+            &admin_realm_id,
             &CreateUserRequest {
                 email: "admin@acme.test".to_string(),
                 display_name: "Admin".to_string(),
@@ -107,11 +112,11 @@ fn build_rig() -> TestRig {
         .expect("create admin user");
     let pw = CleartextPassword::from_string("correct-horse-battery-staple".to_string());
     identity
-        .set_password(realm.id(), admin_user.id(), &pw)
+        .set_password(&admin_realm_id, admin_user.id(), &pw)
         .expect("set admin password");
     identity
         .update_user(
-            realm.id(),
+            &admin_realm_id,
             admin_user.id(),
             &UpdateUserRequest {
                 email: None,
@@ -122,18 +127,18 @@ fn build_rig() -> TestRig {
         .expect("activate admin");
     let admin_session = identity
         .create_session(
-            realm.id(),
+            &admin_realm_id,
             admin_user.id(),
             &hearth::identity::SessionContext::default(),
         )
         .expect("create admin session");
 
-    // Write admin Zanzibar tuple.
+    // Write admin Zanzibar tuple in the system realm.
     let obj = ObjectRef::new("hearth", "admin").expect("obj");
     let sub = SubjectRef::direct("user", &admin_user.id().as_uuid().to_string()).expect("sub");
     let tuple = RelationshipTuple::new(obj, "admin", sub).expect("tuple");
     authz
-        .write_tuples(realm.id(), &[TupleWrite::Touch(tuple)])
+        .write_tuples(&admin_realm_id, &[TupleWrite::Touch(tuple)])
         .expect("write admin tuple");
 
     // Non-admin user.
@@ -215,7 +220,10 @@ fn auth_cookie(session_id: &SessionId, realm_id: &RealmId, csrf: &str) -> String
 }
 
 fn admin_cookie(rig: &TestRig, csrf: &str) -> String {
-    auth_cookie(&rig.admin_session_id, &rig.realm_id, csrf)
+    // Admin sessions are bound to the system realm (nil UUID), not the
+    // application realm (`rig.realm_id`).
+    let admin_realm = hearth::core::RealmId::new(uuid::Uuid::nil());
+    auth_cookie(&rig.admin_session_id, &admin_realm, csrf)
 }
 
 fn non_admin_cookie(rig: &TestRig, csrf: &str) -> String {
@@ -376,8 +384,11 @@ async fn admin_create_user_duplicate_email_shows_error() {
     let csrf = "csrf-dup";
     let cookie = admin_cookie(&rig, csrf);
 
+    // `bob@acme.test` is the non-admin test user seeded in the Acme
+    // realm by `build_rig`. The admin account lives in the system
+    // realm and doesn't collide with Acme users by design.
     let form = format!(
-        "email=admin%40acme.test&display_name=Clone&password=super-secret-password-12&_csrf={csrf}"
+        "email=bob%40acme.test&display_name=Clone&password=super-secret-password-12&_csrf={csrf}"
     );
     let response = rig
         .app

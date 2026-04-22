@@ -48,7 +48,7 @@ use crate::identity::{
     Session, UpdateOrganizationRequest, UpdateUserRequest, User, UserStatus,
 };
 
-use super::auth::{verify_csrf_form_field, RequireAdmin};
+use super::auth::{verify_csrf_form_field, RequireAdmin, TargetRealm};
 use super::templates::{render, Flash};
 use super::WebState;
 
@@ -102,13 +102,14 @@ struct UserListTemplate {
 pub async fn admin_users_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     Query(params): Query<UserListParams>,
 ) -> Response {
     let search_query = params.q.clone().unwrap_or_default();
     let result = if search_query.len() >= 2 {
         state
             .identity
-            .search_users(&session.realm_id, &search_query, 20)
+            .search_users(target.id(), &search_query, 20)
             .map(|users| Page {
                 items: users,
                 next_cursor: None,
@@ -116,7 +117,7 @@ pub async fn admin_users_list(
     } else {
         state
             .identity
-            .list_users(&session.realm_id, params.cursor.as_deref(), 20)
+            .list_users(target.id(), params.cursor.as_deref(), 20)
     };
 
     match result {
@@ -208,6 +209,7 @@ pub struct CreateUserForm {
 pub async fn admin_user_create_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     Form(form): Form<CreateUserForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -219,20 +221,17 @@ pub async fn admin_user_create_submit(
         display_name: form.display_name.clone(),
     };
 
-    match state.identity.create_user(&session.realm_id, &req) {
+    match state.identity.create_user(target.id(), &req) {
         Ok(user) => {
             // Set the initial password.
             let pw = CleartextPassword::from_string(form.password);
-            if let Err(e) = state
-                .identity
-                .set_password(&session.realm_id, user.id(), &pw)
-            {
+            if let Err(e) = state.identity.set_password(target.id(), user.id(), &pw) {
                 tracing::warn!(error = %e, "set initial password after create_user failed");
             }
 
             // Activate the user (skip email verification for admin-created users).
             let _ = state.identity.update_user(
-                &session.realm_id,
+                target.id(),
                 user.id(),
                 &UpdateUserRequest {
                     email: None,
@@ -242,7 +241,7 @@ pub async fn admin_user_create_submit(
             );
 
             // Audit.
-            audit_user_event(&state, &session, user.id(), "create");
+            audit_user_event(&state, &session, &target.0, user.id(), "create");
             Redirect::to(&format!("/ui/admin/users/{}", user.id().as_uuid())).into_response()
         }
         Err(IdentityError::DuplicateEmail) => render(&UserNewTemplate {
@@ -386,6 +385,7 @@ pub struct UserDetailParams {
 pub async fn admin_user_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
     Query(params): Query<UserDetailParams>,
 ) -> Response {
@@ -394,7 +394,7 @@ pub async fn admin_user_detail(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    let user = match state.identity.get_user(&session.realm_id, &uid) {
+    let user = match state.identity.get_user(target.id(), &uid) {
         Ok(Some(u)) => u,
         Ok(None) => return super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -406,7 +406,7 @@ pub async fn admin_user_detail(
     // Load related data for the detail page
     let raw_sessions = state
         .identity
-        .list_sessions_by_user(&session.realm_id, &uid, None, 10)
+        .list_sessions_by_user(target.id(), &uid, None, 10)
         .unwrap_or_default();
     let sessions: Vec<UserSessionRow> = raw_sessions
         .items
@@ -423,12 +423,12 @@ pub async fn admin_user_detail(
 
     let mfa_enabled = state
         .identity
-        .mfa_enabled(&session.realm_id, &uid)
+        .mfa_enabled(target.id(), &uid)
         .unwrap_or(false);
 
     let raw_creds = state
         .identity
-        .list_webauthn_credentials(&session.realm_id, &uid)
+        .list_webauthn_credentials(target.id(), &uid)
         .unwrap_or_default();
     let webauthn_credentials: Vec<WebAuthnCredRow> = raw_creds
         .iter()
@@ -451,14 +451,11 @@ pub async fn admin_user_detail(
     // Load org memberships and resolve org names
     let memberships = state
         .identity
-        .list_user_organizations(&session.realm_id, &uid, None, 50)
+        .list_user_organizations(target.id(), &uid, None, 50)
         .unwrap_or_default();
     let mut org_memberships = Vec::with_capacity(memberships.items.len());
     for m in &memberships.items {
-        let (org_name, org_slug) = match state
-            .identity
-            .get_organization(&session.realm_id, m.org_id())
-        {
+        let (org_name, org_slug) = match state.identity.get_organization(target.id(), m.org_id()) {
             Ok(Some(o)) => (o.name().to_string(), o.slug().to_string()),
             _ => ("(unknown)".to_string(), String::new()),
         };
@@ -479,7 +476,7 @@ pub async fn admin_user_detail(
         other => other.to_string(),
     });
 
-    let is_user_admin = check_user_admin(&state, &session.realm_id, &uid);
+    let is_user_admin = check_user_admin(&state, target.id(), &uid);
     let created_at_display = format_ts(user.created_at());
     let updated_at_display = format_ts(user.updated_at());
 
@@ -510,7 +507,8 @@ pub async fn admin_user_detail(
 /// `POST /ui/admin/users/:id/reset-password` — sends a password reset email.
 pub async fn admin_user_send_reset(
     State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
@@ -518,7 +516,7 @@ pub async fn admin_user_send_reset(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    let user = match state.identity.get_user(&session.realm_id, &uid) {
+    let user = match state.identity.get_user(target.id(), &uid) {
         Ok(Some(u)) => u,
         Ok(None) => return super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -529,7 +527,7 @@ pub async fn admin_user_send_reset(
 
     match state
         .identity
-        .request_password_reset(&session.realm_id, user.email())
+        .request_password_reset(target.id(), user.email())
     {
         Ok(Some(_token)) => {
             // Token generated — in production, the email service sends it.
@@ -551,6 +549,7 @@ pub async fn admin_user_send_reset(
 pub async fn admin_user_disable_mfa(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
@@ -558,7 +557,7 @@ pub async fn admin_user_disable_mfa(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    match state.identity.disable_mfa(&session.realm_id, &uid) {
+    match state.identity.disable_mfa(target.id(), &uid) {
         Ok(()) => {
             tracing::info!(user_id = %uid, admin = %session.user_email, "admin disabled MFA");
         }
@@ -574,6 +573,7 @@ pub async fn admin_user_disable_mfa(
 pub async fn admin_user_revoke_session(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath((user_id, session_id)): AxumPath<(String, String)>,
 ) -> Response {
     let sid = match session_id.parse::<uuid::Uuid>() {
@@ -581,7 +581,7 @@ pub async fn admin_user_revoke_session(
         Err(_) => return super::handlers_common::not_found("Session not found"),
     };
 
-    match state.identity.revoke_session(&session.realm_id, &sid) {
+    match state.identity.revoke_session(target.id(), &sid) {
         Ok(()) => {
             tracing::info!(session_id = %session_id, admin = %session.user_email, "admin revoked session");
         }
@@ -597,6 +597,7 @@ pub async fn admin_user_revoke_session(
 pub async fn admin_user_revoke_webauthn(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath((user_id, cred_id_b64)): AxumPath<(String, String)>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
@@ -611,7 +612,7 @@ pub async fn admin_user_revoke_webauthn(
 
     match state
         .identity
-        .revoke_webauthn_credential(&session.realm_id, &uid, &cred_id_bytes)
+        .revoke_webauthn_credential(target.id(), &uid, &cred_id_bytes)
     {
         Ok(()) => {
             tracing::info!(user_id = %uid, admin = %session.user_email, "admin revoked WebAuthn credential");
@@ -670,6 +671,7 @@ pub struct UserOrgView {
 pub async fn admin_user_edit_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
@@ -677,10 +679,10 @@ pub async fn admin_user_edit_form(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    match state.identity.get_user(&session.realm_id, &uid) {
+    match state.identity.get_user(target.id(), &uid) {
         Ok(Some(user)) => {
-            let is_user_admin = check_user_admin(&state, &session.realm_id, &uid);
-            let org_memberships = resolve_user_org_memberships(&state, &session.realm_id, &uid);
+            let is_user_admin = check_user_admin(&state, target.id(), &uid);
+            let org_memberships = resolve_user_org_memberships(&state, target.id(), &uid);
             render(&UserEditTemplate {
                 form_email: user.email().to_string(),
                 form_display_name: user.display_name().to_string(),
@@ -730,6 +732,7 @@ pub struct EditUserForm {
 pub async fn admin_user_edit_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
     Form(form): Form<EditUserForm>,
 ) -> Response {
@@ -749,28 +752,29 @@ pub async fn admin_user_edit_submit(
         status,
     };
 
-    match state.identity.update_user(&session.realm_id, &uid, &req) {
+    match state.identity.update_user(target.id(), &uid, &req) {
         Ok(_updated) => {
             // Sync admin role if changed
             let want_admin = form.admin.is_some();
-            let has_admin = check_user_admin(&state, &session.realm_id, &uid);
+            let has_admin = check_user_admin(&state, target.id(), &uid);
             if want_admin != has_admin {
-                if let Err(e) = set_user_admin(&state, &session.realm_id, &uid, want_admin) {
+                if let Err(e) = set_user_admin(&state, target.id(), &uid, want_admin) {
                     tracing::warn!(error = %e, user_id = %uid, want_admin, "admin role toggle failed");
                 }
             }
-            audit_user_event(&state, &session, &uid, "update");
+            audit_user_event(&state, &session, &target.0, &uid, "update");
             Redirect::to(&format!("/ui/admin/users/{}", uid.as_uuid())).into_response()
         }
         Err(IdentityError::DuplicateEmail) => render_edit_error(
             &state,
             &session,
+            &target.0,
             &uid,
             "A user with that email already exists.",
             &form,
         ),
         Err(IdentityError::InvalidInput { reason }) => {
-            render_edit_error(&state, &session, &uid, &reason, &form)
+            render_edit_error(&state, &session, &target.0, &uid, &reason, &form)
         }
         Err(IdentityError::UserNotFound) => super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -778,6 +782,7 @@ pub async fn admin_user_edit_submit(
             render_edit_error(
                 &state,
                 &session,
+                &target.0,
                 &uid,
                 "Unable to update user right now.",
                 &form,
@@ -801,6 +806,7 @@ pub struct DeleteUserForm {
 pub async fn admin_user_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
     Form(form): Form<DeleteUserForm>,
 ) -> Response {
@@ -813,9 +819,9 @@ pub async fn admin_user_delete(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    match state.identity.delete_user(&session.realm_id, &uid) {
+    match state.identity.delete_user(target.id(), &uid) {
         Ok(()) => {
-            audit_user_event(&state, &session, &uid, "delete");
+            audit_user_event(&state, &session, &target.0, &uid, "delete");
             Redirect::to("/ui/admin/users").into_response()
         }
         Err(IdentityError::UserNotFound) => super::handlers_common::not_found("User not found"),
@@ -845,20 +851,17 @@ fn parse_user_status(s: &str) -> Option<UserStatus> {
 fn render_edit_error(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
+    target: &Realm,
     uid: &crate::core::UserId,
     msg: &str,
     form: &EditUserForm,
 ) -> Response {
-    let user = state
-        .identity
-        .get_user(&session.realm_id, uid)
-        .ok()
-        .flatten();
+    let user = state.identity.get_user(target.id(), uid).ok().flatten();
 
     match user {
         Some(ref user) => {
-            let is_user_admin = check_user_admin(state, &session.realm_id, uid);
-            let org_memberships = resolve_user_org_memberships(state, &session.realm_id, uid);
+            let is_user_admin = check_user_admin(state, target.id(), uid);
+            let org_memberships = resolve_user_org_memberships(state, target.id(), uid);
             render(&UserEditTemplate {
                 user: user.clone(),
                 error: Some(msg.to_string()),
@@ -889,6 +892,7 @@ fn render_edit_error(
 fn audit_user_event(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
+    target_realm: &Realm,
     target_user_id: &crate::core::UserId,
     op: &'static str,
 ) {
@@ -900,7 +904,7 @@ fn audit_user_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        realm_id: session.realm_id.clone(),
+        realm_id: target_realm.id().clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "user".to_string(),
@@ -1108,7 +1112,7 @@ fn audit_realm_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        realm_id: session.realm_id.clone(),
+        realm_id: realm_id.clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "realm".to_string(),
@@ -1149,11 +1153,12 @@ struct AppListTemplate {
 pub async fn admin_apps_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     Query(params): Query<PaginationParams>,
 ) -> Response {
     match state
         .identity
-        .list_clients(&session.realm_id, params.cursor.as_deref(), 20)
+        .list_clients(target.id(), params.cursor.as_deref(), 20)
     {
         Ok(page) => render(&AppListTemplate {
             applications: page.items,
@@ -1203,6 +1208,7 @@ struct AppDetailTemplate {
 pub async fn admin_app_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(cid): AxumPath<String>,
 ) -> Response {
     let client_id = match cid.parse::<uuid::Uuid>() {
@@ -1210,7 +1216,7 @@ pub async fn admin_app_detail(
         Err(_) => return super::handlers_common::not_found("Application not found"),
     };
 
-    match state.identity.get_client(&session.realm_id, &client_id) {
+    match state.identity.get_client(target.id(), &client_id) {
         Ok(Some(app)) => render(&AppDetailTemplate {
             app,
             client_secret: None,
@@ -1241,6 +1247,7 @@ pub async fn admin_app_detail(
 pub async fn admin_app_regenerate_secret(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(cid): AxumPath<String>,
     Form(form): Form<DeleteForm>,
 ) -> Response {
@@ -1255,12 +1262,12 @@ pub async fn admin_app_regenerate_secret(
 
     match state
         .identity
-        .regenerate_client_secret(&session.realm_id, &client_id)
+        .regenerate_client_secret(target.id(), &client_id)
     {
         Ok(new_secret) => {
-            audit_app_event(&state, &session, &client_id, "update");
+            audit_app_event(&state, &session, &target.0, &client_id, "update");
             // Re-fetch the client to render the detail page with the new secret.
-            match state.identity.get_client(&session.realm_id, &client_id) {
+            match state.identity.get_client(target.id(), &client_id) {
                 Ok(Some(app)) => render(&AppDetailTemplate {
                     app,
                     client_secret: Some(new_secret),
@@ -1297,6 +1304,7 @@ pub async fn admin_app_regenerate_secret(
 fn audit_app_event(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
+    target_realm: &Realm,
     client_id: &ClientId,
     op: &'static str,
 ) {
@@ -1308,7 +1316,7 @@ fn audit_app_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        realm_id: session.realm_id.clone(),
+        realm_id: target_realm.id().clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "client".to_string(),
@@ -1515,18 +1523,19 @@ fn resolve_user_email(
 pub async fn admin_sessions_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     Query(params): Query<PaginationParams>,
 ) -> Response {
     match state
         .identity
-        .list_sessions_by_realm(&session.realm_id, params.cursor.as_deref(), 20)
+        .list_sessions_by_realm(target.id(), params.cursor.as_deref(), 20)
     {
         Ok(page) => {
             let rows: Vec<SessionRow> = page
                 .items
                 .into_iter()
                 .map(|s| {
-                    let email = resolve_user_email(&state, &session.realm_id, s.user_id());
+                    let email = resolve_user_email(&state, target.id(), s.user_id());
                     let device_label = s.device_label().unwrap_or("Unknown device").to_string();
                     let ip_address = s.ip_address().unwrap_or("\u{2014}").to_string();
                     SessionRow {
@@ -1566,6 +1575,7 @@ pub async fn admin_sessions_list(
 pub async fn admin_session_revoke(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     htmx: super::templates::IsHtmx,
     AxumPath(sid): AxumPath<String>,
     Form(form): Form<DeleteForm>,
@@ -1579,12 +1589,9 @@ pub async fn admin_session_revoke(
         Err(_) => return super::handlers_common::not_found("Session not found"),
     };
 
-    match state
-        .identity
-        .revoke_session(&session.realm_id, &session_id)
-    {
+    match state.identity.revoke_session(target.id(), &session_id) {
         Ok(()) => {
-            audit_session_event(&state, &session, &session_id, "revoke");
+            audit_session_event(&state, &session, &target.0, &session_id, "revoke");
             if htmx.0 {
                 super::templates::htmx_toast_response("Session revoked.", "success")
             } else {
@@ -1605,6 +1612,7 @@ pub async fn admin_session_revoke(
 fn audit_session_event(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
+    target_realm: &Realm,
     target_session_id: &SessionId,
     op: &'static str,
 ) {
@@ -1614,7 +1622,7 @@ fn audit_session_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        realm_id: session.realm_id.clone(),
+        realm_id: target_realm.id().clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "session".to_string(),
@@ -1722,6 +1730,7 @@ struct AuditRowsTemplate {
 pub async fn admin_audit_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     htmx: super::templates::IsHtmx,
     Query(params): Query<AuditFilterParams>,
 ) -> Response {
@@ -1746,7 +1755,7 @@ pub async fn admin_audit_list(
 
     let limit = params.limit.unwrap_or(50).min(200);
     let query = crate::audit::AuditQuery {
-        realm_id: session.realm_id.clone(),
+        realm_id: target.id().clone(),
         start_time,
         end_time,
         actor: params.actor.clone().filter(|s| !s.is_empty()),
@@ -1805,8 +1814,9 @@ pub async fn admin_audit_list(
 pub async fn admin_audit_verify_integrity(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
 ) -> Response {
-    match state.audit.verify_integrity(&session.realm_id, None, None) {
+    match state.audit.verify_integrity(target.id(), None, None) {
         Ok(true) => render(&AuditListTemplate {
             events: Vec::new(),
             form_actor: String::new(),
@@ -1877,6 +1887,7 @@ pub struct TestEmailForm {
 pub async fn admin_test_email(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     Form(form): Form<TestEmailForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -1892,7 +1903,7 @@ pub async fn admin_test_email(
         Some(email_service) => {
             let realm_branding = state
                 .identity
-                .get_realm(&session.realm_id)
+                .get_realm(target.id())
                 .ok()
                 .flatten()
                 .and_then(|t| t.config().email_branding.clone());
@@ -1943,11 +1954,12 @@ struct OrgListTemplate {
 pub async fn admin_orgs_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     Query(params): Query<PaginationParams>,
 ) -> Response {
     match state
         .identity
-        .list_organizations(&session.realm_id, params.cursor.as_deref(), 20)
+        .list_organizations(target.id(), params.cursor.as_deref(), 20)
     {
         Ok(page) => render(&OrgListTemplate {
             organizations: page.items,
@@ -2041,6 +2053,7 @@ pub struct CreateOrgForm {
 pub async fn admin_org_create_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     Form(form): Form<CreateOrgForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -2058,7 +2071,7 @@ pub async fn admin_org_create_submit(
     });
 
     match state.identity.create_organization(
-        &session.realm_id,
+        target.id(),
         &CreateOrganizationRequest {
             name: form.name.clone(),
             slug: form.slug.clone(),
@@ -2067,7 +2080,7 @@ pub async fn admin_org_create_submit(
         },
     ) {
         Ok(org) => {
-            audit_org_event(&state, &session, org.id(), "create");
+            audit_org_event(&state, &session, &target.0, org.id(), "create");
             Redirect::to(&format!("/ui/admin/organizations/{}", org.id().as_uuid())).into_response()
         }
         Err(IdentityError::DuplicateOrgSlug) => render(&OrgNewTemplate {
@@ -2162,6 +2175,7 @@ pub struct OrgDetailParams {
 pub async fn admin_org_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Query(params): Query<OrgDetailParams>,
 ) -> Response {
@@ -2170,7 +2184,7 @@ pub async fn admin_org_detail(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
-    let org = match state.identity.get_organization(&session.realm_id, &org_id) {
+    let org = match state.identity.get_organization(target.id(), &org_id) {
         Ok(Some(o)) => o,
         Ok(None) => return super::handlers_common::not_found("Organization not found"),
         Err(e) => {
@@ -2181,7 +2195,7 @@ pub async fn admin_org_detail(
 
     let memberships = state
         .identity
-        .list_members(&session.realm_id, &org_id, None, 100)
+        .list_members(target.id(), &org_id, None, 100)
         .map(|p| p.items)
         .unwrap_or_default();
 
@@ -2191,7 +2205,7 @@ pub async fn admin_org_detail(
         .map(|m| {
             let (name, email) = state
                 .identity
-                .get_user(&session.realm_id, m.user_id())
+                .get_user(target.id(), m.user_id())
                 .ok()
                 .flatten()
                 .map_or_else(
@@ -2208,7 +2222,7 @@ pub async fn admin_org_detail(
 
     let invitations = state
         .identity
-        .list_invitations(&session.realm_id, &org_id, None, 100)
+        .list_invitations(target.id(), &org_id, None, 100)
         .map(|p| p.items)
         .unwrap_or_default();
 
@@ -2273,6 +2287,7 @@ struct OrgEditTemplate {
 pub async fn admin_org_edit_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
 ) -> Response {
     let org_id = match oid.parse::<uuid::Uuid>() {
@@ -2280,7 +2295,7 @@ pub async fn admin_org_edit_form(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
-    match state.identity.get_organization(&session.realm_id, &org_id) {
+    match state.identity.get_organization(target.id(), &org_id) {
         Ok(Some(org)) => render(&OrgEditTemplate {
             form_name: org.name().to_string(),
             form_description: org.description().to_string(),
@@ -2327,6 +2342,7 @@ pub struct EditOrgForm {
 pub async fn admin_org_edit_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Form(form): Form<EditOrgForm>,
 ) -> Response {
@@ -2356,7 +2372,7 @@ pub async fn admin_org_edit_submit(
     });
 
     match state.identity.update_organization(
-        &session.realm_id,
+        target.id(),
         &org_id,
         &UpdateOrganizationRequest {
             name: Some(form.name.clone()),
@@ -2366,7 +2382,7 @@ pub async fn admin_org_edit_submit(
         },
     ) {
         Ok(_) => {
-            audit_org_event(&state, &session, &org_id, "update");
+            audit_org_event(&state, &session, &target.0, &org_id, "update");
             Redirect::to(&format!("/ui/admin/organizations/{}", org_id.as_uuid())).into_response()
         }
         Err(IdentityError::OrganizationNotFound) => {
@@ -2387,6 +2403,7 @@ pub async fn admin_org_edit_submit(
 pub async fn admin_org_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Form(form): Form<DeleteForm>,
 ) -> Response {
@@ -2399,12 +2416,9 @@ pub async fn admin_org_delete(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
-    match state
-        .identity
-        .delete_organization(&session.realm_id, &org_id)
-    {
+    match state.identity.delete_organization(target.id(), &org_id) {
         Ok(()) => {
-            audit_org_event(&state, &session, &org_id, "delete");
+            audit_org_event(&state, &session, &target.0, &org_id, "delete");
             Redirect::to("/ui/admin/organizations").into_response()
         }
         Err(IdentityError::OrganizationNotFound) => {
@@ -2437,6 +2451,7 @@ pub struct AddMemberForm {
 pub async fn admin_org_add_member(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Form(form): Form<AddMemberForm>,
 ) -> Response {
@@ -2460,7 +2475,7 @@ pub async fn admin_org_add_member(
 
     match state
         .identity
-        .add_member(&session.realm_id, &org_id, &user_id, role)
+        .add_member(target.id(), &org_id, &user_id, role)
     {
         Ok(_) => org_redirect_flash(&org_id, "Member added successfully", "success"),
         Err(IdentityError::AlreadyMember) => {
@@ -2523,6 +2538,7 @@ pub struct MemberPickerParams {
 pub async fn admin_org_member_picker(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Query(params): Query<MemberPickerParams>,
     headers: axum::http::HeaderMap,
@@ -2536,7 +2552,7 @@ pub async fn admin_org_member_picker(
     let page = if query.len() >= 2 {
         state
             .identity
-            .search_users(&session.realm_id, &query, 20)
+            .search_users(target.id(), &query, 20)
             .map(|users| Page {
                 items: users,
                 next_cursor: None,
@@ -2544,7 +2560,7 @@ pub async fn admin_org_member_picker(
     } else {
         state
             .identity
-            .list_users(&session.realm_id, params.cursor.as_deref(), 20)
+            .list_users(target.id(), params.cursor.as_deref(), 20)
     };
 
     let (users, next_cursor) = match page {
@@ -2611,6 +2627,7 @@ pub struct BulkAddMembersForm {
 pub async fn admin_org_bulk_add_members(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Form(form): Form<BulkAddMembersForm>,
 ) -> Response {
@@ -2640,7 +2657,7 @@ pub async fn admin_org_bulk_add_members(
 
         match state
             .identity
-            .add_member(&session.realm_id, &org_id, &user_id, role)
+            .add_member(target.id(), &org_id, &user_id, role)
         {
             Ok(_) => added += 1,
             Err(IdentityError::AlreadyMember) => skipped += 1,
@@ -2667,6 +2684,7 @@ pub async fn admin_org_bulk_add_members(
 pub async fn admin_org_remove_member(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
     Form(form): Form<DeleteForm>,
 ) -> Response {
@@ -2684,10 +2702,7 @@ pub async fn admin_org_remove_member(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
-    match state
-        .identity
-        .remove_member(&session.realm_id, &org_id, &user_id)
-    {
+    match state.identity.remove_member(target.id(), &org_id, &user_id) {
         Ok(()) => org_redirect_flash(&org_id, "Member removed", "success"),
         Err(e) => {
             tracing::warn!(error = %e, "remove_member failed");
@@ -2714,6 +2729,7 @@ pub struct UpdateRoleForm {
 pub async fn admin_org_update_role(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
     Form(form): Form<UpdateRoleForm>,
 ) -> Response {
@@ -2735,7 +2751,7 @@ pub async fn admin_org_update_role(
 
     match state
         .identity
-        .update_member_role(&session.realm_id, &org_id, &user_id, role)
+        .update_member_role(target.id(), &org_id, &user_id, role)
     {
         Ok(_) => org_redirect_flash(&org_id, "Role updated", "success"),
         Err(e) => {
@@ -2765,6 +2781,7 @@ pub struct InviteForm {
 pub async fn admin_org_invite(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Form(form): Form<InviteForm>,
 ) -> Response {
@@ -2780,7 +2797,7 @@ pub async fn admin_org_invite(
     let role = parse_org_role(&form.role);
 
     match state.identity.create_invitation(
-        &session.realm_id,
+        target.id(),
         &CreateInvitationRequest {
             org_id: org_id.clone(),
             email: form.email.clone(),
@@ -2793,7 +2810,7 @@ pub async fn admin_org_invite(
             if let Some(ref email_service) = state.email {
                 let org_name = state
                     .identity
-                    .get_organization(&session.realm_id, &org_id)
+                    .get_organization(target.id(), &org_id)
                     .ok()
                     .flatten()
                     .map_or_else(|| "your organization".to_string(), |o| o.name().to_string());
@@ -2807,7 +2824,7 @@ pub async fn admin_org_invite(
 
                 let realm_branding = state
                     .identity
-                    .get_realm(&session.realm_id)
+                    .get_realm(target.id())
                     .ok()
                     .flatten()
                     .and_then(|t| t.config().email_branding.clone());
@@ -2840,6 +2857,7 @@ pub async fn admin_org_invite(
 pub async fn admin_org_revoke_invite(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
     AxumPath((oid, iid)): AxumPath<(String, String)>,
     Form(form): Form<DeleteForm>,
 ) -> Response {
@@ -2859,7 +2877,7 @@ pub async fn admin_org_revoke_invite(
 
     match state
         .identity
-        .revoke_invitation(&session.realm_id, &invitation_id)
+        .revoke_invitation(target.id(), &invitation_id)
     {
         Ok(()) => {}
         Err(e) => {
@@ -2898,7 +2916,8 @@ struct UserSearchResultsTemplate {
 /// `GET /ui/admin/api/users/search?q=...` — returns HTML fragment for HTMX.
 pub async fn admin_api_user_search(
     State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
     Query(params): Query<UserSearchParams>,
 ) -> Response {
     let query = params.q.trim().to_string();
@@ -2907,7 +2926,7 @@ pub async fn admin_api_user_search(
     } else {
         state
             .identity
-            .search_users(&session.realm_id, &query, 10)
+            .search_users(target.id(), &query, 10)
             .unwrap_or_default()
     };
 
@@ -2924,6 +2943,60 @@ pub async fn admin_api_user_search(
 // ---------------------------------------------------------------------------
 // Config reload API
 // ---------------------------------------------------------------------------
+
+/// Form body for `POST /ui/admin/switch-realm`.
+#[derive(Debug, serde::Deserialize)]
+pub struct SwitchRealmForm {
+    /// Target realm name. Validated by [`super::auth::TargetRealm`]
+    /// on the next admin request; persisted in the
+    /// `hearth_ui_admin_target` cookie here.
+    pub realm: String,
+    /// CSRF token echoed from the `hearth_ui_csrf` cookie.
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+    /// Optional `return_to` path — admins usually land back on the
+    /// same page they were administering.
+    #[serde(default)]
+    pub return_to: Option<String>,
+}
+
+/// `POST /ui/admin/switch-realm` — changes the admin's currently-
+/// targeted application realm by setting the
+/// `hearth_ui_admin_target` cookie. Redirects back to `return_to`.
+pub async fn admin_switch_realm(
+    State(_state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    Form(form): Form<SwitchRealmForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    // The realm name is NOT validated here — TargetRealm validates on
+    // every subsequent request and falls back to the first realm if
+    // the cookie is stale. Keep this handler cheap: no storage hit.
+    // Reject the reserved system name to avoid an obviously-wrong
+    // cookie value being set.
+    if form.realm == crate::identity::keys::SYSTEM_REALM_NAME || form.realm.is_empty() {
+        return (StatusCode::BAD_REQUEST, "invalid realm name").into_response();
+    }
+
+    let return_to = form
+        .return_to
+        .as_deref()
+        .and_then(super::auth::sanitize_return_to)
+        .unwrap_or_else(|| "/ui/admin/users".to_string());
+
+    let cookie = format!(
+        "{}={}; HttpOnly; Path=/ui; SameSite=Lax",
+        super::auth::ADMIN_TARGET_COOKIE,
+        form.realm,
+    );
+    let mut response = Redirect::to(&return_to).into_response();
+    #[allow(clippy::unwrap_used)]
+    let cookie_header = axum::http::HeaderValue::from_str(&cookie).unwrap();
+    response.headers_mut().append("set-cookie", cookie_header);
+    response
+}
 
 /// `POST /admin/api/config/reload` — triggers config hot-reload.
 ///
@@ -3000,6 +3073,7 @@ fn parse_org_role(s: &str) -> OrganizationRole {
 fn audit_org_event(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
+    target_realm: &Realm,
     org_id: &OrganizationId,
     op: &'static str,
 ) {
@@ -3011,7 +3085,7 @@ fn audit_org_event(
         _ => return,
     };
     if let Err(e) = state.audit.append(&CreateAuditEvent {
-        realm_id: session.realm_id.clone(),
+        realm_id: target_realm.id().clone(),
         actor: session.user_id.as_uuid().to_string(),
         action,
         resource_type: "organization".to_string(),

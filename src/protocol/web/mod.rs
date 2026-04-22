@@ -627,6 +627,11 @@ pub fn router(state: WebState) -> Router {
             "/admin/api/config/reload",
             axum::routing::post(admin::admin_api_config_reload),
         )
+        // --- Admin realm switcher ---
+        .route(
+            "/admin/switch-realm",
+            axum::routing::post(admin::admin_switch_realm),
+        )
         // --- Applications (read-only — managed via hearth.yaml) ---
         .route(
             "/admin/applications",

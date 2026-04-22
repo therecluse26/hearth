@@ -492,7 +492,7 @@ Hearth administrators live in an invisible **system realm** — distinct from an
 - **The system realm is read-only through public APIs.** `realms: { system: {} }` in YAML is a config error at parse time. `create_realm`, `delete_realm`, `register_user`, `register_client`, and `create_organization` all reject the reserved realm's UUID with a 403 `SystemRealmProtected`. The realm does not appear in `list_realms()`, `get_realm_by_name("system")` returns nothing, and `/ui/realms/system/...` URLs return 404.
 - **Operators run the first-run setup exactly once**, regardless of how many application realms they've declared. The admin user is always placed in the system realm; tenant realms stay empty of operators.
 
-Today's admin console UI is still being refactored to target tenant realms via `?realm=<name>` rather than the session realm — so post-login, the user/org/app pages temporarily show empty lists on multi-realm deployments. Follow-up work tracked in [`docs/gaps/FEATURE_GAPS.md`](docs/gaps/FEATURE_GAPS.md) ("Admin (system) realm — PARTIAL").
+Admins administer tenant realms via a `?realm=<name>` query parameter on admin URLs, which persists for the session via the `hearth_ui_admin_target` cookie. Switching realms is done either by visiting `/ui/admin/realms` and clicking "Administer this realm" next to the target, or by typing `?realm=<name>` in the URL. The admin's session cookie is always bound to the system realm; the target realm is orthogonal.
 
 ---
 

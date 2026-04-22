@@ -53,6 +53,15 @@ use super::WebState;
 pub const SESSION_COOKIE: &str = "hearth_ui_session";
 /// Name of the page-readable cookie carrying the CSRF token.
 pub const CSRF_COOKIE: &str = "hearth_ui_csrf";
+/// Name of the cookie carrying the admin's currently-selected target
+/// realm name.
+///
+/// Set by the realm switcher in the admin UI; read by [`TargetRealm`].
+/// Does not need to be signed — the realm name is validated against
+/// storage on every extraction, and a tampered cookie just yields the
+/// wrong page (not an authentication bypass).
+pub const ADMIN_TARGET_COOKIE: &str = "hearth_ui_admin_target";
+
 /// Name of the short-lived cookie carrying the pending MFA challenge state.
 ///
 /// Issued after successful password verification when MFA is enabled.
@@ -443,6 +452,173 @@ pub fn resolve_session(
     identity.get_session(realm_id, session_id).ok().flatten()
 }
 
+/// Extracts the application realm the admin is currently
+/// administering — the `?realm=<name>` query parameter on admin URLs.
+///
+/// Admin sessions are always bound to the system realm
+/// ([`crate::identity::keys::system_realm_id`]), which is not a place
+/// for tenant users, OAuth clients, or organizations. The admin UI
+/// operates on tenant realms via this extractor.
+///
+/// Resolution rules:
+///
+/// 1. If `?realm=<name>` is present and names an existing non-system
+///    realm, use it.
+/// 2. If `?realm=<name>` is present but names the reserved `system`
+///    realm or a nonexistent realm, return 404.
+/// 3. Otherwise, if the `hearth_ui_admin_target` cookie is set and
+///    names an existing non-system realm, use it.
+/// 4. Otherwise, fall back to the first realm returned by
+///    [`crate::identity::IdentityEngine::list_realms`] (which already
+///    filters out the system realm). Operators without any tenant
+///    realm see 404; handlers should render a friendly "no realms
+///    yet" state where applicable.
+///
+/// Callers that need to handle "no realms yet" specially can extract
+/// [`Option<TargetRealm>`] instead and branch on `None`.
+#[derive(Debug, Clone)]
+pub struct TargetRealm(pub crate::identity::Realm);
+
+impl TargetRealm {
+    /// Returns the resolved `RealmId`.
+    #[must_use]
+    pub fn id(&self) -> &crate::core::RealmId {
+        self.0.id()
+    }
+}
+
+impl<S> FromRequestParts<S> for TargetRealm
+where
+    Arc<WebState>: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let web_state = Arc::<WebState>::from_ref(state);
+
+        // Parse `?realm=<name>` from the URL query string. We don't
+        // use axum's Query<T> extractor here so we can gracefully
+        // accept admin URLs that carry many other unrelated query
+        // params without having to define a catch-all struct.
+        let query_realm = parts
+            .uri
+            .query()
+            .and_then(|q| {
+                q.split('&')
+                    .find_map(|p| p.strip_prefix("realm="))
+                    .map(|v| {
+                        // URL-decode '+' and '%' escapes minimally — realm
+                        // names are slug-ish so this usually returns the
+                        // value unchanged.
+                        percent_decode(v)
+                    })
+            })
+            .filter(|s| !s.is_empty());
+
+        // Try the query parameter first. Explicit URL overrides the
+        // cookie so deep-links and share-links behave predictably.
+        if let Some(name) = query_realm {
+            return resolve_named_realm(&web_state, &name);
+        }
+
+        // Fall back to the admin-target cookie. Unsigned — a tampered
+        // cookie just yields a different page, not an auth bypass, and
+        // the engine validates the name before use.
+        if let Some(name) = cookie_value(parts, ADMIN_TARGET_COOKIE) {
+            let decoded = percent_decode(name);
+            if !decoded.is_empty() && decoded != crate::identity::keys::SYSTEM_REALM_NAME {
+                if let Ok(Some(realm)) = web_state.identity.get_realm_by_name(&decoded) {
+                    return Ok(TargetRealm(realm));
+                }
+                // Cookie references a stale/deleted realm; fall through
+                // to the first-realm default rather than 404.
+            }
+        }
+
+        // Default: first non-system realm.
+        match web_state.identity.list_realms(None, 1) {
+            Ok(page) => match page.items.into_iter().next() {
+                Some(realm) => Ok(TargetRealm(realm)),
+                None => Err(render_status(
+                    &super::handlers_common::NotFoundTemplate::new(
+                        "No application realms exist yet. Declare one in hearth.yaml to begin."
+                            .to_string(),
+                    ),
+                    StatusCode::NOT_FOUND,
+                )),
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "TargetRealm: list_realms failed");
+                Err(render_status(
+                    &super::handlers_common::ServerErrorTemplate::new(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ))
+            }
+        }
+    }
+}
+
+/// Resolves a realm by name for the `TargetRealm` extractor. Rejects
+/// the reserved system-realm name so an admin cannot accidentally
+/// target the admin realm with `?realm=system`.
+#[allow(clippy::result_large_err)] // Response is inherently ~128B; boxing on the rare failure path isn't worth the extra heap alloc on each successful call.
+fn resolve_named_realm(web_state: &Arc<WebState>, name: &str) -> Result<TargetRealm, Response> {
+    if name == crate::identity::keys::SYSTEM_REALM_NAME {
+        return Err(render_status(
+            &super::handlers_common::NotFoundTemplate::new("Realm not found.".to_string()),
+            StatusCode::NOT_FOUND,
+        ));
+    }
+    match web_state.identity.get_realm_by_name(name) {
+        Ok(Some(realm)) => Ok(TargetRealm(realm)),
+        Ok(None) => Err(render_status(
+            &super::handlers_common::NotFoundTemplate::new("Realm not found.".to_string()),
+            StatusCode::NOT_FOUND,
+        )),
+        Err(e) => {
+            tracing::warn!(error = %e, realm = %name, "TargetRealm: get_realm_by_name failed");
+            Err(render_status(
+                &super::handlers_common::ServerErrorTemplate::new(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+        }
+    }
+}
+
+/// Minimal percent-decoding for realm-name query values. Handles `+`
+/// (space) and `%XX` escapes; returns the input unchanged on any
+/// malformed sequence. Realm names are slug-ish so most callers will
+/// get the value back verbatim.
+fn percent_decode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte as char);
+                    i += 3;
+                } else {
+                    out.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b as char);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// Like [`UiSession`] but additionally requires the caller has the
 /// `hearth#admin` relation in Zanzibar.
 #[derive(Debug, Clone)]
@@ -458,6 +634,18 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let session = UiSession::from_request_parts(parts, state).await?;
         let web_state = Arc::<WebState>::from_ref(state);
+
+        // Admin sessions always live in the system realm. A tenant-realm
+        // session cannot carry admin privilege; reject with 403 rather
+        // than leak "the admin URL exists" by redirecting. The caller
+        // shows the same page to tenant users whether they hit the URL
+        // with or without a session.
+        if session.realm_id != crate::identity::keys::system_realm_id() {
+            return Err(render_status(
+                &ForbiddenTemplate::new(Some(session.user_email.clone())),
+                StatusCode::FORBIDDEN,
+            ));
+        }
 
         // INVARIANT: "hearth"/"admin"/"user" are valid ObjectRef
         // components (short ASCII strings).
