@@ -246,7 +246,7 @@ impl EmbeddedIdentityEngine {
     ) -> Result<Self, IdentityError> {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let signing_key = Arc::new(SigningKey::generate()?);
-        Ok(Self {
+        let engine = Self {
             storage,
             clock,
             config,
@@ -262,7 +262,9 @@ impl EmbeddedIdentityEngine {
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
-        })
+        };
+        engine.seed_system_realm_if_absent()?;
+        Ok(engine)
     }
 
     /// Creates a new identity engine with a pre-existing signing key.
@@ -275,7 +277,7 @@ impl EmbeddedIdentityEngine {
         signing_key: Arc<SigningKey>,
     ) -> Self {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
-        Self {
+        let engine = Self {
             storage,
             clock,
             config,
@@ -291,7 +293,64 @@ impl EmbeddedIdentityEngine {
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
+        };
+        // Best-effort: if seeding fails here, tests that expect a system
+        // realm will notice and surface it. `new()` panics on failure; this
+        // constructor swallows so existing test harnesses don't break.
+        let _ = engine.seed_system_realm_if_absent();
+        engine
+    }
+
+    /// Ensures the reserved system realm exists in storage. Called from
+    /// both constructors. Idempotent — safe to run on every startup.
+    ///
+    /// The system realm is Hearth's private admin-user home. See
+    /// [`crate::identity::keys::system_realm_id`] for the invariants.
+    fn seed_system_realm_if_absent(&self) -> Result<(), IdentityError> {
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+        let sys_realm = keys::system_realm_id();
+        let realm_key = keys::encode_realm_id(&sys_realm);
+
+        // Already seeded? Skip.
+        if self
+            .storage
+            .get(&sys_realm, &realm_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Ok(());
         }
+
+        let now = self.clock.now();
+        let realm = Realm::new(
+            sys_realm.clone(),
+            keys::SYSTEM_REALM_NAME.to_string(),
+            RealmStatus::Active,
+            crate::identity::types::RealmConfig::default(),
+            now,
+            now,
+        );
+        let realm_bytes = Self::serialize_realm(&realm)?;
+        let realm_signing_key = SigningKey::generate()?;
+        let key_storage_key = keys::encode_realm_signing_key(&sys_realm);
+        let key_bytes = realm_signing_key.pkcs8_bytes().to_vec();
+        // Note: we intentionally do NOT write a name index entry — that
+        // would let `get_realm_by_name("system")` find it, violating the
+        // "invisible to lookups" invariant.
+
+        self.storage
+            .put_batch(
+                &sys_realm,
+                &[(realm_key, realm_bytes), (key_storage_key, key_bytes)],
+            )
+            .map_err(Self::storage_err)?;
+
+        {
+            let mut key_cache = self.realm_signing_keys.lock().expect("key cache lock");
+            key_cache.insert(sys_realm.as_uuid().to_string(), Arc::new(realm_signing_key));
+        }
+
+        Ok(())
     }
 
     /// Returns a reference to the signing key.
@@ -963,6 +1022,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     // ===== Realm lifecycle (Phase 1 Step 19) =====
 
     fn create_realm(&self, request: &CreateRealmRequest) -> Result<Realm, IdentityError> {
+        // Reserved name — the system realm is Hearth-managed.
+        if request.name == keys::SYSTEM_REALM_NAME {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "create_realm",
+            });
+        }
         // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. See `realm_ops_lock` docs.
@@ -1029,6 +1094,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     fn get_realm_by_name(&self, name: &str) -> Result<Option<Realm>, IdentityError> {
+        // The reserved system realm is invisible to name lookups. Even
+        // though its record is in storage, we refuse to surface it here
+        // so that realm resolvers, registration policies, and admin UI
+        // dropdowns can never accidentally route into it.
+        if name == keys::SYSTEM_REALM_NAME {
+            return Ok(None);
+        }
         let sys_realm = keys::system_realm_id();
         let name_key = keys::encode_realm_name(name);
         let id_bytes = self
@@ -1057,6 +1129,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &UpdateRealmRequest,
     ) -> Result<Realm, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "update_realm",
+            });
+        }
+        if matches!(request.name.as_deref(), Some(n) if n == keys::SYSTEM_REALM_NAME) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "update_realm",
+            });
+        }
         // Serialize against create/delete so an in-flight delete can't
         // race with this read-modify-write and resurrect an orphaned
         // record after its signing key has already been removed.
@@ -1107,6 +1189,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     #[allow(clippy::too_many_lines)]
     fn delete_realm(&self, realm_id: &RealmId) -> Result<(), IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "delete_realm",
+            });
+        }
         // Serialize against create/update so a concurrent update can't
         // re-put a realm record after we've already removed its signing
         // key. Without this lock, `record=Some key=None` would leak out
@@ -2056,6 +2143,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &RegisterClientRequest,
     ) -> Result<OAuthClient, IdentityError> {
+        // OAuth clients never target the admin realm. This is the
+        // strongest structural guarantee that the admin surface and
+        // application auth surfaces cannot be conflated.
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "register_client",
+            });
+        }
         // Validate client name (non-empty, length limit)
         let client_name = validation::validate_client_name(&request.client_name)?;
 
@@ -3513,6 +3608,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &RegisterUserRequest,
     ) -> Result<RegisterUserResponse, IdentityError> {
+        // The system realm never accepts self-registration — it is
+        // Hearth's admin home, not an application realm.
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "register_user",
+            });
+        }
         // 1. Load realm and enforce active status.
         let realm = self
             .get_realm(realm_id)?
@@ -4012,13 +4114,25 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .scan(&sys_realm, &start, &end)
             .map_err(Self::storage_err)?;
 
+        // Filter out the reserved system realm: its record lives here
+        // alongside application realms but must never surface on the
+        // admin listing, realm switcher, or resolver's sole-realm
+        // shortcut. We scan with `limit + 1` headroom plus the filter
+        // so a page that happens to straddle the nil realm still
+        // returns `limit` real results.
         let mut items = Vec::new();
-        for entry in entries.iter().take(limit + 1) {
+        for entry in &entries {
             let realm: Realm =
                 serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
                 })?;
+            if keys::is_system_realm(realm.id()) {
+                continue;
+            }
             items.push(realm);
+            if items.len() > limit {
+                break;
+            }
         }
 
         let next_cursor = if items.len() > limit {
@@ -4500,6 +4614,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &CreateOrganizationRequest,
     ) -> Result<Organization, IdentityError> {
+        if keys::is_system_realm(realm_id) {
+            return Err(IdentityError::SystemRealmProtected {
+                operation: "create_organization",
+            });
+        }
         let slug = validation::validate_slug(&request.slug)?;
         let name = validation::validate_display_name(&request.name)?;
 

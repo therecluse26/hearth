@@ -291,6 +291,14 @@ impl Config {
         // Branding
         validate_branding_all(&self.branding, &mut issues);
         // Realm configs
+        if let Some(realms) = self.realms.as_ref() {
+            if realms.contains_key("system") {
+                issues.push(ValidationIssue {
+                    field: "realms.system".to_string(),
+                    reason: "\"system\" is a reserved realm name; managed by Hearth".to_string(),
+                });
+            }
+        }
         validate_realm_web_configs_all(self.realms.as_ref(), &mut issues);
         validate_realm_auth_configs_all(self.realms.as_ref(), &mut issues);
         validate_realm_applications_all(self.realms.as_ref(), &mut issues);
@@ -413,6 +421,7 @@ impl Config {
         validate_token(&self.token)?;
         validate_email(&self.email)?;
         validate_branding(&self.branding)?;
+        validate_realm_names(self.realms.as_ref())?;
         validate_realm_web_configs(self.realms.as_ref())?;
         validate_realm_auth_configs(self.realms.as_ref())?;
         validate_realm_applications(self.realms.as_ref())?;
@@ -430,6 +439,22 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Rejects YAML `realms.system`. The system realm is Hearth-owned; it
+/// must not be declared or reconciled by operators. See the admin-realm
+/// architecture note in `memory/admin_realm.md`.
+fn validate_realm_names(
+    realms: Option<&std::collections::HashMap<String, types::RealmYamlConfig>>,
+) -> Result<(), ConfigError> {
+    let Some(realms) = realms else { return Ok(()) };
+    if realms.contains_key("system") {
+        return Err(invalid(
+            "realms.system",
+            "\"system\" is a reserved realm name; it is managed by Hearth and cannot be declared in YAML",
+        ));
+    }
+    Ok(())
 }
 
 /// Validates the `branding` section.

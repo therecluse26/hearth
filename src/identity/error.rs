@@ -156,6 +156,15 @@ pub enum IdentityError {
     InvitationInvalid,
     /// An invitation for this email already exists for this organization.
     DuplicateInvitation,
+    /// An operation targeted the reserved system realm, which only
+    /// accepts writes from Hearth itself. The admin realm is not a
+    /// place for application users, OAuth clients, organizations, or
+    /// operator-created realms.
+    SystemRealmProtected {
+        /// The operation that was attempted (e.g. `"create_realm"`).
+        /// Static strings to keep the error cheap and greppable.
+        operation: &'static str,
+    },
     /// Self-service registration is disabled for this realm.
     RegistrationDisabled,
     /// Self-service registration is enabled but the email's domain is not
@@ -243,6 +252,10 @@ impl fmt::Display for IdentityError {
             Self::DuplicateInvitation => {
                 write!(f, "an invitation for this email already exists")
             }
+            Self::SystemRealmProtected { operation } => write!(
+                f,
+                "operation not permitted on the system realm: {operation}"
+            ),
             Self::RegistrationDisabled => write!(f, "self-service registration is disabled"),
             Self::RegistrationDomainNotAllowed { domain } => write!(
                 f,
@@ -312,6 +325,7 @@ impl std::error::Error for IdentityError {
             | Self::RegistrationDisabled
             | Self::RegistrationDomainNotAllowed { .. }
             | Self::RegistrationRequiresInvitation
+            | Self::SystemRealmProtected { .. }
             | Self::Serialization { .. } => None,
         }
     }

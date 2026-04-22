@@ -387,8 +387,7 @@ impl OnboardingService {
     /// # Errors
     ///
     /// See [`OnboardingError`]. `AlreadyConfigured` is returned if the
-    /// setup-token file has already been consumed. `RealmNotFound` is
-    /// returned if no realm exists (YAML reconciliation must run first).
+    /// setup-token file has already been consumed.
     pub fn complete_setup(
         &self,
         admin_email: &str,
@@ -403,16 +402,12 @@ impl OnboardingService {
             return Err(OnboardingError::AlreadyConfigured);
         }
 
-        // 1. Find the first existing realm (created by YAML reconciliation
-        //    or the auto-created "default"). Realms are managed exclusively
-        //    through hearth.yaml — setup only creates the admin user.
-        let page = self.identity.list_realms(None, 1)?;
-        let realm = page
-            .items
-            .into_iter()
-            .next()
-            .ok_or_else(|| OnboardingError::Identity(IdentityError::RealmNotFound))?;
-        let realm_id = realm.id().clone();
+        // 1. Admin users always live in the reserved system realm — this
+        //    is Hearth's home for operators, distinct from any tenant
+        //    realm declared in YAML. The system realm is auto-seeded at
+        //    engine construction (`seed_system_realm_if_absent`), so it
+        //    is guaranteed to exist here. See `memory/admin_realm.md`.
+        let realm_id = crate::identity::keys::system_realm_id();
 
         // 2. Create admin user.
         let user = self.identity.create_user(
@@ -441,9 +436,13 @@ impl OnboardingService {
         self.identity
             .set_password(&realm_id, &user_id, admin_password)?;
 
-        // 5. Zanzibar admin tuple: hearth#admin@user:<uuid>.
-        //    INVARIANT: "hearth", "admin", "user" are valid short-ASCII
-        //    field names; the user-id string is a canonical UUID.
+        // 5. Zanzibar admin tuple: hearth#admin@user:<uuid>, written
+        //    in the system realm's authz store. The `RequireAdmin`
+        //    extractor checks for this tuple against
+        //    `session.realm_id`, which is always the system realm for
+        //    admin sessions. INVARIANT: "hearth", "admin", "user" are
+        //    valid short-ASCII field names; the user-id string is a
+        //    canonical UUID.
         let object = ObjectRef::new("hearth", "admin")
             .map_err(|e| OnboardingError::Authz(format!("failed to build admin object: {e}")))?;
         let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string())
@@ -454,12 +453,15 @@ impl OnboardingService {
             .write_tuples(&realm_id, &[TupleWrite::Touch(tuple)])
             .map_err(|e| OnboardingError::Authz(e.to_string()))?;
 
-        // 6. Email-verification token.
+        // 6. Email-verification token. The verification URL targets the
+        //    admin-scoped route so the realm resolver binds to the
+        //    system realm (which is not reachable via the public
+        //    `/ui/realms/<name>/...` path family).
         let token = self
             .identity
             .issue_email_verification_token(&realm_id, &user_id)?;
         let verification_url = format!(
-            "{}/ui/verify-email?token={}",
+            "{}/ui/admin/verify-email?token={}",
             verification_base_url.trim_end_matches('/'),
             token
         );

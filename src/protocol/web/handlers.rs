@@ -540,7 +540,7 @@ pub async fn verify_email(
     State(state): State<Arc<WebState>>,
     Query(query): Query<VerifyQuery>,
 ) -> Response {
-    verify_email_impl(state, query, None)
+    verify_email_impl(state, query, RealmSource::Path(None))
 }
 
 /// Handles email verification on `/ui/realms/<name>/verify-email?token=...`.
@@ -549,17 +549,24 @@ pub async fn verify_email_scoped(
     axum::extract::Path(realm_name): axum::extract::Path<String>,
     Query(query): Query<VerifyQuery>,
 ) -> Response {
-    verify_email_impl(state, query, Some(realm_name))
+    verify_email_impl(state, query, RealmSource::Path(Some(realm_name)))
+}
+
+/// Handles email verification on `/ui/admin/verify-email?token=...`.
+///
+/// This is the link admins receive in their setup confirmation email.
+/// Resolves to the system realm regardless of application realm state.
+pub async fn admin_verify_email(
+    State(state): State<Arc<WebState>>,
+    Query(query): Query<VerifyQuery>,
+) -> Response {
+    verify_email_impl(state, query, RealmSource::Admin)
 }
 
 /// Shared implementation. On success the user transitions
 /// `PendingVerification` → `Active` and can thereafter sign in.
 #[allow(clippy::needless_pass_by_value)]
-fn verify_email_impl(
-    state: Arc<WebState>,
-    query: VerifyQuery,
-    path_realm: Option<String>,
-) -> Response {
+fn verify_email_impl(state: Arc<WebState>, query: VerifyQuery, source: RealmSource) -> Response {
     let product_name = state.product_name.clone();
     let logo_url = state.logo_url.clone();
 
@@ -574,7 +581,7 @@ fn verify_email_impl(
         return render_status(&tmpl, StatusCode::BAD_REQUEST);
     };
 
-    let (realm, action_prefix) = match resolve_pre_auth_realm(&state, path_realm, false) {
+    let (realm, action_prefix) = match resolve_for_source(&state, source, false) {
         PreAuthRealm::Ok {
             realm,
             action_prefix,
@@ -624,7 +631,7 @@ pub async fn login_form(
     State(state): State<Arc<WebState>>,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, None)
+    login_form_impl(state, query, RealmSource::Path(None))
 }
 
 /// Renders the login form under `/ui/realms/<name>/login`.
@@ -633,17 +640,22 @@ pub async fn login_form_scoped(
     axum::extract::Path(realm_name): axum::extract::Path<String>,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, Some(realm_name))
+    login_form_impl(state, query, RealmSource::Path(Some(realm_name)))
+}
+
+/// Renders the admin login form at `/ui/admin/login`. The session
+/// created by a successful submit is always bound to the system realm.
+pub async fn admin_login_form(
+    State(state): State<Arc<WebState>>,
+    Query(query): Query<LoginQuery>,
+) -> Response {
+    login_form_impl(state, query, RealmSource::Admin)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn login_form_impl(
-    state: Arc<WebState>,
-    query: LoginQuery,
-    path_realm: Option<String>,
-) -> Response {
+fn login_form_impl(state: Arc<WebState>, query: LoginQuery, source: RealmSource) -> Response {
     let return_to = query.return_to.as_deref().and_then(sanitize_return_to);
-    let (realm, action_prefix) = match resolve_pre_auth_realm(&state, path_realm, false) {
+    let (realm, action_prefix) = match resolve_for_source(&state, source, false) {
         PreAuthRealm::Ok {
             realm,
             action_prefix,
@@ -682,7 +694,7 @@ pub async fn login_submit(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    login_submit_impl(state, headers, form, None)
+    login_submit_impl(state, headers, form, RealmSource::Path(None))
 }
 
 /// Handles login submission at `/ui/realms/<name>/login`.
@@ -692,7 +704,17 @@ pub async fn login_submit_scoped(
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    login_submit_impl(state, headers, form, Some(realm_name))
+    login_submit_impl(state, headers, form, RealmSource::Path(Some(realm_name)))
+}
+
+/// Handles admin login submission at `/ui/admin/login`. On success,
+/// issues a session cookie bound to the system realm.
+pub async fn admin_login_submit(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    login_submit_impl(state, headers, form, RealmSource::Admin)
 }
 
 /// Shared login submit. On success: creates a session, issues the
@@ -705,13 +727,13 @@ fn login_submit_impl(
     state: Arc<WebState>,
     headers: HeaderMap,
     form: LoginForm,
-    path_realm: Option<String>,
+    source: RealmSource,
 ) -> Response {
     let email = form.email.trim();
     let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
     let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
 
-    let (realm, action_prefix) = match resolve_pre_auth_realm(&state, path_realm, true) {
+    let (realm, action_prefix) = match resolve_for_source(&state, source, true) {
         PreAuthRealm::Ok {
             realm,
             action_prefix,
@@ -2329,6 +2351,35 @@ impl RealmRequiredTemplate {
     }
 }
 
+/// Which realm-resolution strategy a pre-auth handler should use.
+///
+/// Most handlers are shared between the bare `/ui/*` routes, the
+/// path-scoped `/ui/realms/<name>/*` routes, AND the admin-surface
+/// `/ui/admin/*` routes. This enum lets them dispatch without
+/// duplicating the template-render and form-submit logic.
+#[derive(Debug)]
+pub(super) enum RealmSource {
+    /// Bare or path-scoped tenant route. `Option<String>` is the
+    /// realm name from the URL path, if any.
+    Path(Option<String>),
+    /// Admin surface (`/ui/admin/*`). Always resolves to the system
+    /// realm with `action_prefix = "/ui/admin"`.
+    Admin,
+}
+
+/// Unified entry point that dispatches to the right resolver based on
+/// the `RealmSource`.
+pub(super) fn resolve_for_source(
+    state: &WebState,
+    source: RealmSource,
+    is_mutation: bool,
+) -> PreAuthRealm {
+    match source {
+        RealmSource::Path(path_realm) => resolve_pre_auth_realm(state, path_realm, is_mutation),
+        RealmSource::Admin => resolve_admin_realm(state),
+    }
+}
+
 /// Outcome of [`resolve_pre_auth_realm`].
 ///
 /// Size-difference lint suppressed: the `Ok` variant is the common case
@@ -2387,6 +2438,35 @@ pub(super) fn resolve_pre_auth_realm(
             PreAuthRealm::Handled(realm_required_response(state))
         }
         Resolved::Storage => PreAuthRealm::Handled(internal_error_response()),
+    }
+}
+
+/// Resolves the admin (system) realm for `/ui/admin/*` pre-auth
+/// routes. The system realm is auto-seeded at engine construction, so
+/// this should always succeed; a missing system realm indicates a
+/// broken installation and we return 500.
+///
+/// Returns `PreAuthRealm::Ok { action_prefix: "/ui/admin" }` so all
+/// admin-surface forms and sibling links stay on the admin URL space,
+/// never leaking the reserved realm name or falling through to the
+/// tenant resolver.
+pub(super) fn resolve_admin_realm(state: &WebState) -> PreAuthRealm {
+    let system = crate::identity::keys::system_realm_id();
+    match state.identity.get_realm(&system) {
+        Ok(Some(realm)) => PreAuthRealm::Ok {
+            realm,
+            action_prefix: "/ui/admin".to_string(),
+        },
+        Ok(None) => {
+            tracing::error!(
+                "admin realm missing from storage — system realm seeding failed at startup"
+            );
+            PreAuthRealm::Handled(internal_error_response())
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "admin realm lookup failed");
+            PreAuthRealm::Handled(internal_error_response())
+        }
     }
 }
 

@@ -463,6 +463,18 @@ pub fn router(state: WebState) -> Router {
             "/realms/{realm}/accept-invitation",
             axum::routing::get(handlers::accept_invitation_page_scoped),
         )
+        // Admin pre-auth surface. Always resolves to the system realm;
+        // does not route through the tenant resolver. See
+        // `src/protocol/web/realm_resolver.rs` and the admin-realm
+        // architecture note for details.
+        .route(
+            "/admin/login",
+            axum::routing::get(handlers::admin_login_form).post(handlers::admin_login_submit),
+        )
+        .route(
+            "/admin/verify-email",
+            axum::routing::get(handlers::admin_verify_email),
+        )
         .route("/", axum::routing::get(handlers::dashboard))
         .route(
             "/device",
