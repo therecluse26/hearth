@@ -5,7 +5,7 @@
   "description": "Minimal local OIDC provider for the Hearth federation demo, built on node-oidc-provider.",
   "type": "module",
   "scripts": {
-    "start": "tsx src/server.ts",
+    "start": "tsc && node dist/server.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
@@ -16,7 +16,10 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.0",
-    "tsx": "^4.7.0",
     "typescript": "^5.3.0"
+  },
+  "_overridesExplainer": "is-generator-function <1.1 crashes on Node.js 24+ (TypeError: getGeneratorFunction is not a function). koa pulls it in transitively via oidc-provider; we pin the patched version until oidc-provider ships an update that does so directly.",
+  "overrides": {
+    "is-generator-function": "^1.1.0"
   }
 }

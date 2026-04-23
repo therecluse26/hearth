@@ -183,21 +183,40 @@ async fn callback_impl(state: Arc<WebState>, realm_id: RealmId, q: CallbackQuery
         }
         FederationOutcome::JitProvision(identity) => {
             // Create a fresh user for this external identity.
-            let req = CreateUserRequest {
-                email: if identity.email.is_empty() {
-                    // Fall back to a synthesized email if the upstream
-                    // returned nothing — GitHub private-email users
-                    // land here. The user must update their email
-                    // post-provision; acceptable for v1.
-                    format!(
-                        "{}@fed.{}.local",
-                        identity.external_sub,
-                        bag.idp_id.as_uuid()
-                    )
+            //
+            // Fallback chain for display_name: upstreams that omit the
+            // `profile` scope (or `name` claim entirely — e.g., Apple
+            // Sign-In after the first consent, or any bare-minimum
+            // `openid email` grant) leave `identity.display_name`
+            // empty. The engine validator rejects an empty display
+            // name, so synthesize one from the email local-part and
+            // fall through to the external sub as the last resort.
+            let email = if identity.email.is_empty() {
+                // Synthesized email for providers that don't expose
+                // one (GitHub private-email users, or minimal-scope
+                // flows).
+                format!(
+                    "{}@fed.{}.local",
+                    identity.external_sub,
+                    bag.idp_id.as_uuid()
+                )
+            } else {
+                identity.email.clone()
+            };
+            let display_name = if !identity.display_name.is_empty() {
+                identity.display_name.clone()
+            } else if let Some((local, _)) = email.split_once('@') {
+                if local.is_empty() {
+                    identity.external_sub.clone()
                 } else {
-                    identity.email.clone()
-                },
-                display_name: identity.display_name.clone(),
+                    local.to_string()
+                }
+            } else {
+                identity.external_sub.clone()
+            };
+            let req = CreateUserRequest {
+                email,
+                display_name,
             };
             let new_user = match state.identity.create_user(&realm_id, &req) {
                 Ok(u) => u,

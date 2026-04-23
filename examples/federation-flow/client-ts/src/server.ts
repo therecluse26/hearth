@@ -10,17 +10,30 @@
  *   4. User logs in at the upstream with demo/demo credentials.
  *   5. Upstream redirects to Hearth's callback.
  *   6. Hearth runs its federation pipeline (JIT / confirm / auto),
- *      sets its session cookie, then redirects back here.
- *   7. We read the Hearth session cookie on /me to show profile data.
+ *      sets its session cookie on :8420, then redirects back to us at
+ *      http://localhost:3000/callback-complete.
+ *   7. We set our OWN cookie on :3000 to remember "signed in via
+ *      Hearth" and redirect to /me.
+ *
+ * # Why a separate cookie
+ *
+ * Hearth's session cookie lives on `localhost:8420`. Browsers scope
+ * cookies per origin (scheme + host + port), so this app at :3000
+ * cannot see the :8420 cookie — that would be a cross-site cookie
+ * leak and is correctly blocked. The standard pattern for an OIDC
+ * relying-party front-end is to establish its own local session on
+ * successful callback; that's what the `fed_demo_session` cookie
+ * below represents.
  *
  * # Not production
  *
- * Real clients verify the Hearth-issued session cookie cryptographically
- * or exchange it for a real OAuth access token. This demo cheats: it
- * reads the cookie's presence as a signal that Hearth authenticated
- * the user, and fetches profile data directly from Hearth's own
- * account-info endpoint. The point is to exercise Hearth's federation
- * flow, not to build a real RP template.
+ * The local session cookie here is just a flag; a real RP would:
+ *   - Verify the Hearth-issued ID token / access token on callback.
+ *   - Store the verified user id (and optionally a refresh token) in
+ *     a signed + encrypted cookie, or in a server-side session store.
+ *   - Check the cookie's signature on every request.
+ * We keep the demo cookie unsigned to avoid obscuring the federation
+ * flow with session-management ceremony.
  */
 
 import express, { type Request, type Response } from "express";
@@ -39,86 +52,71 @@ const SIGN_IN_URL = `${HEARTH_BASE_URL}/ui/realms/${REALM_NAME}/federation/begin
   IDP_NAME,
 )}&return_to=${encodeURIComponent(`${CLIENT_BASE_URL}/callback-complete`)}`;
 
+const HEARTH_ACCOUNT_URL = `${HEARTH_BASE_URL}/ui/account`;
 const LINKED_ACCOUNTS_URL = `${HEARTH_BASE_URL}/ui/account/linked-accounts`;
+
+/** Local cookie name scoped to this demo client (origin :3000). */
+const DEMO_SESSION_COOKIE = "fed_demo_session";
 
 // --- App --------------------------------------------------------------------
 
 const app = express();
 app.use(cookieParser());
 
-// Home: shows either "Sign in" or "Signed in as ..." based on the
-// Hearth session cookie's presence.
+// Home: shows "Sign in" or "Signed in" based on the LOCAL demo cookie.
 app.get("/", (req: Request, res: Response) => {
-  const hearthSession = req.cookies["hearth_ui_session"];
+  const signedIn = Boolean(req.cookies[DEMO_SESSION_COOKIE]);
   res
     .type("html")
     .send(
       renderIndex({
         signInUrl: SIGN_IN_URL,
-        signedInEmail: hearthSession ? "signed-in (via Hearth)" : undefined,
+        signedIn,
+        hearthAccountUrl: HEARTH_ACCOUNT_URL,
       }),
     );
 });
 
 // The `return_to` Hearth redirects to after completing the federation
-// pipeline. We just send the user to `/me`; Hearth has already set
-// its session cookie at this point.
+// pipeline. We set our own demo session cookie here so subsequent
+// requests know the user is signed in via Hearth, then redirect to /me.
+//
+// In a real app this is where you'd verify Hearth's ID/access token
+// (e.g., via /userinfo or the SDK) and encode the verified user id
+// into a signed cookie.
 app.get("/callback-complete", (_req: Request, res: Response) => {
-  res.redirect("/me");
+  res
+    .cookie(DEMO_SESSION_COOKIE, "1", {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 1000 * 60 * 60, // 1 hour, demo-only
+    })
+    .redirect("/me");
 });
 
-// Show a "profile" page. In a real integration you'd verify the
-// Hearth access token; here we just confirm the cookie is set.
-app.get("/me", async (req: Request, res: Response) => {
-  const hearthSession = req.cookies["hearth_ui_session"];
-  if (!hearthSession) {
+// Show a "profile" page. The local cookie is the signal that
+// authentication happened; profile details live on Hearth itself.
+app.get("/me", (req: Request, res: Response) => {
+  if (!req.cookies[DEMO_SESSION_COOKIE]) {
     return res.redirect("/");
   }
-  // Hearth's /ui/account page renders the signed-in user's email in
-  // the chrome. We forward the cookie and extract a rough
-  // display name from that page's HTML. A real client would use the
-  // Hearth SDK or hit /userinfo with a bearer token.
-  try {
-    const resp = await fetch(`${HEARTH_BASE_URL}/ui/account`, {
-      headers: { cookie: `hearth_ui_session=${hearthSession}` },
-      redirect: "manual",
-    });
-    if (resp.status !== 200) {
-      return res
-        .status(resp.status)
-        .type("html")
-        .send(
-          `<p>Hearth returned status ${resp.status} when fetching /ui/account.</p><p><a href="/">Home</a></p>`,
-        );
-    }
-    const html = await resp.text();
-    // Crude extraction — enough for a demo that just wants to show the
-    // user something.
-    const emailMatch = html.match(/data-testid="account-email"[^>]*>([^<]+)</);
-    const nameMatch = html.match(/data-testid="account-display-name"[^>]*>([^<]+)</);
-    res
-      .type("html")
-      .send(
-        renderProfile({
-          email: emailMatch?.[1]?.trim() ?? "(email not exposed)",
-          displayName: nameMatch?.[1]?.trim() ?? "(name not exposed)",
-          linkedAccountsUrl: LINKED_ACCOUNTS_URL,
-        }),
-      );
-  } catch (err) {
-    res
-      .status(502)
-      .type("html")
-      .send(
-        `<p>Could not reach Hearth at ${HEARTH_BASE_URL}. Is it running?</p><p>${String(err)}</p>`,
-      );
-  }
+  res.type("html").send(
+    renderProfile({
+      hearthAccountUrl: HEARTH_ACCOUNT_URL,
+      linkedAccountsUrl: LINKED_ACCOUNTS_URL,
+    }),
+  );
 });
 
-// Sign-out: clear the Hearth UI session cookie by calling logout, then
-// come back to home.
+// Sign-out: clear OUR local cookie AND send the user to Hearth's
+// logout endpoint so the Hearth session dies too. Without both,
+// clicking "Sign in" again would silently re-authenticate off the
+// still-live Hearth session.
 app.get("/signout", (_req: Request, res: Response) => {
-  res.redirect(`${HEARTH_BASE_URL}/ui/logout`);
+  res
+    .clearCookie(DEMO_SESSION_COOKIE, { path: "/" })
+    .redirect(`${HEARTH_BASE_URL}/ui/logout`);
 });
 
 app.listen(CLIENT_PORT, () => {

@@ -50,10 +50,15 @@ You'll run three processes:
 ## Steps
 
 Everything below assumes you're at the repo root (`/path/to/hearth/`).
+Each command block shows the directory it must run from — this example
+has **no top-level `package.json`**, so running `npm install` or
+`npm start` from `examples/federation-flow/` itself will fail with
+*"Missing script: start"*. You must `cd` into the sub-project first.
 
 ### 1. Start the upstream OIDC provider
 
 ```bash
+# from: <repo root>
 cd examples/federation-flow/upstream-idp
 npm install
 npm start
@@ -75,6 +80,7 @@ its endpoints) in `hearth.yaml`.
 ### 2. Start Hearth in a second terminal
 
 ```bash
+# from: <repo root>
 cargo run --release -- serve --dev \
   --config examples/federation-flow/hearth.yaml
 ```
@@ -112,6 +118,7 @@ Open that URL, then sign in at <http://localhost:8420/ui/admin/login>.
 ### 4. Start the client app in a third terminal
 
 ```bash
+# from: <repo root>
 cd examples/federation-flow/client-ts
 npm install
 npm start
@@ -307,6 +314,23 @@ configuration works unchanged.
 
 ## Troubleshooting
 
+- **`npm error Missing script: "start"`** when running `npm start`: you're
+  in `examples/federation-flow/` itself. There's no root `package.json`
+  here — each sub-project owns its own. `cd` into either
+  `upstream-idp/` or `client-ts/` first, then rerun.
+- **`TypeError: getGeneratorFunction is not a function`** when starting
+  the upstream IdP: a transitive dep (`is-generator-function` ≤1.0) is
+  incompatible with Node.js 24+. The upstream-idp `package.json`
+  already pins `^1.1.0` via `overrides`, and the `start` script uses
+  `tsc && node dist/server.js` (not `tsx`) because `tsx`'s ESM loader
+  mangles the CJS require-chain in a way that re-triggers the same
+  symptom. If you hit this: `rm -rf node_modules package-lock.json
+  && npm install` to pick up the override, then `npm start` again.
+- **Upstream `/auth` redirects back with `error=invalid_request`** and
+  `code_challenge` in the description: Hearth sent a short or malformed
+  PKCE challenge. Normally Hearth generates a 43-char base64url
+  challenge; see `src/identity/federation/state.rs::pkce_s256_challenge`.
+  If you modified that path, restart Hearth.
 - **"Federation connector not found"** when clicking sign-in: the YAML
   reconciler didn't run. Make sure `--config
   examples/federation-flow/hearth.yaml` is on the `cargo run` command,

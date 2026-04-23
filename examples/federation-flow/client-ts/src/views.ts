@@ -73,16 +73,29 @@ function layout(title: string, body: string): string {
 
 export function renderIndex(args: {
   signInUrl: string;
-  signedInEmail?: string;
+  signedIn: boolean;
+  hearthAccountUrl: string;
 }): string {
-  const card = args.signedInEmail
+  const card = args.signedIn
     ? `
       <div class="card">
-        <h1>Signed in as ${esc(args.signedInEmail)}</h1>
-        <p class="muted">This page reads the Hearth session cookie to show who you are.</p>
+        <h1>Signed in via Hearth</h1>
         <p>
-          <a class="button" href="/me">View profile</a>
-          <a class="secondary button" href="${esc(args.signInUrl)}">Re-authenticate via Hearth</a>
+          This app has established a local session (cookie
+          <code>fed_demo_session</code> on <code>localhost:3000</code>).
+          Hearth has a separate session cookie on
+          <code>localhost:8420</code> that the browser correctly keeps
+          isolated from this origin.
+        </p>
+        <p>
+          <a class="button" href="/me">Continue to profile</a>
+          <a class="secondary button" href="${esc(args.hearthAccountUrl)}" target="_blank" rel="noopener">Open Hearth account</a>
+          <a class="secondary button" href="/signout">Sign out</a>
+        </p>
+        <p class="muted">
+          Clicking "Sign in" again would silently re-authenticate you
+          off the still-live Hearth session; that's why the button is
+          hidden while you're signed in.
         </p>
       </div>`
     : `
@@ -102,21 +115,31 @@ export function renderIndex(args: {
 }
 
 export function renderProfile(args: {
-  email: string;
-  displayName: string;
+  hearthAccountUrl: string;
   linkedAccountsUrl: string;
 }): string {
   return layout(
-    "Your profile",
+    "Signed in",
     `
       <div class="card">
-        <h1>Hello, ${esc(args.displayName || args.email)}</h1>
-        <p class="muted">Hearth authenticated you. This page is served by the demo client at :3000.</p>
-        <pre>email: ${esc(args.email)}
-display_name: ${esc(args.displayName)}</pre>
+        <h1>You're signed in</h1>
         <p>
-          <a class="button" href="${esc(args.linkedAccountsUrl)}">Manage linked accounts in Hearth</a>
-          <a class="secondary button" href="/">Home</a>
+          Authentication was completed through Hearth. This demo client
+          intentionally shows no user details here — profile data lives
+          on Hearth, and a real integration would call <code>/userinfo</code>
+          with the access token Hearth issued on callback.
+        </p>
+        <p class="muted">
+          Cookies are origin-scoped: Hearth's <code>hearth_ui_session</code>
+          lives on <code>localhost:8420</code>, this app's
+          <code>fed_demo_session</code> lives on <code>localhost:3000</code>.
+          That isolation is correct — a cross-origin cookie would be
+          a security hole.
+        </p>
+        <p>
+          <a class="button" href="${esc(args.hearthAccountUrl)}" target="_blank" rel="noopener">View profile in Hearth</a>
+          <a class="secondary button" href="${esc(args.linkedAccountsUrl)}" target="_blank" rel="noopener">Linked accounts</a>
+          <a class="secondary button" href="/signout">Sign out</a>
         </p>
       </div>`,
   );

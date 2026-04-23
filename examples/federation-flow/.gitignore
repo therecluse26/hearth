@@ -6,8 +6,10 @@ data/
 # Node.js
 upstream-idp/node_modules/
 upstream-idp/dist/
+upstream-idp/package-lock.json
 client-ts/node_modules/
 client-ts/dist/
+client-ts/package-lock.json
 
 # Editor
 .idea/

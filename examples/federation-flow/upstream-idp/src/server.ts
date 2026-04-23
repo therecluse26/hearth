@@ -108,6 +108,24 @@ const configuration = {
   // you don't list algorithms — listed here for documentation.
   idTokenSigningAlgValues: ["RS256"],
 
+  // Include all scope-granted claims (email, email_verified, name) in
+  // the ID token, not just in the userinfo response. Hearth's OIDC
+  // relying-party reads claims straight from the ID token and does
+  // not call userinfo in v1, so the spec-compliant default (claims
+  // only via /userinfo for response_type=code) would leave Hearth
+  // with just `sub` and no display name, and the JIT user-create
+  // would fail validation. This flag is documented at
+  // https://github.com/panva/node-oidc-provider/blob/main/docs/README.md
+  // and is standard for code-flow relying parties that don't poll
+  // userinfo.
+  conformIdTokenClaims: false,
+
+  // Session-cookie signing keys. Hard-coded demo values; rotate these
+  // the moment this file ever ships outside a learning context.
+  cookies: {
+    keys: ["hearth-federation-demo-cookie-key-do-not-use-in-prod"],
+  },
+
   // Dev-friendly policy: skip the consent screen entirely so the demo
   // focuses on Hearth's linking behavior, not oidc-provider's UI.
   features: {
