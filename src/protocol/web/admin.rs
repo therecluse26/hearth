@@ -2704,11 +2704,13 @@ pub async fn admin_org_add_member(
 // Member picker modal (HTMX)
 // ---------------------------------------------------------------------------
 
-/// Template for the full member picker modal (initial load).
+/// Template for the inline picker rows partial. Rendered as the response
+/// to `GET /ui/admin/organizations/:id/members/picker` and swapped into
+/// `#member-picker-results` on the org detail page.
 #[derive(Template)]
-#[template(path = "ui/admin/organizations/_member_modal.html")]
+#[template(path = "ui/admin/organizations/_member_picker_rows.html")]
 #[allow(dead_code)]
-struct MemberPickerModalTemplate {
+struct MemberPickerRowsTemplate {
     org_id: String,
     users: Vec<User>,
     query: String,
@@ -2720,19 +2722,17 @@ struct MemberPickerModalTemplate {
     realm_theme_css: Option<String>,
 }
 
-/// Template for the picker rows partial (pagination/search updates).
+/// Template for a single member row. Included by `detail.html` in the
+/// member loop, and returned standalone as an HTMX partial from
+/// `admin_org_update_role` so the row swaps in place without a full-page
+/// reload.
 #[derive(Template)]
-#[template(path = "ui/admin/organizations/_member_picker_rows.html")]
+#[template(path = "ui/admin/organizations/_member_row.html")]
 #[allow(dead_code)]
-struct MemberPickerRowsTemplate {
-    org_id: String,
-    users: Vec<User>,
-    query: String,
-    next_cursor: Option<String>,
-    product_name: String,
-    logo_url: String,
-    theme_css: String,
-    realm_theme_css: Option<String>,
+struct MemberRowTemplate {
+    org: Organization,
+    m: MemberView,
+    csrf: Option<String>,
 }
 
 /// Query params for member picker.
@@ -2746,14 +2746,16 @@ pub struct MemberPickerParams {
     pub cursor: Option<String>,
 }
 
-/// `GET /ui/admin/organizations/:id/members/picker` — HTMX modal or rows partial.
+/// `GET /ui/admin/organizations/:id/members/picker` — inline search results.
+///
+/// Rendered into `#member-picker-results` on the org detail page via HTMX.
+/// Always returns the rows partial; there is no modal wrapper.
 pub async fn admin_org_member_picker(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Query(params): Query<MemberPickerParams>,
-    headers: axum::http::HeaderMap,
 ) -> Response {
     let org_id = match oid.parse::<uuid::Uuid>() {
         Ok(u) => OrganizationId::new(u),
@@ -2785,164 +2787,20 @@ pub async fn admin_org_member_picker(
 
     let org_id_str = org_id.as_uuid().to_string();
 
-    // If request has HX-Target=picker-results, return only the rows partial.
-    // Otherwise return the full modal (initial open).
-    let is_rows_only = headers
-        .get("HX-Target")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v == "picker-results");
-
-    if is_rows_only {
-        render(&MemberPickerRowsTemplate {
-            org_id: org_id_str,
-            users,
-            query,
-            next_cursor,
-            product_name: String::new(),
-            logo_url: String::new(),
-            theme_css: state.theme_css.clone(),
-            realm_theme_css: None,
-        })
-    } else {
-        render(&MemberPickerModalTemplate {
-            org_id: org_id_str,
-            users,
-            query,
-            next_cursor,
-            csrf: session.csrf.clone(),
-            product_name: String::new(),
-            logo_url: String::new(),
-            theme_css: state.theme_css.clone(),
-            realm_theme_css: None,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Bulk add members
-// ---------------------------------------------------------------------------
-
-/// Form data for `POST /ui/admin/organizations/:id/members/bulk`.
-///
-/// `user_ids` uses a custom deserializer because `serde_urlencoded`
-/// (Axum's `Form` backend) cannot coerce a single `user_ids=X` pair into
-/// `Vec<String>` — a single-checkbox submission arrives as a scalar, not
-/// a sequence. The helper below accepts either shape.
-#[derive(Debug, Deserialize)]
-pub struct BulkAddMembersForm {
-    /// Selected user IDs (one or many values from checkboxes).
-    #[serde(default, deserialize_with = "deserialize_string_list")]
-    pub user_ids: Vec<String>,
-    /// Role to assign to all selected users.
-    #[serde(default)]
-    pub role: String,
-    #[serde(rename = "_csrf", default)]
-    pub csrf: String,
-}
-
-/// Accepts `user_ids=a&user_ids=b` (sequence) **or** `user_ids=a` (single
-/// scalar) and yields `Vec<String>`. Empty string → empty vec so the
-/// "no selection" case is handled uniformly.
-fn deserialize_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{self, SeqAccess, Visitor};
-    use std::fmt;
-
-    struct SingleOrMany;
-
-    impl<'de> Visitor<'de> for SingleOrMany {
-        type Value = Vec<String>;
-
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a string or a sequence of strings")
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-            if v.is_empty() {
-                Ok(Vec::new())
-            } else {
-                Ok(vec![v.to_string()])
-            }
-        }
-
-        fn visit_string<E: de::Error>(self, v: String) -> Result<Vec<String>, E> {
-            if v.is_empty() {
-                Ok(Vec::new())
-            } else {
-                Ok(vec![v])
-            }
-        }
-
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
-            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-            while let Some(item) = seq.next_element::<String>()? {
-                if !item.is_empty() {
-                    out.push(item);
-                }
-            }
-            Ok(out)
-        }
-    }
-
-    deserializer.deserialize_any(SingleOrMany)
-}
-
-/// `POST /ui/admin/organizations/:id/members/bulk` — add multiple members at once.
-pub async fn admin_org_bulk_add_members(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
-    Form(form): Form<BulkAddMembersForm>,
-) -> Response {
-    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
-        return resp;
-    }
-
-    let org_id = match oid.parse::<uuid::Uuid>() {
-        Ok(u) => OrganizationId::new(u),
-        Err(_) => return super::handlers_common::not_found("Organization not found"),
-    };
-
-    if form.user_ids.is_empty() {
-        return org_redirect_flash(&org_id, "No users selected", "error");
-    }
-
-    let role = parse_org_role(&form.role);
-    let mut added = 0u32;
-    let mut skipped = 0u32;
-
-    for uid_str in &form.user_ids {
-        let Ok(u) = uid_str.trim().parse::<uuid::Uuid>() else {
-            skipped += 1;
-            continue;
-        };
-        let user_id = crate::core::UserId::new(u);
-
-        match state
-            .identity
-            .add_member(target.id(), &org_id, &user_id, role)
-        {
-            Ok(_) => {
-                mirror_org_member_added(&state, &session, target.id(), &org_id, &user_id, role);
-                added += 1;
-            }
-            Err(IdentityError::AlreadyMember) => skipped += 1,
-            Err(e) => {
-                tracing::warn!(error = %e, user_id = %uid_str, "bulk add_member failed");
-                skipped += 1;
-            }
-        }
-    }
-
-    let msg = if skipped > 0 {
-        format!("Added {added} member(s), {skipped} skipped (already members or invalid)")
-    } else {
-        format!("Added {added} member(s) successfully")
-    };
-    org_redirect_flash(&org_id, &msg, "success")
+    // The picker is always rendered inline into `#member-picker-results`
+    // on the org detail page — no modal wrapper. CSRF is threaded in so
+    // each per-row Add form can echo the token.
+    render(&MemberPickerRowsTemplate {
+        org_id: org_id_str,
+        users,
+        query,
+        next_cursor,
+        csrf: session.csrf.clone(),
+        product_name: String::new(),
+        logo_url: String::new(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2950,11 +2808,17 @@ pub async fn admin_org_bulk_add_members(
 // ---------------------------------------------------------------------------
 
 /// `POST /ui/admin/organizations/:id/members/:uid/remove`.
+///
+/// HTMX caller (confirm-to-remove button in the members table) gets an
+/// empty body + `HX-Trigger: showToast`, which the `hx-swap="outerHTML"`
+/// on the row form interprets as "replace the row with nothing." Plain
+/// form POST (curl, no-JS) gets the familiar redirect-with-flash.
 pub async fn admin_org_remove_member(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -2971,6 +2835,8 @@ pub async fn admin_org_remove_member(
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
 
+    let is_htmx = is_htmx_request(&headers);
+
     // Capture the role before removal so we can issue the matching
     // Zanzibar delete. If lookup fails, we still proceed with the
     // legacy remove — mirroring is best-effort.
@@ -2986,14 +2852,96 @@ pub async fn admin_org_remove_member(
             if let Some(role) = prior_role {
                 mirror_org_member_removed(&state, &session, target.id(), &org_id, &user_id, role);
             }
-            org_redirect_flash(&org_id, "Member removed", "success")
+            if is_htmx {
+                super::templates::htmx_toast_response("Member removed", "success")
+            } else {
+                org_redirect_flash(&org_id, "Member removed", "success")
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "remove_member failed");
             let msg = format!("{e}");
-            org_redirect_flash(&org_id, &msg, "error")
+            if is_htmx {
+                // Return the row unchanged so HTMX's outerHTML swap puts
+                // the member back — the server is the source of truth.
+                // Re-render by fetching the membership; if that fails,
+                // fall back to an empty error toast.
+                if let Ok(Some(m)) = state
+                    .identity
+                    .get_membership(target.id(), &org_id, &user_id)
+                {
+                    if let Ok(Some(org)) = state.identity.get_organization(target.id(), &org_id) {
+                        return render_member_row_with_toast(
+                            &state,
+                            &session,
+                            target.id(),
+                            org,
+                            m,
+                            &msg,
+                            "error",
+                        );
+                    }
+                }
+                super::templates::htmx_toast_response(&msg, "error")
+            } else {
+                org_redirect_flash(&org_id, &msg, "error")
+            }
         }
     }
+}
+
+/// Returns `true` when the request carries the `HX-Request: true` header
+/// that HTMX attaches to every fetch it initiates.
+fn is_htmx_request(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("HX-Request")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == "true")
+}
+
+/// Re-renders a single member row with an attached `HX-Trigger: showToast`
+/// header. Used by the role-update and remove handlers to swap the row in
+/// place while also firing a client-side toast.
+fn render_member_row_with_toast(
+    state: &WebState,
+    session: &super::auth::UiSession,
+    realm: &RealmId,
+    org: Organization,
+    m: OrganizationMembership,
+    message: &str,
+    kind: &str,
+) -> Response {
+    let (name, email) = state
+        .identity
+        .get_user(realm, m.user_id())
+        .ok()
+        .flatten()
+        .map_or_else(
+            || (m.user_id().as_uuid().to_string(), String::from("(unknown)")),
+            |u| (u.display_name().to_string(), u.email().to_string()),
+        );
+    let tmpl = MemberRowTemplate {
+        org,
+        m: MemberView {
+            membership: m,
+            user_name: name,
+            user_email: email,
+        },
+        csrf: session.csrf.clone(),
+    };
+    let mut response = render(&tmpl);
+    let json = format!(
+        r#"{{"showToast":{{"message":"{}","kind":"{}"}}}}"#,
+        message.replace('"', r#"\""#),
+        kind.replace('"', r#"\""#),
+    );
+    if let Ok(val) = axum::http::HeaderValue::from_str(&json) {
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("hx-trigger"),
+            val,
+        );
+    }
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -3010,11 +2958,18 @@ pub struct UpdateRoleForm {
 }
 
 /// `POST /ui/admin/organizations/:id/members/:uid/role`.
+///
+/// HTMX caller (role dropdown with `hx-trigger="change"`) receives the
+/// refreshed member row partial + `HX-Trigger: showToast` so the row
+/// updates in place and a toast confirms the change. Plain-form caller
+/// (curl, no-JS) gets the familiar redirect-with-flash so scripted
+/// integrations keep working.
 pub async fn admin_org_update_role(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<UpdateRoleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -3032,6 +2987,7 @@ pub async fn admin_org_update_role(
     };
 
     let new_role = parse_org_role(&form.role);
+    let is_htmx = is_htmx_request(&headers);
     // Capture the old role before update for the Zanzibar delete-old /
     // touch-new pair. Mirror emits both halves as paired audit events.
     let old_role = state
@@ -3062,12 +3018,55 @@ pub async fn admin_org_update_role(
                 // at least lands for the new role.
                 mirror_org_member_added(&state, &session, target.id(), &org_id, &user_id, new_role);
             }
-            org_redirect_flash(&org_id, "Role updated", "success")
+            if is_htmx {
+                match (
+                    state.identity.get_organization(target.id(), &org_id),
+                    state
+                        .identity
+                        .get_membership(target.id(), &org_id, &user_id),
+                ) {
+                    (Ok(Some(org)), Ok(Some(m))) => render_member_row_with_toast(
+                        &state,
+                        &session,
+                        target.id(),
+                        org,
+                        m,
+                        "Role updated",
+                        "success",
+                    ),
+                    _ => super::templates::htmx_toast_response("Role updated", "success"),
+                }
+            } else {
+                org_redirect_flash(&org_id, "Role updated", "success")
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "update_member_role failed");
             let msg = format!("{e}");
-            org_redirect_flash(&org_id, &msg, "error")
+            if is_htmx {
+                // Row swap must put the pre-change state back so the
+                // dropdown visually reverts. Fetch the current membership
+                // (unchanged after failure) and re-render the row.
+                if let (Ok(Some(org)), Ok(Some(m))) = (
+                    state.identity.get_organization(target.id(), &org_id),
+                    state
+                        .identity
+                        .get_membership(target.id(), &org_id, &user_id),
+                ) {
+                    return render_member_row_with_toast(
+                        &state,
+                        &session,
+                        target.id(),
+                        org,
+                        m,
+                        &msg,
+                        "error",
+                    );
+                }
+                super::templates::htmx_toast_response(&msg, "error")
+            } else {
+                org_redirect_flash(&org_id, &msg, "error")
+            }
         }
     }
 }

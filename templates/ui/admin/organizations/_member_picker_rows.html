@@ -1,6 +1,8 @@
-{# HTMX partial: paginated user rows for the member picker modal #}
+{# HTMX partial: paginated user rows for the inline member picker.
+   Each row is its own mini-form — role dropdown + Add button post to
+   /members, the handler redirects back to the org detail with a flash. #}
 {% if !users.is_empty() %}
-<div class="px-6 py-2 text-xs text-ht-content-muted">
+<div class="mb-2 text-xs text-ht-content-muted">
   {% if !query.is_empty() %}
     Showing {{ users.len() }} result{% if users.len() != 1 %}s{% endif %} for "{{ query }}"
   {% else %}
@@ -10,28 +12,34 @@
 </div>
 {% endif %}
 
-<div class="divide-y divide-divider-faint">
+<div class="divide-y divide-divider-faint rounded-sm border border-divider-subtle">
   {% for u in users %}
-  <label class="flex cursor-pointer items-center gap-3 px-6 py-2.5 hover-bg-divider">
-    <input type="checkbox"
-           class="picker-checkbox h-4 w-4 rounded border-divider bg-ht-surface-elevated text-ht-content-brand focus:ring-ht-content-brand"
-           value="{{ u.id().as_uuid() }}"
-           data-name="{{ u.display_name() }}">
+  <form method="post"
+        action="/ui/admin/organizations/{{ org_id }}/members"
+        class="flex items-center gap-3 px-3 py-2 hover-bg-divider">
+    {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+    <input type="hidden" name="user_id" value="{{ u.id().as_uuid() }}">
     <div class="min-w-0 flex-1">
       <div class="truncate text-sm font-medium text-ht-content-primary">{{ u.display_name() }}</div>
       <div class="truncate text-xs text-ht-content-muted">{{ u.email() }}</div>
     </div>
-    <code class="hidden text-xs text-ht-content-muted sm:block">{{ u.id().as_uuid() }}</code>
-  </label>
+    <select name="role"
+            class="rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1 text-xs text-ht-content-primary">
+      <option value="Member">Member</option>
+      <option value="Admin">Admin</option>
+      <option value="Owner">Owner</option>
+    </select>
+    <button type="submit" class="btn-ember rounded px-3 py-1 text-xs font-semibold">Add</button>
+  </form>
   {% endfor %}
 </div>
 
 {% if users.is_empty() %}
-<div class="px-6 py-8 text-center text-sm text-ht-content-muted">
+<div class="py-6 text-center text-sm text-ht-content-muted">
   {% if query.len() >= 2 %}
     No users found matching "{{ query }}"
   {% else if query.is_empty() %}
-    No users in this realm yet.
+    Type at least 2 characters to search, or browse below.
   {% else %}
     Type at least 2 characters to search.
   {% endif %}
@@ -40,12 +48,12 @@
 
 {% match next_cursor %}
   {% when Some with (cursor) %}
-  <div class="border-t border-divider-faint px-6 py-3 text-center">
+  <div class="mt-2 text-center">
     <button type="button"
             hx-get="/ui/admin/organizations/{{ org_id }}/members/picker?cursor={{ cursor }}{% if !query.is_empty() %}&q={{ query }}{% endif %}"
-            hx-target="#picker-results"
+            hx-target="#member-picker-results"
             hx-swap="innerHTML"
-            class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">
+            class="text-xs font-medium text-ht-content-brand hover:text-ht-brand-deep">
       Load more users
     </button>
   </div>

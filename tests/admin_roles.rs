@@ -278,69 +278,6 @@ async fn org_role_change_mirrors_into_zanzibar_tuples_and_audit() {
     assert_eq!(revoked, 1, "expected 1 RoleRevoked event");
 }
 
-/// Regression: a bulk-add form body with exactly one checkbox ticked
-/// (`user_ids=<uuid>&role=Member&_csrf=…`) must deserialize into the
-/// one-element `Vec<String>` the handler expects. Before the custom
-/// `deserialize_string_list` fix, this round-trip failed at the form
-/// layer with "invalid type: string … expected a sequence".
-#[test]
-fn bulk_add_members_form_accepts_single_user_id() {
-    #[derive(serde::Deserialize, Debug)]
-    struct Body {
-        #[serde(default, deserialize_with = "single_or_many")]
-        user_ids: Vec<String>,
-    }
-    // Copy of the production helper — kept inline here so the test is
-    // decoupled from handler module visibility.
-    fn single_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{self, SeqAccess, Visitor};
-        struct V;
-        impl<'de> Visitor<'de> for V {
-            type Value = Vec<String>;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("string or sequence")
-            }
-            fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-                Ok(if v.is_empty() { vec![] } else { vec![v.to_string()] })
-            }
-            fn visit_string<E: de::Error>(self, v: String) -> Result<Vec<String>, E> {
-                Ok(if v.is_empty() { vec![] } else { vec![v] })
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut s: A) -> Result<Vec<String>, A::Error> {
-                let mut out = Vec::new();
-                while let Some(item) = s.next_element::<String>()? {
-                    if !item.is_empty() {
-                        out.push(item);
-                    }
-                }
-                Ok(out)
-            }
-        }
-        deserializer.deserialize_any(V)
-    }
-
-    // Single scalar: this is the shape `serde_urlencoded` produces from
-    // a one-checkbox submission (`user_ids=UUID`).
-    let single: Body = serde_json::from_value(serde_json::json!({
-        "user_ids": "813a58c0-2c73-4563-acb6-e7723acdc238"
-    }))
-    .expect("single scalar must deserialize");
-    assert_eq!(single.user_ids.len(), 1);
-
-    // Sequence: multi-checkbox submission.
-    let multi: Body =
-        serde_json::from_value(serde_json::json!({ "user_ids": ["a", "b"] })).expect("seq");
-    assert_eq!(multi.user_ids, vec!["a".to_string(), "b".to_string()]);
-
-    // Empty string: zero checkboxes → empty vec.
-    let empty: Body =
-        serde_json::from_value(serde_json::json!({ "user_ids": "" })).expect("empty scalar");
-    assert!(empty.user_ids.is_empty());
-}
-
 /// Serialization round-trip: the new `AuditAction` variants survive the
 /// `as_str` / `from_str` pair used by storage keys and query filters.
 #[test]

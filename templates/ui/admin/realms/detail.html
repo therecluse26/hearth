@@ -316,10 +316,15 @@
         </td>
         <td class="px-3 py-2"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ a.user_id }}</code></td>
         <td class="px-3 py-2 text-right">
-          <form method="post" action="/ui/admin/realms/{{ realm.id().as_uuid() }}/admins/{{ a.user_id }}/revoke">
-            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-            <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
-          </form>
+          <div class="flex items-center justify-end gap-3">
+            <a href="/ui/admin/authz/debug?object_type=hearth&object_id=admin&relation=admin&subject_type=user&subject_id={{ a.user_id }}"
+               class="text-xs text-ht-content-muted hover:text-ht-content-secondary"
+               title="Open authz debugger pre-filled for this admin">Check access</a>
+            <form method="post" action="/ui/admin/realms/{{ realm.id().as_uuid() }}/admins/{{ a.user_id }}/revoke">
+              {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+              <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
+            </form>
+          </div>
         </td>
       </tr>
       {% endfor %}

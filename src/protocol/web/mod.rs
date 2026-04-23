@@ -736,10 +736,6 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(admin::admin_org_member_picker),
         )
         .route(
-            "/admin/organizations/{id}/members/bulk",
-            axum::routing::post(admin::admin_org_bulk_add_members),
-        )
-        .route(
             "/admin/organizations/{id}/members/{uid}/remove",
             axum::routing::post(admin::admin_org_remove_member),
         )
