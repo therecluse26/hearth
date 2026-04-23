@@ -440,11 +440,13 @@ pub async fn confirm_link_submit(
 // ------ helpers ------
 
 fn build_service(state: &WebState) -> Option<FederationService> {
-    let http: Arc<dyn crate::identity::federation::FederationHttpTransport> =
-        Arc::new(crate::identity::federation::UreqFederationTransport);
-    // Redirect URI is synthesized from server.base_url — if we don't
-    // have one the service can't produce an absolute URL. For v1 we
-    // accept the server-local default.
+    // Tests inject a stub transport via `WebState::with_federation_http`.
+    // Production builds leave it `None` and fall through to the ureq-
+    // backed implementation.
+    let http: Arc<dyn crate::identity::federation::FederationHttpTransport> = state
+        .federation_http
+        .clone()
+        .unwrap_or_else(|| Arc::new(crate::identity::federation::UreqFederationTransport));
     // Reuse the onboarding base_url — the same "public URL of this
     // Hearth server" that verification emails use. Federation callback
     // URLs have the same requirement (must match exactly what's

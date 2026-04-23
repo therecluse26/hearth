@@ -39,8 +39,8 @@ pub use http::{
     StubResponse, UreqFederationTransport,
 };
 pub use oidc::{
-    verify_id_token_claims, verify_rs256, DiscoveryDocument, GenericOidcConnector, IdTokenClaims,
-    Jwk, JwksDoc,
+    fuzz_parse_id_token_claims, verify_id_token_claims, verify_rs256, DiscoveryDocument,
+    GenericOidcConnector, IdTokenClaims, Jwk, JwksDoc,
 };
 pub use presets::{lookup as preset_lookup, Preset};
 pub use service::{FederationOutcome, FederationService};

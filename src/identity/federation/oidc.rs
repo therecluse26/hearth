@@ -468,6 +468,16 @@ fn claims_to_identity(claims: &IdTokenClaims, cfg: &IdpConfig) -> ExternalIdenti
     }
 }
 
+/// Fuzz entry point: attempts to parse arbitrary bytes as an ID token
+/// claims payload. Must never panic, only return `Ok` or `Err`.
+///
+/// Exposed publicly so the `fuzz/fuzz_targets/federation_claims.rs`
+/// target can exercise the parser under `cargo fuzz` without taking a
+/// dependency on private module internals.
+pub fn fuzz_parse_id_token_claims(bytes: &[u8]) -> Result<IdTokenClaims, serde_json::Error> {
+    serde_json::from_slice(bytes)
+}
+
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

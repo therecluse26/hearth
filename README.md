@@ -45,6 +45,7 @@ Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home t
 - Magic link / passwordless
 - TOTP (RFC 6238) with recovery codes
 - WebAuthn / passkeys (Level 2)
+- Social login via external OIDC / OAuth2 providers — Google, Microsoft / Azure AD, Apple, GitHub out of the box; any OIDC Core 1.0 issuer via generic `type: oidc`
 
 **Authorization**
 - Zanzibar-style relationship tuples
@@ -127,8 +128,16 @@ Want to see the OAuth consent flow from a client's perspective? There's
 a runnable example at [`examples/oauth-consent-flow/`](examples/oauth-consent-flow/)
 — a small Express app that demonstrates the consent screen, per-scope
 approval, trusted-client bypass, and user-driven revocation in a
-real browser. See [`examples/`](examples/) for the full list of
-runnable demos.
+real browser.
+
+For the *other* direction — Hearth as a relying party consuming tokens
+from an upstream IdP — see
+[`examples/federation-flow/`](examples/federation-flow/). It spins up a
+local OIDC provider (built on `node-oidc-provider`) alongside Hearth and
+walks through JIT provisioning, confirm-to-link, auto-link, and
+self-service unlinking.
+
+See [`examples/`](examples/) for the full list of runnable demos.
 
 ---
 
@@ -382,6 +391,70 @@ curl -fsS -X POST http://127.0.0.1:8420/token \
 ```
 
 Refresh tokens rotate on use. Presenting an already-rotated refresh token triggers theft detection and revokes the grant family.
+
+---
+
+## External IdP Federation (social login)
+
+Hearth also acts as an OIDC **relying party**: users can sign in with Google, Microsoft / Azure AD, Apple, GitHub, or any OIDC Core 1.0–compliant provider. Connectors are declared per realm in `hearth.yaml`; at login time Hearth renders a "Sign in with Google" button next to the password form and brokers the standard OIDC code flow against the upstream.
+
+### Minimum config
+
+```yaml
+realms:
+  customer-portal:
+    federation:
+      # How external identities attach to existing local users when the
+      # upstream asserts a verified email that matches a Hearth user.
+      # Default is `confirm` (Keycloak-equivalent safety posture).
+      link_existing_accounts: confirm
+      providers:
+        google:
+          type: google                 # preset — fills in issuer + endpoints + scopes
+          client_id: ${GOOGLE_CLIENT_ID}
+          client_secret: ${GOOGLE_CLIENT_SECRET}
+```
+
+That's enough. Restart Hearth and the realm's login page shows a "Sign in with Google" button. `${VAR_NAME}` substitution comes from `src/config/env.rs` — missing values are a hard startup error.
+
+### Provider types
+
+| `type` | Protocol | What the preset fills in |
+|---|---|---|
+| `google` | OIDC | Issuer, authorize / token / userinfo / JWKS URLs, scopes `openid email profile` |
+| `microsoft` | OIDC | Azure AD `common` tenant v2.0 endpoints (override `issuer` for single-tenant deployments) |
+| `apple` | OIDC | Apple Sign-In endpoints; no userinfo (claims inline in the ID token) |
+| `github` | OAuth2 | `/login/oauth/authorize` + `/login/oauth/access_token` + `/user`; email via `/user/emails` when private |
+| `oidc` | OIDC | No preset — operator supplies `issuer`, `authorization_endpoint`, `token_endpoint`, `jwks_uri`, `scopes` explicitly |
+
+`type: oidc` is the escape hatch for any provider not in the preset list (Okta, Auth0, Keycloak, Zitadel, on-prem Azure AD B2C, …).
+
+### Account linking
+
+`link_existing_accounts` governs what happens when an external login's verified email matches an existing Hearth user:
+
+| Mode | Behavior | Security posture |
+|---|---|---|
+| `disabled` | Never link. Always JIT-provision a new user per external identity. | Safest against IdP email spoofing; duplicate accounts are visible and expected |
+| `confirm` *(default)* | Redirect to `/ui/federation/confirm-link`; user must authenticate to the local account (password or passkey) before the link attaches. | Matches Keycloak's default First Broker Login flow |
+| `auto` | Silent link on `email_verified=true` email match. | Trusts the IdP entirely — only use when the realm federates to a single high-trust provider |
+
+Users can list and unlink their external identities at `/ui/account/linked-accounts`.
+
+### Configuration is YAML-only, permanently
+
+Federation connectors are **system configuration**, not data. Hearth deliberately separates the two:
+
+- **Data** (users, organizations, linked external identities, sessions) — managed through the admin UI and APIs. Changes at runtime, per user, driven by user action.
+- **System configuration** (realms, OAuth clients, email transports, **federation connectors**, themes) — YAML-only, reconciled at startup, version-controlled alongside the rest of the deployment.
+
+There will never be an admin UI for adding federation connectors. This is Infrastructure-as-Code by design: connector credentials, issuer URLs, and scopes belong in git next to the rest of your deployment, not in a database that can silently drift from what operators think they deployed.
+
+### Try it
+
+An end-to-end walkthrough with a local OIDC upstream lives at [`examples/federation-flow/`](examples/federation-flow/) — two processes (Hearth + a `node-oidc-provider`-based upstream) that reproduce JIT provisioning, confirm-to-link, auto-link, and self-service unlinking without any external credentials.
+
+For the complete feature spec + file map see [`docs/gaps/FEATURE_GAPS.md §5`](docs/gaps/FEATURE_GAPS.md).
 
 ---
 

@@ -45,3 +45,8 @@ doc = false
 name = "webauthn_cbor_parse"
 path = "fuzz_targets/webauthn_cbor_parse.rs"
 doc = false
+
+[[bin]]
+name = "federation_claims"
+path = "fuzz_targets/federation_claims.rs"
+doc = false

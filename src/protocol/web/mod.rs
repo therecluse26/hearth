@@ -150,6 +150,11 @@ pub struct WebState {
     /// Path to the config file for the config editor. `None` in test or
     /// dev-mode contexts where no file was loaded.
     pub config_path: Option<PathBuf>,
+    /// Optional federation HTTP transport override. `None` in production
+    /// (the handler uses [`crate::identity::federation::UreqFederationTransport`]);
+    /// tests inject a [`crate::identity::federation::StubFederationTransport`]
+    /// to drive the federation callback path without touching the network.
+    pub federation_http: Option<Arc<dyn crate::identity::federation::FederationHttpTransport>>,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -197,7 +202,21 @@ impl WebState {
             reload_notify: None,
             default_realm_name: None,
             config_path: None,
+            federation_http: None,
         }
+    }
+
+    /// Injects an HTTP transport used by the federation service for
+    /// outbound calls (token exchange, JWKS, userinfo). Intended for
+    /// tests — production builds leave this `None` and fall through to
+    /// [`crate::identity::federation::UreqFederationTransport`].
+    #[must_use]
+    pub fn with_federation_http(
+        mut self,
+        transport: Arc<dyn crate::identity::federation::FederationHttpTransport>,
+    ) -> Self {
+        self.federation_http = Some(transport);
+        self
     }
 
     /// Attaches configuration warnings to this state.

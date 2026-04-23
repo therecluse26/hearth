@@ -1,0 +1,14 @@
+# Runtime artifacts
+data/
+.env
+*.log
+
+# Node.js
+upstream-idp/node_modules/
+upstream-idp/dist/
+client-ts/node_modules/
+client-ts/dist/
+
+# Editor
+.idea/
+.vscode/

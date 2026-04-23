@@ -54,11 +54,15 @@ Implemented feature-complete. Hearth now acts as an OIDC **relying party** in ad
 - Audit: `proto/hearth/events/v1/audit.proto`, `src/audit/types.rs`, `src/protocol/convert/audit.rs`
 - Tests: unit tests in each federation submodule (53 across types/http/state/connector/oidc/github/presets), integration tests in `tests/federation.rs` (11 covering registration, realm isolation, state single-use, state expiry, link roundtrip, cross-user-link refusal, unlink idempotency, delete_user cascade, delete_idp cascade leaves users intact, confirm-link single-use, default link mode)
 
-**Remaining enhancements (not blocking):**
-- Admin UI for connector CRUD (YAML-only today — matches the existing pattern; admin UI can come later alongside the Applications edit surface).
-- ES256 / EdDSA ID-token verification (RS256 covers every provider Hearth targets in v1; mechanical follow-ups).
-- Fixture-backed RSA happy-path signature test (sad paths are covered; generating a test RSA keypair + sample JWT is fixture work for a later session).
+**Design principle — system config is YAML-only, permanently:**
+
+Hearth draws a deliberate line between **data** (users, orgs, sessions, linked external identities — all manageable via the admin UI) and **system configuration** (realms, OAuth clients, email transports, **federation connectors**, themes — all YAML-only, reconciled at startup, version-controlled alongside the rest of the deployment). Federation connectors sit on the config side of that line; there will **never** be an admin UI for `register_idp` / `update_idp` / `delete_idp`. Rationale: Infrastructure-as-Code, avoiding Keycloak-style config-UI sprawl, and keeping the declarative bootstrap path (`git clone && hearth serve --config hearth.yaml`) intact.
+
+**Remaining enhancements (not blocking, genuinely future work):**
+- Admin-side `/ui/admin/users/{id}/linked-accounts` view (admin-assisted revocation — that IS data management, so it's in-scope for the UI, just not built yet).
+- ES256 / EdDSA ID-token verification (RS256 covers every provider Hearth targets in v1; swap the `ring::signature::VerificationAlgorithm` instance in `verify_rs256`).
 - Claim-mapping application at claim-extraction time (scaffold exists in `IdpConfig.claim_mappings`; wiring to apply the rename before `IdTokenClaims` deserialize is a small addition when the first real consumer appears — e.g., Azure AD `upn` → `email`).
+- JWKS caching with TTL (today `fetch_jwks` hits the upstream on every callback — acceptable since federation is off the hot path, but wasteful at scale).
 - Approximate geolocation in federation audit metadata (same deferral as `/account/sessions`).
 
 ### 6. SAML 2.0 IdP / SP Support

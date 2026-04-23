@@ -9,7 +9,8 @@ outside"* — not exhaustive coverage, not a template starter kit.
 
 | Example | What it demonstrates | Runtime |
 |---|---|---|
-| [`oauth-consent-flow/`](./oauth-consent-flow/) | Browser-facing OAuth 2.0 / OIDC authorization code flow with the consent screen, per-scope approval, trusted-client bypass, and user-driven revocation. | Node.js 18+ / TypeScript |
+| [`oauth-consent-flow/`](./oauth-consent-flow/) | Browser-facing OAuth 2.0 / OIDC authorization code flow with the consent screen, per-scope approval, trusted-client bypass, and user-driven revocation. Hearth as an OIDC **provider**. | Node.js 18+ / TypeScript |
+| [`federation-flow/`](./federation-flow/) | External IdP federation (social login): Hearth as an OIDC **relying party**. Local upstream built on `node-oidc-provider`, walkthrough of JIT provisioning, confirm-to-link, auto-link, and self-service unlinking. | Node.js 18+ / TypeScript |
 
 Contributions welcome — see [Adding a new example](#adding-a-new-example) below.
 
