@@ -17,6 +17,9 @@ use hearth::core::{Clock, SystemClock};
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
+// Kept alongside the harness so tests can hand the engines to gRPC / HTTP
+// rigs that require `Arc<dyn Trait>`.
+
 /// Errors from test harness operations.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -80,11 +83,11 @@ pub struct TestHarness {
     /// Storage engine (embedded mode only), wrapped in Arc for sharing with authz.
     engine: Arc<EmbeddedStorageEngine>,
     /// Authorization engine.
-    authz_engine: EmbeddedAuthzEngine,
+    authz_engine: Arc<EmbeddedAuthzEngine>,
     /// Identity engine.
-    identity_engine: EmbeddedIdentityEngine,
+    identity_engine: Arc<EmbeddedIdentityEngine>,
     /// Audit engine.
-    audit_engine: EmbeddedAuditEngine,
+    audit_engine: Arc<EmbeddedAuditEngine>,
     /// Temporary directory — held for lifetime management.
     _temp_dir: tempfile::TempDir,
 }
@@ -128,9 +131,9 @@ impl TestHarness {
         Ok(Self {
             mode: HarnessMode::Embedded,
             engine,
-            authz_engine,
-            identity_engine,
-            audit_engine,
+            authz_engine: Arc::new(authz_engine),
+            identity_engine: Arc::new(identity_engine),
+            audit_engine: Arc::new(audit_engine),
             _temp_dir: temp_dir,
         })
     }
@@ -163,7 +166,7 @@ impl TestHarness {
     /// Available in both modes — embedded mode returns the in-process engine,
     /// server mode will return a client-backed implementation.
     pub fn authz(&self) -> &dyn AuthorizationEngine {
-        &self.authz_engine
+        self.authz_engine.as_ref()
     }
 
     /// Returns a reference to the identity engine.
@@ -171,7 +174,7 @@ impl TestHarness {
     /// Available in both modes — embedded mode returns the in-process engine,
     /// server mode will return a client-backed implementation.
     pub fn identity(&self) -> &dyn IdentityEngine {
-        &self.identity_engine
+        self.identity_engine.as_ref()
     }
 
     /// Returns a reference to the audit engine.
@@ -179,7 +182,23 @@ impl TestHarness {
     /// Available in both modes — embedded mode returns the in-process engine,
     /// server mode will return a client-backed implementation.
     pub fn audit(&self) -> &dyn AuditEngine {
-        &self.audit_engine
+        self.audit_engine.as_ref()
+    }
+
+    /// Returns an `Arc<dyn IdentityEngine>` for constructing protocol-layer
+    /// state (gRPC / HTTP) that demands shared ownership.
+    pub fn identity_arc(&self) -> Arc<dyn IdentityEngine> {
+        self.identity_engine.clone() as Arc<dyn IdentityEngine>
+    }
+
+    /// Returns an `Arc<dyn AuthorizationEngine>` for shared ownership.
+    pub fn authz_arc(&self) -> Arc<dyn AuthorizationEngine> {
+        self.authz_engine.clone() as Arc<dyn AuthorizationEngine>
+    }
+
+    /// Returns an `Arc<dyn AuditEngine>` for shared ownership.
+    pub fn audit_arc(&self) -> Arc<dyn AuditEngine> {
+        self.audit_engine.clone() as Arc<dyn AuditEngine>
     }
 
     /// Returns the base URL for server mode, or `None` for embedded mode.

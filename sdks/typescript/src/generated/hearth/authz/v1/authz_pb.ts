@@ -2,15 +2,15 @@
 // @generated from file hearth/authz/v1/authz.proto (package hearth.authz.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file hearth/authz/v1/authz.proto.
  */
 export const file_hearth_authz_v1_authz: GenFile = /*@__PURE__*/
-  fileDesc("ChtoZWFydGgvYXV0aHovdjEvYXV0aHoucHJvdG8SD2hlYXJ0aC5hdXRoei52MSIzCglPYmplY3RSZWYSEwoLb2JqZWN0X3R5cGUYASABKAkSEQoJb2JqZWN0X2lkGAIgASgJInIKClN1YmplY3RSZWYSLAoGZGlyZWN0GAEgASgLMhouaGVhcnRoLmF1dGh6LnYxLk9iamVjdFJlZkgAEi4KB3VzZXJzZXQYAiABKAsyGy5oZWFydGguYXV0aHoudjEuVXNlcnNldFJlZkgAQgYKBGtpbmQiSgoKVXNlcnNldFJlZhIqCgZvYmplY3QYASABKAsyGi5oZWFydGguYXV0aHoudjEuT2JqZWN0UmVmEhAKCHJlbGF0aW9uGAIgASgJIn8KEVJlbGF0aW9uc2hpcFR1cGxlEioKBm9iamVjdBgBIAEoCzIaLmhlYXJ0aC5hdXRoei52MS5PYmplY3RSZWYSEAoIcmVsYXRpb24YAiABKAkSLAoHc3ViamVjdBgDIAEoCzIbLmhlYXJ0aC5hdXRoei52MS5TdWJqZWN0UmVmIngKClR1cGxlV3JpdGUSNwoJb3BlcmF0aW9uGAEgASgOMiQuaGVhcnRoLmF1dGh6LnYxLlR1cGxlV3JpdGVPcGVyYXRpb24SMQoFdHVwbGUYAiABKAsyIi5oZWFydGguYXV0aHoudjEuUmVsYXRpb25zaGlwVHVwbGUiIwoQQ29uc2lzdGVuY3lUb2tlbhIPCgd2ZXJzaW9uGAEgASgEIssBChBUdXBsZUNoYW5nZUV2ZW50EhAKCHNlcXVlbmNlGAEgASgEEjIKBmFjdGlvbhgCIAEoDjIiLmhlYXJ0aC5hdXRoei52MS5UdXBsZUNoYW5nZUFjdGlvbhITCgtvYmplY3RfdHlwZRgDIAEoCRIRCglvYmplY3RfaWQYBCABKAkSEAoIcmVsYXRpb24YBSABKAkSDwoHc3ViamVjdBgGIAEoCRIQCghyZWFsbV9pZBgHIAEoCRIUCgx0aW1lc3RhbXBfdXMYCCABKAQiNwoLV2F0Y2hGaWx0ZXISGAoLb2JqZWN0X3R5cGUYASABKAlIAIgBAUIOCgxfb2JqZWN0X3R5cGUisQEKD05hbWVzcGFjZUNvbmZpZxJHCgxvYmplY3RfdHlwZXMYASADKAsyMS5oZWFydGguYXV0aHoudjEuTmFtZXNwYWNlQ29uZmlnLk9iamVjdFR5cGVzRW50cnkaVQoQT2JqZWN0VHlwZXNFbnRyeRILCgNrZXkYASABKAkSMAoFdmFsdWUYAiABKAsyIS5oZWFydGguYXV0aHoudjEuT2JqZWN0VHlwZUNvbmZpZzoCOAEiqgEKEE9iamVjdFR5cGVDb25maWcSQwoJcmVsYXRpb25zGAEgAygLMjAuaGVhcnRoLmF1dGh6LnYxLk9iamVjdFR5cGVDb25maWcuUmVsYXRpb25zRW50cnkaUQoOUmVsYXRpb25zRW50cnkSCwoDa2V5GAEgASgJEi4KBXZhbHVlGAIgASgLMh8uaGVhcnRoLmF1dGh6LnYxLlJlbGF0aW9uQ29uZmlnOgI4ASIvCg5SZWxhdGlvbkNvbmZpZxIdChVhbGxvd2VkX3N1YmplY3RfdHlwZXMYASADKAkq1wEKE1R1cGxlV3JpdGVPcGVyYXRpb24SJQohVFVQTEVfV1JJVEVfT1BFUkFUSU9OX1VOU1BFQ0lGSUVEEAASHwobVFVQTEVfV1JJVEVfT1BFUkFUSU9OX1RPVUNIEAESIAocVFVQTEVfV1JJVEVfT1BFUkFUSU9OX0RFTEVURRACEikKJVRVUExFX1dSSVRFX09QRVJBVElPTl9UT1VDSF9JRl9BQlNFTlQQAxIrCidUVVBMRV9XUklURV9PUEVSQVRJT05fREVMRVRFX0lGX1BSRVNFTlQQBCp3ChFUdXBsZUNoYW5nZUFjdGlvbhIjCh9UVVBMRV9DSEFOR0VfQUNUSU9OX1VOU1BFQ0lGSUVEEAASHQoZVFVQTEVfQ0hBTkdFX0FDVElPTl9UT1VDSBABEh4KGlRVUExFX0NIQU5HRV9BQ1RJT05fREVMRVRFEAJCP1o9Z2l0aHViLmNvbS9oZWFydGhkYi9oZWFydGgvc2Rrcy9nby9nZW5lcmF0ZWQvYXV0aHovdjE7YXV0aHp2MWIGcHJvdG8z");
+  fileDesc("ChtoZWFydGgvYXV0aHovdjEvYXV0aHoucHJvdG8SD2hlYXJ0aC5hdXRoei52MSIzCglPYmplY3RSZWYSEwoLb2JqZWN0X3R5cGUYASABKAkSEQoJb2JqZWN0X2lkGAIgASgJInIKClN1YmplY3RSZWYSLAoGZGlyZWN0GAEgASgLMhouaGVhcnRoLmF1dGh6LnYxLk9iamVjdFJlZkgAEi4KB3VzZXJzZXQYAiABKAsyGy5oZWFydGguYXV0aHoudjEuVXNlcnNldFJlZkgAQgYKBGtpbmQiSgoKVXNlcnNldFJlZhIqCgZvYmplY3QYASABKAsyGi5oZWFydGguYXV0aHoudjEuT2JqZWN0UmVmEhAKCHJlbGF0aW9uGAIgASgJIn8KEVJlbGF0aW9uc2hpcFR1cGxlEioKBm9iamVjdBgBIAEoCzIaLmhlYXJ0aC5hdXRoei52MS5PYmplY3RSZWYSEAoIcmVsYXRpb24YAiABKAkSLAoHc3ViamVjdBgDIAEoCzIbLmhlYXJ0aC5hdXRoei52MS5TdWJqZWN0UmVmIngKClR1cGxlV3JpdGUSNwoJb3BlcmF0aW9uGAEgASgOMiQuaGVhcnRoLmF1dGh6LnYxLlR1cGxlV3JpdGVPcGVyYXRpb24SMQoFdHVwbGUYAiABKAsyIi5oZWFydGguYXV0aHoudjEuUmVsYXRpb25zaGlwVHVwbGUiIwoQQ29uc2lzdGVuY3lUb2tlbhIPCgd2ZXJzaW9uGAEgASgEIssBChBUdXBsZUNoYW5nZUV2ZW50EhAKCHNlcXVlbmNlGAEgASgEEjIKBmFjdGlvbhgCIAEoDjIiLmhlYXJ0aC5hdXRoei52MS5UdXBsZUNoYW5nZUFjdGlvbhITCgtvYmplY3RfdHlwZRgDIAEoCRIRCglvYmplY3RfaWQYBCABKAkSEAoIcmVsYXRpb24YBSABKAkSDwoHc3ViamVjdBgGIAEoCRIQCghyZWFsbV9pZBgHIAEoCRIUCgx0aW1lc3RhbXBfdXMYCCABKAQiNwoLV2F0Y2hGaWx0ZXISGAoLb2JqZWN0X3R5cGUYASABKAlIAIgBAUIOCgxfb2JqZWN0X3R5cGUisQEKD05hbWVzcGFjZUNvbmZpZxJHCgxvYmplY3RfdHlwZXMYASADKAsyMS5oZWFydGguYXV0aHoudjEuTmFtZXNwYWNlQ29uZmlnLk9iamVjdFR5cGVzRW50cnkaVQoQT2JqZWN0VHlwZXNFbnRyeRILCgNrZXkYASABKAkSMAoFdmFsdWUYAiABKAsyIS5oZWFydGguYXV0aHoudjEuT2JqZWN0VHlwZUNvbmZpZzoCOAEiqgEKEE9iamVjdFR5cGVDb25maWcSQwoJcmVsYXRpb25zGAEgAygLMjAuaGVhcnRoLmF1dGh6LnYxLk9iamVjdFR5cGVDb25maWcuUmVsYXRpb25zRW50cnkaUQoOUmVsYXRpb25zRW50cnkSCwoDa2V5GAEgASgJEi4KBXZhbHVlGAIgASgLMh8uaGVhcnRoLmF1dGh6LnYxLlJlbGF0aW9uQ29uZmlnOgI4ASIvCg5SZWxhdGlvbkNvbmZpZxIdChVhbGxvd2VkX3N1YmplY3RfdHlwZXMYASADKAki2QEKDENoZWNrUmVxdWVzdBIqCgZvYmplY3QYASABKAsyGi5oZWFydGguYXV0aHoudjEuT2JqZWN0UmVmEhAKCHJlbGF0aW9uGAIgASgJEiwKB3N1YmplY3QYAyABKAsyGy5oZWFydGguYXV0aHoudjEuU3ViamVjdFJlZhJEChRhdF9sZWFzdF9hc19mcmVzaF9hcxgEIAEoCzIhLmhlYXJ0aC5hdXRoei52MS5Db25zaXN0ZW5jeVRva2VuSACIAQFCFwoVX2F0X2xlYXN0X2FzX2ZyZXNoX2FzIlIKDUNoZWNrUmVzcG9uc2USDwoHYWxsb3dlZBgBIAEoCBIwCgV0b2tlbhgCIAEoCzIhLmhlYXJ0aC5hdXRoei52MS5Db25zaXN0ZW5jeVRva2VuIqwBCg1FeHBhbmRSZXF1ZXN0EioKBm9iamVjdBgBIAEoCzIaLmhlYXJ0aC5hdXRoei52MS5PYmplY3RSZWYSEAoIcmVsYXRpb24YAiABKAkSRAoUYXRfbGVhc3RfYXNfZnJlc2hfYXMYAyABKAsyIS5oZWFydGguYXV0aHoudjEuQ29uc2lzdGVuY3lUb2tlbkgAiAEBQhcKFV9hdF9sZWFzdF9hc19mcmVzaF9hcyJxCg5FeHBhbmRSZXNwb25zZRIwCgV0b2tlbhgBIAEoCzIhLmhlYXJ0aC5hdXRoei52MS5Db25zaXN0ZW5jeVRva2VuEi0KCHN1YmplY3RzGAIgAygLMhsuaGVhcnRoLmF1dGh6LnYxLlN1YmplY3RSZWYiQQoSV3JpdGVUdXBsZXNSZXF1ZXN0EisKBndyaXRlcxgBIAMoCzIbLmhlYXJ0aC5hdXRoei52MS5UdXBsZVdyaXRlIkcKE1dyaXRlVHVwbGVzUmVzcG9uc2USMAoFdG9rZW4YASABKAsyIS5oZWFydGguYXV0aHoudjEuQ29uc2lzdGVuY3lUb2tlbiKZAQoMV2F0Y2hSZXF1ZXN0EjsKC3N0YXJ0X2FmdGVyGAEgASgLMiEuaGVhcnRoLmF1dGh6LnYxLkNvbnNpc3RlbmN5VG9rZW5IAIgBARIxCgZmaWx0ZXIYAiABKAsyHC5oZWFydGguYXV0aHoudjEuV2F0Y2hGaWx0ZXJIAYgBAUIOCgxfc3RhcnRfYWZ0ZXJCCQoHX2ZpbHRlciJwCgpXYXRjaEV2ZW50EjAKBWV2ZW50GAEgASgLMiEuaGVhcnRoLmF1dGh6LnYxLlR1cGxlQ2hhbmdlRXZlbnQSMAoFdG9rZW4YAiABKAsyIS5oZWFydGguYXV0aHoudjEuQ29uc2lzdGVuY3lUb2tlbirXAQoTVHVwbGVXcml0ZU9wZXJhdGlvbhIlCiFUVVBMRV9XUklURV9PUEVSQVRJT05fVU5TUEVDSUZJRUQQABIfChtUVVBMRV9XUklURV9PUEVSQVRJT05fVE9VQ0gQARIgChxUVVBMRV9XUklURV9PUEVSQVRJT05fREVMRVRFEAISKQolVFVQTEVfV1JJVEVfT1BFUkFUSU9OX1RPVUNIX0lGX0FCU0VOVBADEisKJ1RVUExFX1dSSVRFX09QRVJBVElPTl9ERUxFVEVfSUZfUFJFU0VOVBAEKncKEVR1cGxlQ2hhbmdlQWN0aW9uEiMKH1RVUExFX0NIQU5HRV9BQ1RJT05fVU5TUEVDSUZJRUQQABIdChlUVVBMRV9DSEFOR0VfQUNUSU9OX1RPVUNIEAESHgoaVFVQTEVfQ0hBTkdFX0FDVElPTl9ERUxFVEUQAjLKAgoUQXV0aG9yaXphdGlvblNlcnZpY2USRgoFQ2hlY2sSHS5oZWFydGguYXV0aHoudjEuQ2hlY2tSZXF1ZXN0Gh4uaGVhcnRoLmF1dGh6LnYxLkNoZWNrUmVzcG9uc2USSQoGRXhwYW5kEh4uaGVhcnRoLmF1dGh6LnYxLkV4cGFuZFJlcXVlc3QaHy5oZWFydGguYXV0aHoudjEuRXhwYW5kUmVzcG9uc2USWAoLV3JpdGVUdXBsZXMSIy5oZWFydGguYXV0aHoudjEuV3JpdGVUdXBsZXNSZXF1ZXN0GiQuaGVhcnRoLmF1dGh6LnYxLldyaXRlVHVwbGVzUmVzcG9uc2USRQoFV2F0Y2gSHS5oZWFydGguYXV0aHoudjEuV2F0Y2hSZXF1ZXN0GhsuaGVhcnRoLmF1dGh6LnYxLldhdGNoRXZlbnQwAUI/Wj1naXRodWIuY29tL2hlYXJ0aGRiL2hlYXJ0aC9zZGtzL2dvL2dlbmVyYXRlZC9hdXRoei92MTthdXRoenYxYgZwcm90bzM");
 
 /**
  * A reference to an object: {type}:{id}.
@@ -298,6 +298,195 @@ export const RelationConfigSchema: GenMessage<RelationConfig> = /*@__PURE__*/
   messageDesc(file_hearth_authz_v1_authz, 10);
 
 /**
+ * @generated from message hearth.authz.v1.CheckRequest
+ */
+export type CheckRequest = Message<"hearth.authz.v1.CheckRequest"> & {
+  /**
+   * @generated from field: hearth.authz.v1.ObjectRef object = 1;
+   */
+  object?: ObjectRef;
+
+  /**
+   * @generated from field: string relation = 2;
+   */
+  relation: string;
+
+  /**
+   * @generated from field: hearth.authz.v1.SubjectRef subject = 3;
+   */
+  subject?: SubjectRef;
+
+  /**
+   * @generated from field: optional hearth.authz.v1.ConsistencyToken at_least_as_fresh_as = 4;
+   */
+  atLeastAsFreshAs?: ConsistencyToken;
+};
+
+/**
+ * Describes the message hearth.authz.v1.CheckRequest.
+ * Use `create(CheckRequestSchema)` to create a new message.
+ */
+export const CheckRequestSchema: GenMessage<CheckRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 11);
+
+/**
+ * @generated from message hearth.authz.v1.CheckResponse
+ */
+export type CheckResponse = Message<"hearth.authz.v1.CheckResponse"> & {
+  /**
+   * @generated from field: bool allowed = 1;
+   */
+  allowed: boolean;
+
+  /**
+   * @generated from field: hearth.authz.v1.ConsistencyToken token = 2;
+   */
+  token?: ConsistencyToken;
+};
+
+/**
+ * Describes the message hearth.authz.v1.CheckResponse.
+ * Use `create(CheckResponseSchema)` to create a new message.
+ */
+export const CheckResponseSchema: GenMessage<CheckResponse> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 12);
+
+/**
+ * @generated from message hearth.authz.v1.ExpandRequest
+ */
+export type ExpandRequest = Message<"hearth.authz.v1.ExpandRequest"> & {
+  /**
+   * @generated from field: hearth.authz.v1.ObjectRef object = 1;
+   */
+  object?: ObjectRef;
+
+  /**
+   * @generated from field: string relation = 2;
+   */
+  relation: string;
+
+  /**
+   * @generated from field: optional hearth.authz.v1.ConsistencyToken at_least_as_fresh_as = 3;
+   */
+  atLeastAsFreshAs?: ConsistencyToken;
+};
+
+/**
+ * Describes the message hearth.authz.v1.ExpandRequest.
+ * Use `create(ExpandRequestSchema)` to create a new message.
+ */
+export const ExpandRequestSchema: GenMessage<ExpandRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 13);
+
+/**
+ * A tree of subjects for a given (object, relation). Flattened from the
+ * engine's recursive expand tree; each node is keyed by its userset id.
+ *
+ * @generated from message hearth.authz.v1.ExpandResponse
+ */
+export type ExpandResponse = Message<"hearth.authz.v1.ExpandResponse"> & {
+  /**
+   * @generated from field: hearth.authz.v1.ConsistencyToken token = 1;
+   */
+  token?: ConsistencyToken;
+
+  /**
+   * @generated from field: repeated hearth.authz.v1.SubjectRef subjects = 2;
+   */
+  subjects: SubjectRef[];
+};
+
+/**
+ * Describes the message hearth.authz.v1.ExpandResponse.
+ * Use `create(ExpandResponseSchema)` to create a new message.
+ */
+export const ExpandResponseSchema: GenMessage<ExpandResponse> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 14);
+
+/**
+ * @generated from message hearth.authz.v1.WriteTuplesRequest
+ */
+export type WriteTuplesRequest = Message<"hearth.authz.v1.WriteTuplesRequest"> & {
+  /**
+   * @generated from field: repeated hearth.authz.v1.TupleWrite writes = 1;
+   */
+  writes: TupleWrite[];
+};
+
+/**
+ * Describes the message hearth.authz.v1.WriteTuplesRequest.
+ * Use `create(WriteTuplesRequestSchema)` to create a new message.
+ */
+export const WriteTuplesRequestSchema: GenMessage<WriteTuplesRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 15);
+
+/**
+ * @generated from message hearth.authz.v1.WriteTuplesResponse
+ */
+export type WriteTuplesResponse = Message<"hearth.authz.v1.WriteTuplesResponse"> & {
+  /**
+   * @generated from field: hearth.authz.v1.ConsistencyToken token = 1;
+   */
+  token?: ConsistencyToken;
+};
+
+/**
+ * Describes the message hearth.authz.v1.WriteTuplesResponse.
+ * Use `create(WriteTuplesResponseSchema)` to create a new message.
+ */
+export const WriteTuplesResponseSchema: GenMessage<WriteTuplesResponse> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 16);
+
+/**
+ * @generated from message hearth.authz.v1.WatchRequest
+ */
+export type WatchRequest = Message<"hearth.authz.v1.WatchRequest"> & {
+  /**
+   * Start streaming events strictly after this token. When unset, the
+   * stream starts from "now" and only future events are delivered.
+   *
+   * @generated from field: optional hearth.authz.v1.ConsistencyToken start_after = 1;
+   */
+  startAfter?: ConsistencyToken;
+
+  /**
+   * @generated from field: optional hearth.authz.v1.WatchFilter filter = 2;
+   */
+  filter?: WatchFilter;
+};
+
+/**
+ * Describes the message hearth.authz.v1.WatchRequest.
+ * Use `create(WatchRequestSchema)` to create a new message.
+ */
+export const WatchRequestSchema: GenMessage<WatchRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 17);
+
+/**
+ * A streamed tuple-change event.
+ *
+ * @generated from message hearth.authz.v1.WatchEvent
+ */
+export type WatchEvent = Message<"hearth.authz.v1.WatchEvent"> & {
+  /**
+   * @generated from field: hearth.authz.v1.TupleChangeEvent event = 1;
+   */
+  event?: TupleChangeEvent;
+
+  /**
+   * @generated from field: hearth.authz.v1.ConsistencyToken token = 2;
+   */
+  token?: ConsistencyToken;
+};
+
+/**
+ * Describes the message hearth.authz.v1.WatchEvent.
+ * Use `create(WatchEventSchema)` to create a new message.
+ */
+export const WatchEventSchema: GenMessage<WatchEvent> = /*@__PURE__*/
+  messageDesc(file_hearth_authz_v1_authz, 18);
+
+/**
  * The operation type for a tuple write.
  *
  * @generated from enum hearth.authz.v1.TupleWriteOperation
@@ -362,4 +551,43 @@ export enum TupleChangeAction {
  */
 export const TupleChangeActionSchema: GenEnum<TupleChangeAction> = /*@__PURE__*/
   enumDesc(file_hearth_authz_v1_authz, 1);
+
+/**
+ * @generated from service hearth.authz.v1.AuthorizationService
+ */
+export const AuthorizationService: GenService<{
+  /**
+   * @generated from rpc hearth.authz.v1.AuthorizationService.Check
+   */
+  check: {
+    methodKind: "unary";
+    input: typeof CheckRequestSchema;
+    output: typeof CheckResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.authz.v1.AuthorizationService.Expand
+   */
+  expand: {
+    methodKind: "unary";
+    input: typeof ExpandRequestSchema;
+    output: typeof ExpandResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.authz.v1.AuthorizationService.WriteTuples
+   */
+  writeTuples: {
+    methodKind: "unary";
+    input: typeof WriteTuplesRequestSchema;
+    output: typeof WriteTuplesResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.authz.v1.AuthorizationService.Watch
+   */
+  watch: {
+    methodKind: "server_streaming";
+    input: typeof WatchRequestSchema;
+    output: typeof WatchEventSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hearth_authz_v1_authz, 0);
 

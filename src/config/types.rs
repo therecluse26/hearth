@@ -49,6 +49,14 @@ pub struct ServerConfig {
     /// realm reconciliation runs, else the server refuses to start.
     #[serde(default)]
     pub default_realm: Option<String>,
+    /// Port for the gRPC management API. When `None` (the default), the
+    /// gRPC server is not started — REST-only deployments are unaffected.
+    #[serde(default)]
+    pub grpc_port: Option<u16>,
+    /// Optional bind address for the gRPC listener. Defaults to
+    /// `bind_address` when unset.
+    #[serde(default)]
+    pub grpc_bind_address: Option<String>,
 }
 
 impl ServerConfig {
@@ -72,6 +80,8 @@ impl Default for ServerConfig {
             tls_require_client_cert: false,
             trusted_proxies: Vec::new(),
             default_realm: None,
+            grpc_port: None,
+            grpc_bind_address: None,
         }
     }
 }

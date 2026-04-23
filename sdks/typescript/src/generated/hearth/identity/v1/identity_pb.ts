@@ -2,15 +2,15 @@
 // @generated from file hearth/identity/v1/identity.proto (package hearth.identity.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file hearth/identity/v1/identity.proto.
  */
 export const file_hearth_identity_v1_identity: GenFile = /*@__PURE__*/
-  fileDesc("CiFoZWFydGgvaWRlbnRpdHkvdjEvaWRlbnRpdHkucHJvdG8SEmhlYXJ0aC5pZGVudGl0eS52MSKPAQoEVXNlchIKCgJpZBgBIAEoCRINCgVlbWFpbBgCIAEoCRIUCgxkaXNwbGF5X25hbWUYAyABKAkSLgoGc3RhdHVzGAQgASgOMh4uaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJTdGF0dXMSEgoKY3JlYXRlZF9hdBgFIAEoAxISCgp1cGRhdGVkX2F0GAYgASgDImkKB1Nlc3Npb24SCgoCaWQYASABKAkSDwoHdXNlcl9pZBgCIAEoCRISCgpjcmVhdGVkX2F0GAMgASgDEhIKCmV4cGlyZXNfYXQYBCABKAMSGQoRbGFzdF9yZWZyZXNoZWRfYXQYBSABKAMiuQEKC1JlYWxtQ29uZmlnEh8KEnNlc3Npb25fdHRsX21pY3JvcxgBIAEoA0gAiAEBEiEKFHBhc3N3b3JkX21lbW9yeV9jb3N0GAIgASgNSAGIAQESHwoScGFzc3dvcmRfdGltZV9jb3N0GAMgASgNSAKIAQFCFQoTX3Nlc3Npb25fdHRsX21pY3Jvc0IXChVfcGFzc3dvcmRfbWVtb3J5X2Nvc3RCFQoTX3Bhc3N3b3JkX3RpbWVfY29zdCKrAQoFUmVhbG0SCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIvCgZzdGF0dXMYAyABKA4yHy5oZWFydGguaWRlbnRpdHkudjEuUmVhbG1TdGF0dXMSLwoGY29uZmlnGAQgASgLMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtQ29uZmlnEhIKCmNyZWF0ZWRfYXQYBSABKAMSEgoKdXBkYXRlZF9hdBgGIAEoAyI4ChFDcmVhdGVVc2VyUmVxdWVzdBINCgVlbWFpbBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkinQEKEVVwZGF0ZVVzZXJSZXF1ZXN0EhIKBWVtYWlsGAEgASgJSACIAQESGQoMZGlzcGxheV9uYW1lGAIgASgJSAGIAQESMwoGc3RhdHVzGAMgASgOMh4uaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJTdGF0dXNIAogBAUIICgZfZW1haWxCDwoNX2Rpc3BsYXlfbmFtZUIJCgdfc3RhdHVzImMKEkNyZWF0ZVJlYWxtUmVxdWVzdBIMCgRuYW1lGAEgASgJEjQKBmNvbmZpZxgCIAEoCzIfLmhlYXJ0aC5pZGVudGl0eS52MS5SZWFsbUNvbmZpZ0gAiAEBQgkKB19jb25maWcisgEKElVwZGF0ZVJlYWxtUmVxdWVzdBIRCgRuYW1lGAEgASgJSACIAQESNAoGc3RhdHVzGAIgASgOMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtU3RhdHVzSAGIAQESNAoGY29uZmlnGAMgASgLMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtQ29uZmlnSAKIAQFCBwoFX25hbWVCCQoHX3N0YXR1c0IJCgdfY29uZmlnIl0KCFVzZXJQYWdlEicKBWl0ZW1zGAEgAygLMhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXISGAoLbmV4dF9jdXJzb3IYAiABKAlIAIgBAUIOCgxfbmV4dF9jdXJzb3IiXwoJUmVhbG1QYWdlEigKBWl0ZW1zGAEgAygLMhkuaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtEhgKC25leHRfY3Vyc29yGAIgASgJSACIAQFCDgoMX25leHRfY3Vyc29yIoUBCg9CdWxrUmVzdWx0RW50cnkSDQoFaW5kZXgYASABKA0SDwoHc3VjY2VzcxgCIAEoCBIrCgR1c2VyGAMgASgLMhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJIAIgBARISCgVlcnJvchgEIAEoCUgBiAEBQgcKBV91c2VyQggKBl9lcnJvciJCCgpCdWxrUmVzdWx0EjQKB3Jlc3VsdHMYASADKAsyIy5oZWFydGguaWRlbnRpdHkudjEuQnVsa1Jlc3VsdEVudHJ5KoEBCgpVc2VyU3RhdHVzEhsKF1VTRVJfU1RBVFVTX1VOU1BFQ0lGSUVEEAASFgoSVVNFUl9TVEFUVVNfQUNUSVZFEAESGAoUVVNFUl9TVEFUVVNfRElTQUJMRUQQAhIkCiBVU0VSX1NUQVRVU19QRU5ESU5HX1ZFUklGSUNBVElPThADKmAKC1JlYWxtU3RhdHVzEhwKGFJFQUxNX1NUQVRVU19VTlNQRUNJRklFRBAAEhcKE1JFQUxNX1NUQVRVU19BQ1RJVkUQARIaChZSRUFMTV9TVEFUVVNfU1VTUEVOREVEEAJCRVpDZ2l0aHViLmNvbS9oZWFydGhkYi9oZWFydGgvc2Rrcy9nby9nZW5lcmF0ZWQvaWRlbnRpdHkvdjE7aWRlbnRpdHl2MWIGcHJvdG8z");
+  fileDesc("CiFoZWFydGgvaWRlbnRpdHkvdjEvaWRlbnRpdHkucHJvdG8SEmhlYXJ0aC5pZGVudGl0eS52MSKPAQoEVXNlchIKCgJpZBgBIAEoCRINCgVlbWFpbBgCIAEoCRIUCgxkaXNwbGF5X25hbWUYAyABKAkSLgoGc3RhdHVzGAQgASgOMh4uaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJTdGF0dXMSEgoKY3JlYXRlZF9hdBgFIAEoAxISCgp1cGRhdGVkX2F0GAYgASgDImkKB1Nlc3Npb24SCgoCaWQYASABKAkSDwoHdXNlcl9pZBgCIAEoCRISCgpjcmVhdGVkX2F0GAMgASgDEhIKCmV4cGlyZXNfYXQYBCABKAMSGQoRbGFzdF9yZWZyZXNoZWRfYXQYBSABKAMiuQEKC1JlYWxtQ29uZmlnEh8KEnNlc3Npb25fdHRsX21pY3JvcxgBIAEoA0gAiAEBEiEKFHBhc3N3b3JkX21lbW9yeV9jb3N0GAIgASgNSAGIAQESHwoScGFzc3dvcmRfdGltZV9jb3N0GAMgASgNSAKIAQFCFQoTX3Nlc3Npb25fdHRsX21pY3Jvc0IXChVfcGFzc3dvcmRfbWVtb3J5X2Nvc3RCFQoTX3Bhc3N3b3JkX3RpbWVfY29zdCKrAQoFUmVhbG0SCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIvCgZzdGF0dXMYAyABKA4yHy5oZWFydGguaWRlbnRpdHkudjEuUmVhbG1TdGF0dXMSLwoGY29uZmlnGAQgASgLMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtQ29uZmlnEhIKCmNyZWF0ZWRfYXQYBSABKAMSEgoKdXBkYXRlZF9hdBgGIAEoAyI4ChFDcmVhdGVVc2VyUmVxdWVzdBINCgVlbWFpbBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkinQEKEVVwZGF0ZVVzZXJSZXF1ZXN0EhIKBWVtYWlsGAEgASgJSACIAQESGQoMZGlzcGxheV9uYW1lGAIgASgJSAGIAQESMwoGc3RhdHVzGAMgASgOMh4uaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJTdGF0dXNIAogBAUIICgZfZW1haWxCDwoNX2Rpc3BsYXlfbmFtZUIJCgdfc3RhdHVzImMKEkNyZWF0ZVJlYWxtUmVxdWVzdBIMCgRuYW1lGAEgASgJEjQKBmNvbmZpZxgCIAEoCzIfLmhlYXJ0aC5pZGVudGl0eS52MS5SZWFsbUNvbmZpZ0gAiAEBQgkKB19jb25maWcisgEKElVwZGF0ZVJlYWxtUmVxdWVzdBIRCgRuYW1lGAEgASgJSACIAQESNAoGc3RhdHVzGAIgASgOMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtU3RhdHVzSAGIAQESNAoGY29uZmlnGAMgASgLMh8uaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtQ29uZmlnSAKIAQFCBwoFX25hbWVCCQoHX3N0YXR1c0IJCgdfY29uZmlnIl0KCFVzZXJQYWdlEicKBWl0ZW1zGAEgAygLMhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXISGAoLbmV4dF9jdXJzb3IYAiABKAlIAIgBAUIOCgxfbmV4dF9jdXJzb3IiXwoJUmVhbG1QYWdlEigKBWl0ZW1zGAEgAygLMhkuaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtEhgKC25leHRfY3Vyc29yGAIgASgJSACIAQFCDgoMX25leHRfY3Vyc29yIoUBCg9CdWxrUmVzdWx0RW50cnkSDQoFaW5kZXgYASABKA0SDwoHc3VjY2VzcxgCIAEoCBIrCgR1c2VyGAMgASgLMhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXJIAIgBARISCgVlcnJvchgEIAEoCUgBiAEBQgcKBV91c2VyQggKBl9lcnJvciJCCgpCdWxrUmVzdWx0EjQKB3Jlc3VsdHMYASADKAsyIy5oZWFydGguaWRlbnRpdHkudjEuQnVsa1Jlc3VsdEVudHJ5ItwBCgxPcmdhbml6YXRpb24SCgoCaWQYASABKAkSEAoIcmVhbG1faWQYAiABKAkSDAoEc2x1ZxgDIAEoCRIUCgxkaXNwbGF5X25hbWUYBCABKAkSNgoGc3RhdHVzGAUgASgOMiYuaGVhcnRoLmlkZW50aXR5LnYxLk9yZ2FuaXphdGlvblN0YXR1cxISCgpjcmVhdGVkX2F0GAYgASgDEhIKCnVwZGF0ZWRfYXQYByABKAMSGQoMbWVtYmVyX2xpbWl0GAggASgNSACIAQFCDwoNX21lbWJlcl9saW1pdCJrChlDcmVhdGVPcmdhbml6YXRpb25SZXF1ZXN0EgwKBHNsdWcYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJEhkKDG1lbWJlcl9saW1pdBgDIAEoDUgAiAEBQg8KDV9tZW1iZXJfbGltaXQi1wEKGVVwZGF0ZU9yZ2FuaXphdGlvblJlcXVlc3QSEQoEc2x1ZxgBIAEoCUgAiAEBEhkKDGRpc3BsYXlfbmFtZRgCIAEoCUgBiAEBEjsKBnN0YXR1cxgDIAEoDjImLmhlYXJ0aC5pZGVudGl0eS52MS5Pcmdhbml6YXRpb25TdGF0dXNIAogBARIZCgxtZW1iZXJfbGltaXQYBCABKA1IA4gBAUIHCgVfc2x1Z0IPCg1fZGlzcGxheV9uYW1lQgkKB19zdGF0dXNCDwoNX21lbWJlcl9saW1pdCJtChBPcmdhbml6YXRpb25QYWdlEi8KBWl0ZW1zGAEgAygLMiAuaGVhcnRoLmlkZW50aXR5LnYxLk9yZ2FuaXphdGlvbhIYCgtuZXh0X2N1cnNvchgCIAEoCUgAiAEBQg4KDF9uZXh0X2N1cnNvciIcCg5HZXRVc2VyUmVxdWVzdBIKCgJpZBgBIAEoCSIfChFEZWxldGVVc2VyUmVxdWVzdBIKCgJpZBgBIAEoCSJQChBMaXN0VXNlcnNSZXF1ZXN0EhMKBmN1cnNvchgBIAEoCUgAiAEBEhIKBWxpbWl0GAIgASgNSAGIAQFCCQoHX2N1cnNvckIICgZfbGltaXQiUQoOVXBkYXRlVXNlckNhbGwSCgoCaWQYASABKAkSMwoEYm9keRgCIAEoCzIlLmhlYXJ0aC5pZGVudGl0eS52MS5VcGRhdGVVc2VyUmVxdWVzdCJRChFMaXN0UmVhbG1zUmVxdWVzdBITCgZjdXJzb3IYASABKAlIAIgBARISCgVsaW1pdBgCIAEoDUgBiAEBQgkKB19jdXJzb3JCCAoGX2xpbWl0Ih0KD0dldFJlYWxtUmVxdWVzdBIKCgJpZBgBIAEoCSIgChJEZWxldGVSZWFsbVJlcXVlc3QSCgoCaWQYASABKAkiUwoPVXBkYXRlUmVhbG1DYWxsEgoKAmlkGAEgASgJEjQKBGJvZHkYAiABKAsyJi5oZWFydGguaWRlbnRpdHkudjEuVXBkYXRlUmVhbG1SZXF1ZXN0IlgKGExpc3RPcmdhbml6YXRpb25zUmVxdWVzdBITCgZjdXJzb3IYASABKAlIAIgBARISCgVsaW1pdBgCIAEoDUgBiAEBQgkKB19jdXJzb3JCCAoGX2xpbWl0IiQKFkdldE9yZ2FuaXphdGlvblJlcXVlc3QSCgoCaWQYASABKAkiJwoZRGVsZXRlT3JnYW5pemF0aW9uUmVxdWVzdBIKCgJpZBgBIAEoCSJhChZVcGRhdGVPcmdhbml6YXRpb25DYWxsEgoKAmlkGAEgASgJEjsKBGJvZHkYAiABKAsyLS5oZWFydGguaWRlbnRpdHkudjEuVXBkYXRlT3JnYW5pemF0aW9uUmVxdWVzdCIHCgVFbXB0eSqBAQoKVXNlclN0YXR1cxIbChdVU0VSX1NUQVRVU19VTlNQRUNJRklFRBAAEhYKElVTRVJfU1RBVFVTX0FDVElWRRABEhgKFFVTRVJfU1RBVFVTX0RJU0FCTEVEEAISJAogVVNFUl9TVEFUVVNfUEVORElOR19WRVJJRklDQVRJT04QAypgCgtSZWFsbVN0YXR1cxIcChhSRUFMTV9TVEFUVVNfVU5TUEVDSUZJRUQQABIXChNSRUFMTV9TVEFUVVNfQUNUSVZFEAESGgoWUkVBTE1fU1RBVFVTX1NVU1BFTkRFRBACKnwKEk9yZ2FuaXphdGlvblN0YXR1cxIjCh9PUkdBTklaQVRJT05fU1RBVFVTX1VOU1BFQ0lGSUVEEAASHgoaT1JHQU5JWkFUSU9OX1NUQVRVU19BQ1RJVkUQARIhCh1PUkdBTklaQVRJT05fU1RBVFVTX1NVU1BFTkRFRBACMqMKChRJZGVudGl0eUFkbWluU2VydmljZRJPCglMaXN0VXNlcnMSJC5oZWFydGguaWRlbnRpdHkudjEuTGlzdFVzZXJzUmVxdWVzdBocLmhlYXJ0aC5pZGVudGl0eS52MS5Vc2VyUGFnZRJHCgdHZXRVc2VyEiIuaGVhcnRoLmlkZW50aXR5LnYxLkdldFVzZXJSZXF1ZXN0GhguaGVhcnRoLmlkZW50aXR5LnYxLlVzZXISTQoKQ3JlYXRlVXNlchIlLmhlYXJ0aC5pZGVudGl0eS52MS5DcmVhdGVVc2VyUmVxdWVzdBoYLmhlYXJ0aC5pZGVudGl0eS52MS5Vc2VyEkoKClVwZGF0ZVVzZXISIi5oZWFydGguaWRlbnRpdHkudjEuVXBkYXRlVXNlckNhbGwaGC5oZWFydGguaWRlbnRpdHkudjEuVXNlchJOCgpEZWxldGVVc2VyEiUuaGVhcnRoLmlkZW50aXR5LnYxLkRlbGV0ZVVzZXJSZXF1ZXN0GhkuaGVhcnRoLmlkZW50aXR5LnYxLkVtcHR5ElIKCkxpc3RSZWFsbXMSJS5oZWFydGguaWRlbnRpdHkudjEuTGlzdFJlYWxtc1JlcXVlc3QaHS5oZWFydGguaWRlbnRpdHkudjEuUmVhbG1QYWdlEkoKCEdldFJlYWxtEiMuaGVhcnRoLmlkZW50aXR5LnYxLkdldFJlYWxtUmVxdWVzdBoZLmhlYXJ0aC5pZGVudGl0eS52MS5SZWFsbRJQCgtDcmVhdGVSZWFsbRImLmhlYXJ0aC5pZGVudGl0eS52MS5DcmVhdGVSZWFsbVJlcXVlc3QaGS5oZWFydGguaWRlbnRpdHkudjEuUmVhbG0STQoLVXBkYXRlUmVhbG0SIy5oZWFydGguaWRlbnRpdHkudjEuVXBkYXRlUmVhbG1DYWxsGhkuaGVhcnRoLmlkZW50aXR5LnYxLlJlYWxtElAKC0RlbGV0ZVJlYWxtEiYuaGVhcnRoLmlkZW50aXR5LnYxLkRlbGV0ZVJlYWxtUmVxdWVzdBoZLmhlYXJ0aC5pZGVudGl0eS52MS5FbXB0eRJnChFMaXN0T3JnYW5pemF0aW9ucxIsLmhlYXJ0aC5pZGVudGl0eS52MS5MaXN0T3JnYW5pemF0aW9uc1JlcXVlc3QaJC5oZWFydGguaWRlbnRpdHkudjEuT3JnYW5pemF0aW9uUGFnZRJfCg9HZXRPcmdhbml6YXRpb24SKi5oZWFydGguaWRlbnRpdHkudjEuR2V0T3JnYW5pemF0aW9uUmVxdWVzdBogLmhlYXJ0aC5pZGVudGl0eS52MS5Pcmdhbml6YXRpb24SZQoSQ3JlYXRlT3JnYW5pemF0aW9uEi0uaGVhcnRoLmlkZW50aXR5LnYxLkNyZWF0ZU9yZ2FuaXphdGlvblJlcXVlc3QaIC5oZWFydGguaWRlbnRpdHkudjEuT3JnYW5pemF0aW9uEmIKElVwZGF0ZU9yZ2FuaXphdGlvbhIqLmhlYXJ0aC5pZGVudGl0eS52MS5VcGRhdGVPcmdhbml6YXRpb25DYWxsGiAuaGVhcnRoLmlkZW50aXR5LnYxLk9yZ2FuaXphdGlvbhJeChJEZWxldGVPcmdhbml6YXRpb24SLS5oZWFydGguaWRlbnRpdHkudjEuRGVsZXRlT3JnYW5pemF0aW9uUmVxdWVzdBoZLmhlYXJ0aC5pZGVudGl0eS52MS5FbXB0eUJFWkNnaXRodWIuY29tL2hlYXJ0aGRiL2hlYXJ0aC9zZGtzL2dvL2dlbmVyYXRlZC9pZGVudGl0eS92MTtpZGVudGl0eXYxYgZwcm90bzM");
 
 /**
  * A user record within a realm.
@@ -380,6 +380,420 @@ export const BulkResultSchema: GenMessage<BulkResult> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_identity, 11);
 
 /**
+ * An organization (B2B customer group) within a realm.
+ *
+ * @generated from message hearth.identity.v1.Organization
+ */
+export type Organization = Message<"hearth.identity.v1.Organization"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: string realm_id = 2;
+   */
+  realmId: string;
+
+  /**
+   * @generated from field: string slug = 3;
+   */
+  slug: string;
+
+  /**
+   * @generated from field: string display_name = 4;
+   */
+  displayName: string;
+
+  /**
+   * @generated from field: hearth.identity.v1.OrganizationStatus status = 5;
+   */
+  status: OrganizationStatus;
+
+  /**
+   * @generated from field: int64 created_at = 6;
+   */
+  createdAt: bigint;
+
+  /**
+   * @generated from field: int64 updated_at = 7;
+   */
+  updatedAt: bigint;
+
+  /**
+   * @generated from field: optional uint32 member_limit = 8;
+   */
+  memberLimit?: number;
+};
+
+/**
+ * Describes the message hearth.identity.v1.Organization.
+ * Use `create(OrganizationSchema)` to create a new message.
+ */
+export const OrganizationSchema: GenMessage<Organization> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 12);
+
+/**
+ * Request to create a new organization.
+ *
+ * @generated from message hearth.identity.v1.CreateOrganizationRequest
+ */
+export type CreateOrganizationRequest = Message<"hearth.identity.v1.CreateOrganizationRequest"> & {
+  /**
+   * @generated from field: string slug = 1;
+   */
+  slug: string;
+
+  /**
+   * @generated from field: string display_name = 2;
+   */
+  displayName: string;
+
+  /**
+   * @generated from field: optional uint32 member_limit = 3;
+   */
+  memberLimit?: number;
+};
+
+/**
+ * Describes the message hearth.identity.v1.CreateOrganizationRequest.
+ * Use `create(CreateOrganizationRequestSchema)` to create a new message.
+ */
+export const CreateOrganizationRequestSchema: GenMessage<CreateOrganizationRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 13);
+
+/**
+ * Request to update an existing organization.
+ *
+ * @generated from message hearth.identity.v1.UpdateOrganizationRequest
+ */
+export type UpdateOrganizationRequest = Message<"hearth.identity.v1.UpdateOrganizationRequest"> & {
+  /**
+   * @generated from field: optional string slug = 1;
+   */
+  slug?: string;
+
+  /**
+   * @generated from field: optional string display_name = 2;
+   */
+  displayName?: string;
+
+  /**
+   * @generated from field: optional hearth.identity.v1.OrganizationStatus status = 3;
+   */
+  status?: OrganizationStatus;
+
+  /**
+   * @generated from field: optional uint32 member_limit = 4;
+   */
+  memberLimit?: number;
+};
+
+/**
+ * Describes the message hearth.identity.v1.UpdateOrganizationRequest.
+ * Use `create(UpdateOrganizationRequestSchema)` to create a new message.
+ */
+export const UpdateOrganizationRequestSchema: GenMessage<UpdateOrganizationRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 14);
+
+/**
+ * A cursor-based page of organizations.
+ *
+ * @generated from message hearth.identity.v1.OrganizationPage
+ */
+export type OrganizationPage = Message<"hearth.identity.v1.OrganizationPage"> & {
+  /**
+   * @generated from field: repeated hearth.identity.v1.Organization items = 1;
+   */
+  items: Organization[];
+
+  /**
+   * @generated from field: optional string next_cursor = 2;
+   */
+  nextCursor?: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.OrganizationPage.
+ * Use `create(OrganizationPageSchema)` to create a new message.
+ */
+export const OrganizationPageSchema: GenMessage<OrganizationPage> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 15);
+
+/**
+ * Request to fetch a user by id.
+ *
+ * @generated from message hearth.identity.v1.GetUserRequest
+ */
+export type GetUserRequest = Message<"hearth.identity.v1.GetUserRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.GetUserRequest.
+ * Use `create(GetUserRequestSchema)` to create a new message.
+ */
+export const GetUserRequestSchema: GenMessage<GetUserRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 16);
+
+/**
+ * Request to delete a user by id.
+ *
+ * @generated from message hearth.identity.v1.DeleteUserRequest
+ */
+export type DeleteUserRequest = Message<"hearth.identity.v1.DeleteUserRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.DeleteUserRequest.
+ * Use `create(DeleteUserRequestSchema)` to create a new message.
+ */
+export const DeleteUserRequestSchema: GenMessage<DeleteUserRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 17);
+
+/**
+ * Request to list users with optional pagination.
+ *
+ * @generated from message hearth.identity.v1.ListUsersRequest
+ */
+export type ListUsersRequest = Message<"hearth.identity.v1.ListUsersRequest"> & {
+  /**
+   * @generated from field: optional string cursor = 1;
+   */
+  cursor?: string;
+
+  /**
+   * @generated from field: optional uint32 limit = 2;
+   */
+  limit?: number;
+};
+
+/**
+ * Describes the message hearth.identity.v1.ListUsersRequest.
+ * Use `create(ListUsersRequestSchema)` to create a new message.
+ */
+export const ListUsersRequestSchema: GenMessage<ListUsersRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 18);
+
+/**
+ * Wraps an UpdateUserRequest with the target id.
+ *
+ * @generated from message hearth.identity.v1.UpdateUserCall
+ */
+export type UpdateUserCall = Message<"hearth.identity.v1.UpdateUserCall"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: hearth.identity.v1.UpdateUserRequest body = 2;
+   */
+  body?: UpdateUserRequest;
+};
+
+/**
+ * Describes the message hearth.identity.v1.UpdateUserCall.
+ * Use `create(UpdateUserCallSchema)` to create a new message.
+ */
+export const UpdateUserCallSchema: GenMessage<UpdateUserCall> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 19);
+
+/**
+ * Request to list realms.
+ *
+ * @generated from message hearth.identity.v1.ListRealmsRequest
+ */
+export type ListRealmsRequest = Message<"hearth.identity.v1.ListRealmsRequest"> & {
+  /**
+   * @generated from field: optional string cursor = 1;
+   */
+  cursor?: string;
+
+  /**
+   * @generated from field: optional uint32 limit = 2;
+   */
+  limit?: number;
+};
+
+/**
+ * Describes the message hearth.identity.v1.ListRealmsRequest.
+ * Use `create(ListRealmsRequestSchema)` to create a new message.
+ */
+export const ListRealmsRequestSchema: GenMessage<ListRealmsRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 20);
+
+/**
+ * Request to fetch a realm by id.
+ *
+ * @generated from message hearth.identity.v1.GetRealmRequest
+ */
+export type GetRealmRequest = Message<"hearth.identity.v1.GetRealmRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.GetRealmRequest.
+ * Use `create(GetRealmRequestSchema)` to create a new message.
+ */
+export const GetRealmRequestSchema: GenMessage<GetRealmRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 21);
+
+/**
+ * Request to delete a realm by id.
+ *
+ * @generated from message hearth.identity.v1.DeleteRealmRequest
+ */
+export type DeleteRealmRequest = Message<"hearth.identity.v1.DeleteRealmRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.DeleteRealmRequest.
+ * Use `create(DeleteRealmRequestSchema)` to create a new message.
+ */
+export const DeleteRealmRequestSchema: GenMessage<DeleteRealmRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 22);
+
+/**
+ * Wraps an UpdateRealmRequest with the target id.
+ *
+ * @generated from message hearth.identity.v1.UpdateRealmCall
+ */
+export type UpdateRealmCall = Message<"hearth.identity.v1.UpdateRealmCall"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: hearth.identity.v1.UpdateRealmRequest body = 2;
+   */
+  body?: UpdateRealmRequest;
+};
+
+/**
+ * Describes the message hearth.identity.v1.UpdateRealmCall.
+ * Use `create(UpdateRealmCallSchema)` to create a new message.
+ */
+export const UpdateRealmCallSchema: GenMessage<UpdateRealmCall> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 23);
+
+/**
+ * Request to list organizations.
+ *
+ * @generated from message hearth.identity.v1.ListOrganizationsRequest
+ */
+export type ListOrganizationsRequest = Message<"hearth.identity.v1.ListOrganizationsRequest"> & {
+  /**
+   * @generated from field: optional string cursor = 1;
+   */
+  cursor?: string;
+
+  /**
+   * @generated from field: optional uint32 limit = 2;
+   */
+  limit?: number;
+};
+
+/**
+ * Describes the message hearth.identity.v1.ListOrganizationsRequest.
+ * Use `create(ListOrganizationsRequestSchema)` to create a new message.
+ */
+export const ListOrganizationsRequestSchema: GenMessage<ListOrganizationsRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 24);
+
+/**
+ * Request to fetch an organization by id.
+ *
+ * @generated from message hearth.identity.v1.GetOrganizationRequest
+ */
+export type GetOrganizationRequest = Message<"hearth.identity.v1.GetOrganizationRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.GetOrganizationRequest.
+ * Use `create(GetOrganizationRequestSchema)` to create a new message.
+ */
+export const GetOrganizationRequestSchema: GenMessage<GetOrganizationRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 25);
+
+/**
+ * Request to delete an organization by id.
+ *
+ * @generated from message hearth.identity.v1.DeleteOrganizationRequest
+ */
+export type DeleteOrganizationRequest = Message<"hearth.identity.v1.DeleteOrganizationRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.DeleteOrganizationRequest.
+ * Use `create(DeleteOrganizationRequestSchema)` to create a new message.
+ */
+export const DeleteOrganizationRequestSchema: GenMessage<DeleteOrganizationRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 26);
+
+/**
+ * Wraps an UpdateOrganizationRequest with the target id.
+ *
+ * @generated from message hearth.identity.v1.UpdateOrganizationCall
+ */
+export type UpdateOrganizationCall = Message<"hearth.identity.v1.UpdateOrganizationCall"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: hearth.identity.v1.UpdateOrganizationRequest body = 2;
+   */
+  body?: UpdateOrganizationRequest;
+};
+
+/**
+ * Describes the message hearth.identity.v1.UpdateOrganizationCall.
+ * Use `create(UpdateOrganizationCallSchema)` to create a new message.
+ */
+export const UpdateOrganizationCallSchema: GenMessage<UpdateOrganizationCall> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 27);
+
+/**
+ * Empty response type for delete RPCs.
+ *
+ * @generated from message hearth.identity.v1.Empty
+ */
+export type Empty = Message<"hearth.identity.v1.Empty"> & {
+};
+
+/**
+ * Describes the message hearth.identity.v1.Empty.
+ * Use `create(EmptySchema)` to create a new message.
+ */
+export const EmptySchema: GenMessage<Empty> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_identity, 28);
+
+/**
  * The lifecycle status of a user account.
  *
  * @generated from enum hearth.identity.v1.UserStatus
@@ -439,4 +853,166 @@ export enum RealmStatus {
  */
 export const RealmStatusSchema: GenEnum<RealmStatus> = /*@__PURE__*/
   enumDesc(file_hearth_identity_v1_identity, 1);
+
+/**
+ * The lifecycle status of an organization.
+ *
+ * @generated from enum hearth.identity.v1.OrganizationStatus
+ */
+export enum OrganizationStatus {
+  /**
+   * @generated from enum value: ORGANIZATION_STATUS_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ORGANIZATION_STATUS_ACTIVE = 1;
+   */
+  ACTIVE = 1,
+
+  /**
+   * @generated from enum value: ORGANIZATION_STATUS_SUSPENDED = 2;
+   */
+  SUSPENDED = 2,
+}
+
+/**
+ * Describes the enum hearth.identity.v1.OrganizationStatus.
+ */
+export const OrganizationStatusSchema: GenEnum<OrganizationStatus> = /*@__PURE__*/
+  enumDesc(file_hearth_identity_v1_identity, 2);
+
+/**
+ * @generated from service hearth.identity.v1.IdentityAdminService
+ */
+export const IdentityAdminService: GenService<{
+  /**
+   * Users
+   *
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.ListUsers
+   */
+  listUsers: {
+    methodKind: "unary";
+    input: typeof ListUsersRequestSchema;
+    output: typeof UserPageSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.GetUser
+   */
+  getUser: {
+    methodKind: "unary";
+    input: typeof GetUserRequestSchema;
+    output: typeof UserSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.CreateUser
+   */
+  createUser: {
+    methodKind: "unary";
+    input: typeof CreateUserRequestSchema;
+    output: typeof UserSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.UpdateUser
+   */
+  updateUser: {
+    methodKind: "unary";
+    input: typeof UpdateUserCallSchema;
+    output: typeof UserSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.DeleteUser
+   */
+  deleteUser: {
+    methodKind: "unary";
+    input: typeof DeleteUserRequestSchema;
+    output: typeof EmptySchema;
+  },
+  /**
+   * Realms — operate against the system realm (mutations require admin in
+   * the system realm). `x-realm-id` metadata is ignored for these RPCs.
+   *
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.ListRealms
+   */
+  listRealms: {
+    methodKind: "unary";
+    input: typeof ListRealmsRequestSchema;
+    output: typeof RealmPageSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.GetRealm
+   */
+  getRealm: {
+    methodKind: "unary";
+    input: typeof GetRealmRequestSchema;
+    output: typeof RealmSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.CreateRealm
+   */
+  createRealm: {
+    methodKind: "unary";
+    input: typeof CreateRealmRequestSchema;
+    output: typeof RealmSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.UpdateRealm
+   */
+  updateRealm: {
+    methodKind: "unary";
+    input: typeof UpdateRealmCallSchema;
+    output: typeof RealmSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.DeleteRealm
+   */
+  deleteRealm: {
+    methodKind: "unary";
+    input: typeof DeleteRealmRequestSchema;
+    output: typeof EmptySchema;
+  },
+  /**
+   * Organizations
+   *
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.ListOrganizations
+   */
+  listOrganizations: {
+    methodKind: "unary";
+    input: typeof ListOrganizationsRequestSchema;
+    output: typeof OrganizationPageSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.GetOrganization
+   */
+  getOrganization: {
+    methodKind: "unary";
+    input: typeof GetOrganizationRequestSchema;
+    output: typeof OrganizationSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.CreateOrganization
+   */
+  createOrganization: {
+    methodKind: "unary";
+    input: typeof CreateOrganizationRequestSchema;
+    output: typeof OrganizationSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.UpdateOrganization
+   */
+  updateOrganization: {
+    methodKind: "unary";
+    input: typeof UpdateOrganizationCallSchema;
+    output: typeof OrganizationSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.IdentityAdminService.DeleteOrganization
+   */
+  deleteOrganization: {
+    methodKind: "unary";
+    input: typeof DeleteOrganizationRequestSchema;
+    output: typeof EmptySchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hearth_identity_v1_identity, 0);
 

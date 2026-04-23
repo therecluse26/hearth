@@ -445,6 +445,151 @@ func (x *AuditQuery) GetLimit() uint32 {
 	return 0
 }
 
+// A page of audit events.
+type AuditEventPage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Events        []*AuditEvent          `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuditEventPage) Reset() {
+	*x = AuditEventPage{}
+	mi := &file_hearth_events_v1_audit_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditEventPage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditEventPage) ProtoMessage() {}
+
+func (x *AuditEventPage) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_events_v1_audit_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditEventPage.ProtoReflect.Descriptor instead.
+func (*AuditEventPage) Descriptor() ([]byte, []int) {
+	return file_hearth_events_v1_audit_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *AuditEventPage) GetEvents() []*AuditEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+// Request to verify the integrity hash chain of the realm's audit log.
+// Realm context comes from the `x-realm-id` metadata (admin interceptor).
+type VerifyIntegrityRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyIntegrityRequest) Reset() {
+	*x = VerifyIntegrityRequest{}
+	mi := &file_hearth_events_v1_audit_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyIntegrityRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyIntegrityRequest) ProtoMessage() {}
+
+func (x *VerifyIntegrityRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_events_v1_audit_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyIntegrityRequest.ProtoReflect.Descriptor instead.
+func (*VerifyIntegrityRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_events_v1_audit_proto_rawDescGZIP(), []int{4}
+}
+
+// Result of an integrity check. `ok = true` means the hash chain verified
+// end-to-end; `ok = false` indicates a broken link at `broken_at_event_id`.
+type VerifyIntegrityResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Ok              bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	BrokenAtEventId *string                `protobuf:"bytes,2,opt,name=broken_at_event_id,json=brokenAtEventId,proto3,oneof" json:"broken_at_event_id,omitempty"`
+	EventCount      uint64                 `protobuf:"varint,3,opt,name=event_count,json=eventCount,proto3" json:"event_count,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *VerifyIntegrityResponse) Reset() {
+	*x = VerifyIntegrityResponse{}
+	mi := &file_hearth_events_v1_audit_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyIntegrityResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyIntegrityResponse) ProtoMessage() {}
+
+func (x *VerifyIntegrityResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_events_v1_audit_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyIntegrityResponse.ProtoReflect.Descriptor instead.
+func (*VerifyIntegrityResponse) Descriptor() ([]byte, []int) {
+	return file_hearth_events_v1_audit_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *VerifyIntegrityResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *VerifyIntegrityResponse) GetBrokenAtEventId() string {
+	if x != nil && x.BrokenAtEventId != nil {
+		return *x.BrokenAtEventId
+	}
+	return ""
+}
+
+func (x *VerifyIntegrityResponse) GetEventCount() uint64 {
+	if x != nil {
+		return x.EventCount
+	}
+	return 0
+}
+
 var File_hearth_events_v1_audit_proto protoreflect.FileDescriptor
 
 const file_hearth_events_v1_audit_proto_rawDesc = "" +
@@ -485,7 +630,16 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\t_end_timeB\b\n" +
 	"\x06_actorB\t\n" +
 	"\a_actionB\b\n" +
-	"\x06_limit*\xc3\t\n" +
+	"\x06_limit\"F\n" +
+	"\x0eAuditEventPage\x124\n" +
+	"\x06events\x18\x01 \x03(\v2\x1c.hearth.events.v1.AuditEventR\x06events\"\x18\n" +
+	"\x16VerifyIntegrityRequest\"\x93\x01\n" +
+	"\x17VerifyIntegrityResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x120\n" +
+	"\x12broken_at_event_id\x18\x02 \x01(\tH\x00R\x0fbrokenAtEventId\x88\x01\x01\x12\x1f\n" +
+	"\vevent_count\x18\x03 \x01(\x04R\n" +
+	"eventCountB\x15\n" +
+	"\x13_broken_at_event_id*\xc3\t\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -521,7 +675,11 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"'AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED\x10\x1e\x12*\n" +
 	"&AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED\x10\x1f\x12,\n" +
 	"(AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED\x10 \x12+\n" +
-	"'AUDIT_ACTION_FEDERATION_JIT_PROVISIONED\x10!BAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
+	"'AUDIT_ACTION_FEDERATION_JIT_PROVISIONED\x10!2\xc4\x01\n" +
+	"\fAuditService\x12L\n" +
+	"\n" +
+	"ListEvents\x12\x1c.hearth.events.v1.AuditQuery\x1a .hearth.events.v1.AuditEventPage\x12f\n" +
+	"\x0fVerifyIntegrity\x12(.hearth.events.v1.VerifyIntegrityRequest\x1a).hearth.events.v1.VerifyIntegrityResponseBAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
 
 var (
 	file_hearth_events_v1_audit_proto_rawDescOnce sync.Once
@@ -536,22 +694,30 @@ func file_hearth_events_v1_audit_proto_rawDescGZIP() []byte {
 }
 
 var file_hearth_events_v1_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_hearth_events_v1_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_hearth_events_v1_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_hearth_events_v1_audit_proto_goTypes = []any{
-	(AuditAction)(0),         // 0: hearth.events.v1.AuditAction
-	(*AuditEvent)(nil),       // 1: hearth.events.v1.AuditEvent
-	(*CreateAuditEvent)(nil), // 2: hearth.events.v1.CreateAuditEvent
-	(*AuditQuery)(nil),       // 3: hearth.events.v1.AuditQuery
+	(AuditAction)(0),                // 0: hearth.events.v1.AuditAction
+	(*AuditEvent)(nil),              // 1: hearth.events.v1.AuditEvent
+	(*CreateAuditEvent)(nil),        // 2: hearth.events.v1.CreateAuditEvent
+	(*AuditQuery)(nil),              // 3: hearth.events.v1.AuditQuery
+	(*AuditEventPage)(nil),          // 4: hearth.events.v1.AuditEventPage
+	(*VerifyIntegrityRequest)(nil),  // 5: hearth.events.v1.VerifyIntegrityRequest
+	(*VerifyIntegrityResponse)(nil), // 6: hearth.events.v1.VerifyIntegrityResponse
 }
 var file_hearth_events_v1_audit_proto_depIdxs = []int32{
 	0, // 0: hearth.events.v1.AuditEvent.action:type_name -> hearth.events.v1.AuditAction
 	0, // 1: hearth.events.v1.CreateAuditEvent.action:type_name -> hearth.events.v1.AuditAction
 	0, // 2: hearth.events.v1.AuditQuery.action:type_name -> hearth.events.v1.AuditAction
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	1, // 3: hearth.events.v1.AuditEventPage.events:type_name -> hearth.events.v1.AuditEvent
+	3, // 4: hearth.events.v1.AuditService.ListEvents:input_type -> hearth.events.v1.AuditQuery
+	5, // 5: hearth.events.v1.AuditService.VerifyIntegrity:input_type -> hearth.events.v1.VerifyIntegrityRequest
+	4, // 6: hearth.events.v1.AuditService.ListEvents:output_type -> hearth.events.v1.AuditEventPage
+	6, // 7: hearth.events.v1.AuditService.VerifyIntegrity:output_type -> hearth.events.v1.VerifyIntegrityResponse
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_hearth_events_v1_audit_proto_init() }
@@ -562,15 +728,16 @@ func file_hearth_events_v1_audit_proto_init() {
 	file_hearth_events_v1_audit_proto_msgTypes[0].OneofWrappers = []any{}
 	file_hearth_events_v1_audit_proto_msgTypes[1].OneofWrappers = []any{}
 	file_hearth_events_v1_audit_proto_msgTypes[2].OneofWrappers = []any{}
+	file_hearth_events_v1_audit_proto_msgTypes[5].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hearth_events_v1_audit_proto_rawDesc), len(file_hearth_events_v1_audit_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   3,
+			NumMessages:   6,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_hearth_events_v1_audit_proto_goTypes,
 		DependencyIndexes: file_hearth_events_v1_audit_proto_depIdxs,

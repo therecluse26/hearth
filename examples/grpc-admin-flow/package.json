@@ -1,0 +1,14 @@
+{
+  "name": "hearth-grpc-admin-flow-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end walkthrough of Hearth's gRPC management API: admin CRUD, authz Watch streaming, audit, health, reflection.",
+  "type": "module",
+  "scripts": {
+    "start": "node demo.mjs"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.2",
+    "@grpc/proto-loader": "^0.7.13"
+  }
+}

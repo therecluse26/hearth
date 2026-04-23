@@ -150,6 +150,8 @@ impl Config {
                 tls_require_client_cert: false,
                 trusted_proxies: Vec::new(),
                 default_realm: None,
+                grpc_port: None,
+                grpc_bind_address: None,
             },
             storage: StorageSection {
                 data_dir: String::new(),

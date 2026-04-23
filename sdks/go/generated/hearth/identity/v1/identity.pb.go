@@ -124,6 +124,56 @@ func (RealmStatus) EnumDescriptor() ([]byte, []int) {
 	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{1}
 }
 
+// The lifecycle status of an organization.
+type OrganizationStatus int32
+
+const (
+	OrganizationStatus_ORGANIZATION_STATUS_UNSPECIFIED OrganizationStatus = 0
+	OrganizationStatus_ORGANIZATION_STATUS_ACTIVE      OrganizationStatus = 1
+	OrganizationStatus_ORGANIZATION_STATUS_SUSPENDED   OrganizationStatus = 2
+)
+
+// Enum value maps for OrganizationStatus.
+var (
+	OrganizationStatus_name = map[int32]string{
+		0: "ORGANIZATION_STATUS_UNSPECIFIED",
+		1: "ORGANIZATION_STATUS_ACTIVE",
+		2: "ORGANIZATION_STATUS_SUSPENDED",
+	}
+	OrganizationStatus_value = map[string]int32{
+		"ORGANIZATION_STATUS_UNSPECIFIED": 0,
+		"ORGANIZATION_STATUS_ACTIVE":      1,
+		"ORGANIZATION_STATUS_SUSPENDED":   2,
+	}
+)
+
+func (x OrganizationStatus) Enum() *OrganizationStatus {
+	p := new(OrganizationStatus)
+	*p = x
+	return p
+}
+
+func (x OrganizationStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (OrganizationStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_hearth_identity_v1_identity_proto_enumTypes[2].Descriptor()
+}
+
+func (OrganizationStatus) Type() protoreflect.EnumType {
+	return &file_hearth_identity_v1_identity_proto_enumTypes[2]
+}
+
+func (x OrganizationStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use OrganizationStatus.Descriptor instead.
+func (OrganizationStatus) EnumDescriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{2}
+}
+
 // A user record within a realm.
 type User struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -882,6 +932,915 @@ func (x *BulkResult) GetResults() []*BulkResultEntry {
 	return nil
 }
 
+// An organization (B2B customer group) within a realm.
+type Organization struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	RealmId       string                 `protobuf:"bytes,2,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
+	Slug          string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
+	DisplayName   string                 `protobuf:"bytes,4,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	Status        OrganizationStatus     `protobuf:"varint,5,opt,name=status,proto3,enum=hearth.identity.v1.OrganizationStatus" json:"status,omitempty"`
+	CreatedAt     int64                  `protobuf:"varint,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     int64                  `protobuf:"varint,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	MemberLimit   *uint32                `protobuf:"varint,8,opt,name=member_limit,json=memberLimit,proto3,oneof" json:"member_limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Organization) Reset() {
+	*x = Organization{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Organization) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Organization) ProtoMessage() {}
+
+func (x *Organization) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Organization.ProtoReflect.Descriptor instead.
+func (*Organization) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Organization) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Organization) GetRealmId() string {
+	if x != nil {
+		return x.RealmId
+	}
+	return ""
+}
+
+func (x *Organization) GetSlug() string {
+	if x != nil {
+		return x.Slug
+	}
+	return ""
+}
+
+func (x *Organization) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *Organization) GetStatus() OrganizationStatus {
+	if x != nil {
+		return x.Status
+	}
+	return OrganizationStatus_ORGANIZATION_STATUS_UNSPECIFIED
+}
+
+func (x *Organization) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Organization) GetUpdatedAt() int64 {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return 0
+}
+
+func (x *Organization) GetMemberLimit() uint32 {
+	if x != nil && x.MemberLimit != nil {
+		return *x.MemberLimit
+	}
+	return 0
+}
+
+// Request to create a new organization.
+type CreateOrganizationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Slug          string                 `protobuf:"bytes,1,opt,name=slug,proto3" json:"slug,omitempty"`
+	DisplayName   string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	MemberLimit   *uint32                `protobuf:"varint,3,opt,name=member_limit,json=memberLimit,proto3,oneof" json:"member_limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateOrganizationRequest) Reset() {
+	*x = CreateOrganizationRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateOrganizationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateOrganizationRequest) ProtoMessage() {}
+
+func (x *CreateOrganizationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateOrganizationRequest.ProtoReflect.Descriptor instead.
+func (*CreateOrganizationRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *CreateOrganizationRequest) GetSlug() string {
+	if x != nil {
+		return x.Slug
+	}
+	return ""
+}
+
+func (x *CreateOrganizationRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *CreateOrganizationRequest) GetMemberLimit() uint32 {
+	if x != nil && x.MemberLimit != nil {
+		return *x.MemberLimit
+	}
+	return 0
+}
+
+// Request to update an existing organization.
+type UpdateOrganizationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Slug          *string                `protobuf:"bytes,1,opt,name=slug,proto3,oneof" json:"slug,omitempty"`
+	DisplayName   *string                `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3,oneof" json:"display_name,omitempty"`
+	Status        *OrganizationStatus    `protobuf:"varint,3,opt,name=status,proto3,enum=hearth.identity.v1.OrganizationStatus,oneof" json:"status,omitempty"`
+	MemberLimit   *uint32                `protobuf:"varint,4,opt,name=member_limit,json=memberLimit,proto3,oneof" json:"member_limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateOrganizationRequest) Reset() {
+	*x = UpdateOrganizationRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateOrganizationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateOrganizationRequest) ProtoMessage() {}
+
+func (x *UpdateOrganizationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateOrganizationRequest.ProtoReflect.Descriptor instead.
+func (*UpdateOrganizationRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *UpdateOrganizationRequest) GetSlug() string {
+	if x != nil && x.Slug != nil {
+		return *x.Slug
+	}
+	return ""
+}
+
+func (x *UpdateOrganizationRequest) GetDisplayName() string {
+	if x != nil && x.DisplayName != nil {
+		return *x.DisplayName
+	}
+	return ""
+}
+
+func (x *UpdateOrganizationRequest) GetStatus() OrganizationStatus {
+	if x != nil && x.Status != nil {
+		return *x.Status
+	}
+	return OrganizationStatus_ORGANIZATION_STATUS_UNSPECIFIED
+}
+
+func (x *UpdateOrganizationRequest) GetMemberLimit() uint32 {
+	if x != nil && x.MemberLimit != nil {
+		return *x.MemberLimit
+	}
+	return 0
+}
+
+// A cursor-based page of organizations.
+type OrganizationPage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*Organization        `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	NextCursor    *string                `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3,oneof" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OrganizationPage) Reset() {
+	*x = OrganizationPage{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OrganizationPage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OrganizationPage) ProtoMessage() {}
+
+func (x *OrganizationPage) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OrganizationPage.ProtoReflect.Descriptor instead.
+func (*OrganizationPage) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *OrganizationPage) GetItems() []*Organization {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *OrganizationPage) GetNextCursor() string {
+	if x != nil && x.NextCursor != nil {
+		return *x.NextCursor
+	}
+	return ""
+}
+
+// Request to fetch a user by id.
+type GetUserRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUserRequest) Reset() {
+	*x = GetUserRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUserRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUserRequest) ProtoMessage() {}
+
+func (x *GetUserRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUserRequest.ProtoReflect.Descriptor instead.
+func (*GetUserRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *GetUserRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// Request to delete a user by id.
+type DeleteUserRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteUserRequest) Reset() {
+	*x = DeleteUserRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteUserRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteUserRequest) ProtoMessage() {}
+
+func (x *DeleteUserRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteUserRequest.ProtoReflect.Descriptor instead.
+func (*DeleteUserRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *DeleteUserRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// Request to list users with optional pagination.
+type ListUsersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cursor        *string                `protobuf:"bytes,1,opt,name=cursor,proto3,oneof" json:"cursor,omitempty"`
+	Limit         *uint32                `protobuf:"varint,2,opt,name=limit,proto3,oneof" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListUsersRequest) Reset() {
+	*x = ListUsersRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListUsersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListUsersRequest) ProtoMessage() {}
+
+func (x *ListUsersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListUsersRequest.ProtoReflect.Descriptor instead.
+func (*ListUsersRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ListUsersRequest) GetCursor() string {
+	if x != nil && x.Cursor != nil {
+		return *x.Cursor
+	}
+	return ""
+}
+
+func (x *ListUsersRequest) GetLimit() uint32 {
+	if x != nil && x.Limit != nil {
+		return *x.Limit
+	}
+	return 0
+}
+
+// Wraps an UpdateUserRequest with the target id.
+type UpdateUserCall struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Body          *UpdateUserRequest     `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateUserCall) Reset() {
+	*x = UpdateUserCall{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateUserCall) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateUserCall) ProtoMessage() {}
+
+func (x *UpdateUserCall) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateUserCall.ProtoReflect.Descriptor instead.
+func (*UpdateUserCall) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *UpdateUserCall) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateUserCall) GetBody() *UpdateUserRequest {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+// Request to list realms.
+type ListRealmsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cursor        *string                `protobuf:"bytes,1,opt,name=cursor,proto3,oneof" json:"cursor,omitempty"`
+	Limit         *uint32                `protobuf:"varint,2,opt,name=limit,proto3,oneof" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRealmsRequest) Reset() {
+	*x = ListRealmsRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRealmsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRealmsRequest) ProtoMessage() {}
+
+func (x *ListRealmsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRealmsRequest.ProtoReflect.Descriptor instead.
+func (*ListRealmsRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ListRealmsRequest) GetCursor() string {
+	if x != nil && x.Cursor != nil {
+		return *x.Cursor
+	}
+	return ""
+}
+
+func (x *ListRealmsRequest) GetLimit() uint32 {
+	if x != nil && x.Limit != nil {
+		return *x.Limit
+	}
+	return 0
+}
+
+// Request to fetch a realm by id.
+type GetRealmRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRealmRequest) Reset() {
+	*x = GetRealmRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRealmRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRealmRequest) ProtoMessage() {}
+
+func (x *GetRealmRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRealmRequest.ProtoReflect.Descriptor instead.
+func (*GetRealmRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *GetRealmRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// Request to delete a realm by id.
+type DeleteRealmRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRealmRequest) Reset() {
+	*x = DeleteRealmRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRealmRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRealmRequest) ProtoMessage() {}
+
+func (x *DeleteRealmRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRealmRequest.ProtoReflect.Descriptor instead.
+func (*DeleteRealmRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *DeleteRealmRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// Wraps an UpdateRealmRequest with the target id.
+type UpdateRealmCall struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Body          *UpdateRealmRequest    `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateRealmCall) Reset() {
+	*x = UpdateRealmCall{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateRealmCall) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateRealmCall) ProtoMessage() {}
+
+func (x *UpdateRealmCall) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateRealmCall.ProtoReflect.Descriptor instead.
+func (*UpdateRealmCall) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *UpdateRealmCall) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateRealmCall) GetBody() *UpdateRealmRequest {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+// Request to list organizations.
+type ListOrganizationsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cursor        *string                `protobuf:"bytes,1,opt,name=cursor,proto3,oneof" json:"cursor,omitempty"`
+	Limit         *uint32                `protobuf:"varint,2,opt,name=limit,proto3,oneof" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListOrganizationsRequest) Reset() {
+	*x = ListOrganizationsRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListOrganizationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListOrganizationsRequest) ProtoMessage() {}
+
+func (x *ListOrganizationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListOrganizationsRequest.ProtoReflect.Descriptor instead.
+func (*ListOrganizationsRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ListOrganizationsRequest) GetCursor() string {
+	if x != nil && x.Cursor != nil {
+		return *x.Cursor
+	}
+	return ""
+}
+
+func (x *ListOrganizationsRequest) GetLimit() uint32 {
+	if x != nil && x.Limit != nil {
+		return *x.Limit
+	}
+	return 0
+}
+
+// Request to fetch an organization by id.
+type GetOrganizationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetOrganizationRequest) Reset() {
+	*x = GetOrganizationRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetOrganizationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetOrganizationRequest) ProtoMessage() {}
+
+func (x *GetOrganizationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetOrganizationRequest.ProtoReflect.Descriptor instead.
+func (*GetOrganizationRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GetOrganizationRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// Request to delete an organization by id.
+type DeleteOrganizationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteOrganizationRequest) Reset() {
+	*x = DeleteOrganizationRequest{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteOrganizationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteOrganizationRequest) ProtoMessage() {}
+
+func (x *DeleteOrganizationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteOrganizationRequest.ProtoReflect.Descriptor instead.
+func (*DeleteOrganizationRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *DeleteOrganizationRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// Wraps an UpdateOrganizationRequest with the target id.
+type UpdateOrganizationCall struct {
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	Id            string                     `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Body          *UpdateOrganizationRequest `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateOrganizationCall) Reset() {
+	*x = UpdateOrganizationCall{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateOrganizationCall) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateOrganizationCall) ProtoMessage() {}
+
+func (x *UpdateOrganizationCall) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateOrganizationCall.ProtoReflect.Descriptor instead.
+func (*UpdateOrganizationCall) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *UpdateOrganizationCall) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateOrganizationCall) GetBody() *UpdateOrganizationRequest {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+// Empty response type for delete RPCs.
+type Empty struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Empty) Reset() {
+	*x = Empty{}
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Empty) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Empty) ProtoMessage() {}
+
+func (x *Empty) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_identity_v1_identity_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Empty.ProtoReflect.Descriptor instead.
+func (*Empty) Descriptor() ([]byte, []int) {
+	return file_hearth_identity_v1_identity_proto_rawDescGZIP(), []int{28}
+}
+
 var File_hearth_identity_v1_identity_proto protoreflect.FileDescriptor
 
 const file_hearth_identity_v1_identity_proto_rawDesc = "" +
@@ -960,7 +1919,75 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\x06_error\"K\n" +
 	"\n" +
 	"BulkResult\x12=\n" +
-	"\aresults\x18\x01 \x03(\v2#.hearth.identity.v1.BulkResultEntryR\aresults*\x81\x01\n" +
+	"\aresults\x18\x01 \x03(\v2#.hearth.identity.v1.BulkResultEntryR\aresults\"\xa7\x02\n" +
+	"\fOrganization\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
+	"\brealm_id\x18\x02 \x01(\tR\arealmId\x12\x12\n" +
+	"\x04slug\x18\x03 \x01(\tR\x04slug\x12!\n" +
+	"\fdisplay_name\x18\x04 \x01(\tR\vdisplayName\x12>\n" +
+	"\x06status\x18\x05 \x01(\x0e2&.hearth.identity.v1.OrganizationStatusR\x06status\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\x03R\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\a \x01(\x03R\tupdatedAt\x12&\n" +
+	"\fmember_limit\x18\b \x01(\rH\x00R\vmemberLimit\x88\x01\x01B\x0f\n" +
+	"\r_member_limit\"\x8b\x01\n" +
+	"\x19CreateOrganizationRequest\x12\x12\n" +
+	"\x04slug\x18\x01 \x01(\tR\x04slug\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12&\n" +
+	"\fmember_limit\x18\x03 \x01(\rH\x00R\vmemberLimit\x88\x01\x01B\x0f\n" +
+	"\r_member_limit\"\xff\x01\n" +
+	"\x19UpdateOrganizationRequest\x12\x17\n" +
+	"\x04slug\x18\x01 \x01(\tH\x00R\x04slug\x88\x01\x01\x12&\n" +
+	"\fdisplay_name\x18\x02 \x01(\tH\x01R\vdisplayName\x88\x01\x01\x12C\n" +
+	"\x06status\x18\x03 \x01(\x0e2&.hearth.identity.v1.OrganizationStatusH\x02R\x06status\x88\x01\x01\x12&\n" +
+	"\fmember_limit\x18\x04 \x01(\rH\x03R\vmemberLimit\x88\x01\x01B\a\n" +
+	"\x05_slugB\x0f\n" +
+	"\r_display_nameB\t\n" +
+	"\a_statusB\x0f\n" +
+	"\r_member_limit\"\x80\x01\n" +
+	"\x10OrganizationPage\x126\n" +
+	"\x05items\x18\x01 \x03(\v2 .hearth.identity.v1.OrganizationR\x05items\x12$\n" +
+	"\vnext_cursor\x18\x02 \x01(\tH\x00R\n" +
+	"nextCursor\x88\x01\x01B\x0e\n" +
+	"\f_next_cursor\" \n" +
+	"\x0eGetUserRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"#\n" +
+	"\x11DeleteUserRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"_\n" +
+	"\x10ListUsersRequest\x12\x1b\n" +
+	"\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n" +
+	"\x05limit\x18\x02 \x01(\rH\x01R\x05limit\x88\x01\x01B\t\n" +
+	"\a_cursorB\b\n" +
+	"\x06_limit\"[\n" +
+	"\x0eUpdateUserCall\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x129\n" +
+	"\x04body\x18\x02 \x01(\v2%.hearth.identity.v1.UpdateUserRequestR\x04body\"`\n" +
+	"\x11ListRealmsRequest\x12\x1b\n" +
+	"\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n" +
+	"\x05limit\x18\x02 \x01(\rH\x01R\x05limit\x88\x01\x01B\t\n" +
+	"\a_cursorB\b\n" +
+	"\x06_limit\"!\n" +
+	"\x0fGetRealmRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"$\n" +
+	"\x12DeleteRealmRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"]\n" +
+	"\x0fUpdateRealmCall\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12:\n" +
+	"\x04body\x18\x02 \x01(\v2&.hearth.identity.v1.UpdateRealmRequestR\x04body\"g\n" +
+	"\x18ListOrganizationsRequest\x12\x1b\n" +
+	"\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n" +
+	"\x05limit\x18\x02 \x01(\rH\x01R\x05limit\x88\x01\x01B\t\n" +
+	"\a_cursorB\b\n" +
+	"\x06_limit\"(\n" +
+	"\x16GetOrganizationRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"+\n" +
+	"\x19DeleteOrganizationRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"k\n" +
+	"\x16UpdateOrganizationCall\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12A\n" +
+	"\x04body\x18\x02 \x01(\v2-.hearth.identity.v1.UpdateOrganizationRequestR\x04body\"\a\n" +
+	"\x05Empty*\x81\x01\n" +
 	"\n" +
 	"UserStatus\x12\x1b\n" +
 	"\x17USER_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -970,7 +1997,32 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\vRealmStatus\x12\x1c\n" +
 	"\x18REALM_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13REALM_STATUS_ACTIVE\x10\x01\x12\x1a\n" +
-	"\x16REALM_STATUS_SUSPENDED\x10\x02BEZCgithub.com/hearthdb/hearth/sdks/go/generated/identity/v1;identityv1b\x06proto3"
+	"\x16REALM_STATUS_SUSPENDED\x10\x02*|\n" +
+	"\x12OrganizationStatus\x12#\n" +
+	"\x1fORGANIZATION_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aORGANIZATION_STATUS_ACTIVE\x10\x01\x12!\n" +
+	"\x1dORGANIZATION_STATUS_SUSPENDED\x10\x022\xa3\n" +
+	"\n" +
+	"\x14IdentityAdminService\x12O\n" +
+	"\tListUsers\x12$.hearth.identity.v1.ListUsersRequest\x1a\x1c.hearth.identity.v1.UserPage\x12G\n" +
+	"\aGetUser\x12\".hearth.identity.v1.GetUserRequest\x1a\x18.hearth.identity.v1.User\x12M\n" +
+	"\n" +
+	"CreateUser\x12%.hearth.identity.v1.CreateUserRequest\x1a\x18.hearth.identity.v1.User\x12J\n" +
+	"\n" +
+	"UpdateUser\x12\".hearth.identity.v1.UpdateUserCall\x1a\x18.hearth.identity.v1.User\x12N\n" +
+	"\n" +
+	"DeleteUser\x12%.hearth.identity.v1.DeleteUserRequest\x1a\x19.hearth.identity.v1.Empty\x12R\n" +
+	"\n" +
+	"ListRealms\x12%.hearth.identity.v1.ListRealmsRequest\x1a\x1d.hearth.identity.v1.RealmPage\x12J\n" +
+	"\bGetRealm\x12#.hearth.identity.v1.GetRealmRequest\x1a\x19.hearth.identity.v1.Realm\x12P\n" +
+	"\vCreateRealm\x12&.hearth.identity.v1.CreateRealmRequest\x1a\x19.hearth.identity.v1.Realm\x12M\n" +
+	"\vUpdateRealm\x12#.hearth.identity.v1.UpdateRealmCall\x1a\x19.hearth.identity.v1.Realm\x12P\n" +
+	"\vDeleteRealm\x12&.hearth.identity.v1.DeleteRealmRequest\x1a\x19.hearth.identity.v1.Empty\x12g\n" +
+	"\x11ListOrganizations\x12,.hearth.identity.v1.ListOrganizationsRequest\x1a$.hearth.identity.v1.OrganizationPage\x12_\n" +
+	"\x0fGetOrganization\x12*.hearth.identity.v1.GetOrganizationRequest\x1a .hearth.identity.v1.Organization\x12e\n" +
+	"\x12CreateOrganization\x12-.hearth.identity.v1.CreateOrganizationRequest\x1a .hearth.identity.v1.Organization\x12b\n" +
+	"\x12UpdateOrganization\x12*.hearth.identity.v1.UpdateOrganizationCall\x1a .hearth.identity.v1.Organization\x12^\n" +
+	"\x12DeleteOrganization\x12-.hearth.identity.v1.DeleteOrganizationRequest\x1a\x19.hearth.identity.v1.EmptyBEZCgithub.com/hearthdb/hearth/sdks/go/generated/identity/v1;identityv1b\x06proto3"
 
 var (
 	file_hearth_identity_v1_identity_proto_rawDescOnce sync.Once
@@ -984,41 +2036,95 @@ func file_hearth_identity_v1_identity_proto_rawDescGZIP() []byte {
 	return file_hearth_identity_v1_identity_proto_rawDescData
 }
 
-var file_hearth_identity_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_hearth_identity_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_hearth_identity_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_hearth_identity_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_hearth_identity_v1_identity_proto_goTypes = []any{
-	(UserStatus)(0),            // 0: hearth.identity.v1.UserStatus
-	(RealmStatus)(0),           // 1: hearth.identity.v1.RealmStatus
-	(*User)(nil),               // 2: hearth.identity.v1.User
-	(*Session)(nil),            // 3: hearth.identity.v1.Session
-	(*RealmConfig)(nil),        // 4: hearth.identity.v1.RealmConfig
-	(*Realm)(nil),              // 5: hearth.identity.v1.Realm
-	(*CreateUserRequest)(nil),  // 6: hearth.identity.v1.CreateUserRequest
-	(*UpdateUserRequest)(nil),  // 7: hearth.identity.v1.UpdateUserRequest
-	(*CreateRealmRequest)(nil), // 8: hearth.identity.v1.CreateRealmRequest
-	(*UpdateRealmRequest)(nil), // 9: hearth.identity.v1.UpdateRealmRequest
-	(*UserPage)(nil),           // 10: hearth.identity.v1.UserPage
-	(*RealmPage)(nil),          // 11: hearth.identity.v1.RealmPage
-	(*BulkResultEntry)(nil),    // 12: hearth.identity.v1.BulkResultEntry
-	(*BulkResult)(nil),         // 13: hearth.identity.v1.BulkResult
+	(UserStatus)(0),                   // 0: hearth.identity.v1.UserStatus
+	(RealmStatus)(0),                  // 1: hearth.identity.v1.RealmStatus
+	(OrganizationStatus)(0),           // 2: hearth.identity.v1.OrganizationStatus
+	(*User)(nil),                      // 3: hearth.identity.v1.User
+	(*Session)(nil),                   // 4: hearth.identity.v1.Session
+	(*RealmConfig)(nil),               // 5: hearth.identity.v1.RealmConfig
+	(*Realm)(nil),                     // 6: hearth.identity.v1.Realm
+	(*CreateUserRequest)(nil),         // 7: hearth.identity.v1.CreateUserRequest
+	(*UpdateUserRequest)(nil),         // 8: hearth.identity.v1.UpdateUserRequest
+	(*CreateRealmRequest)(nil),        // 9: hearth.identity.v1.CreateRealmRequest
+	(*UpdateRealmRequest)(nil),        // 10: hearth.identity.v1.UpdateRealmRequest
+	(*UserPage)(nil),                  // 11: hearth.identity.v1.UserPage
+	(*RealmPage)(nil),                 // 12: hearth.identity.v1.RealmPage
+	(*BulkResultEntry)(nil),           // 13: hearth.identity.v1.BulkResultEntry
+	(*BulkResult)(nil),                // 14: hearth.identity.v1.BulkResult
+	(*Organization)(nil),              // 15: hearth.identity.v1.Organization
+	(*CreateOrganizationRequest)(nil), // 16: hearth.identity.v1.CreateOrganizationRequest
+	(*UpdateOrganizationRequest)(nil), // 17: hearth.identity.v1.UpdateOrganizationRequest
+	(*OrganizationPage)(nil),          // 18: hearth.identity.v1.OrganizationPage
+	(*GetUserRequest)(nil),            // 19: hearth.identity.v1.GetUserRequest
+	(*DeleteUserRequest)(nil),         // 20: hearth.identity.v1.DeleteUserRequest
+	(*ListUsersRequest)(nil),          // 21: hearth.identity.v1.ListUsersRequest
+	(*UpdateUserCall)(nil),            // 22: hearth.identity.v1.UpdateUserCall
+	(*ListRealmsRequest)(nil),         // 23: hearth.identity.v1.ListRealmsRequest
+	(*GetRealmRequest)(nil),           // 24: hearth.identity.v1.GetRealmRequest
+	(*DeleteRealmRequest)(nil),        // 25: hearth.identity.v1.DeleteRealmRequest
+	(*UpdateRealmCall)(nil),           // 26: hearth.identity.v1.UpdateRealmCall
+	(*ListOrganizationsRequest)(nil),  // 27: hearth.identity.v1.ListOrganizationsRequest
+	(*GetOrganizationRequest)(nil),    // 28: hearth.identity.v1.GetOrganizationRequest
+	(*DeleteOrganizationRequest)(nil), // 29: hearth.identity.v1.DeleteOrganizationRequest
+	(*UpdateOrganizationCall)(nil),    // 30: hearth.identity.v1.UpdateOrganizationCall
+	(*Empty)(nil),                     // 31: hearth.identity.v1.Empty
 }
 var file_hearth_identity_v1_identity_proto_depIdxs = []int32{
 	0,  // 0: hearth.identity.v1.User.status:type_name -> hearth.identity.v1.UserStatus
 	1,  // 1: hearth.identity.v1.Realm.status:type_name -> hearth.identity.v1.RealmStatus
-	4,  // 2: hearth.identity.v1.Realm.config:type_name -> hearth.identity.v1.RealmConfig
+	5,  // 2: hearth.identity.v1.Realm.config:type_name -> hearth.identity.v1.RealmConfig
 	0,  // 3: hearth.identity.v1.UpdateUserRequest.status:type_name -> hearth.identity.v1.UserStatus
-	4,  // 4: hearth.identity.v1.CreateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
+	5,  // 4: hearth.identity.v1.CreateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
 	1,  // 5: hearth.identity.v1.UpdateRealmRequest.status:type_name -> hearth.identity.v1.RealmStatus
-	4,  // 6: hearth.identity.v1.UpdateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
-	2,  // 7: hearth.identity.v1.UserPage.items:type_name -> hearth.identity.v1.User
-	5,  // 8: hearth.identity.v1.RealmPage.items:type_name -> hearth.identity.v1.Realm
-	2,  // 9: hearth.identity.v1.BulkResultEntry.user:type_name -> hearth.identity.v1.User
-	12, // 10: hearth.identity.v1.BulkResult.results:type_name -> hearth.identity.v1.BulkResultEntry
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	5,  // 6: hearth.identity.v1.UpdateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
+	3,  // 7: hearth.identity.v1.UserPage.items:type_name -> hearth.identity.v1.User
+	6,  // 8: hearth.identity.v1.RealmPage.items:type_name -> hearth.identity.v1.Realm
+	3,  // 9: hearth.identity.v1.BulkResultEntry.user:type_name -> hearth.identity.v1.User
+	13, // 10: hearth.identity.v1.BulkResult.results:type_name -> hearth.identity.v1.BulkResultEntry
+	2,  // 11: hearth.identity.v1.Organization.status:type_name -> hearth.identity.v1.OrganizationStatus
+	2,  // 12: hearth.identity.v1.UpdateOrganizationRequest.status:type_name -> hearth.identity.v1.OrganizationStatus
+	15, // 13: hearth.identity.v1.OrganizationPage.items:type_name -> hearth.identity.v1.Organization
+	8,  // 14: hearth.identity.v1.UpdateUserCall.body:type_name -> hearth.identity.v1.UpdateUserRequest
+	10, // 15: hearth.identity.v1.UpdateRealmCall.body:type_name -> hearth.identity.v1.UpdateRealmRequest
+	17, // 16: hearth.identity.v1.UpdateOrganizationCall.body:type_name -> hearth.identity.v1.UpdateOrganizationRequest
+	21, // 17: hearth.identity.v1.IdentityAdminService.ListUsers:input_type -> hearth.identity.v1.ListUsersRequest
+	19, // 18: hearth.identity.v1.IdentityAdminService.GetUser:input_type -> hearth.identity.v1.GetUserRequest
+	7,  // 19: hearth.identity.v1.IdentityAdminService.CreateUser:input_type -> hearth.identity.v1.CreateUserRequest
+	22, // 20: hearth.identity.v1.IdentityAdminService.UpdateUser:input_type -> hearth.identity.v1.UpdateUserCall
+	20, // 21: hearth.identity.v1.IdentityAdminService.DeleteUser:input_type -> hearth.identity.v1.DeleteUserRequest
+	23, // 22: hearth.identity.v1.IdentityAdminService.ListRealms:input_type -> hearth.identity.v1.ListRealmsRequest
+	24, // 23: hearth.identity.v1.IdentityAdminService.GetRealm:input_type -> hearth.identity.v1.GetRealmRequest
+	9,  // 24: hearth.identity.v1.IdentityAdminService.CreateRealm:input_type -> hearth.identity.v1.CreateRealmRequest
+	26, // 25: hearth.identity.v1.IdentityAdminService.UpdateRealm:input_type -> hearth.identity.v1.UpdateRealmCall
+	25, // 26: hearth.identity.v1.IdentityAdminService.DeleteRealm:input_type -> hearth.identity.v1.DeleteRealmRequest
+	27, // 27: hearth.identity.v1.IdentityAdminService.ListOrganizations:input_type -> hearth.identity.v1.ListOrganizationsRequest
+	28, // 28: hearth.identity.v1.IdentityAdminService.GetOrganization:input_type -> hearth.identity.v1.GetOrganizationRequest
+	16, // 29: hearth.identity.v1.IdentityAdminService.CreateOrganization:input_type -> hearth.identity.v1.CreateOrganizationRequest
+	30, // 30: hearth.identity.v1.IdentityAdminService.UpdateOrganization:input_type -> hearth.identity.v1.UpdateOrganizationCall
+	29, // 31: hearth.identity.v1.IdentityAdminService.DeleteOrganization:input_type -> hearth.identity.v1.DeleteOrganizationRequest
+	11, // 32: hearth.identity.v1.IdentityAdminService.ListUsers:output_type -> hearth.identity.v1.UserPage
+	3,  // 33: hearth.identity.v1.IdentityAdminService.GetUser:output_type -> hearth.identity.v1.User
+	3,  // 34: hearth.identity.v1.IdentityAdminService.CreateUser:output_type -> hearth.identity.v1.User
+	3,  // 35: hearth.identity.v1.IdentityAdminService.UpdateUser:output_type -> hearth.identity.v1.User
+	31, // 36: hearth.identity.v1.IdentityAdminService.DeleteUser:output_type -> hearth.identity.v1.Empty
+	12, // 37: hearth.identity.v1.IdentityAdminService.ListRealms:output_type -> hearth.identity.v1.RealmPage
+	6,  // 38: hearth.identity.v1.IdentityAdminService.GetRealm:output_type -> hearth.identity.v1.Realm
+	6,  // 39: hearth.identity.v1.IdentityAdminService.CreateRealm:output_type -> hearth.identity.v1.Realm
+	6,  // 40: hearth.identity.v1.IdentityAdminService.UpdateRealm:output_type -> hearth.identity.v1.Realm
+	31, // 41: hearth.identity.v1.IdentityAdminService.DeleteRealm:output_type -> hearth.identity.v1.Empty
+	18, // 42: hearth.identity.v1.IdentityAdminService.ListOrganizations:output_type -> hearth.identity.v1.OrganizationPage
+	15, // 43: hearth.identity.v1.IdentityAdminService.GetOrganization:output_type -> hearth.identity.v1.Organization
+	15, // 44: hearth.identity.v1.IdentityAdminService.CreateOrganization:output_type -> hearth.identity.v1.Organization
+	15, // 45: hearth.identity.v1.IdentityAdminService.UpdateOrganization:output_type -> hearth.identity.v1.Organization
+	31, // 46: hearth.identity.v1.IdentityAdminService.DeleteOrganization:output_type -> hearth.identity.v1.Empty
+	32, // [32:47] is the sub-list for method output_type
+	17, // [17:32] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_hearth_identity_v1_identity_proto_init() }
@@ -1033,15 +2139,22 @@ func file_hearth_identity_v1_identity_proto_init() {
 	file_hearth_identity_v1_identity_proto_msgTypes[8].OneofWrappers = []any{}
 	file_hearth_identity_v1_identity_proto_msgTypes[9].OneofWrappers = []any{}
 	file_hearth_identity_v1_identity_proto_msgTypes[10].OneofWrappers = []any{}
+	file_hearth_identity_v1_identity_proto_msgTypes[12].OneofWrappers = []any{}
+	file_hearth_identity_v1_identity_proto_msgTypes[13].OneofWrappers = []any{}
+	file_hearth_identity_v1_identity_proto_msgTypes[14].OneofWrappers = []any{}
+	file_hearth_identity_v1_identity_proto_msgTypes[15].OneofWrappers = []any{}
+	file_hearth_identity_v1_identity_proto_msgTypes[18].OneofWrappers = []any{}
+	file_hearth_identity_v1_identity_proto_msgTypes[20].OneofWrappers = []any{}
+	file_hearth_identity_v1_identity_proto_msgTypes[24].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hearth_identity_v1_identity_proto_rawDesc), len(file_hearth_identity_v1_identity_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   12,
+			NumEnums:      3,
+			NumMessages:   29,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_hearth_identity_v1_identity_proto_goTypes,
 		DependencyIndexes: file_hearth_identity_v1_identity_proto_depIdxs,

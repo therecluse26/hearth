@@ -21,6 +21,7 @@ use hearth::identity::{
     CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, OidcConfig,
     TokenConfig,
 };
+use hearth::protocol;
 use hearth::protocol::http::{self, AppState};
 use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
 use hearth::protocol::web::{self, WebState};
@@ -594,6 +595,38 @@ async fn run_serve(
 
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
+    // Spawn the gRPC management API alongside the HTTP server. Both share
+    // the `AdminRateLimiter` so rate limits apply across protocols.
+    let grpc_shutdown = if let Some(grpc_port) = config.server.grpc_port {
+        let bind = config
+            .server
+            .grpc_bind_address
+            .as_deref()
+            .unwrap_or(config.server.bind_address.as_str());
+        let grpc_addr: SocketAddr = format!("{bind}:{grpc_port}")
+            .parse()
+            .map_err(|e| format!("invalid gRPC bind address: {e}"))?;
+        let grpc_state = protocol::grpc::GrpcState::new(
+            Arc::clone(&identity_engine),
+            Arc::clone(&authz_engine),
+            Arc::clone(&audit_engine),
+            Arc::clone(&app_state.admin_rate_limiter),
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let shutdown = async {
+                let _ = shutdown_rx.await;
+            };
+            if let Err(e) = protocol::grpc::serve(grpc_addr, grpc_state, shutdown).await {
+                error!(error = %e, "gRPC server exited with error");
+            }
+        });
+        info!(address = %grpc_addr, "gRPC management API enabled");
+        Some((shutdown_tx, handle))
+    } else {
+        None
+    };
+
     // Write PID file for `hearth config reload` CLI.
     let pid_file_path = data_dir.join("hearth.pid");
     std::fs::write(&pid_file_path, std::process::id().to_string())
@@ -648,6 +681,12 @@ async fn run_serve(
             info!("shutdown signal received, stopping server");
         };
         http::serve_router(addr, app_router, shutdown).await?;
+    }
+
+    // Signal the gRPC task to shut down and wait for it.
+    if let Some((tx, handle)) = grpc_shutdown {
+        let _ = tx.send(());
+        let _ = handle.await;
     }
 
     // Clean up PID file on exit.

@@ -2,15 +2,15 @@
 // @generated from file hearth/events/v1/audit.proto (package hearth.events.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file hearth/events/v1/audit.proto.
  */
 export const file_hearth_events_v1_audit: GenFile = /*@__PURE__*/
-  fileDesc("ChxoZWFydGgvZXZlbnRzL3YxL2F1ZGl0LnByb3RvEhBoZWFydGguZXZlbnRzLnYxIuMBCgpBdWRpdEV2ZW50EgoKAmlkGAEgASgJEhAKCHJlYWxtX2lkGAIgASgJEg0KBWFjdG9yGAMgASgJEi0KBmFjdGlvbhgEIAEoDjIdLmhlYXJ0aC5ldmVudHMudjEuQXVkaXRBY3Rpb24SFQoNcmVzb3VyY2VfdHlwZRgFIAEoCRITCgtyZXNvdXJjZV9pZBgGIAEoCRIRCgl0aW1lc3RhbXAYByABKAMSFQoIbWV0YWRhdGEYCCABKAlIAIgBARIWCg5pbnRlZ3JpdHlfaGFzaBgJIAEoCUILCglfbWV0YWRhdGEisgEKEENyZWF0ZUF1ZGl0RXZlbnQSEAoIcmVhbG1faWQYASABKAkSDQoFYWN0b3IYAiABKAkSLQoGYWN0aW9uGAMgASgOMh0uaGVhcnRoLmV2ZW50cy52MS5BdWRpdEFjdGlvbhIVCg1yZXNvdXJjZV90eXBlGAQgASgJEhMKC3Jlc291cmNlX2lkGAUgASgJEhUKCG1ldGFkYXRhGAYgASgJSACIAQFCCwoJX21ldGFkYXRhIuUBCgpBdWRpdFF1ZXJ5EhAKCHJlYWxtX2lkGAEgASgJEhcKCnN0YXJ0X3RpbWUYAiABKANIAIgBARIVCghlbmRfdGltZRgDIAEoA0gBiAEBEhIKBWFjdG9yGAQgASgJSAKIAQESMgoGYWN0aW9uGAUgASgOMh0uaGVhcnRoLmV2ZW50cy52MS5BdWRpdEFjdGlvbkgDiAEBEhIKBWxpbWl0GAYgASgNSASIAQFCDQoLX3N0YXJ0X3RpbWVCCwoJX2VuZF90aW1lQggKBl9hY3RvckIJCgdfYWN0aW9uQggKBl9saW1pdCrDCQoLQXVkaXRBY3Rpb24SHAoYQVVESVRfQUNUSU9OX1VOU1BFQ0lGSUVEEAASHQoZQVVESVRfQUNUSU9OX1VTRVJfQ1JFQVRFRBABEh0KGUFVRElUX0FDVElPTl9VU0VSX1VQREFURUQQAhIdChlBVURJVF9BQ1RJT05fVVNFUl9ERUxFVEVEEAMSHwobQVVESVRfQUNUSU9OX0NSRURFTlRJQUxfU0VUEAQSIwofQVVESVRfQUNUSU9OX0NSRURFTlRJQUxfQ0hBTkdFRBAFEiQKIEFVRElUX0FDVElPTl9DUkVERU5USUFMX1ZFUklGSUVEEAYSIAocQVVESVRfQUNUSU9OX1NFU1NJT05fQ1JFQVRFRBAHEiAKHEFVRElUX0FDVElPTl9TRVNTSU9OX1JFVk9LRUQQCBIdChlBVURJVF9BQ1RJT05fVE9LRU5fSVNTVUVEEAkSIAocQVVESVRfQUNUSU9OX1RPS0VOX1JFRlJFU0hFRBAKEh4KGkFVRElUX0FDVElPTl9SRUFMTV9DUkVBVEVEEAsSHgoaQVVESVRfQUNUSU9OX1JFQUxNX1VQREFURUQQDBIeChpBVURJVF9BQ1RJT05fUkVBTE1fREVMRVRFRBANEiIKHkFVRElUX0FDVElPTl9DTElFTlRfUkVHSVNURVJFRBAOEioKJkFVRElUX0FDVElPTl9BVVRIT1JJWkFUSU9OX0NPREVfSVNTVUVEEA8SLQopQVVESVRfQUNUSU9OX0FVVEhPUklaQVRJT05fQ09ERV9FWENIQU5HRUQQEBIeChpBVURJVF9BQ1RJT05fVFVQTEVfV1JJVFRFThAREh4KGkFVRElUX0FDVElPTl9UVVBMRV9ERUxFVEVEEBISHwobQVVESVRfQUNUSU9OX0NMSUVOVF9VUERBVEVEEBMSHwobQVVESVRfQUNUSU9OX0NMSUVOVF9ERUxFVEVEEBQSIwofQVVESVRfQUNUSU9OX0JVTEtfVVNFUlNfQ1JFQVRFRBAVEiQKIEFVRElUX0FDVElPTl9CVUxLX1VTRVJTX0RJU0FCTEVEEBYSHAoYQVVESVRfQUNUSU9OX09SR19DUkVBVEVEEBcSHAoYQVVESVRfQUNUSU9OX09SR19VUERBVEVEEBgSHAoYQVVESVRfQUNUSU9OX09SR19ERUxFVEVEEBkSIAocQVVESVRfQUNUSU9OX0NPTlNFTlRfR1JBTlRFRBAaEh8KG0FVRElUX0FDVElPTl9DT05TRU5UX0RFTklFRBAbEiAKHEFVRElUX0FDVElPTl9DT05TRU5UX1JFVk9LRUQQHBIpCiVBVURJVF9BQ1RJT05fRkVERVJBVElPTl9MT0dJTl9TVEFSVEVEEB0SKwonQVVESVRfQUNUSU9OX0ZFREVSQVRJT05fTE9HSU5fQ09NUExFVEVEEB4SKgomQVVESVRfQUNUSU9OX0ZFREVSQVRJT05fQUNDT1VOVF9MSU5LRUQQHxIsCihBVURJVF9BQ1RJT05fRkVERVJBVElPTl9BQ0NPVU5UX1VOTElOS0VEECASKwonQVVESVRfQUNUSU9OX0ZFREVSQVRJT05fSklUX1BST1ZJU0lPTkVEECFCQVo/Z2l0aHViLmNvbS9oZWFydGhkYi9oZWFydGgvc2Rrcy9nby9nZW5lcmF0ZWQvZXZlbnRzL3YxO2V2ZW50c3YxYgZwcm90bzM");
+  fileDesc("ChxoZWFydGgvZXZlbnRzL3YxL2F1ZGl0LnByb3RvEhBoZWFydGguZXZlbnRzLnYxIuMBCgpBdWRpdEV2ZW50EgoKAmlkGAEgASgJEhAKCHJlYWxtX2lkGAIgASgJEg0KBWFjdG9yGAMgASgJEi0KBmFjdGlvbhgEIAEoDjIdLmhlYXJ0aC5ldmVudHMudjEuQXVkaXRBY3Rpb24SFQoNcmVzb3VyY2VfdHlwZRgFIAEoCRITCgtyZXNvdXJjZV9pZBgGIAEoCRIRCgl0aW1lc3RhbXAYByABKAMSFQoIbWV0YWRhdGEYCCABKAlIAIgBARIWCg5pbnRlZ3JpdHlfaGFzaBgJIAEoCUILCglfbWV0YWRhdGEisgEKEENyZWF0ZUF1ZGl0RXZlbnQSEAoIcmVhbG1faWQYASABKAkSDQoFYWN0b3IYAiABKAkSLQoGYWN0aW9uGAMgASgOMh0uaGVhcnRoLmV2ZW50cy52MS5BdWRpdEFjdGlvbhIVCg1yZXNvdXJjZV90eXBlGAQgASgJEhMKC3Jlc291cmNlX2lkGAUgASgJEhUKCG1ldGFkYXRhGAYgASgJSACIAQFCCwoJX21ldGFkYXRhIuUBCgpBdWRpdFF1ZXJ5EhAKCHJlYWxtX2lkGAEgASgJEhcKCnN0YXJ0X3RpbWUYAiABKANIAIgBARIVCghlbmRfdGltZRgDIAEoA0gBiAEBEhIKBWFjdG9yGAQgASgJSAKIAQESMgoGYWN0aW9uGAUgASgOMh0uaGVhcnRoLmV2ZW50cy52MS5BdWRpdEFjdGlvbkgDiAEBEhIKBWxpbWl0GAYgASgNSASIAQFCDQoLX3N0YXJ0X3RpbWVCCwoJX2VuZF90aW1lQggKBl9hY3RvckIJCgdfYWN0aW9uQggKBl9saW1pdCI+Cg5BdWRpdEV2ZW50UGFnZRIsCgZldmVudHMYASADKAsyHC5oZWFydGguZXZlbnRzLnYxLkF1ZGl0RXZlbnQiGAoWVmVyaWZ5SW50ZWdyaXR5UmVxdWVzdCJyChdWZXJpZnlJbnRlZ3JpdHlSZXNwb25zZRIKCgJvaxgBIAEoCBIfChJicm9rZW5fYXRfZXZlbnRfaWQYAiABKAlIAIgBARITCgtldmVudF9jb3VudBgDIAEoBEIVChNfYnJva2VuX2F0X2V2ZW50X2lkKsMJCgtBdWRpdEFjdGlvbhIcChhBVURJVF9BQ1RJT05fVU5TUEVDSUZJRUQQABIdChlBVURJVF9BQ1RJT05fVVNFUl9DUkVBVEVEEAESHQoZQVVESVRfQUNUSU9OX1VTRVJfVVBEQVRFRBACEh0KGUFVRElUX0FDVElPTl9VU0VSX0RFTEVURUQQAxIfChtBVURJVF9BQ1RJT05fQ1JFREVOVElBTF9TRVQQBBIjCh9BVURJVF9BQ1RJT05fQ1JFREVOVElBTF9DSEFOR0VEEAUSJAogQVVESVRfQUNUSU9OX0NSRURFTlRJQUxfVkVSSUZJRUQQBhIgChxBVURJVF9BQ1RJT05fU0VTU0lPTl9DUkVBVEVEEAcSIAocQVVESVRfQUNUSU9OX1NFU1NJT05fUkVWT0tFRBAIEh0KGUFVRElUX0FDVElPTl9UT0tFTl9JU1NVRUQQCRIgChxBVURJVF9BQ1RJT05fVE9LRU5fUkVGUkVTSEVEEAoSHgoaQVVESVRfQUNUSU9OX1JFQUxNX0NSRUFURUQQCxIeChpBVURJVF9BQ1RJT05fUkVBTE1fVVBEQVRFRBAMEh4KGkFVRElUX0FDVElPTl9SRUFMTV9ERUxFVEVEEA0SIgoeQVVESVRfQUNUSU9OX0NMSUVOVF9SRUdJU1RFUkVEEA4SKgomQVVESVRfQUNUSU9OX0FVVEhPUklaQVRJT05fQ09ERV9JU1NVRUQQDxItCilBVURJVF9BQ1RJT05fQVVUSE9SSVpBVElPTl9DT0RFX0VYQ0hBTkdFRBAQEh4KGkFVRElUX0FDVElPTl9UVVBMRV9XUklUVEVOEBESHgoaQVVESVRfQUNUSU9OX1RVUExFX0RFTEVURUQQEhIfChtBVURJVF9BQ1RJT05fQ0xJRU5UX1VQREFURUQQExIfChtBVURJVF9BQ1RJT05fQ0xJRU5UX0RFTEVURUQQFBIjCh9BVURJVF9BQ1RJT05fQlVMS19VU0VSU19DUkVBVEVEEBUSJAogQVVESVRfQUNUSU9OX0JVTEtfVVNFUlNfRElTQUJMRUQQFhIcChhBVURJVF9BQ1RJT05fT1JHX0NSRUFURUQQFxIcChhBVURJVF9BQ1RJT05fT1JHX1VQREFURUQQGBIcChhBVURJVF9BQ1RJT05fT1JHX0RFTEVURUQQGRIgChxBVURJVF9BQ1RJT05fQ09OU0VOVF9HUkFOVEVEEBoSHwobQVVESVRfQUNUSU9OX0NPTlNFTlRfREVOSUVEEBsSIAocQVVESVRfQUNUSU9OX0NPTlNFTlRfUkVWT0tFRBAcEikKJUFVRElUX0FDVElPTl9GRURFUkFUSU9OX0xPR0lOX1NUQVJURUQQHRIrCidBVURJVF9BQ1RJT05fRkVERVJBVElPTl9MT0dJTl9DT01QTEVURUQQHhIqCiZBVURJVF9BQ1RJT05fRkVERVJBVElPTl9BQ0NPVU5UX0xJTktFRBAfEiwKKEFVRElUX0FDVElPTl9GRURFUkFUSU9OX0FDQ09VTlRfVU5MSU5LRUQQIBIrCidBVURJVF9BQ1RJT05fRkVERVJBVElPTl9KSVRfUFJPVklTSU9ORUQQITLEAQoMQXVkaXRTZXJ2aWNlEkwKCkxpc3RFdmVudHMSHC5oZWFydGguZXZlbnRzLnYxLkF1ZGl0UXVlcnkaIC5oZWFydGguZXZlbnRzLnYxLkF1ZGl0RXZlbnRQYWdlEmYKD1ZlcmlmeUludGVncml0eRIoLmhlYXJ0aC5ldmVudHMudjEuVmVyaWZ5SW50ZWdyaXR5UmVxdWVzdBopLmhlYXJ0aC5ldmVudHMudjEuVmVyaWZ5SW50ZWdyaXR5UmVzcG9uc2VCQVo/Z2l0aHViLmNvbS9oZWFydGhkYi9oZWFydGgvc2Rrcy9nby9nZW5lcmF0ZWQvZXZlbnRzL3YxO2V2ZW50c3YxYgZwcm90bzM");
 
 /**
  * A recorded audit event in the append-only log.
@@ -162,6 +162,71 @@ export type AuditQuery = Message<"hearth.events.v1.AuditQuery"> & {
  */
 export const AuditQuerySchema: GenMessage<AuditQuery> = /*@__PURE__*/
   messageDesc(file_hearth_events_v1_audit, 2);
+
+/**
+ * A page of audit events.
+ *
+ * @generated from message hearth.events.v1.AuditEventPage
+ */
+export type AuditEventPage = Message<"hearth.events.v1.AuditEventPage"> & {
+  /**
+   * @generated from field: repeated hearth.events.v1.AuditEvent events = 1;
+   */
+  events: AuditEvent[];
+};
+
+/**
+ * Describes the message hearth.events.v1.AuditEventPage.
+ * Use `create(AuditEventPageSchema)` to create a new message.
+ */
+export const AuditEventPageSchema: GenMessage<AuditEventPage> = /*@__PURE__*/
+  messageDesc(file_hearth_events_v1_audit, 3);
+
+/**
+ * Request to verify the integrity hash chain of the realm's audit log.
+ * Realm context comes from the `x-realm-id` metadata (admin interceptor).
+ *
+ * @generated from message hearth.events.v1.VerifyIntegrityRequest
+ */
+export type VerifyIntegrityRequest = Message<"hearth.events.v1.VerifyIntegrityRequest"> & {
+};
+
+/**
+ * Describes the message hearth.events.v1.VerifyIntegrityRequest.
+ * Use `create(VerifyIntegrityRequestSchema)` to create a new message.
+ */
+export const VerifyIntegrityRequestSchema: GenMessage<VerifyIntegrityRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_events_v1_audit, 4);
+
+/**
+ * Result of an integrity check. `ok = true` means the hash chain verified
+ * end-to-end; `ok = false` indicates a broken link at `broken_at_event_id`.
+ *
+ * @generated from message hearth.events.v1.VerifyIntegrityResponse
+ */
+export type VerifyIntegrityResponse = Message<"hearth.events.v1.VerifyIntegrityResponse"> & {
+  /**
+   * @generated from field: bool ok = 1;
+   */
+  ok: boolean;
+
+  /**
+   * @generated from field: optional string broken_at_event_id = 2;
+   */
+  brokenAtEventId?: string;
+
+  /**
+   * @generated from field: uint64 event_count = 3;
+   */
+  eventCount: bigint;
+};
+
+/**
+ * Describes the message hearth.events.v1.VerifyIntegrityResponse.
+ * Use `create(VerifyIntegrityResponseSchema)` to create a new message.
+ */
+export const VerifyIntegrityResponseSchema: GenMessage<VerifyIntegrityResponse> = /*@__PURE__*/
+  messageDesc(file_hearth_events_v1_audit, 5);
 
 /**
  * Categories of security-critical actions recorded in the audit log.
@@ -345,4 +410,27 @@ export enum AuditAction {
  */
 export const AuditActionSchema: GenEnum<AuditAction> = /*@__PURE__*/
   enumDesc(file_hearth_events_v1_audit, 0);
+
+/**
+ * @generated from service hearth.events.v1.AuditService
+ */
+export const AuditService: GenService<{
+  /**
+   * @generated from rpc hearth.events.v1.AuditService.ListEvents
+   */
+  listEvents: {
+    methodKind: "unary";
+    input: typeof AuditQuerySchema;
+    output: typeof AuditEventPageSchema;
+  },
+  /**
+   * @generated from rpc hearth.events.v1.AuditService.VerifyIntegrity
+   */
+  verifyIntegrity: {
+    methodKind: "unary";
+    input: typeof VerifyIntegrityRequestSchema;
+    output: typeof VerifyIntegrityResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hearth_events_v1_audit, 0);
 

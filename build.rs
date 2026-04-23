@@ -17,15 +17,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generated = PathBuf::from(GENERATED_DIR);
     std::fs::create_dir_all(&generated)?;
 
-    // File descriptor set stays in OUT_DIR (binary artifact, not source).
+    // File descriptor set is consumed by both pbjson (for JSON codec) and
+    // tonic-reflection (for runtime service discovery), so we write it into
+    // the generated dir as a checked-in-but-gitignored artifact. It also
+    // stays in OUT_DIR for pbjson-build.
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
     let descriptor_path = out_dir.join("proto_descriptor.bin");
+    let reflection_descriptor_path = generated.join("proto_descriptor.bin");
 
-    // Compile proto files with prost, generating file descriptor set for pbjson.
-    prost_build::Config::new()
+    // Compile proto files with tonic_build (wraps prost). Emits both message
+    // types and service traits/clients. The file descriptor set is shared
+    // with pbjson below.
+    tonic_build::configure()
+        .build_server(true)
+        .build_client(true)
         .out_dir(&generated)
         .file_descriptor_set_path(&descriptor_path)
         .compile_protos(protos, &[proto_dir])?;
+
+    // Duplicate the descriptor set into the generated dir so tonic-reflection
+    // can `include_bytes!` it at compile time without relying on OUT_DIR
+    // layout leaking into source code.
+    std::fs::copy(&descriptor_path, &reflection_descriptor_path)?;
 
     // Generate serde (JSON) implementations from the descriptor set.
     let descriptor_set = std::fs::read(&descriptor_path)?;
