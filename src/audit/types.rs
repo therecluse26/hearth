@@ -61,6 +61,15 @@ pub enum AuditAction {
     OrgUpdated,
     /// An organization was deleted.
     OrgDeleted,
+    /// A role was assigned to a subject (user) on an object (realm / organization / application).
+    ///
+    /// Metadata carries `object_type`, `object_id`, `role`, and the previous
+    /// role (if any) so downgrades/upgrades are visible in the audit trail.
+    RoleAssigned,
+    /// A role previously held by a subject was revoked.
+    ///
+    /// Metadata carries `object_type`, `object_id`, and `role`.
+    RoleRevoked,
     /// A user granted OAuth consent to a client for one or more scopes.
     ConsentGranted,
     /// A user denied an OAuth consent request.
@@ -165,6 +174,8 @@ impl AuditAction {
             Self::ScimGroupCreated => "scim_group_created",
             Self::ScimGroupUpdated => "scim_group_updated",
             Self::ScimGroupDeleted => "scim_group_deleted",
+            Self::RoleAssigned => "role_assigned",
+            Self::RoleRevoked => "role_revoked",
         }
     }
 }
@@ -221,6 +232,8 @@ impl std::str::FromStr for AuditAction {
             "scim_group_created" => Ok(Self::ScimGroupCreated),
             "scim_group_updated" => Ok(Self::ScimGroupUpdated),
             "scim_group_deleted" => Ok(Self::ScimGroupDeleted),
+            "role_assigned" => Ok(Self::RoleAssigned),
+            "role_revoked" => Ok(Self::RoleRevoked),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

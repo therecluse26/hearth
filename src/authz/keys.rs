@@ -86,6 +86,36 @@ pub(crate) fn encode_reverse(object: &ObjectRef, relation: &str, subject: &Subje
     .into_bytes()
 }
 
+/// Encodes the reverse-index scan prefix for a given subject.
+///
+/// Returned bytes match every reverse-index key with that subject, so a
+/// storage scan over `[prefix, prefix_end(prefix))` enumerates every
+/// `(object, relation)` pair the subject appears in.
+///
+/// Format: `rev:{subject}@`
+pub(crate) fn encode_reverse_prefix_for_subject(subject: &SubjectRef) -> Vec<u8> {
+    format!("{REV_PREFIX}{}@", encode_subject(subject)).into_bytes()
+}
+
+/// Parses a reverse-index key into its `(object_type, object_id, relation)`
+/// triple. Returns `None` if the key does not follow the `rev:{subject}@{type}:{id}#{rel}`
+/// shape. Used when scanning all tuples attached to a subject.
+pub(crate) fn decode_reverse_tail(
+    key: &[u8],
+    subject_prefix: &[u8],
+) -> Option<(String, String, String)> {
+    let rest = key.strip_prefix(subject_prefix)?;
+    let rest = std::str::from_utf8(rest).ok()?;
+    // rest is `{type}:{id}#{relation}`
+    let (object_type, after_type) = rest.split_once(':')?;
+    let (object_id, relation) = after_type.split_once('#')?;
+    Some((
+        object_type.to_string(),
+        object_id.to_string(),
+        relation.to_string(),
+    ))
+}
+
 /// Returns the storage key for the namespace configuration.
 pub(crate) fn encode_namespace_config() -> &'static [u8] {
     NAMESPACE_CONFIG_KEY

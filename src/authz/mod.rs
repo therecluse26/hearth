@@ -21,9 +21,9 @@ pub use engine::{AuthzConfig, EmbeddedAuthzEngine};
 pub use error::AuthzError;
 pub use presets::{ensure_preset_namespace, preset_namespace};
 pub use types::{
-    ConsistencyToken, NamespaceConfig, ObjectRef, ObjectTypeConfig, RelationConfig,
-    RelationRewrite, RelationshipTuple, SubjectRef, TupleChangeAction, TupleChangeEvent,
-    TupleWrite, WatchFilter, WatchReceiver,
+    CheckExplanation, CheckStep, ConsistencyToken, NamespaceConfig, ObjectRef, ObjectTypeConfig,
+    RelationConfig, RelationRewrite, RelationshipTuple, SubjectRef, TupleChangeAction,
+    TupleChangeEvent, TupleWrite, WatchFilter, WatchReceiver,
 };
 
 use crate::core::RealmId;
@@ -90,6 +90,35 @@ pub trait AuthorizationEngine: Send + Sync {
 
     /// Gets the namespace configuration for a realm, if one exists.
     fn get_namespace(&self, realm_id: &RealmId) -> Result<Option<NamespaceConfig>, AuthzError>;
+
+    /// Lists every `(object, relation)` where `subject` has a direct tuple
+    /// in this realm.
+    ///
+    /// Reverse-index scan; cheap enough for admin screens, not cached, and
+    /// off the hot path. Does NOT expand userset / rewrite chains — a user
+    /// whose access is inherited via `group:eng#member` will NOT appear as
+    /// a member of downstream objects. Intended for the "direct grants"
+    /// per-user overview on the admin UI, not for authorization decisions.
+    fn list_direct_relations_for_subject(
+        &self,
+        realm_id: &RealmId,
+        subject: &SubjectRef,
+    ) -> Result<Vec<(ObjectRef, String)>, AuthzError>;
+
+    /// Runs a `check()` with traversal instrumentation for the check
+    /// debugger UI.
+    ///
+    /// Unlike `check()`, this bypasses the permission cache and emits a
+    /// structured [`CheckExplanation`] describing every BFS step taken.
+    /// Intended for admin-only diagnostic use — NOT for the hot path.
+    /// Allocations are acceptable here.
+    fn check_explain(
+        &self,
+        realm_id: &RealmId,
+        object: &ObjectRef,
+        relation: &str,
+        subject: &SubjectRef,
+    ) -> Result<CheckExplanation, AuthzError>;
 
     /// Subscribes to relationship tuple changes matching the filter.
     ///

@@ -80,6 +80,49 @@
   </div>
 </div>
 
+{# Access across this realm #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <div class="mb-4 flex items-center justify-between">
+    <h2 class="text-lg font-semibold text-ht-content-primary">Access</h2>
+    <p class="text-sm text-ht-content-muted">Direct grants in this realm. Group-inherited access is not shown.</p>
+  </div>
+
+  <div class="mb-4 flex items-center gap-2">
+    <span class="font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Realm administrator</span>
+    {% if is_user_admin %}
+      <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Yes</span>
+    {% else %}
+      <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">No</span>
+    {% endif %}
+  </div>
+
+  {% if access_groups.is_empty() %}
+    <p class="py-6 text-center text-sm text-ht-content-muted">No direct role grants in this realm.</p>
+  {% else %}
+    {% for g in access_groups %}
+    <div class="mt-4">
+      <h3 class="mb-2 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">{{ g.object_type }}</h3>
+      <ul class="divide-y divide-divider-faint">
+        {% for e in g.entries %}
+        <li class="flex items-center justify-between gap-3 py-2">
+          <div class="min-w-0 flex-1">
+            {% match e.detail_url %}
+              {% when Some with (url) %}
+                <a href="{{ url }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ e.label }}</a>
+              {% when None %}
+                <span class="text-sm text-ht-content-primary">{{ e.label }}</span>
+            {% endmatch %}
+            <div class="text-xs text-ht-content-muted font-mono">{{ e.object_id }}</div>
+          </div>
+          <span class="inline-flex shrink-0 items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">{{ e.relation }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  {% endif %}
+</div>
+
 {# Sessions section #}
 <div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <h2 class="mb-4 text-lg font-semibold text-ht-content-primary">Sessions</h2>

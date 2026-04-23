@@ -73,6 +73,8 @@ const (
 	AuditAction_AUDIT_ACTION_SCIM_GROUP_CREATED              AuditAction = 45
 	AuditAction_AUDIT_ACTION_SCIM_GROUP_UPDATED              AuditAction = 46
 	AuditAction_AUDIT_ACTION_SCIM_GROUP_DELETED              AuditAction = 47
+	AuditAction_AUDIT_ACTION_ROLE_ASSIGNED                   AuditAction = 48
+	AuditAction_AUDIT_ACTION_ROLE_REVOKED                    AuditAction = 49
 )
 
 // Enum value maps for AuditAction.
@@ -126,6 +128,8 @@ var (
 		45: "AUDIT_ACTION_SCIM_GROUP_CREATED",
 		46: "AUDIT_ACTION_SCIM_GROUP_UPDATED",
 		47: "AUDIT_ACTION_SCIM_GROUP_DELETED",
+		48: "AUDIT_ACTION_ROLE_ASSIGNED",
+		49: "AUDIT_ACTION_ROLE_REVOKED",
 	}
 	AuditAction_value = map[string]int32{
 		"AUDIT_ACTION_UNSPECIFIED":                     0,
@@ -176,6 +180,8 @@ var (
 		"AUDIT_ACTION_SCIM_GROUP_CREATED":              45,
 		"AUDIT_ACTION_SCIM_GROUP_UPDATED":              46,
 		"AUDIT_ACTION_SCIM_GROUP_DELETED":              47,
+		"AUDIT_ACTION_ROLE_ASSIGNED":                   48,
+		"AUDIT_ACTION_ROLE_REVOKED":                    49,
 	}
 )
 
@@ -681,7 +687,7 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\x12broken_at_event_id\x18\x02 \x01(\tH\x00R\x0fbrokenAtEventId\x88\x01\x01\x12\x1f\n" +
 	"\vevent_count\x18\x03 \x01(\x04R\n" +
 	"eventCountB\x15\n" +
-	"\x13_broken_at_event_id*\xe0\r\n" +
+	"\x13_broken_at_event_id*\x9f\x0e\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -731,7 +737,9 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\x1eAUDIT_ACTION_SCIM_USER_DELETED\x10,\x12#\n" +
 	"\x1fAUDIT_ACTION_SCIM_GROUP_CREATED\x10-\x12#\n" +
 	"\x1fAUDIT_ACTION_SCIM_GROUP_UPDATED\x10.\x12#\n" +
-	"\x1fAUDIT_ACTION_SCIM_GROUP_DELETED\x10/2\xc4\x01\n" +
+	"\x1fAUDIT_ACTION_SCIM_GROUP_DELETED\x10/\x12\x1e\n" +
+	"\x1aAUDIT_ACTION_ROLE_ASSIGNED\x100\x12\x1d\n" +
+	"\x19AUDIT_ACTION_ROLE_REVOKED\x1012\xc4\x01\n" +
 	"\fAuditService\x12L\n" +
 	"\n" +
 	"ListEvents\x12\x1c.hearth.events.v1.AuditQuery\x1a .hearth.events.v1.AuditEventPage\x12f\n" +

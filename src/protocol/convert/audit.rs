@@ -61,6 +61,8 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::ScimGroupCreated => pb::AuditAction::ScimGroupCreated,
         domain::AuditAction::ScimGroupUpdated => pb::AuditAction::ScimGroupUpdated,
         domain::AuditAction::ScimGroupDeleted => pb::AuditAction::ScimGroupDeleted,
+        domain::AuditAction::RoleAssigned => pb::AuditAction::RoleAssigned,
+        domain::AuditAction::RoleRevoked => pb::AuditAction::RoleRevoked,
     }
 }
 
@@ -162,6 +164,8 @@ mod tests {
             domain::AuditAction::ScimGroupCreated,
             domain::AuditAction::ScimGroupUpdated,
             domain::AuditAction::ScimGroupDeleted,
+            domain::AuditAction::RoleAssigned,
+            domain::AuditAction::RoleRevoked,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

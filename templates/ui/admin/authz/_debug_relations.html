@@ -1,0 +1,5 @@
+{# HTMX partial: relation dropdown options for the debugger. #}
+<option value="">— select —</option>
+{% for r in relations %}
+<option value="{{ r }}">{{ r }}</option>
+{% endfor %}

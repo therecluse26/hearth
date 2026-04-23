@@ -13,8 +13,8 @@ use arc_swap::ArcSwap;
 use crate::authz::error::{AuthzError, AuthzErrorCode};
 use crate::authz::keys;
 use crate::authz::types::{
-    ConsistencyToken, NamespaceConfig, ObjectRef, RelationshipTuple, SubjectRef, TupleChangeAction,
-    TupleChangeEvent, TupleWrite, WatchFilter, WatchReceiver,
+    CheckExplanation, CheckStep, ConsistencyToken, NamespaceConfig, ObjectRef, RelationshipTuple,
+    SubjectRef, TupleChangeAction, TupleChangeEvent, TupleWrite, WatchFilter, WatchReceiver,
 };
 use crate::authz::AuthorizationEngine;
 use crate::core::RealmId;
@@ -855,6 +855,146 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
             }
             None => Ok(None),
         }
+    }
+
+    fn list_direct_relations_for_subject(
+        &self,
+        realm_id: &RealmId,
+        subject: &SubjectRef,
+    ) -> Result<Vec<(ObjectRef, String)>, AuthzError> {
+        let prefix = keys::encode_reverse_prefix_for_subject(subject);
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            // Keys that fail to parse are skipped rather than failing the
+            // whole query — a malformed reverse-index entry is a storage
+            // bug, but the admin screen should still show the rest.
+            let Some((object_type, object_id, relation)) =
+                keys::decode_reverse_tail(&entry.key, &prefix)
+            else {
+                continue;
+            };
+            let Ok(object) = ObjectRef::new(&object_type, &object_id) else {
+                continue;
+            };
+            out.push((object, relation));
+        }
+        Ok(out)
+    }
+
+    fn check_explain(
+        &self,
+        realm_id: &RealmId,
+        object: &ObjectRef,
+        relation: &str,
+        subject: &SubjectRef,
+    ) -> Result<CheckExplanation, AuthzError> {
+        let ns = self.get_namespace(realm_id)?;
+        let mut steps: Vec<CheckStep> = Vec::new();
+        let mut max_depth_reached: u32 = 0;
+
+        // 1. Direct lookup — check the target relation and every sibling
+        // relation that transitively satisfies it via rewrite unions.
+        let target_relations = closure_or_self(ns.as_ref(), object.object_type(), relation);
+        for rel in &target_relations {
+            if rel != relation {
+                steps.push(CheckStep::RewriteUnion {
+                    object: format!("{object}"),
+                    relation: relation.to_string(),
+                    included: rel.clone(),
+                });
+            }
+            let fwd_key = keys::encode_forward(object, rel, subject);
+            let direct = self
+                .storage
+                .get(realm_id, &fwd_key)
+                .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+            if direct.is_some() {
+                steps.push(CheckStep::DirectMatch {
+                    object: format!("{object}"),
+                    relation: rel.clone(),
+                    subject: format!("{subject}"),
+                });
+                return Ok(CheckExplanation {
+                    allowed: true,
+                    steps,
+                    max_depth_reached,
+                });
+            }
+        }
+
+        // 2. BFS traversal through userset indirections and rewrite unions.
+        let mut queue: VecDeque<(ObjectRef, String, u32)> = VecDeque::new();
+        let mut visited: HashSet<(String, String, String)> = HashSet::new();
+        enqueue_with_closure(
+            &mut queue,
+            &mut visited,
+            ns.as_ref(),
+            object.clone(),
+            relation,
+            0,
+        );
+
+        while let Some((cur_object, cur_relation, depth)) = queue.pop_front() {
+            if depth >= self.config.max_depth {
+                continue;
+            }
+            if depth > max_depth_reached {
+                max_depth_reached = depth;
+            }
+            let subjects = self.scan_subjects(realm_id, &cur_object, &cur_relation)?;
+            steps.push(CheckStep::ScannedRelation {
+                object: format!("{cur_object}"),
+                relation: cur_relation.clone(),
+                subject_count: subjects.len(),
+            });
+            for s in &subjects {
+                match s {
+                    SubjectRef::Direct(_) => {
+                        if s == subject {
+                            steps.push(CheckStep::DirectMatch {
+                                object: format!("{cur_object}"),
+                                relation: cur_relation.clone(),
+                                subject: format!("{subject}"),
+                            });
+                            return Ok(CheckExplanation {
+                                allowed: true,
+                                steps,
+                                max_depth_reached,
+                            });
+                        }
+                    }
+                    SubjectRef::Userset {
+                        object: userset_obj,
+                        relation: userset_rel,
+                    } => {
+                        steps.push(CheckStep::FollowedUserset {
+                            object: format!("{userset_obj}"),
+                            relation: userset_rel.clone(),
+                        });
+                        enqueue_with_closure(
+                            &mut queue,
+                            &mut visited,
+                            ns.as_ref(),
+                            userset_obj.clone(),
+                            userset_rel,
+                            depth + 1,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(CheckExplanation {
+            allowed: false,
+            steps,
+            max_depth_reached,
+        })
     }
 
     fn watch(

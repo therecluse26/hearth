@@ -1,0 +1,25 @@
+{# HTMX partial: user rows for the debugger subject picker. #}
+{# Each row emits a click handler that copies the UUID into the subject_id input. #}
+{% if users.is_empty() %}
+  {% if query.len() >= 2 %}
+  <div class="px-3 py-2 text-sm text-ht-content-muted">No users matched &ldquo;{{ query }}&rdquo;.</div>
+  {% else %}
+  <div class="px-3 py-2 text-sm text-ht-content-muted">Type at least 2 characters.</div>
+  {% endif %}
+{% else %}
+<ul class="divide-y divide-divider-faint">
+  {% for u in users %}
+  <li>
+    <button type="button"
+            @click="subjectId = '{{ u.id().as_uuid() }}'; subjectType = 'user'; showSubjectPicker = false"
+            class="flex w-full items-center gap-3 px-3 py-2 text-left hover-bg-divider">
+      <div class="min-w-0 flex-1">
+        <div class="truncate text-sm font-medium text-ht-content-primary">{{ u.display_name() }}</div>
+        <div class="truncate text-xs text-ht-content-muted">{{ u.email() }}</div>
+      </div>
+      <code class="hidden text-[10px] text-ht-content-muted sm:block">{{ u.id().as_uuid() }}</code>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

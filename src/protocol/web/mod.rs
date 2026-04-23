@@ -682,6 +682,30 @@ pub fn router(state: WebState) -> Router {
             "/admin/realms/{id}/delete",
             axum::routing::post(admin::admin_realm_delete),
         )
+        .route(
+            "/admin/realms/{id}/admins/picker",
+            axum::routing::get(admin::admin_realm_admin_picker),
+        )
+        .route(
+            "/admin/realms/{id}/admins/grant",
+            axum::routing::post(admin::admin_realm_admin_grant),
+        )
+        .route(
+            "/admin/realms/{id}/admins/{uid}/revoke",
+            axum::routing::post(admin::admin_realm_admin_revoke),
+        )
+        .route(
+            "/admin/authz/debug",
+            axum::routing::get(admin::admin_authz_debug),
+        )
+        .route(
+            "/admin/authz/debug/relations",
+            axum::routing::get(admin::admin_authz_debug_relations),
+        )
+        .route(
+            "/admin/authz/debug/subject-picker",
+            axum::routing::get(admin::admin_authz_debug_subject_picker),
+        )
         // --- Organizations ---
         .route(
             "/admin/organizations",

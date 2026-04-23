@@ -1,0 +1,26 @@
+{# HTMX partial: realm-admin search results. Each row is a one-click grant form. #}
+{% if users.is_empty() %}
+  {% if query.len() >= 2 %}
+  <div class="px-3 py-3 text-sm text-ht-content-muted">No users match &ldquo;{{ query }}&rdquo;.</div>
+  {% else %}
+  <div class="px-3 py-3 text-sm text-ht-content-muted">Type at least 2 characters to search existing users.</div>
+  {% endif %}
+{% else %}
+<ul class="divide-y divide-divider-faint">
+  {% for u in users %}
+  <li class="flex items-center justify-between gap-3 px-3 py-2">
+    <div class="min-w-0 flex-1">
+      <div class="truncate text-sm font-medium text-ht-content-primary">{{ u.display_name() }}</div>
+      <div class="truncate text-xs text-ht-content-muted">{{ u.email() }}</div>
+    </div>
+    <form method="post" action="/ui/admin/realms/{{ realm_id }}/admins/grant" class="shrink-0">
+      {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+      <input type="hidden" name="user_id" value="{{ u.id().as_uuid() }}">
+      <button type="submit" class="rounded border border-strong bg-ht-surface-elevated px-2.5 py-1 text-xs font-medium text-ht-content-secondary hover-bg-divider">
+        Grant admin
+      </button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

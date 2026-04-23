@@ -279,6 +279,57 @@
   </div>
 </div>
 
+{# Administrators — users with realm-wide admin role. #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <div class="mb-4 flex items-center justify-between">
+    <h2 class="text-lg font-semibold text-ht-content-primary">Administrators</h2>
+    <p class="text-sm text-ht-content-muted">Users with full access to manage this realm.</p>
+  </div>
+
+  <div class="mb-6">
+    <label for="admin_search" class="block text-xs font-medium text-ht-content-secondary">Grant admin</label>
+    <input type="search" id="admin_search" name="q" placeholder="Search by name or email…"
+           class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus"
+           hx-get="/ui/admin/realms/{{ realm.id().as_uuid() }}/admins/picker"
+           hx-trigger="input changed delay:200ms, search"
+           hx-target="#admin-picker-results"
+           hx-swap="innerHTML">
+    <div id="admin-picker-results" class="mt-2 max-h-64 overflow-y-auto rounded-sm border border-divider bg-ht-surface-elevated"></div>
+  </div>
+
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">User</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">ID</th>
+        <th class="px-3 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in admins %}
+      <tr class="border-b border-divider-faint">
+        <td class="px-3 py-2">
+          <a href="/ui/admin/users/{{ a.user_id }}" class="group">
+            <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ a.display_name }}</div>
+            <div class="text-xs text-ht-content-muted">{{ a.email }}</div>
+          </a>
+        </td>
+        <td class="px-3 py-2"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ a.user_id }}</code></td>
+        <td class="px-3 py-2 text-right">
+          <form method="post" action="/ui/admin/realms/{{ realm.id().as_uuid() }}/admins/{{ a.user_id }}/revoke">
+            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+            <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if admins.is_empty() %}
+      <tr><td colspan="3" class="px-3 py-6 text-center text-sm text-ht-content-muted">No administrators yet.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
 {# Danger zone — only shown for Archived realms #}
 {% if realm.status()|fmt("{:?}") == "Archived" %}
 <div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">

@@ -532,6 +532,61 @@ pub struct WatchFilter {
     pub object_type: Option<String>,
 }
 
+/// A step along a `check_explain()` traversal path.
+///
+/// Steps are emitted in the order the BFS explored them — operators can
+/// read them top-to-bottom to understand *why* a check did or did not
+/// succeed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckStep {
+    /// A direct tuple matched the query (`object#relation@subject`).
+    DirectMatch {
+        /// Object as `type:id`.
+        object: String,
+        /// Relation name.
+        relation: String,
+        /// Subject display string.
+        subject: String,
+    },
+    /// A rewrite union made `included` satisfy `relation` on the same object.
+    RewriteUnion {
+        /// Object as `type:id`.
+        object: String,
+        /// The outer relation that included another.
+        relation: String,
+        /// The inner relation that satisfied it.
+        included: String,
+    },
+    /// The traversal scanned tuples on `object#relation`.
+    ScannedRelation {
+        /// Object as `type:id`.
+        object: String,
+        /// Relation scanned.
+        relation: String,
+        /// Number of subjects found on the scanned relation.
+        subject_count: usize,
+    },
+    /// A userset subject pushed the search into a new `object#relation` pair.
+    FollowedUserset {
+        /// The userset object pushed.
+        object: String,
+        /// The userset relation pushed.
+        relation: String,
+    },
+}
+
+/// Structured explanation of a `check_explain()` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckExplanation {
+    /// Final outcome — same as `check()` would return.
+    pub allowed: bool,
+    /// Ordered list of BFS steps.
+    pub steps: Vec<CheckStep>,
+    /// If `allowed` is false, the maximum BFS depth reached. Helps
+    /// operators spot "depth-limited" failures from genuine misses.
+    pub max_depth_reached: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -131,6 +131,8 @@ fn proto_action_to_domain(v: i32) -> Result<AuditAction, ()> {
         pb::AuditAction::ScimGroupCreated => AuditAction::ScimGroupCreated,
         pb::AuditAction::ScimGroupUpdated => AuditAction::ScimGroupUpdated,
         pb::AuditAction::ScimGroupDeleted => AuditAction::ScimGroupDeleted,
+        pb::AuditAction::RoleAssigned => AuditAction::RoleAssigned,
+        pb::AuditAction::RoleRevoked => AuditAction::RoleRevoked,
     })
 }
 
