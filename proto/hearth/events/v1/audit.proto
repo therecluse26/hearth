@@ -76,3 +76,25 @@ message AuditQuery {
   optional AuditAction action = 5;
   optional uint32 limit = 6;
 }
+
+// A page of audit events.
+message AuditEventPage {
+  repeated AuditEvent events = 1;
+}
+
+// Request to verify the integrity hash chain of the realm's audit log.
+// Realm context comes from the `x-realm-id` metadata (admin interceptor).
+message VerifyIntegrityRequest {}
+
+// Result of an integrity check. `ok = true` means the hash chain verified
+// end-to-end; `ok = false` indicates a broken link at `broken_at_event_id`.
+message VerifyIntegrityResponse {
+  bool ok = 1;
+  optional string broken_at_event_id = 2;
+  uint64 event_count = 3;
+}
+
+service AuditService {
+  rpc ListEvents(AuditQuery) returns (AuditEventPage);
+  rpc VerifyIntegrity(VerifyIntegrityRequest) returns (VerifyIntegrityResponse);
+}

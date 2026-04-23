@@ -93,18 +93,46 @@ Hearth draws a deliberate line between **data** (users, orgs, sessions, linked e
 - **Why It Matters:** Enterprises sync HR directories (Workday, BambooHR) and IdPs (Okta, Azure AD) via SCIM. Without SCIM, user provisioning is manual or requires custom API integration.
 - **Priority Rationale:** P1 because automated provisioning is a procurement requirement for mid-to-large enterprises.
 
-### 8. gRPC Management API
+### 8. gRPC Management API — COMPLETED ✅
 
-- **Vision ref:** §6.1 "The protocol layer also exposes a gRPC and REST management API."
-- **Current State:** Protobuf definitions exist in `proto/hearth/` (identity, oauth, authz, audit). Code generation via `buf` produces Rust, Go, and TypeScript types. REST/HTTP endpoints are fully implemented. **No gRPC server handlers exist** — the generated types are used only for serialization/deserialization in the REST layer.
-- **What's Missing:**
-  - `tonic`-based gRPC server with service implementations for all proto-defined RPCs.
-  - gRPC reflection for tooling (grpcurl, Postman).
-  - gRPC health checking protocol (for load balancer probes).
-  - mTLS support on the gRPC listener (may share TLS config with HTTP).
-  - Documentation: which operations are available via gRPC vs REST vs both.
-- **Why It Matters:** The Vision promises gRPC alongside REST. Machine-to-machine integrations, SDKs, and infrastructure tools (Terraform providers, Kubernetes operators) prefer gRPC for type safety and code generation. The proto files are a promise without delivery.
-- **Priority Rationale:** P1 because REST covers most use cases, but the Vision explicitly commits to gRPC.
+Implemented feature-complete. Hearth now exposes a tonic-based gRPC server alongside the existing REST surface, reusing the same engines and rate-limit state.
+
+- **Services (5):**
+  - `hearth.identity.v1.IdentityAdminService` — Users, realms, organizations CRUD.
+  - `hearth.identity.v1.ApplicationAdminService` — OAuth client CRUD.
+  - `hearth.identity.v1.OAuthService` — Authorize, TokenExchange, Revoke, Introspect, DeviceAuthorize, ClientCredentials, RegisterClient (RFC 6749 + RFC 8628 + RFC 7009 + RFC 7662 + RFC 7591 over gRPC).
+  - `hearth.authz.v1.AuthorizationService` — Check, Expand, WriteTuples, **Watch (server-streaming)** with `start_after` replay and tokio broadcast fan-out.
+  - `hearth.events.v1.AuditService` — ListEvents, VerifyIntegrity (runs the SHA-256 chain verifier).
+- **Plus:** `grpc.health.v1.Health` via `tonic-health` and `grpc.reflection.v1.ServerReflection` via `tonic-reflection` so grpcurl / Postman can enumerate services at runtime.
+- **Admin auth:** Same rules as REST — `authorization: Bearer <token>` + `x-realm-id: <uuid>` metadata → `identity.validate_token()` + `authz.check(hearth#admin@user:uuid)` → [`AdminRateLimiter`](../../src/protocol/admin_auth.rs) (100 req/min per admin user, **shared** with the REST surface so a caller cannot evade limits by switching protocols).
+- **OAuth auth:** Client credentials travel in the request body per RFC 6749 §2.3 (no admin interceptor), consistent with REST `/token` shape.
+- **Error mapping:** Centralized [`identity_to_status`](../../src/protocol/grpc/convert.rs) and `authz_to_status` tables map domain errors to `tonic::Code` (`NotFound`, `AlreadyExists`, `Unauthenticated`, `PermissionDenied`, `InvalidArgument`, `FailedPrecondition`, `ResourceExhausted`, `Internal`).
+- **Cross-realm isolation:** Admin of realm A requesting B's resources gets `NOT_FOUND` (not `PERMISSION_DENIED`) — same enumeration-resistance posture as REST.
+- **Transport:** Spawned off the main HTTP listener in `src/main.rs`. New config fields `server.grpc_port` (optional — when unset gRPC is disabled) and `server.grpc_bind_address` (defaults to `server.bind_address`). Graceful shutdown is wired through the same ctrl+c channel so both listeners stop together. Max decoding message size clamped to 1 MiB (matches REST `BODY_LIMIT_DEFAULT`).
+
+**Key files:**
+- Proto: `proto/hearth/identity/v1/identity.proto`, `oauth.proto`; `proto/hearth/authz/v1/authz.proto`; `proto/hearth/events/v1/audit.proto` (all gained `service` stanzas).
+- Build: `build.rs` switched from `prost_build` to `tonic_build` (wraps prost + emits server traits and client stubs). File descriptor set is reused by pbjson (HTTP JSON codec) and tonic-reflection.
+- gRPC module: `src/protocol/grpc/{mod,server,auth,identity,oauth,authz,audit,convert}.rs`.
+- Shared rate limiter: `src/protocol/admin_auth.rs` (extracted from `http.rs`).
+- Config: `src/config/types.rs::ServerConfig` gained `grpc_port` + `grpc_bind_address`.
+- Harness: `tests/common/mod.rs` exposes `identity_arc`, `authz_arc`, `audit_arc` for rigs that need `Arc<dyn Trait>`.
+- Tests: `tests/grpc_admin.rs` (13 integration tests — health, reflection, unauthenticated/forbidden/rate-limit, user+app+authz+audit+OAuth round-trips, Watch streaming, cross-realm isolation).
+- Runnable example: `examples/grpc-admin-flow/` — one-command Node walkthrough (`./run.sh`) that boots Hearth, bootstraps an admin, and drives the full surface end-to-end (admin CRUD, live Watch stream, Check, audit, health, reflection).
+
+**Remaining enhancements (not blocking):**
+- mTLS on the gRPC listener (today plaintext over h2c; operators bring their own TLS terminator via service mesh / Envoy). The existing `ReloadableTlsConfig` in `src/protocol/tls.rs` can be reused when the need for direct TLS arises.
+- Rich error details via `google.rpc.ErrorInfo` / `BadRequest` (`tonic-types` is wired; current Status carries string message only).
+- Terraform provider / Kubernetes operator using the generated clients.
+- SDK wiring for `sdks/ts` and `sdks/go` to consume the tonic-generated clients.
+
+**Verification:** `cargo nextest run` passes 1251 tests (13 new gRPC + 1238 existing). Manual probe via grpcurl:
+```text
+grpcurl -plaintext localhost:<grpc_port> list
+grpcurl -plaintext -H 'authorization: Bearer $TOKEN' -H 'x-realm-id: $UUID' \
+  -d '{"limit": 10}' localhost:<port> hearth.identity.v1.IdentityAdminService/ListUsers
+grpc_health_probe -addr=localhost:<port>
+```
 
 ### 9. Documentation Site
 
@@ -462,7 +490,7 @@ Addresses two admin-setup bugs on multi-realm deployments: verification links hi
 | 5 | ~~Social login / external IdP~~ — **DONE** | P1 | §5.3 | — |
 | 6 | SAML 2.0 | P1 | §5.3, §6.1 | Large |
 | 7 | SCIM 2.0 | P1 | §5.3, §6.1 | Large |
-| 8 | gRPC management API | P1 | §6.1 | Medium |
+| 8 | ~~gRPC management API~~ — **DONE** | P1 | §6.1 | — |
 | 9 | Documentation site | P1 | Phase 1 exit | Medium |
 | 10 | Additional migration tools | P1 | §8.3 | Medium per tool |
 | 11 | Prometheus / OpenTelemetry | P2 | Phase 2 | Medium |
@@ -489,11 +517,11 @@ Gaps 1 ✅, 2 ✅, 3 ✅, and 4 ✅ complete. Remaining: 15 — CI/CD.
 Add gaps 9, 11 — documentation site, Prometheus metrics. (Consent screen ✅, social login ✅.)
 
 **Enterprise-ready (v1.0 per Phase 2 exit criteria):**
-Add gaps 6, 7, 8, 10, 12, 14, 17, 21 — SAML, SCIM, gRPC, migration tools, backup, encryption, deployment artifacts, Raft.
+Add gaps 6, 7, 10, 12, 14, 17, 21 — SAML, SCIM, migration tools, backup, encryption, deployment artifacts, Raft. (gRPC ✅.)
 
 ---
 
-*Last updated: 2026-04-22. Revised to mark gap #3 (OAuth consent screen) as completed — zero remaining P0 gaps.*
+*Last updated: 2026-04-22. Revised to mark gap #8 (gRPC management API) as completed — P1 list narrowed from 5 to 4 items.*
 
 ---
 

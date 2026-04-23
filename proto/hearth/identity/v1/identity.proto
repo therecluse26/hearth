@@ -107,3 +107,139 @@ message BulkResultEntry {
 message BulkResult {
   repeated BulkResultEntry results = 1;
 }
+
+// ---------------------------------------------------------------------------
+// Organizations
+// ---------------------------------------------------------------------------
+
+// The lifecycle status of an organization.
+enum OrganizationStatus {
+  ORGANIZATION_STATUS_UNSPECIFIED = 0;
+  ORGANIZATION_STATUS_ACTIVE = 1;
+  ORGANIZATION_STATUS_SUSPENDED = 2;
+}
+
+// An organization (B2B customer group) within a realm.
+message Organization {
+  string id = 1;
+  string realm_id = 2;
+  string slug = 3;
+  string display_name = 4;
+  OrganizationStatus status = 5;
+  int64 created_at = 6;
+  int64 updated_at = 7;
+  optional uint32 member_limit = 8;
+}
+
+// Request to create a new organization.
+message CreateOrganizationRequest {
+  string slug = 1;
+  string display_name = 2;
+  optional uint32 member_limit = 3;
+}
+
+// Request to update an existing organization.
+message UpdateOrganizationRequest {
+  optional string slug = 1;
+  optional string display_name = 2;
+  optional OrganizationStatus status = 3;
+  optional uint32 member_limit = 4;
+}
+
+// A cursor-based page of organizations.
+message OrganizationPage {
+  repeated Organization items = 1;
+  optional string next_cursor = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Request wrappers for admin RPCs
+// ---------------------------------------------------------------------------
+
+// Request to fetch a user by id.
+message GetUserRequest { string id = 1; }
+
+// Request to delete a user by id.
+message DeleteUserRequest { string id = 1; }
+
+// Request to list users with optional pagination.
+message ListUsersRequest {
+  optional string cursor = 1;
+  optional uint32 limit = 2;
+}
+
+// Wraps an UpdateUserRequest with the target id.
+message UpdateUserCall {
+  string id = 1;
+  UpdateUserRequest body = 2;
+}
+
+// Request to list realms.
+message ListRealmsRequest {
+  optional string cursor = 1;
+  optional uint32 limit = 2;
+}
+
+// Request to fetch a realm by id.
+message GetRealmRequest { string id = 1; }
+
+// Request to delete a realm by id.
+message DeleteRealmRequest { string id = 1; }
+
+// Wraps an UpdateRealmRequest with the target id.
+message UpdateRealmCall {
+  string id = 1;
+  UpdateRealmRequest body = 2;
+}
+
+// Request to list organizations.
+message ListOrganizationsRequest {
+  optional string cursor = 1;
+  optional uint32 limit = 2;
+}
+
+// Request to fetch an organization by id.
+message GetOrganizationRequest { string id = 1; }
+
+// Request to delete an organization by id.
+message DeleteOrganizationRequest { string id = 1; }
+
+// Wraps an UpdateOrganizationRequest with the target id.
+message UpdateOrganizationCall {
+  string id = 1;
+  UpdateOrganizationRequest body = 2;
+}
+
+// Empty response type for delete RPCs.
+message Empty {}
+
+// ---------------------------------------------------------------------------
+// Admin service — realm context is supplied via the `x-realm-id` request
+// metadata, authenticated via the admin interceptor (bearer token + Zanzibar
+// admin tuple). Rate-limited to 100 req/min per admin user, shared with the
+// REST admin surface.
+// ---------------------------------------------------------------------------
+
+service IdentityAdminService {
+  // Users
+  rpc ListUsers(ListUsersRequest) returns (UserPage);
+  rpc GetUser(GetUserRequest) returns (User);
+  rpc CreateUser(CreateUserRequest) returns (User);
+  rpc UpdateUser(UpdateUserCall) returns (User);
+  rpc DeleteUser(DeleteUserRequest) returns (Empty);
+
+  // Realms — operate against the system realm (mutations require admin in
+  // the system realm). `x-realm-id` metadata is ignored for these RPCs.
+  rpc ListRealms(ListRealmsRequest) returns (RealmPage);
+  rpc GetRealm(GetRealmRequest) returns (Realm);
+  rpc CreateRealm(CreateRealmRequest) returns (Realm);
+  rpc UpdateRealm(UpdateRealmCall) returns (Realm);
+  rpc DeleteRealm(DeleteRealmRequest) returns (Empty);
+
+  // Organizations
+  rpc ListOrganizations(ListOrganizationsRequest) returns (OrganizationPage);
+  rpc GetOrganization(GetOrganizationRequest) returns (Organization);
+  rpc CreateOrganization(CreateOrganizationRequest) returns (Organization);
+  rpc UpdateOrganization(UpdateOrganizationCall) returns (Organization);
+  rpc DeleteOrganization(DeleteOrganizationRequest) returns (Empty);
+}

@@ -61,6 +61,12 @@ tera = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tonic = { version = "0.12", features = ["transport", "tls", "gzip"] }
+tonic-health = "0.12"
+tonic-reflection = "0.12"
+tonic-types = "0.12"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 ureq = { version = "3", features = ["json"] }
@@ -79,6 +85,7 @@ test-hooks = []
 [build-dependencies]
 pbjson-build = "0.7"
 prost-build = "0.13"
+tonic-build = { version = "0.12", default-features = false, features = ["prost", "transport"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -90,7 +97,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rsa = { version = "0.9", features = ["pem"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
-tower = { version = "0.5", features = ["util"] }
 
 [[bench]]
 name = "permission_check"

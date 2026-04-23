@@ -2,15 +2,15 @@
 // @generated from file hearth/identity/v1/oauth.proto (package hearth.identity.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file hearth/identity/v1/oauth.proto.
  */
 export const file_hearth_identity_v1_oauth: GenFile = /*@__PURE__*/
-  fileDesc("Ch5oZWFydGgvaWRlbnRpdHkvdjEvb2F1dGgucHJvdG8SEmhlYXJ0aC5pZGVudGl0eS52MSKRAgoUQXV0aG9yaXphdGlvblJlcXVlc3QSEQoJY2xpZW50X2lkGAEgASgJEhQKDHJlZGlyZWN0X3VyaRgCIAEoCRINCgVzY29wZRgDIAEoCRINCgVzdGF0ZRgEIAEoCRIVCg1yZXNwb25zZV90eXBlGAUgASgJEg8KB3VzZXJfaWQYBiABKAkSGwoOY29kZV9jaGFsbGVuZ2UYByABKAlIAIgBARIiChVjb2RlX2NoYWxsZW5nZV9tZXRob2QYCCABKAlIAYgBARISCgVub25jZRgJIAEoCUgCiAEBQhEKD19jb2RlX2NoYWxsZW5nZUIYChZfY29kZV9jaGFsbGVuZ2VfbWV0aG9kQggKBl9ub25jZSI0ChVBdXRob3JpemF0aW9uUmVzcG9uc2USDAoEY29kZRgBIAEoCRINCgVzdGF0ZRgCIAEoCSJ7ChRUb2tlbkV4Y2hhbmdlUmVxdWVzdBIRCgljbGllbnRfaWQYASABKAkSDAoEY29kZRgCIAEoCRIUCgxyZWRpcmVjdF91cmkYAyABKAkSGgoNY29kZV92ZXJpZmllchgEIAEoCUgAiAEBQhAKDl9jb2RlX3ZlcmlmaWVyInoKEU9pZGNUb2tlblJlc3BvbnNlEhQKDGFjY2Vzc190b2tlbhgBIAEoCRIQCghpZF90b2tlbhgCIAEoCRISCgp0b2tlbl90eXBlGAMgASgJEhIKCmV4cGlyZXNfaW4YBCABKAMSFQoNcmVmcmVzaF90b2tlbhgFIAEoCSKGAQoVUmVnaXN0ZXJDbGllbnRSZXF1ZXN0EhMKC2NsaWVudF9uYW1lGAEgASgJEhUKDXJlZGlyZWN0X3VyaXMYAiADKAkSGgoNY2xpZW50X3NlY3JldBgDIAEoCUgAiAEBEhMKC2dyYW50X3R5cGVzGAQgAygJQhAKDl9jbGllbnRfc2VjcmV0ImsKE1VwZGF0ZUNsaWVudFJlcXVlc3QSGAoLY2xpZW50X25hbWUYASABKAlIAIgBARIVCg1yZWRpcmVjdF91cmlzGAIgAygJEhMKC2dyYW50X3R5cGVzGAMgAygJQg4KDF9jbGllbnRfbmFtZSKOAQoLT0F1dGhDbGllbnQSEQoJY2xpZW50X2lkGAEgASgJEhMKC2NsaWVudF9uYW1lGAIgASgJEhUKDXJlZGlyZWN0X3VyaXMYAyADKAkSEgoKY3JlYXRlZF9hdBgEIAEoAxIXCg9pc19jb25maWRlbnRpYWwYBSABKAgSEwoLZ3JhbnRfdHlwZXMYBiADKAkiawoPT0F1dGhDbGllbnRQYWdlEi4KBWl0ZW1zGAEgAygLMh8uaGVhcnRoLmlkZW50aXR5LnYxLk9BdXRoQ2xpZW50EhgKC25leHRfY3Vyc29yGAIgASgJSACIAQFCDgoMX25leHRfY3Vyc29yImIKGENsaWVudENyZWRlbnRpYWxzUmVxdWVzdBIRCgljbGllbnRfaWQYASABKAkSFQoNY2xpZW50X3NlY3JldBgCIAEoCRISCgVzY29wZRgDIAEoCUgAiAEBQggKBl9zY29wZSJ3ChlDbGllbnRDcmVkZW50aWFsc1Jlc3BvbnNlEhQKDGFjY2Vzc190b2tlbhgBIAEoCRISCgp0b2tlbl90eXBlGAIgASgJEhIKCmV4cGlyZXNfaW4YAyABKAMSEgoFc2NvcGUYBCABKAlIAIgBAUIICgZfc2NvcGUiTQoaRGV2aWNlQXV0aG9yaXphdGlvblJlcXVlc3QSEQoJY2xpZW50X2lkGAEgASgJEhIKBXNjb3BlGAIgASgJSACIAQFCCAoGX3Njb3BlIoUBChtEZXZpY2VBdXRob3JpemF0aW9uUmVzcG9uc2USEwoLZGV2aWNlX2NvZGUYASABKAkSEQoJdXNlcl9jb2RlGAIgASgJEhgKEHZlcmlmaWNhdGlvbl91cmkYAyABKAkSEgoKZXhwaXJlc19pbhgEIAEoAxIQCghpbnRlcnZhbBgFIAEoAyJZChZUb2tlblJldm9jYXRpb25SZXF1ZXN0Eg0KBXRva2VuGAEgASgJEhwKD3Rva2VuX3R5cGVfaGludBgCIAEoCUgAiAEBQhIKEF90b2tlbl90eXBlX2hpbnQiXAoZVG9rZW5JbnRyb3NwZWN0aW9uUmVxdWVzdBINCgV0b2tlbhgBIAEoCRIcCg90b2tlbl90eXBlX2hpbnQYAiABKAlIAIgBAUISChBfdG9rZW5fdHlwZV9oaW50IpUCChVJbnRyb3NwZWN0aW9uUmVzcG9uc2USDgoGYWN0aXZlGAEgASgIEhIKBXNjb3BlGAIgASgJSACIAQESFgoJY2xpZW50X2lkGAMgASgJSAGIAQESEAoDc3ViGAQgASgJSAKIAQESEAoDZXhwGAUgASgDSAOIAQESEAoDaWF0GAYgASgDSASIAQESFwoKdG9rZW5fdHlwZRgHIAEoCUgFiAEBEhAKA2lzcxgIIAEoCUgGiAEBEhAKA2F1ZBgJIAEoCUgHiAEBQggKBl9zY29wZUIMCgpfY2xpZW50X2lkQgYKBF9zdWJCBgoEX2V4cEIGCgRfaWF0Qg0KC190b2tlbl90eXBlQgYKBF9pc3NCBgoEX2F1ZCKJAQoQVXNlckluZm9SZXNwb25zZRILCgNzdWIYASABKAkSEgoFZW1haWwYAiABKAlIAIgBARIbCg5lbWFpbF92ZXJpZmllZBgDIAEoCEgBiAEBEhEKBG5hbWUYBCABKAlIAogBAUIICgZfZW1haWxCEQoPX2VtYWlsX3ZlcmlmaWVkQgcKBV9uYW1lItIFChVPaWRjRGlzY292ZXJ5RG9jdW1lbnQSDgoGaXNzdWVyGAEgASgJEh4KFmF1dGhvcml6YXRpb25fZW5kcG9pbnQYAiABKAkSFgoOdG9rZW5fZW5kcG9pbnQYAyABKAkSEAoIandrc191cmkYBCABKAkSGQoRdXNlcmluZm9fZW5kcG9pbnQYBSABKAkSIAoYcmVzcG9uc2VfdHlwZXNfc3VwcG9ydGVkGAYgAygJEiAKGHJlc3BvbnNlX21vZGVzX3N1cHBvcnRlZBgHIAMoCRIfChdzdWJqZWN0X3R5cGVzX3N1cHBvcnRlZBgIIAMoCRItCiVpZF90b2tlbl9zaWduaW5nX2FsZ192YWx1ZXNfc3VwcG9ydGVkGAkgAygJEhgKEHNjb3Blc19zdXBwb3J0ZWQYCiADKAkSGAoQY2xhaW1zX3N1cHBvcnRlZBgLIAMoCRItCiV0b2tlbl9lbmRwb2ludF9hdXRoX21ldGhvZHNfc3VwcG9ydGVkGAwgAygJEigKIGNvZGVfY2hhbGxlbmdlX21ldGhvZHNfc3VwcG9ydGVkGA0gAygJEh0KFWdyYW50X3R5cGVzX3N1cHBvcnRlZBgOIAMoCRIiChVyZWdpc3RyYXRpb25fZW5kcG9pbnQYDyABKAlIAIgBARIqCh1kZXZpY2VfYXV0aG9yaXphdGlvbl9lbmRwb2ludBgQIAEoCUgBiAEBEiAKE3Jldm9jYXRpb25fZW5kcG9pbnQYESABKAlIAogBARIjChZpbnRyb3NwZWN0aW9uX2VuZHBvaW50GBIgASgJSAOIAQFCGAoWX3JlZ2lzdHJhdGlvbl9lbmRwb2ludEIgCh5fZGV2aWNlX2F1dGhvcml6YXRpb25fZW5kcG9pbnRCFgoUX3Jldm9jYXRpb25fZW5kcG9pbnRCGQoXX2ludHJvc3BlY3Rpb25fZW5kcG9pbnQiWAoKSnNvbldlYktleRILCgNrdHkYASABKAkSCwoDY3J2GAIgASgJEgkKAXgYAyABKAkSCwoDa2lkGAQgASgJEgsKA3VzZRgFIAEoCRILCgNhbGcYBiABKAkiPAoMSndrc0RvY3VtZW50EiwKBGtleXMYASADKAsyHi5oZWFydGguaWRlbnRpdHkudjEuSnNvbldlYktleSJjChFCb290c3RyYXBSZXNwb25zZRIQCghyZWFsbV9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEhQKDGFjY2Vzc190b2tlbhgDIAEoCRIVCg1yZWZyZXNoX3Rva2VuGAQgASgJQkVaQ2dpdGh1Yi5jb20vaGVhcnRoZGIvaGVhcnRoL3Nka3MvZ28vZ2VuZXJhdGVkL2lkZW50aXR5L3YxO2lkZW50aXR5djFiBnByb3RvMw");
+  fileDesc("Ch5oZWFydGgvaWRlbnRpdHkvdjEvb2F1dGgucHJvdG8SEmhlYXJ0aC5pZGVudGl0eS52MSKRAgoUQXV0aG9yaXphdGlvblJlcXVlc3QSEQoJY2xpZW50X2lkGAEgASgJEhQKDHJlZGlyZWN0X3VyaRgCIAEoCRINCgVzY29wZRgDIAEoCRINCgVzdGF0ZRgEIAEoCRIVCg1yZXNwb25zZV90eXBlGAUgASgJEg8KB3VzZXJfaWQYBiABKAkSGwoOY29kZV9jaGFsbGVuZ2UYByABKAlIAIgBARIiChVjb2RlX2NoYWxsZW5nZV9tZXRob2QYCCABKAlIAYgBARISCgVub25jZRgJIAEoCUgCiAEBQhEKD19jb2RlX2NoYWxsZW5nZUIYChZfY29kZV9jaGFsbGVuZ2VfbWV0aG9kQggKBl9ub25jZSI0ChVBdXRob3JpemF0aW9uUmVzcG9uc2USDAoEY29kZRgBIAEoCRINCgVzdGF0ZRgCIAEoCSJ7ChRUb2tlbkV4Y2hhbmdlUmVxdWVzdBIRCgljbGllbnRfaWQYASABKAkSDAoEY29kZRgCIAEoCRIUCgxyZWRpcmVjdF91cmkYAyABKAkSGgoNY29kZV92ZXJpZmllchgEIAEoCUgAiAEBQhAKDl9jb2RlX3ZlcmlmaWVyInoKEU9pZGNUb2tlblJlc3BvbnNlEhQKDGFjY2Vzc190b2tlbhgBIAEoCRIQCghpZF90b2tlbhgCIAEoCRISCgp0b2tlbl90eXBlGAMgASgJEhIKCmV4cGlyZXNfaW4YBCABKAMSFQoNcmVmcmVzaF90b2tlbhgFIAEoCSKGAQoVUmVnaXN0ZXJDbGllbnRSZXF1ZXN0EhMKC2NsaWVudF9uYW1lGAEgASgJEhUKDXJlZGlyZWN0X3VyaXMYAiADKAkSGgoNY2xpZW50X3NlY3JldBgDIAEoCUgAiAEBEhMKC2dyYW50X3R5cGVzGAQgAygJQhAKDl9jbGllbnRfc2VjcmV0ImsKE1VwZGF0ZUNsaWVudFJlcXVlc3QSGAoLY2xpZW50X25hbWUYASABKAlIAIgBARIVCg1yZWRpcmVjdF91cmlzGAIgAygJEhMKC2dyYW50X3R5cGVzGAMgAygJQg4KDF9jbGllbnRfbmFtZSKOAQoLT0F1dGhDbGllbnQSEQoJY2xpZW50X2lkGAEgASgJEhMKC2NsaWVudF9uYW1lGAIgASgJEhUKDXJlZGlyZWN0X3VyaXMYAyADKAkSEgoKY3JlYXRlZF9hdBgEIAEoAxIXCg9pc19jb25maWRlbnRpYWwYBSABKAgSEwoLZ3JhbnRfdHlwZXMYBiADKAkiawoPT0F1dGhDbGllbnRQYWdlEi4KBWl0ZW1zGAEgAygLMh8uaGVhcnRoLmlkZW50aXR5LnYxLk9BdXRoQ2xpZW50EhgKC25leHRfY3Vyc29yGAIgASgJSACIAQFCDgoMX25leHRfY3Vyc29yImIKGENsaWVudENyZWRlbnRpYWxzUmVxdWVzdBIRCgljbGllbnRfaWQYASABKAkSFQoNY2xpZW50X3NlY3JldBgCIAEoCRISCgVzY29wZRgDIAEoCUgAiAEBQggKBl9zY29wZSJ3ChlDbGllbnRDcmVkZW50aWFsc1Jlc3BvbnNlEhQKDGFjY2Vzc190b2tlbhgBIAEoCRISCgp0b2tlbl90eXBlGAIgASgJEhIKCmV4cGlyZXNfaW4YAyABKAMSEgoFc2NvcGUYBCABKAlIAIgBAUIICgZfc2NvcGUiTQoaRGV2aWNlQXV0aG9yaXphdGlvblJlcXVlc3QSEQoJY2xpZW50X2lkGAEgASgJEhIKBXNjb3BlGAIgASgJSACIAQFCCAoGX3Njb3BlIoUBChtEZXZpY2VBdXRob3JpemF0aW9uUmVzcG9uc2USEwoLZGV2aWNlX2NvZGUYASABKAkSEQoJdXNlcl9jb2RlGAIgASgJEhgKEHZlcmlmaWNhdGlvbl91cmkYAyABKAkSEgoKZXhwaXJlc19pbhgEIAEoAxIQCghpbnRlcnZhbBgFIAEoAyJZChZUb2tlblJldm9jYXRpb25SZXF1ZXN0Eg0KBXRva2VuGAEgASgJEhwKD3Rva2VuX3R5cGVfaGludBgCIAEoCUgAiAEBQhIKEF90b2tlbl90eXBlX2hpbnQiXAoZVG9rZW5JbnRyb3NwZWN0aW9uUmVxdWVzdBINCgV0b2tlbhgBIAEoCRIcCg90b2tlbl90eXBlX2hpbnQYAiABKAlIAIgBAUISChBfdG9rZW5fdHlwZV9oaW50IpUCChVJbnRyb3NwZWN0aW9uUmVzcG9uc2USDgoGYWN0aXZlGAEgASgIEhIKBXNjb3BlGAIgASgJSACIAQESFgoJY2xpZW50X2lkGAMgASgJSAGIAQESEAoDc3ViGAQgASgJSAKIAQESEAoDZXhwGAUgASgDSAOIAQESEAoDaWF0GAYgASgDSASIAQESFwoKdG9rZW5fdHlwZRgHIAEoCUgFiAEBEhAKA2lzcxgIIAEoCUgGiAEBEhAKA2F1ZBgJIAEoCUgHiAEBQggKBl9zY29wZUIMCgpfY2xpZW50X2lkQgYKBF9zdWJCBgoEX2V4cEIGCgRfaWF0Qg0KC190b2tlbl90eXBlQgYKBF9pc3NCBgoEX2F1ZCKJAQoQVXNlckluZm9SZXNwb25zZRILCgNzdWIYASABKAkSEgoFZW1haWwYAiABKAlIAIgBARIbCg5lbWFpbF92ZXJpZmllZBgDIAEoCEgBiAEBEhEKBG5hbWUYBCABKAlIAogBAUIICgZfZW1haWxCEQoPX2VtYWlsX3ZlcmlmaWVkQgcKBV9uYW1lItIFChVPaWRjRGlzY292ZXJ5RG9jdW1lbnQSDgoGaXNzdWVyGAEgASgJEh4KFmF1dGhvcml6YXRpb25fZW5kcG9pbnQYAiABKAkSFgoOdG9rZW5fZW5kcG9pbnQYAyABKAkSEAoIandrc191cmkYBCABKAkSGQoRdXNlcmluZm9fZW5kcG9pbnQYBSABKAkSIAoYcmVzcG9uc2VfdHlwZXNfc3VwcG9ydGVkGAYgAygJEiAKGHJlc3BvbnNlX21vZGVzX3N1cHBvcnRlZBgHIAMoCRIfChdzdWJqZWN0X3R5cGVzX3N1cHBvcnRlZBgIIAMoCRItCiVpZF90b2tlbl9zaWduaW5nX2FsZ192YWx1ZXNfc3VwcG9ydGVkGAkgAygJEhgKEHNjb3Blc19zdXBwb3J0ZWQYCiADKAkSGAoQY2xhaW1zX3N1cHBvcnRlZBgLIAMoCRItCiV0b2tlbl9lbmRwb2ludF9hdXRoX21ldGhvZHNfc3VwcG9ydGVkGAwgAygJEigKIGNvZGVfY2hhbGxlbmdlX21ldGhvZHNfc3VwcG9ydGVkGA0gAygJEh0KFWdyYW50X3R5cGVzX3N1cHBvcnRlZBgOIAMoCRIiChVyZWdpc3RyYXRpb25fZW5kcG9pbnQYDyABKAlIAIgBARIqCh1kZXZpY2VfYXV0aG9yaXphdGlvbl9lbmRwb2ludBgQIAEoCUgBiAEBEiAKE3Jldm9jYXRpb25fZW5kcG9pbnQYESABKAlIAogBARIjChZpbnRyb3NwZWN0aW9uX2VuZHBvaW50GBIgASgJSAOIAQFCGAoWX3JlZ2lzdHJhdGlvbl9lbmRwb2ludEIgCh5fZGV2aWNlX2F1dGhvcml6YXRpb25fZW5kcG9pbnRCFgoUX3Jldm9jYXRpb25fZW5kcG9pbnRCGQoXX2ludHJvc3BlY3Rpb25fZW5kcG9pbnQiWAoKSnNvbldlYktleRILCgNrdHkYASABKAkSCwoDY3J2GAIgASgJEgkKAXgYAyABKAkSCwoDa2lkGAQgASgJEgsKA3VzZRgFIAEoCRILCgNhbGcYBiABKAkiPAoMSndrc0RvY3VtZW50EiwKBGtleXMYASADKAsyHi5oZWFydGguaWRlbnRpdHkudjEuSnNvbldlYktleSJjChFCb290c3RyYXBSZXNwb25zZRIQCghyZWFsbV9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEhQKDGFjY2Vzc190b2tlbhgDIAEoCRIVCg1yZWZyZXNoX3Rva2VuGAQgASgJIlcKF0xpc3RBcHBsaWNhdGlvbnNSZXF1ZXN0EhMKBmN1cnNvchgBIAEoCUgAiAEBEhIKBWxpbWl0GAIgASgNSAGIAQFCCQoHX2N1cnNvckIICgZfbGltaXQiKgoVR2V0QXBwbGljYXRpb25SZXF1ZXN0EhEKCWNsaWVudF9pZBgBIAEoCSItChhEZWxldGVBcHBsaWNhdGlvblJlcXVlc3QSEQoJY2xpZW50X2lkGAEgASgJImEKFVVwZGF0ZUFwcGxpY2F0aW9uQ2FsbBIRCgljbGllbnRfaWQYASABKAkSNQoEYm9keRgCIAEoCzInLmhlYXJ0aC5pZGVudGl0eS52MS5VcGRhdGVDbGllbnRSZXF1ZXN0IgwKCk9BdXRoRW1wdHkyggQKF0FwcGxpY2F0aW9uQWRtaW5TZXJ2aWNlEmQKEExpc3RBcHBsaWNhdGlvbnMSKy5oZWFydGguaWRlbnRpdHkudjEuTGlzdEFwcGxpY2F0aW9uc1JlcXVlc3QaIy5oZWFydGguaWRlbnRpdHkudjEuT0F1dGhDbGllbnRQYWdlElwKDkdldEFwcGxpY2F0aW9uEikuaGVhcnRoLmlkZW50aXR5LnYxLkdldEFwcGxpY2F0aW9uUmVxdWVzdBofLmhlYXJ0aC5pZGVudGl0eS52MS5PQXV0aENsaWVudBJfChFDcmVhdGVBcHBsaWNhdGlvbhIpLmhlYXJ0aC5pZGVudGl0eS52MS5SZWdpc3RlckNsaWVudFJlcXVlc3QaHy5oZWFydGguaWRlbnRpdHkudjEuT0F1dGhDbGllbnQSXwoRVXBkYXRlQXBwbGljYXRpb24SKS5oZWFydGguaWRlbnRpdHkudjEuVXBkYXRlQXBwbGljYXRpb25DYWxsGh8uaGVhcnRoLmlkZW50aXR5LnYxLk9BdXRoQ2xpZW50EmEKEURlbGV0ZUFwcGxpY2F0aW9uEiwuaGVhcnRoLmlkZW50aXR5LnYxLkRlbGV0ZUFwcGxpY2F0aW9uUmVxdWVzdBoeLmhlYXJ0aC5pZGVudGl0eS52MS5PQXV0aEVtcHR5MtQFCgxPQXV0aFNlcnZpY2USYAoJQXV0aG9yaXplEiguaGVhcnRoLmlkZW50aXR5LnYxLkF1dGhvcml6YXRpb25SZXF1ZXN0GikuaGVhcnRoLmlkZW50aXR5LnYxLkF1dGhvcml6YXRpb25SZXNwb25zZRJgCg1Ub2tlbkV4Y2hhbmdlEiguaGVhcnRoLmlkZW50aXR5LnYxLlRva2VuRXhjaGFuZ2VSZXF1ZXN0GiUuaGVhcnRoLmlkZW50aXR5LnYxLk9pZGNUb2tlblJlc3BvbnNlElQKBlJldm9rZRIqLmhlYXJ0aC5pZGVudGl0eS52MS5Ub2tlblJldm9jYXRpb25SZXF1ZXN0Gh4uaGVhcnRoLmlkZW50aXR5LnYxLk9BdXRoRW1wdHkSZgoKSW50cm9zcGVjdBItLmhlYXJ0aC5pZGVudGl0eS52MS5Ub2tlbkludHJvc3BlY3Rpb25SZXF1ZXN0GikuaGVhcnRoLmlkZW50aXR5LnYxLkludHJvc3BlY3Rpb25SZXNwb25zZRJyCg9EZXZpY2VBdXRob3JpemUSLi5oZWFydGguaWRlbnRpdHkudjEuRGV2aWNlQXV0aG9yaXphdGlvblJlcXVlc3QaLy5oZWFydGguaWRlbnRpdHkudjEuRGV2aWNlQXV0aG9yaXphdGlvblJlc3BvbnNlEnAKEUNsaWVudENyZWRlbnRpYWxzEiwuaGVhcnRoLmlkZW50aXR5LnYxLkNsaWVudENyZWRlbnRpYWxzUmVxdWVzdBotLmhlYXJ0aC5pZGVudGl0eS52MS5DbGllbnRDcmVkZW50aWFsc1Jlc3BvbnNlElwKDlJlZ2lzdGVyQ2xpZW50EikuaGVhcnRoLmlkZW50aXR5LnYxLlJlZ2lzdGVyQ2xpZW50UmVxdWVzdBofLmhlYXJ0aC5pZGVudGl0eS52MS5PQXV0aENsaWVudEJFWkNnaXRodWIuY29tL2hlYXJ0aGRiL2hlYXJ0aC9zZGtzL2dvL2dlbmVyYXRlZC9pZGVudGl0eS92MTtpZGVudGl0eXYxYgZwcm90bzM");
 
 /**
  * Request to initiate an OAuth 2.0 authorization.
@@ -770,4 +770,212 @@ export type BootstrapResponse = Message<"hearth.identity.v1.BootstrapResponse"> 
  */
 export const BootstrapResponseSchema: GenMessage<BootstrapResponse> = /*@__PURE__*/
   messageDesc(file_hearth_identity_v1_oauth, 19);
+
+/**
+ * @generated from message hearth.identity.v1.ListApplicationsRequest
+ */
+export type ListApplicationsRequest = Message<"hearth.identity.v1.ListApplicationsRequest"> & {
+  /**
+   * @generated from field: optional string cursor = 1;
+   */
+  cursor?: string;
+
+  /**
+   * @generated from field: optional uint32 limit = 2;
+   */
+  limit?: number;
+};
+
+/**
+ * Describes the message hearth.identity.v1.ListApplicationsRequest.
+ * Use `create(ListApplicationsRequestSchema)` to create a new message.
+ */
+export const ListApplicationsRequestSchema: GenMessage<ListApplicationsRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_oauth, 20);
+
+/**
+ * @generated from message hearth.identity.v1.GetApplicationRequest
+ */
+export type GetApplicationRequest = Message<"hearth.identity.v1.GetApplicationRequest"> & {
+  /**
+   * @generated from field: string client_id = 1;
+   */
+  clientId: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.GetApplicationRequest.
+ * Use `create(GetApplicationRequestSchema)` to create a new message.
+ */
+export const GetApplicationRequestSchema: GenMessage<GetApplicationRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_oauth, 21);
+
+/**
+ * @generated from message hearth.identity.v1.DeleteApplicationRequest
+ */
+export type DeleteApplicationRequest = Message<"hearth.identity.v1.DeleteApplicationRequest"> & {
+  /**
+   * @generated from field: string client_id = 1;
+   */
+  clientId: string;
+};
+
+/**
+ * Describes the message hearth.identity.v1.DeleteApplicationRequest.
+ * Use `create(DeleteApplicationRequestSchema)` to create a new message.
+ */
+export const DeleteApplicationRequestSchema: GenMessage<DeleteApplicationRequest> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_oauth, 22);
+
+/**
+ * @generated from message hearth.identity.v1.UpdateApplicationCall
+ */
+export type UpdateApplicationCall = Message<"hearth.identity.v1.UpdateApplicationCall"> & {
+  /**
+   * @generated from field: string client_id = 1;
+   */
+  clientId: string;
+
+  /**
+   * @generated from field: hearth.identity.v1.UpdateClientRequest body = 2;
+   */
+  body?: UpdateClientRequest;
+};
+
+/**
+ * Describes the message hearth.identity.v1.UpdateApplicationCall.
+ * Use `create(UpdateApplicationCallSchema)` to create a new message.
+ */
+export const UpdateApplicationCallSchema: GenMessage<UpdateApplicationCall> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_oauth, 23);
+
+/**
+ * Empty response type for delete RPCs (local to oauth.proto to avoid
+ * cross-file service dependencies that complicate generated code).
+ *
+ * @generated from message hearth.identity.v1.OAuthEmpty
+ */
+export type OAuthEmpty = Message<"hearth.identity.v1.OAuthEmpty"> & {
+};
+
+/**
+ * Describes the message hearth.identity.v1.OAuthEmpty.
+ * Use `create(OAuthEmptySchema)` to create a new message.
+ */
+export const OAuthEmptySchema: GenMessage<OAuthEmpty> = /*@__PURE__*/
+  messageDesc(file_hearth_identity_v1_oauth, 24);
+
+/**
+ * Application admin service — separated from IdentityAdminService so the
+ * generated code stays within a single proto file. Both share the admin
+ * interceptor.
+ *
+ * @generated from service hearth.identity.v1.ApplicationAdminService
+ */
+export const ApplicationAdminService: GenService<{
+  /**
+   * @generated from rpc hearth.identity.v1.ApplicationAdminService.ListApplications
+   */
+  listApplications: {
+    methodKind: "unary";
+    input: typeof ListApplicationsRequestSchema;
+    output: typeof OAuthClientPageSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.ApplicationAdminService.GetApplication
+   */
+  getApplication: {
+    methodKind: "unary";
+    input: typeof GetApplicationRequestSchema;
+    output: typeof OAuthClientSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.ApplicationAdminService.CreateApplication
+   */
+  createApplication: {
+    methodKind: "unary";
+    input: typeof RegisterClientRequestSchema;
+    output: typeof OAuthClientSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.ApplicationAdminService.UpdateApplication
+   */
+  updateApplication: {
+    methodKind: "unary";
+    input: typeof UpdateApplicationCallSchema;
+    output: typeof OAuthClientSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.ApplicationAdminService.DeleteApplication
+   */
+  deleteApplication: {
+    methodKind: "unary";
+    input: typeof DeleteApplicationRequestSchema;
+    output: typeof OAuthEmptySchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hearth_identity_v1_oauth, 0);
+
+/**
+ * @generated from service hearth.identity.v1.OAuthService
+ */
+export const OAuthService: GenService<{
+  /**
+   * @generated from rpc hearth.identity.v1.OAuthService.Authorize
+   */
+  authorize: {
+    methodKind: "unary";
+    input: typeof AuthorizationRequestSchema;
+    output: typeof AuthorizationResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.OAuthService.TokenExchange
+   */
+  tokenExchange: {
+    methodKind: "unary";
+    input: typeof TokenExchangeRequestSchema;
+    output: typeof OidcTokenResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.OAuthService.Revoke
+   */
+  revoke: {
+    methodKind: "unary";
+    input: typeof TokenRevocationRequestSchema;
+    output: typeof OAuthEmptySchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.OAuthService.Introspect
+   */
+  introspect: {
+    methodKind: "unary";
+    input: typeof TokenIntrospectionRequestSchema;
+    output: typeof IntrospectionResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.OAuthService.DeviceAuthorize
+   */
+  deviceAuthorize: {
+    methodKind: "unary";
+    input: typeof DeviceAuthorizationRequestSchema;
+    output: typeof DeviceAuthorizationResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.OAuthService.ClientCredentials
+   */
+  clientCredentials: {
+    methodKind: "unary";
+    input: typeof ClientCredentialsRequestSchema;
+    output: typeof ClientCredentialsResponseSchema;
+  },
+  /**
+   * @generated from rpc hearth.identity.v1.OAuthService.RegisterClient
+   */
+  registerClient: {
+    methodKind: "unary";
+    input: typeof RegisterClientRequestSchema;
+    output: typeof OAuthClientSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_hearth_identity_v1_oauth, 1);
 

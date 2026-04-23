@@ -91,3 +91,60 @@ message ObjectTypeConfig {
 message RelationConfig {
   repeated string allowed_subject_types = 1;
 }
+
+// ---------------------------------------------------------------------------
+// AuthorizationService — gRPC surface.
+// ---------------------------------------------------------------------------
+
+message CheckRequest {
+  ObjectRef object = 1;
+  string relation = 2;
+  SubjectRef subject = 3;
+  optional ConsistencyToken at_least_as_fresh_as = 4;
+}
+
+message CheckResponse {
+  bool allowed = 1;
+  ConsistencyToken token = 2;
+}
+
+message ExpandRequest {
+  ObjectRef object = 1;
+  string relation = 2;
+  optional ConsistencyToken at_least_as_fresh_as = 3;
+}
+
+// A tree of subjects for a given (object, relation). Flattened from the
+// engine's recursive expand tree; each node is keyed by its userset id.
+message ExpandResponse {
+  ConsistencyToken token = 1;
+  repeated SubjectRef subjects = 2;
+}
+
+message WriteTuplesRequest {
+  repeated TupleWrite writes = 1;
+}
+
+message WriteTuplesResponse {
+  ConsistencyToken token = 1;
+}
+
+message WatchRequest {
+  // Start streaming events strictly after this token. When unset, the
+  // stream starts from "now" and only future events are delivered.
+  optional ConsistencyToken start_after = 1;
+  optional WatchFilter filter = 2;
+}
+
+// A streamed tuple-change event.
+message WatchEvent {
+  TupleChangeEvent event = 1;
+  ConsistencyToken token = 2;
+}
+
+service AuthorizationService {
+  rpc Check(CheckRequest) returns (CheckResponse);
+  rpc Expand(ExpandRequest) returns (ExpandResponse);
+  rpc WriteTuples(WriteTuplesRequest) returns (WriteTuplesResponse);
+  rpc Watch(WatchRequest) returns (stream WatchEvent);
+}

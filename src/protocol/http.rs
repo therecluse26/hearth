@@ -8,9 +8,8 @@
 //! into domain calls on `IdentityEngine` and maps `IdentityError` to HTTP
 //! status codes. No business logic lives here.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -25,6 +24,7 @@ use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
 use crate::core::{ClientId, RealmId, UserId};
 use crate::identity::IdentityEngine;
+use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
 use crate::protocol::convert::identity::{
     proto_user_status_to_domain, realm_page_to_proto, user_bulk_result_to_proto,
     user_page_to_proto, void_bulk_result_to_proto,
@@ -34,20 +34,6 @@ use crate::protocol::convert::oauth::{
     proto_token_exchange_to_domain,
 };
 use crate::protocol::proto::identity::v1 as pb;
-
-/// Tracks admin API rate limiting per user.
-#[derive(Debug, Clone)]
-struct AdminRateTracker {
-    /// Number of requests in the current window.
-    count: u32,
-    /// Start of the current window (Unix microseconds).
-    window_start_micros: i64,
-}
-
-/// Maximum admin API requests per minute per user.
-const ADMIN_RATE_LIMIT: u32 = 100;
-/// Rate limit window in microseconds (1 minute).
-const ADMIN_RATE_WINDOW_MICROS: i64 = 60 * 1_000_000;
 
 /// Default maximum request body size (1 MiB).
 ///
@@ -77,8 +63,10 @@ pub struct AppState {
     /// Enables the `POST /admin/bootstrap` endpoint for SDK integration
     /// tests and local development.
     pub dev_mode: bool,
-    /// Per-admin-user rate trackers. Key: user UUID string.
-    admin_rate_trackers: Mutex<HashMap<String, AdminRateTracker>>,
+    /// Shared admin API rate limiter. Shared between the HTTP and gRPC
+    /// admin surfaces so a caller cannot evade the limit by switching
+    /// protocols.
+    pub admin_rate_limiter: Arc<AdminRateLimiter>,
 }
 
 impl AppState {
@@ -93,7 +81,7 @@ impl AppState {
             authz,
             audit,
             dev_mode: false,
-            admin_rate_trackers: Mutex::new(HashMap::new()),
+            admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
         }
     }
 
@@ -110,7 +98,26 @@ impl AppState {
             authz,
             audit,
             dev_mode: true,
-            admin_rate_trackers: Mutex::new(HashMap::new()),
+            admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
+        }
+    }
+
+    /// Creates an `AppState` that shares an existing rate limiter.
+    ///
+    /// Used when wiring the gRPC server so its interceptor sees the same
+    /// per-user counts as the HTTP handlers.
+    pub fn with_shared_rate_limiter(
+        identity: Arc<dyn IdentityEngine>,
+        authz: Arc<dyn AuthorizationEngine>,
+        audit: Arc<dyn AuditEngine>,
+        admin_rate_limiter: Arc<AdminRateLimiter>,
+    ) -> Self {
+        Self {
+            identity,
+            authz,
+            audit,
+            dev_mode: false,
+            admin_rate_limiter,
         }
     }
 }
@@ -220,32 +227,13 @@ fn check_admin_rate_limit(
         .unwrap_or_default()
         .as_micros() as i64;
 
-    let key = user_id.as_uuid().to_string();
-    let mut trackers = state
-        .admin_rate_trackers
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-    let tracker = trackers.entry(key).or_insert(AdminRateTracker {
-        count: 0,
-        window_start_micros: now,
-    });
-
-    // Reset window if expired
-    if now - tracker.window_start_micros > ADMIN_RATE_WINDOW_MICROS {
-        tracker.count = 0;
-        tracker.window_start_micros = now;
-    }
-
-    tracker.count += 1;
-    if tracker.count > ADMIN_RATE_LIMIT {
-        return Err((
+    match state.admin_rate_limiter.check(user_id, now) {
+        RateLimitOutcome::Allowed => Ok(()),
+        RateLimitOutcome::Exceeded => Err((
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({"error": "rate limit exceeded"})),
-        ));
+        )),
     }
-
-    Ok(())
 }
 
 /// Builds the HTTP router with all configured routes.

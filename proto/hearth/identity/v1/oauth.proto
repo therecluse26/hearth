@@ -180,3 +180,62 @@ message BootstrapResponse {
   string access_token = 3;
   string refresh_token = 4;
 }
+
+// ---------------------------------------------------------------------------
+// Application admin RPCs (part of IdentityAdminService, placed here to keep
+// OAuthClient types co-located).
+// ---------------------------------------------------------------------------
+
+message ListApplicationsRequest {
+  optional string cursor = 1;
+  optional uint32 limit = 2;
+}
+
+message GetApplicationRequest { string client_id = 1; }
+
+message DeleteApplicationRequest { string client_id = 1; }
+
+message UpdateApplicationCall {
+  string client_id = 1;
+  UpdateClientRequest body = 2;
+}
+
+// Empty response type for delete RPCs (local to oauth.proto to avoid
+// cross-file service dependencies that complicate generated code).
+message OAuthEmpty {}
+
+// Application admin service — separated from IdentityAdminService so the
+// generated code stays within a single proto file. Both share the admin
+// interceptor.
+service ApplicationAdminService {
+  rpc ListApplications(ListApplicationsRequest) returns (OAuthClientPage);
+  rpc GetApplication(GetApplicationRequest) returns (OAuthClient);
+  rpc CreateApplication(RegisterClientRequest) returns (OAuthClient);
+  rpc UpdateApplication(UpdateApplicationCall) returns (OAuthClient);
+  rpc DeleteApplication(DeleteApplicationRequest) returns (OAuthEmpty);
+}
+
+// ---------------------------------------------------------------------------
+// User-facing OAuth 2.0 / OIDC surface.
+//
+// Authentication differs from the admin surface:
+//   - `TokenExchange`, `Revoke`, `Introspect`, `ClientCredentials`: require
+//     client credentials per RFC 6749 §2.3 (client_id + client_secret in the
+//     request body or `x-hearth-client-id` / basic-auth metadata).
+//   - `Authorize`: requires an authenticated user (bearer token) plus a
+//     valid client_id.
+//   - `DeviceAuthorize`: public, rate-limited.
+//   - `RegisterClient`: OIDC dynamic client registration (RFC 7591); open by
+//     default, can be gated by a registration-access-token header in future
+//     iterations.
+// ---------------------------------------------------------------------------
+
+service OAuthService {
+  rpc Authorize(AuthorizationRequest) returns (AuthorizationResponse);
+  rpc TokenExchange(TokenExchangeRequest) returns (OidcTokenResponse);
+  rpc Revoke(TokenRevocationRequest) returns (OAuthEmpty);
+  rpc Introspect(TokenIntrospectionRequest) returns (IntrospectionResponse);
+  rpc DeviceAuthorize(DeviceAuthorizationRequest) returns (DeviceAuthorizationResponse);
+  rpc ClientCredentials(ClientCredentialsRequest) returns (ClientCredentialsResponse);
+  rpc RegisterClient(RegisterClientRequest) returns (OAuthClient);
+}

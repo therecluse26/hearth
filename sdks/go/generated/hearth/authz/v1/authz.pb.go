@@ -758,6 +758,435 @@ func (x *RelationConfig) GetAllowedSubjectTypes() []string {
 	return nil
 }
 
+type CheckRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Object           *ObjectRef             `protobuf:"bytes,1,opt,name=object,proto3" json:"object,omitempty"`
+	Relation         string                 `protobuf:"bytes,2,opt,name=relation,proto3" json:"relation,omitempty"`
+	Subject          *SubjectRef            `protobuf:"bytes,3,opt,name=subject,proto3" json:"subject,omitempty"`
+	AtLeastAsFreshAs *ConsistencyToken      `protobuf:"bytes,4,opt,name=at_least_as_fresh_as,json=atLeastAsFreshAs,proto3,oneof" json:"at_least_as_fresh_as,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *CheckRequest) Reset() {
+	*x = CheckRequest{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckRequest) ProtoMessage() {}
+
+func (x *CheckRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckRequest.ProtoReflect.Descriptor instead.
+func (*CheckRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *CheckRequest) GetObject() *ObjectRef {
+	if x != nil {
+		return x.Object
+	}
+	return nil
+}
+
+func (x *CheckRequest) GetRelation() string {
+	if x != nil {
+		return x.Relation
+	}
+	return ""
+}
+
+func (x *CheckRequest) GetSubject() *SubjectRef {
+	if x != nil {
+		return x.Subject
+	}
+	return nil
+}
+
+func (x *CheckRequest) GetAtLeastAsFreshAs() *ConsistencyToken {
+	if x != nil {
+		return x.AtLeastAsFreshAs
+	}
+	return nil
+}
+
+type CheckResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Allowed       bool                   `protobuf:"varint,1,opt,name=allowed,proto3" json:"allowed,omitempty"`
+	Token         *ConsistencyToken      `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckResponse) Reset() {
+	*x = CheckResponse{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckResponse) ProtoMessage() {}
+
+func (x *CheckResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckResponse.ProtoReflect.Descriptor instead.
+func (*CheckResponse) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *CheckResponse) GetAllowed() bool {
+	if x != nil {
+		return x.Allowed
+	}
+	return false
+}
+
+func (x *CheckResponse) GetToken() *ConsistencyToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+type ExpandRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Object           *ObjectRef             `protobuf:"bytes,1,opt,name=object,proto3" json:"object,omitempty"`
+	Relation         string                 `protobuf:"bytes,2,opt,name=relation,proto3" json:"relation,omitempty"`
+	AtLeastAsFreshAs *ConsistencyToken      `protobuf:"bytes,3,opt,name=at_least_as_fresh_as,json=atLeastAsFreshAs,proto3,oneof" json:"at_least_as_fresh_as,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ExpandRequest) Reset() {
+	*x = ExpandRequest{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExpandRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExpandRequest) ProtoMessage() {}
+
+func (x *ExpandRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExpandRequest.ProtoReflect.Descriptor instead.
+func (*ExpandRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ExpandRequest) GetObject() *ObjectRef {
+	if x != nil {
+		return x.Object
+	}
+	return nil
+}
+
+func (x *ExpandRequest) GetRelation() string {
+	if x != nil {
+		return x.Relation
+	}
+	return ""
+}
+
+func (x *ExpandRequest) GetAtLeastAsFreshAs() *ConsistencyToken {
+	if x != nil {
+		return x.AtLeastAsFreshAs
+	}
+	return nil
+}
+
+// A tree of subjects for a given (object, relation). Flattened from the
+// engine's recursive expand tree; each node is keyed by its userset id.
+type ExpandResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         *ConsistencyToken      `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	Subjects      []*SubjectRef          `protobuf:"bytes,2,rep,name=subjects,proto3" json:"subjects,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExpandResponse) Reset() {
+	*x = ExpandResponse{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExpandResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExpandResponse) ProtoMessage() {}
+
+func (x *ExpandResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExpandResponse.ProtoReflect.Descriptor instead.
+func (*ExpandResponse) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ExpandResponse) GetToken() *ConsistencyToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *ExpandResponse) GetSubjects() []*SubjectRef {
+	if x != nil {
+		return x.Subjects
+	}
+	return nil
+}
+
+type WriteTuplesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Writes        []*TupleWrite          `protobuf:"bytes,1,rep,name=writes,proto3" json:"writes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteTuplesRequest) Reset() {
+	*x = WriteTuplesRequest{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteTuplesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteTuplesRequest) ProtoMessage() {}
+
+func (x *WriteTuplesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteTuplesRequest.ProtoReflect.Descriptor instead.
+func (*WriteTuplesRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *WriteTuplesRequest) GetWrites() []*TupleWrite {
+	if x != nil {
+		return x.Writes
+	}
+	return nil
+}
+
+type WriteTuplesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         *ConsistencyToken      `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteTuplesResponse) Reset() {
+	*x = WriteTuplesResponse{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteTuplesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteTuplesResponse) ProtoMessage() {}
+
+func (x *WriteTuplesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteTuplesResponse.ProtoReflect.Descriptor instead.
+func (*WriteTuplesResponse) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *WriteTuplesResponse) GetToken() *ConsistencyToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+type WatchRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Start streaming events strictly after this token. When unset, the
+	// stream starts from "now" and only future events are delivered.
+	StartAfter    *ConsistencyToken `protobuf:"bytes,1,opt,name=start_after,json=startAfter,proto3,oneof" json:"start_after,omitempty"`
+	Filter        *WatchFilter      `protobuf:"bytes,2,opt,name=filter,proto3,oneof" json:"filter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchRequest) Reset() {
+	*x = WatchRequest{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchRequest) ProtoMessage() {}
+
+func (x *WatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
+func (*WatchRequest) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *WatchRequest) GetStartAfter() *ConsistencyToken {
+	if x != nil {
+		return x.StartAfter
+	}
+	return nil
+}
+
+func (x *WatchRequest) GetFilter() *WatchFilter {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+// A streamed tuple-change event.
+type WatchEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Event         *TupleChangeEvent      `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
+	Token         *ConsistencyToken      `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchEvent) Reset() {
+	*x = WatchEvent{}
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchEvent) ProtoMessage() {}
+
+func (x *WatchEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_hearth_authz_v1_authz_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchEvent.ProtoReflect.Descriptor instead.
+func (*WatchEvent) Descriptor() ([]byte, []int) {
+	return file_hearth_authz_v1_authz_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *WatchEvent) GetEvent() *TupleChangeEvent {
+	if x != nil {
+		return x.Event
+	}
+	return nil
+}
+
+func (x *WatchEvent) GetToken() *ConsistencyToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
 var File_hearth_authz_v1_authz_proto protoreflect.FileDescriptor
 
 const file_hearth_authz_v1_authz_proto_rawDesc = "" +
@@ -811,7 +1240,38 @@ const file_hearth_authz_v1_authz_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x1f.hearth.authz.v1.RelationConfigR\x05value:\x028\x01\"D\n" +
 	"\x0eRelationConfig\x122\n" +
-	"\x15allowed_subject_types\x18\x01 \x03(\tR\x13allowedSubjectTypes*\xd7\x01\n" +
+	"\x15allowed_subject_types\x18\x01 \x03(\tR\x13allowedSubjectTypes\"\x86\x02\n" +
+	"\fCheckRequest\x122\n" +
+	"\x06object\x18\x01 \x01(\v2\x1a.hearth.authz.v1.ObjectRefR\x06object\x12\x1a\n" +
+	"\brelation\x18\x02 \x01(\tR\brelation\x125\n" +
+	"\asubject\x18\x03 \x01(\v2\x1b.hearth.authz.v1.SubjectRefR\asubject\x12V\n" +
+	"\x14at_least_as_fresh_as\x18\x04 \x01(\v2!.hearth.authz.v1.ConsistencyTokenH\x00R\x10atLeastAsFreshAs\x88\x01\x01B\x17\n" +
+	"\x15_at_least_as_fresh_as\"b\n" +
+	"\rCheckResponse\x12\x18\n" +
+	"\aallowed\x18\x01 \x01(\bR\aallowed\x127\n" +
+	"\x05token\x18\x02 \x01(\v2!.hearth.authz.v1.ConsistencyTokenR\x05token\"\xd0\x01\n" +
+	"\rExpandRequest\x122\n" +
+	"\x06object\x18\x01 \x01(\v2\x1a.hearth.authz.v1.ObjectRefR\x06object\x12\x1a\n" +
+	"\brelation\x18\x02 \x01(\tR\brelation\x12V\n" +
+	"\x14at_least_as_fresh_as\x18\x03 \x01(\v2!.hearth.authz.v1.ConsistencyTokenH\x00R\x10atLeastAsFreshAs\x88\x01\x01B\x17\n" +
+	"\x15_at_least_as_fresh_as\"\x82\x01\n" +
+	"\x0eExpandResponse\x127\n" +
+	"\x05token\x18\x01 \x01(\v2!.hearth.authz.v1.ConsistencyTokenR\x05token\x127\n" +
+	"\bsubjects\x18\x02 \x03(\v2\x1b.hearth.authz.v1.SubjectRefR\bsubjects\"I\n" +
+	"\x12WriteTuplesRequest\x123\n" +
+	"\x06writes\x18\x01 \x03(\v2\x1b.hearth.authz.v1.TupleWriteR\x06writes\"N\n" +
+	"\x13WriteTuplesResponse\x127\n" +
+	"\x05token\x18\x01 \x01(\v2!.hearth.authz.v1.ConsistencyTokenR\x05token\"\xad\x01\n" +
+	"\fWatchRequest\x12G\n" +
+	"\vstart_after\x18\x01 \x01(\v2!.hearth.authz.v1.ConsistencyTokenH\x00R\n" +
+	"startAfter\x88\x01\x01\x129\n" +
+	"\x06filter\x18\x02 \x01(\v2\x1c.hearth.authz.v1.WatchFilterH\x01R\x06filter\x88\x01\x01B\x0e\n" +
+	"\f_start_afterB\t\n" +
+	"\a_filter\"~\n" +
+	"\n" +
+	"WatchEvent\x127\n" +
+	"\x05event\x18\x01 \x01(\v2!.hearth.authz.v1.TupleChangeEventR\x05event\x127\n" +
+	"\x05token\x18\x02 \x01(\v2!.hearth.authz.v1.ConsistencyTokenR\x05token*\xd7\x01\n" +
 	"\x13TupleWriteOperation\x12%\n" +
 	"!TUPLE_WRITE_OPERATION_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bTUPLE_WRITE_OPERATION_TOUCH\x10\x01\x12 \n" +
@@ -821,7 +1281,12 @@ const file_hearth_authz_v1_authz_proto_rawDesc = "" +
 	"\x11TupleChangeAction\x12#\n" +
 	"\x1fTUPLE_CHANGE_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19TUPLE_CHANGE_ACTION_TOUCH\x10\x01\x12\x1e\n" +
-	"\x1aTUPLE_CHANGE_ACTION_DELETE\x10\x02B?Z=github.com/hearthdb/hearth/sdks/go/generated/authz/v1;authzv1b\x06proto3"
+	"\x1aTUPLE_CHANGE_ACTION_DELETE\x10\x022\xca\x02\n" +
+	"\x14AuthorizationService\x12F\n" +
+	"\x05Check\x12\x1d.hearth.authz.v1.CheckRequest\x1a\x1e.hearth.authz.v1.CheckResponse\x12I\n" +
+	"\x06Expand\x12\x1e.hearth.authz.v1.ExpandRequest\x1a\x1f.hearth.authz.v1.ExpandResponse\x12X\n" +
+	"\vWriteTuples\x12#.hearth.authz.v1.WriteTuplesRequest\x1a$.hearth.authz.v1.WriteTuplesResponse\x12E\n" +
+	"\x05Watch\x12\x1d.hearth.authz.v1.WatchRequest\x1a\x1b.hearth.authz.v1.WatchEvent0\x01B?Z=github.com/hearthdb/hearth/sdks/go/generated/authz/v1;authzv1b\x06proto3"
 
 var (
 	file_hearth_authz_v1_authz_proto_rawDescOnce sync.Once
@@ -836,23 +1301,31 @@ func file_hearth_authz_v1_authz_proto_rawDescGZIP() []byte {
 }
 
 var file_hearth_authz_v1_authz_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_hearth_authz_v1_authz_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_hearth_authz_v1_authz_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_hearth_authz_v1_authz_proto_goTypes = []any{
-	(TupleWriteOperation)(0),  // 0: hearth.authz.v1.TupleWriteOperation
-	(TupleChangeAction)(0),    // 1: hearth.authz.v1.TupleChangeAction
-	(*ObjectRef)(nil),         // 2: hearth.authz.v1.ObjectRef
-	(*SubjectRef)(nil),        // 3: hearth.authz.v1.SubjectRef
-	(*UsersetRef)(nil),        // 4: hearth.authz.v1.UsersetRef
-	(*RelationshipTuple)(nil), // 5: hearth.authz.v1.RelationshipTuple
-	(*TupleWrite)(nil),        // 6: hearth.authz.v1.TupleWrite
-	(*ConsistencyToken)(nil),  // 7: hearth.authz.v1.ConsistencyToken
-	(*TupleChangeEvent)(nil),  // 8: hearth.authz.v1.TupleChangeEvent
-	(*WatchFilter)(nil),       // 9: hearth.authz.v1.WatchFilter
-	(*NamespaceConfig)(nil),   // 10: hearth.authz.v1.NamespaceConfig
-	(*ObjectTypeConfig)(nil),  // 11: hearth.authz.v1.ObjectTypeConfig
-	(*RelationConfig)(nil),    // 12: hearth.authz.v1.RelationConfig
-	nil,                       // 13: hearth.authz.v1.NamespaceConfig.ObjectTypesEntry
-	nil,                       // 14: hearth.authz.v1.ObjectTypeConfig.RelationsEntry
+	(TupleWriteOperation)(0),    // 0: hearth.authz.v1.TupleWriteOperation
+	(TupleChangeAction)(0),      // 1: hearth.authz.v1.TupleChangeAction
+	(*ObjectRef)(nil),           // 2: hearth.authz.v1.ObjectRef
+	(*SubjectRef)(nil),          // 3: hearth.authz.v1.SubjectRef
+	(*UsersetRef)(nil),          // 4: hearth.authz.v1.UsersetRef
+	(*RelationshipTuple)(nil),   // 5: hearth.authz.v1.RelationshipTuple
+	(*TupleWrite)(nil),          // 6: hearth.authz.v1.TupleWrite
+	(*ConsistencyToken)(nil),    // 7: hearth.authz.v1.ConsistencyToken
+	(*TupleChangeEvent)(nil),    // 8: hearth.authz.v1.TupleChangeEvent
+	(*WatchFilter)(nil),         // 9: hearth.authz.v1.WatchFilter
+	(*NamespaceConfig)(nil),     // 10: hearth.authz.v1.NamespaceConfig
+	(*ObjectTypeConfig)(nil),    // 11: hearth.authz.v1.ObjectTypeConfig
+	(*RelationConfig)(nil),      // 12: hearth.authz.v1.RelationConfig
+	(*CheckRequest)(nil),        // 13: hearth.authz.v1.CheckRequest
+	(*CheckResponse)(nil),       // 14: hearth.authz.v1.CheckResponse
+	(*ExpandRequest)(nil),       // 15: hearth.authz.v1.ExpandRequest
+	(*ExpandResponse)(nil),      // 16: hearth.authz.v1.ExpandResponse
+	(*WriteTuplesRequest)(nil),  // 17: hearth.authz.v1.WriteTuplesRequest
+	(*WriteTuplesResponse)(nil), // 18: hearth.authz.v1.WriteTuplesResponse
+	(*WatchRequest)(nil),        // 19: hearth.authz.v1.WatchRequest
+	(*WatchEvent)(nil),          // 20: hearth.authz.v1.WatchEvent
+	nil,                         // 21: hearth.authz.v1.NamespaceConfig.ObjectTypesEntry
+	nil,                         // 22: hearth.authz.v1.ObjectTypeConfig.RelationsEntry
 }
 var file_hearth_authz_v1_authz_proto_depIdxs = []int32{
 	2,  // 0: hearth.authz.v1.SubjectRef.direct:type_name -> hearth.authz.v1.ObjectRef
@@ -863,15 +1336,37 @@ var file_hearth_authz_v1_authz_proto_depIdxs = []int32{
 	0,  // 5: hearth.authz.v1.TupleWrite.operation:type_name -> hearth.authz.v1.TupleWriteOperation
 	5,  // 6: hearth.authz.v1.TupleWrite.tuple:type_name -> hearth.authz.v1.RelationshipTuple
 	1,  // 7: hearth.authz.v1.TupleChangeEvent.action:type_name -> hearth.authz.v1.TupleChangeAction
-	13, // 8: hearth.authz.v1.NamespaceConfig.object_types:type_name -> hearth.authz.v1.NamespaceConfig.ObjectTypesEntry
-	14, // 9: hearth.authz.v1.ObjectTypeConfig.relations:type_name -> hearth.authz.v1.ObjectTypeConfig.RelationsEntry
-	11, // 10: hearth.authz.v1.NamespaceConfig.ObjectTypesEntry.value:type_name -> hearth.authz.v1.ObjectTypeConfig
-	12, // 11: hearth.authz.v1.ObjectTypeConfig.RelationsEntry.value:type_name -> hearth.authz.v1.RelationConfig
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	21, // 8: hearth.authz.v1.NamespaceConfig.object_types:type_name -> hearth.authz.v1.NamespaceConfig.ObjectTypesEntry
+	22, // 9: hearth.authz.v1.ObjectTypeConfig.relations:type_name -> hearth.authz.v1.ObjectTypeConfig.RelationsEntry
+	2,  // 10: hearth.authz.v1.CheckRequest.object:type_name -> hearth.authz.v1.ObjectRef
+	3,  // 11: hearth.authz.v1.CheckRequest.subject:type_name -> hearth.authz.v1.SubjectRef
+	7,  // 12: hearth.authz.v1.CheckRequest.at_least_as_fresh_as:type_name -> hearth.authz.v1.ConsistencyToken
+	7,  // 13: hearth.authz.v1.CheckResponse.token:type_name -> hearth.authz.v1.ConsistencyToken
+	2,  // 14: hearth.authz.v1.ExpandRequest.object:type_name -> hearth.authz.v1.ObjectRef
+	7,  // 15: hearth.authz.v1.ExpandRequest.at_least_as_fresh_as:type_name -> hearth.authz.v1.ConsistencyToken
+	7,  // 16: hearth.authz.v1.ExpandResponse.token:type_name -> hearth.authz.v1.ConsistencyToken
+	3,  // 17: hearth.authz.v1.ExpandResponse.subjects:type_name -> hearth.authz.v1.SubjectRef
+	6,  // 18: hearth.authz.v1.WriteTuplesRequest.writes:type_name -> hearth.authz.v1.TupleWrite
+	7,  // 19: hearth.authz.v1.WriteTuplesResponse.token:type_name -> hearth.authz.v1.ConsistencyToken
+	7,  // 20: hearth.authz.v1.WatchRequest.start_after:type_name -> hearth.authz.v1.ConsistencyToken
+	9,  // 21: hearth.authz.v1.WatchRequest.filter:type_name -> hearth.authz.v1.WatchFilter
+	8,  // 22: hearth.authz.v1.WatchEvent.event:type_name -> hearth.authz.v1.TupleChangeEvent
+	7,  // 23: hearth.authz.v1.WatchEvent.token:type_name -> hearth.authz.v1.ConsistencyToken
+	11, // 24: hearth.authz.v1.NamespaceConfig.ObjectTypesEntry.value:type_name -> hearth.authz.v1.ObjectTypeConfig
+	12, // 25: hearth.authz.v1.ObjectTypeConfig.RelationsEntry.value:type_name -> hearth.authz.v1.RelationConfig
+	13, // 26: hearth.authz.v1.AuthorizationService.Check:input_type -> hearth.authz.v1.CheckRequest
+	15, // 27: hearth.authz.v1.AuthorizationService.Expand:input_type -> hearth.authz.v1.ExpandRequest
+	17, // 28: hearth.authz.v1.AuthorizationService.WriteTuples:input_type -> hearth.authz.v1.WriteTuplesRequest
+	19, // 29: hearth.authz.v1.AuthorizationService.Watch:input_type -> hearth.authz.v1.WatchRequest
+	14, // 30: hearth.authz.v1.AuthorizationService.Check:output_type -> hearth.authz.v1.CheckResponse
+	16, // 31: hearth.authz.v1.AuthorizationService.Expand:output_type -> hearth.authz.v1.ExpandResponse
+	18, // 32: hearth.authz.v1.AuthorizationService.WriteTuples:output_type -> hearth.authz.v1.WriteTuplesResponse
+	20, // 33: hearth.authz.v1.AuthorizationService.Watch:output_type -> hearth.authz.v1.WatchEvent
+	30, // [30:34] is the sub-list for method output_type
+	26, // [26:30] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_hearth_authz_v1_authz_proto_init() }
@@ -884,15 +1379,18 @@ func file_hearth_authz_v1_authz_proto_init() {
 		(*SubjectRef_Userset)(nil),
 	}
 	file_hearth_authz_v1_authz_proto_msgTypes[7].OneofWrappers = []any{}
+	file_hearth_authz_v1_authz_proto_msgTypes[11].OneofWrappers = []any{}
+	file_hearth_authz_v1_authz_proto_msgTypes[13].OneofWrappers = []any{}
+	file_hearth_authz_v1_authz_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hearth_authz_v1_authz_proto_rawDesc), len(file_hearth_authz_v1_authz_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   21,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_hearth_authz_v1_authz_proto_goTypes,
 		DependencyIndexes: file_hearth_authz_v1_authz_proto_depIdxs,
