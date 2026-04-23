@@ -23,12 +23,24 @@
 //!
 //! Off the hot path entirely — federation callbacks are infrequent.
 
+pub mod connector;
 pub mod http;
+pub mod oidc;
+pub mod state;
 pub mod types;
 
+pub use connector::{AuthorizeUrl, IdpConnector};
+pub use oidc::{
+    verify_id_token_claims, verify_rs256, DiscoveryDocument, GenericOidcConnector, IdTokenClaims,
+    Jwk, JwksDoc,
+};
 pub use http::{
     FedHttpRequest, FedHttpResponse, FederationHttpTransport, StubFederationTransport,
     StubResponse, UreqFederationTransport,
+};
+pub use state::{
+    compute_confirm_ticket_mac, generate_nonce, generate_pkce_verifier, generate_state_token,
+    pkce_s256_challenge, verify_confirm_ticket_mac,
 };
 pub use types::{
     ConfirmLinkTicket, ExternalIdentity, FederationSecret, IdpConfig, IdpKind, LinkMode, StateBag,
