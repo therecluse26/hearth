@@ -892,6 +892,10 @@ impl RealmYamlConfig {
             lockout_duration_micros,
             passkey_requires_mfa,
             registration_policy,
+            // Federation connectors + link mode land via a dedicated
+            // reconcile pass in Checkpoint E; the YAML surface lands at
+            // that point. For now every realm gets the safe default.
+            federation_link_mode: None,
         }
     }
 }

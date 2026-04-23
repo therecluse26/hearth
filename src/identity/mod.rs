@@ -8,6 +8,7 @@ pub(crate) mod credentials;
 pub mod email;
 mod engine;
 pub mod error;
+pub mod federation;
 pub(crate) mod keys;
 pub(crate) mod magic_link;
 pub mod migration;

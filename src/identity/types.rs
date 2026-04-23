@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
 use crate::identity::credentials::CleartextPassword;
 use crate::identity::email::EmailBranding;
+use crate::identity::federation::LinkMode;
 
 /// A cursor-based page of results.
 ///
@@ -409,6 +410,11 @@ pub struct RealmConfig {
     pub passkey_requires_mfa: Option<bool>,
     /// Who may self-register in this realm. `None` means `Disabled`.
     pub registration_policy: Option<RegistrationPolicy>,
+    /// How external-IdP logins interact with an existing local user
+    /// when the upstream asserts a matching verified email. `None`
+    /// means [`LinkMode::Confirm`] — the Keycloak-equivalent safety
+    /// default that requires local re-authentication before linking.
+    pub federation_link_mode: Option<LinkMode>,
 }
 
 /// A realm record.
