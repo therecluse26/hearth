@@ -83,6 +83,16 @@ define_id_type!(
     InvitationId, "inv_"
 );
 
+define_id_type!(
+    /// Unique identifier for an external Identity Provider (IdP) connector
+    /// registered against a realm for social login / federated sign-in.
+    ///
+    /// Scoped to a single realm via the containing `RealmId`; the same
+    /// `IdpId` value would not appear across realms in practice because
+    /// each `register_idp` call generates a fresh UUID.
+    IdpId, "idp_"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +189,26 @@ mod tests {
         let json = serde_json::to_string(&id).expect("serialize");
         let deserialized: InvitationId = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn idp_id_basics() {
+        let uuid = Uuid::new_v4();
+        let id = IdpId::new(uuid);
+        assert_eq!(*id.as_uuid(), uuid);
+
+        let display = format!("{id}");
+        assert!(display.starts_with("idp_"), "got: {display}");
+
+        let json = serde_json::to_string(&id).expect("serialize");
+        let deserialized: IdpId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn idp_id_generate_is_unique() {
+        let id1 = IdpId::generate();
+        let id2 = IdpId::generate();
+        assert_ne!(id1, id2);
     }
 }

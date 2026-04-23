@@ -755,6 +755,33 @@ fn identity_error_to_response(
             (StatusCode::BAD_REQUEST, "scope not in original request")
         }
         IdentityError::ConsentNotFound => (StatusCode::NOT_FOUND, "consent not found"),
+        IdentityError::FederationUnknownConnector => {
+            (StatusCode::NOT_FOUND, "federation connector not found")
+        }
+        IdentityError::FederationInvalidState => {
+            (StatusCode::BAD_REQUEST, "invalid federation state")
+        }
+        IdentityError::FederationUpstreamError { .. } => {
+            (StatusCode::BAD_GATEWAY, "federation upstream error")
+        }
+        IdentityError::FederationTokenVerificationFailed => {
+            (StatusCode::UNAUTHORIZED, "federation token verification failed")
+        }
+        IdentityError::FederationEmailNotVerified => {
+            (StatusCode::FORBIDDEN, "upstream email not verified")
+        }
+        IdentityError::FederationLinkConfirmationRequired { .. } => {
+            // Browser flows redirect to /ui/federation/confirm-link; JSON
+            // callers (rare for federation) get a terse 409 so they know
+            // a linking decision is required.
+            (StatusCode::CONFLICT, "federation link confirmation required")
+        }
+        IdentityError::FederationNotLinked => {
+            (StatusCode::NOT_FOUND, "external identity not linked")
+        }
+        IdentityError::FederationAlreadyLinked => {
+            (StatusCode::CONFLICT, "external identity already linked")
+        }
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)
         | IdentityError::Serialization { .. } => {

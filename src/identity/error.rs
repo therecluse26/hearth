@@ -195,6 +195,54 @@ pub enum IdentityError {
     ConsentScopeNotRequested,
     /// No consent record exists for the requested `(user, client)` pair.
     ConsentNotFound,
+    /// The referenced external IdP connector is not registered in this
+    /// realm. Returned by `/ui/federation/begin` when `idp=...` names
+    /// a connector that never existed or has been deleted.
+    FederationUnknownConnector,
+    /// The federation `state` parameter returned by the upstream IdP
+    /// does not correspond to any known in-flight login. Intentionally
+    /// conflates not-found, expired, and single-use-consumed for
+    /// enumeration resistance and replay protection.
+    FederationInvalidState,
+    /// The upstream Identity Provider returned an error or unexpected
+    /// response during token exchange, userinfo fetch, or JWKS lookup.
+    /// Message is sanitized — never contains client secrets or raw
+    /// upstream bodies.
+    FederationUpstreamError {
+        /// Connector the error originated from (e.g. `"google"`,
+        /// `"github"`, `"oidc"`). Never contains PII.
+        provider: String,
+        /// Sanitized human-readable description. Safe to surface to end
+        /// users and logs.
+        reason: String,
+    },
+    /// Verification of an upstream ID token failed (bad issuer,
+    /// audience, signature, nonce, or lifetime). Intentionally vague
+    /// to avoid leaking which check failed to a tampering client.
+    FederationTokenVerificationFailed,
+    /// The upstream IdP returned `email_verified: false` for an
+    /// operation that requires verified email (e.g., auto-linking to an
+    /// existing user under `link_existing_accounts: auto`). The flow
+    /// falls through to JIT provisioning rather than silently linking.
+    FederationEmailNotVerified,
+    /// The external login landed on an existing local user under
+    /// `link_existing_accounts: confirm`. The caller MUST redirect the
+    /// browser to `/ui/federation/confirm-link?ticket={ticket}` so the
+    /// user can authenticate locally before the link is persisted.
+    FederationLinkConfirmationRequired {
+        /// Opaque single-use ticket bound to the target user and the
+        /// pending external identity. 10-minute TTL.
+        ticket: String,
+    },
+    /// The user has no linked external identity for this connector;
+    /// returned from `unlink_external_identity` on a miss and from
+    /// `find_user_by_external_identity` wrappers that require a hit.
+    FederationNotLinked,
+    /// The external identity is already linked — either to this user
+    /// (duplicate `link`) or to a different user in the realm
+    /// (conflict). Hearth refuses to re-home a link without an explicit
+    /// unlink from the current owner.
+    FederationAlreadyLinked,
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -290,6 +338,22 @@ impl fmt::Display for IdentityError {
                 write!(f, "approved scope was not in the original request")
             }
             Self::ConsentNotFound => write!(f, "no consent record for this client"),
+            Self::FederationUnknownConnector => write!(f, "unknown federation connector"),
+            Self::FederationInvalidState => write!(f, "invalid federation state"),
+            Self::FederationUpstreamError { provider, reason } => {
+                write!(f, "federation upstream error ({provider}): {reason}")
+            }
+            Self::FederationTokenVerificationFailed => {
+                write!(f, "federation token verification failed")
+            }
+            Self::FederationEmailNotVerified => {
+                write!(f, "upstream email is not verified")
+            }
+            Self::FederationLinkConfirmationRequired { .. } => {
+                write!(f, "federation login requires confirm-to-link")
+            }
+            Self::FederationNotLinked => write!(f, "external identity is not linked"),
+            Self::FederationAlreadyLinked => write!(f, "external identity is already linked"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -356,6 +420,14 @@ impl std::error::Error for IdentityError {
             | Self::ConsentTicketExpired
             | Self::ConsentScopeNotRequested
             | Self::ConsentNotFound
+            | Self::FederationUnknownConnector
+            | Self::FederationInvalidState
+            | Self::FederationUpstreamError { .. }
+            | Self::FederationTokenVerificationFailed
+            | Self::FederationEmailNotVerified
+            | Self::FederationLinkConfirmationRequired { .. }
+            | Self::FederationNotLinked
+            | Self::FederationAlreadyLinked
             | Self::SystemRealmProtected { .. }
             | Self::Serialization { .. } => None,
         }
@@ -785,6 +857,83 @@ mod tests {
         assert!(format!("{}", IdentityError::ConsentScopeNotRequested)
             .contains("not in the original request"));
         assert!(format!("{}", IdentityError::ConsentNotFound).contains("no consent record"));
+    }
+
+    #[test]
+    fn display_federation_variants() {
+        assert!(format!("{}", IdentityError::FederationUnknownConnector)
+            .contains("unknown federation connector"));
+        assert!(format!("{}", IdentityError::FederationInvalidState)
+            .contains("invalid federation state"));
+        assert!(format!(
+            "{}",
+            IdentityError::FederationUpstreamError {
+                provider: "google".to_string(),
+                reason: "bad response".to_string(),
+            }
+        )
+        .contains("google"));
+        assert!(format!(
+            "{}",
+            IdentityError::FederationUpstreamError {
+                provider: "google".to_string(),
+                reason: "bad response".to_string(),
+            }
+        )
+        .contains("bad response"));
+        assert!(format!("{}", IdentityError::FederationTokenVerificationFailed)
+            .contains("token verification failed"));
+        assert!(format!("{}", IdentityError::FederationEmailNotVerified)
+            .contains("email is not verified"));
+        assert!(format!(
+            "{}",
+            IdentityError::FederationLinkConfirmationRequired {
+                ticket: "abc".to_string()
+            }
+        )
+        .contains("confirm-to-link"));
+        assert!(format!("{}", IdentityError::FederationNotLinked)
+            .contains("external identity is not linked"));
+        assert!(format!("{}", IdentityError::FederationAlreadyLinked)
+            .contains("already linked"));
+    }
+
+    #[test]
+    fn federation_errors_have_no_source() {
+        assert!(IdentityError::FederationUnknownConnector.source().is_none());
+        assert!(IdentityError::FederationInvalidState.source().is_none());
+        assert!((IdentityError::FederationUpstreamError {
+            provider: "x".to_string(),
+            reason: "y".to_string(),
+        })
+        .source()
+        .is_none());
+        assert!(IdentityError::FederationTokenVerificationFailed
+            .source()
+            .is_none());
+        assert!(IdentityError::FederationEmailNotVerified.source().is_none());
+        assert!((IdentityError::FederationLinkConfirmationRequired {
+            ticket: "t".to_string()
+        })
+        .source()
+        .is_none());
+        assert!(IdentityError::FederationNotLinked.source().is_none());
+        assert!(IdentityError::FederationAlreadyLinked.source().is_none());
+    }
+
+    #[test]
+    fn federation_upstream_error_sanitizes_reason_field() {
+        // Regression guard: `FederationUpstreamError.reason` is a free
+        // string. Callers MUST NOT stuff raw HTTP bodies, client secrets,
+        // or upstream stack traces into it. The test below just asserts
+        // the Display format is stable; actual sanitization is enforced
+        // at callsites (connector impls).
+        let err = IdentityError::FederationUpstreamError {
+            provider: "github".to_string(),
+            reason: "upstream returned 500".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.starts_with("federation upstream error (github):"));
     }
 
     #[test]

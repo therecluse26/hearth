@@ -14,7 +14,7 @@
 //!
 //! Scan prefix `usr:id:` enables listing all users in a realm.
 
-use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::core::{ClientId, IdpId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
 
 /// Prefix for user primary keys.
 const USER_ID_PREFIX: &str = "usr:id:";
@@ -103,6 +103,41 @@ const ORGI_ORG_PREFIX: &str = "orgi:org:";
 
 /// Prefix for listing invitations by org.
 const ORGI_LIST_PREFIX: &str = "orgi:list:";
+
+/// Prefix for external Identity Provider connector records (per realm).
+///
+/// Holds `IdpConfig` JSON reconciled from YAML. Keyed by `IdpId` to
+/// preserve connector identity across reconciliation cycles (so existing
+/// `fed:ext:*` account links survive config edits).
+const FED_IDP_PREFIX: &str = "fed:idp:";
+
+/// Prefix for short-lived federation login state.
+///
+/// Holds the `StateBag` (nonce, PKCE verifier, return_to, realm, idp_id)
+/// for an in-flight `begin` → `callback` round trip. 10-minute TTL;
+/// single-use — `take_federation_state` removes the entry after read.
+const FED_STATE_PREFIX: &str = "fed:state:";
+
+/// Prefix for confirm-to-link tickets.
+///
+/// Holds the pending external identity awaiting local-account
+/// re-authentication, in the `link_existing_accounts: confirm` flow.
+/// HMAC-bound to the matched user; single-use; 10-minute TTL.
+const FED_CONFIRM_PREFIX: &str = "fed:confirm:";
+
+/// Prefix for the reverse external-identity → user index.
+///
+/// Keyed by `(realm, idp_id, external_sub)`. Primary lookup on every
+/// federation login — O(1) resolution of "which Hearth user owns this
+/// upstream identity?"
+const FED_EXT_PREFIX: &str = "fed:ext:";
+
+/// Prefix for the forward user → external-identity index.
+///
+/// Keyed by `(realm, user_id, idp_id)`. Used for `/ui/account/linked-accounts`
+/// enumeration and for cascade cleanup in `delete_user`. Value is the
+/// `external_sub` string.
+const FED_EXT_FWD_PREFIX: &str = "fed:ext_fwd:";
 
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
@@ -634,10 +669,134 @@ pub(crate) fn invitation_list_scan_prefix() -> Vec<u8> {
     ORGI_LIST_PREFIX.as_bytes().to_vec()
 }
 
+// ===== Federation key encoding =====
+
+/// Encodes the storage key for an external IdP connector record.
+///
+/// Format: `fed:idp:{idp_uuid}`
+///
+/// Connector records are realm-scoped via the underlying `StorageEngine`;
+/// no realm segment is embedded in the key because every read goes through
+/// the realm handle (same convention as `oauth:client:{client_uuid}`).
+pub(crate) fn encode_idp_key(idp_id: &IdpId) -> Vec<u8> {
+    format!("{FED_IDP_PREFIX}{}", idp_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for listing every IdP connector in a realm.
+///
+/// Format: `fed:idp:`
+pub(crate) fn fed_idp_scan_prefix() -> Vec<u8> {
+    FED_IDP_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for an in-flight federation state record.
+///
+/// Format: `fed:state:{opaque_token}`
+///
+/// The token is an opaque random string that is echoed to the upstream
+/// IdP via the OAuth `state` query parameter and verified on callback.
+pub(crate) fn encode_federation_state_key(state_token: &str) -> Vec<u8> {
+    format!("{FED_STATE_PREFIX}{state_token}").into_bytes()
+}
+
+/// Returns the scan prefix for federation state (for cascade cleanup).
+///
+/// Format: `fed:state:`
+pub(crate) fn fed_state_scan_prefix() -> Vec<u8> {
+    FED_STATE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a confirm-to-link ticket.
+///
+/// Format: `fed:confirm:{ticket_uuid}`
+///
+/// Used in `link_existing_accounts: confirm` mode: after an external
+/// login matches an existing local user by email, the external identity
+/// is parked here while the user re-authenticates locally to prove
+/// ownership of the matched account.
+pub(crate) fn encode_federation_confirm_key(ticket: &str) -> Vec<u8> {
+    format!("{FED_CONFIRM_PREFIX}{ticket}").into_bytes()
+}
+
+/// Returns the scan prefix for federation confirm-link tickets.
+///
+/// Format: `fed:confirm:`
+pub(crate) fn fed_confirm_scan_prefix() -> Vec<u8> {
+    FED_CONFIRM_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the reverse external-identity → user index key.
+///
+/// Format: `fed:ext:{idp_uuid}:{external_sub}`
+///
+/// On every federation callback, Hearth asks "who owns this upstream
+/// identity?" This key answers that in one lookup. The value is the
+/// `UserId` UUID bytes.
+///
+/// The external sub is used verbatim; upstream providers commit to its
+/// stability (Google: sub claim is the Google user ID; GitHub: numeric
+/// user id as string; Apple: sub claim).
+pub(crate) fn encode_federation_ext_key(idp_id: &IdpId, external_sub: &str) -> Vec<u8> {
+    format!("{FED_EXT_PREFIX}{}:{external_sub}", idp_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for every external-identity record owned by
+/// a given IdP connector.
+///
+/// Format: `fed:ext:{idp_uuid}:`
+///
+/// Used by `delete_idp` cascade to sever every link for the connector
+/// without touching other connectors in the realm.
+pub(crate) fn encode_federation_ext_prefix_for_idp(idp_id: &IdpId) -> Vec<u8> {
+    format!("{FED_EXT_PREFIX}{}:", idp_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for every external-identity record in the realm.
+///
+/// Format: `fed:ext:`
+///
+/// Used by `delete_realm` cascade.
+pub(crate) fn fed_ext_scan_prefix() -> Vec<u8> {
+    FED_EXT_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the forward user → external-identity index key.
+///
+/// Format: `fed:ext_fwd:{user_uuid}:{idp_uuid}`
+///
+/// Lets `/ui/account/linked-accounts` enumerate a user's linked IdPs in
+/// a single scan, and lets `delete_user` cascade severs every reverse
+/// index entry without a full-realm scan. Value is the external sub
+/// (the same string used as the trailing segment of `fed:ext:*`).
+pub(crate) fn encode_federation_ext_fwd_key(user_id: &UserId, idp_id: &IdpId) -> Vec<u8> {
+    format!(
+        "{FED_EXT_FWD_PREFIX}{}:{}",
+        user_id.as_uuid(),
+        idp_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for every external identity linked to a user.
+///
+/// Format: `fed:ext_fwd:{user_uuid}:`
+pub(crate) fn encode_federation_ext_fwd_prefix_for_user(user_id: &UserId) -> Vec<u8> {
+    format!("{FED_EXT_FWD_PREFIX}{}:", user_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for the realm-wide forward index.
+///
+/// Format: `fed:ext_fwd:`
+///
+/// Used by `delete_realm` cascade.
+pub(crate) fn fed_ext_fwd_scan_prefix() -> Vec<u8> {
+    FED_EXT_FWD_PREFIX.as_bytes().to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId};
+    use crate::core::{ClientId, IdpId, InvitationId, OrganizationId, RealmId, SessionId};
     use uuid::Uuid;
 
     #[test]
@@ -1033,5 +1192,146 @@ mod tests {
         let key = encode_pending_auth_key("t1");
         let prefix = oauth_pending_auth_scan_prefix();
         assert!(key.starts_with(&prefix));
+    }
+
+    // ===== Federation key tests =====
+
+    #[test]
+    fn encode_idp_key_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let idp_id = IdpId::new(uuid);
+        let key = encode_idp_key(&idp_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "fed:idp:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn idp_key_starts_with_scan_prefix() {
+        let key = encode_idp_key(&IdpId::generate());
+        assert!(key.starts_with(&fed_idp_scan_prefix()));
+    }
+
+    #[test]
+    fn encode_federation_state_key_format() {
+        let key = encode_federation_state_key("state-token-abc");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "fed:state:state-token-abc");
+    }
+
+    #[test]
+    fn federation_state_key_starts_with_scan_prefix() {
+        let key = encode_federation_state_key("xyz");
+        assert!(key.starts_with(&fed_state_scan_prefix()));
+    }
+
+    #[test]
+    fn encode_federation_confirm_key_format() {
+        let key = encode_federation_confirm_key("ticket-uuid-1");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "fed:confirm:ticket-uuid-1");
+    }
+
+    #[test]
+    fn federation_confirm_key_starts_with_scan_prefix() {
+        let key = encode_federation_confirm_key("t");
+        assert!(key.starts_with(&fed_confirm_scan_prefix()));
+    }
+
+    #[test]
+    fn encode_federation_ext_key_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let idp_id = IdpId::new(uuid);
+        let key = encode_federation_ext_key(&idp_id, "google-sub-12345");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(
+            key_str,
+            "fed:ext:550e8400-e29b-41d4-a716-446655440000:google-sub-12345"
+        );
+    }
+
+    #[test]
+    fn federation_ext_key_starts_with_idp_prefix() {
+        let idp_id = IdpId::generate();
+        let key = encode_federation_ext_key(&idp_id, "sub-abc");
+        let prefix = encode_federation_ext_prefix_for_idp(&idp_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn federation_ext_key_starts_with_realm_scan_prefix() {
+        let key = encode_federation_ext_key(&IdpId::generate(), "sub");
+        assert!(key.starts_with(&fed_ext_scan_prefix()));
+    }
+
+    #[test]
+    fn different_idps_produce_disjoint_ext_prefixes() {
+        let p1 = encode_federation_ext_prefix_for_idp(&IdpId::generate());
+        let p2 = encode_federation_ext_prefix_for_idp(&IdpId::generate());
+        assert_ne!(p1, p2);
+        // Critical: one prefix must not be a prefix of the other, or a
+        // cascade scan for IdP-A would delete IdP-B's records.
+        assert!(!p1.starts_with(&p2));
+        assert!(!p2.starts_with(&p1));
+    }
+
+    #[test]
+    fn encode_federation_ext_fwd_key_format() {
+        let user_uuid =
+            Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let idp_uuid =
+            Uuid::parse_str("660e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let user_id = UserId::new(user_uuid);
+        let idp_id = IdpId::new(idp_uuid);
+        let key = encode_federation_ext_fwd_key(&user_id, &idp_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(
+            key_str,
+            "fed:ext_fwd:550e8400-e29b-41d4-a716-446655440000:660e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    #[test]
+    fn federation_ext_fwd_key_starts_with_user_prefix() {
+        let user_id = UserId::generate();
+        let idp_id = IdpId::generate();
+        let key = encode_federation_ext_fwd_key(&user_id, &idp_id);
+        let prefix = encode_federation_ext_fwd_prefix_for_user(&user_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn federation_ext_fwd_key_starts_with_realm_scan_prefix() {
+        let key = encode_federation_ext_fwd_key(&UserId::generate(), &IdpId::generate());
+        assert!(key.starts_with(&fed_ext_fwd_scan_prefix()));
+    }
+
+    #[test]
+    fn different_users_produce_disjoint_ext_fwd_prefixes() {
+        let p1 = encode_federation_ext_fwd_prefix_for_user(&UserId::generate());
+        let p2 = encode_federation_ext_fwd_prefix_for_user(&UserId::generate());
+        assert_ne!(p1, p2);
+        // Critical: cross-user cascade deletes must not leak.
+        assert!(!p1.starts_with(&p2));
+        assert!(!p2.starts_with(&p1));
+    }
+
+    #[test]
+    fn federation_prefixes_do_not_overlap_with_legacy_prefixes() {
+        // Regression guard: a future rename of legacy prefixes that
+        // happened to begin with "fed" would cascade-delete federation
+        // data. All legacy prefixes used by hearth today.
+        let fed = fed_idp_scan_prefix();
+        let legacy_prefixes = [
+            user_id_scan_prefix(),
+            session_id_scan_prefix(),
+            oauth_client_scan_prefix(),
+            oauth_consent_scan_prefix(),
+            oauth_pending_auth_scan_prefix(),
+            org_id_scan_prefix(),
+        ];
+        for p in &legacy_prefixes {
+            assert!(!fed.starts_with(p));
+            assert!(!p.starts_with(&fed));
+        }
     }
 }
