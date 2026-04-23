@@ -1,25 +1,34 @@
 //! Migration from external identity providers.
 //!
 //! This module converts third-party identity exports into Hearth's data
-//! model. Currently only Keycloak realm exports are supported; Auth0,
-//! Okta, and others are deferred to later phases.
+//! model. Currently supported sources:
+//!
+//! - **Keycloak**: single realm-export JSON file.
+//! - **Auth0**: operator-assembled bundle JSON (see
+//!   `examples/auth0-migration-bundler/`).
 //!
 //! # Surface
 //!
-//! The public API is intentionally narrow:
-//!
-//! - [`KeycloakImporter`] — orchestrates a realm import against an
-//!   `IdentityEngine` + `AuthzEngine` pair.
-//! - [`KeycloakRealmExport`] — serde model for a realm export JSON file.
+//! - [`KeycloakImporter`] + [`KeycloakRealmExport`] + [`ImportOptions`]
+//!   for Keycloak.
+//! - [`Auth0Importer`] + [`Auth0Bundle`] + [`Auth0ImportOptions`] for
+//!   Auth0.
 //! - [`MigrationError`] — unified error type wrapping lower-layer errors.
 //!
-//! Credential conversion (Keycloak's `{credentialData, secretData}` →
-//! PHC format) is an internal detail of the importer; direct callers
-//! should use `import_realm()`.
+//! Credential conversion (source-specific hash formats → PHC) is an
+//! internal detail of each importer; direct callers use the importer's
+//! `import_*` entry point.
 
+mod auth0;
+mod auth0_credentials;
 mod credentials;
 mod error;
 mod keycloak;
 
+pub use auth0::{
+    Auth0Bundle, Auth0Client, Auth0ImportOptions, Auth0Importer, Auth0Organization,
+    Auth0OrganizationMember, Auth0PasswordHash, Auth0PasswordHashValue, Auth0Role, Auth0Tenant,
+    Auth0User,
+};
 pub use error::MigrationError;
 pub use keycloak::{ImportOptions, KeycloakImporter, KeycloakRealmExport};

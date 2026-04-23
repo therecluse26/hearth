@@ -716,9 +716,7 @@ impl EmbeddedIdentityEngine {
         let first_name = validation::validate_name_part(&request.first_name, "first_name")?;
         let last_name = validation::validate_name_part(&request.last_name, "last_name")?;
         let display_name = if request.display_name.trim().is_empty() {
-            let synthesized = format!("{} {}", first_name, last_name)
-                .trim()
-                .to_string();
+            let synthesized = format!("{} {}", first_name, last_name).trim().to_string();
             if synthesized.is_empty() {
                 return Err(IdentityError::InvalidInput {
                     reason: "display_name or first_name/last_name required".to_string(),
@@ -4983,9 +4981,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let first_name = validation::validate_name_part(&request.first_name, "first_name")?;
         let last_name = validation::validate_name_part(&request.last_name, "last_name")?;
         let display_name = if request.display_name.trim().is_empty() {
-            let synthesized = format!("{} {}", first_name, last_name)
-                .trim()
-                .to_string();
+            let synthesized = format!("{} {}", first_name, last_name).trim().to_string();
             if synthesized.is_empty() {
                 return Err(IdentityError::InvalidInput {
                     reason: "display_name or first_name/last_name required".to_string(),
@@ -10707,11 +10703,7 @@ mod tests {
 
     // ===== SCIM externalId tests =====
 
-    fn create_scim_user(
-        engine: &EmbeddedIdentityEngine,
-        realm: &RealmId,
-        email: &str,
-    ) -> UserId {
+    fn create_scim_user(engine: &EmbeddedIdentityEngine, realm: &RealmId, email: &str) -> UserId {
         engine
             .create_user(
                 realm,

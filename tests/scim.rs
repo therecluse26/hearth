@@ -8,8 +8,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple, SubjectRef,
-    TupleWrite,
+    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
+    SubjectRef, TupleWrite,
 };
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
@@ -57,11 +57,7 @@ fn build_rig() -> Rig {
         Arc::clone(&engine) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
     ));
-    let state = Arc::new(AppState::new(
-        identity.clone(),
-        authz.clone(),
-        audit,
-    ));
+    let state = Arc::new(AppState::new(identity.clone(), authz.clone(), audit));
     Rig {
         app: router(state),
         identity,
@@ -124,7 +120,12 @@ async fn send(app: &axum::Router, req: Request<Body>) -> (StatusCode, Value) {
     (status, value)
 }
 
-fn scim_request(method: &str, path: &str, realm: &RealmId, token: &str) -> axum::http::request::Builder {
+fn scim_request(
+    method: &str,
+    path: &str,
+    realm: &RealmId,
+    token: &str,
+) -> axum::http::request::Builder {
     Request::builder()
         .method(method)
         .uri(path)
@@ -215,17 +216,23 @@ async fn users_post_duplicate_external_id_is_conflict() {
     assert_eq!(status1, StatusCode::CREATED);
 
     let second = scim_request("POST", "/scim/v2/Users", &realm, &token)
-        .body(Body::from(json!({
-            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
-            "userName": "bob@example.com",
-            "externalId": "okta-dup",
-            "name": {"givenName": "Bob", "familyName": "Example"}
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                "userName": "bob@example.com",
+                "externalId": "okta-dup",
+                "name": {"givenName": "Bob", "familyName": "Example"}
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (status2, body2) = send(&rig.app, second).await;
     assert_eq!(status2, StatusCode::CONFLICT);
     assert_eq!(body2["scimType"], "uniqueness");
-    assert_eq!(body2["schemas"][0], "urn:ietf:params:scim:api:messages:2.0:Error");
+    assert_eq!(
+        body2["schemas"][0],
+        "urn:ietf:params:scim:api:messages:2.0:Error"
+    );
 }
 
 #[tokio::test]
@@ -233,10 +240,13 @@ async fn users_get_by_id_roundtrips() {
     let rig = build_rig();
     let (realm, token) = setup_admin(&rig);
     let post = scim_request("POST", "/scim/v2/Users", &realm, &token)
-        .body(Body::from(json!({
-            "userName": "alice@example.com",
-            "name": {"givenName": "Alice", "familyName": "Example"}
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "userName": "alice@example.com",
+                "name": {"givenName": "Alice", "familyName": "Example"}
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (_, created) = send(&rig.app, post).await;
     let id = created["id"].as_str().unwrap();
@@ -255,20 +265,26 @@ async fn users_patch_active_flips_to_disabled() {
     let rig = build_rig();
     let (realm, token) = setup_admin(&rig);
     let post = scim_request("POST", "/scim/v2/Users", &realm, &token)
-        .body(Body::from(json!({
-            "userName": "alice@example.com",
-            "name": {"givenName": "Alice", "familyName": "Example"},
-            "active": true
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "userName": "alice@example.com",
+                "name": {"givenName": "Alice", "familyName": "Example"},
+                "active": true
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (_, created) = send(&rig.app, post).await;
     let id = created["id"].as_str().unwrap();
 
     let patch = scim_request("PATCH", &format!("/scim/v2/Users/{id}"), &realm, &token)
-        .body(Body::from(json!({
-            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
-            "Operations": [{"op": "replace", "path": "active", "value": false}]
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                "Operations": [{"op": "replace", "path": "active", "value": false}]
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (status, body) = send(&rig.app, patch).await;
     assert_eq!(status, StatusCode::OK);
@@ -280,11 +296,14 @@ async fn users_delete_cascades_and_returns_204() {
     let rig = build_rig();
     let (realm, token) = setup_admin(&rig);
     let post = scim_request("POST", "/scim/v2/Users", &realm, &token)
-        .body(Body::from(json!({
-            "userName": "alice@example.com",
-            "externalId": "okta-delete",
-            "name": {"givenName": "Alice", "familyName": "Example"}
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "userName": "alice@example.com",
+                "externalId": "okta-delete",
+                "name": {"givenName": "Alice", "familyName": "Example"}
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (_, created) = send(&rig.app, post).await;
     let id = created["id"].as_str().unwrap();
@@ -297,11 +316,14 @@ async fn users_delete_cascades_and_returns_204() {
 
     // Re-provision with the same externalId must succeed (cascade).
     let repost = scim_request("POST", "/scim/v2/Users", &realm, &token)
-        .body(Body::from(json!({
-            "userName": "alice2@example.com",
-            "externalId": "okta-delete",
-            "name": {"givenName": "Alice", "familyName": "Example"}
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "userName": "alice2@example.com",
+                "externalId": "okta-delete",
+                "name": {"givenName": "Alice", "familyName": "Example"}
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (status, _) = send(&rig.app, repost).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -313,17 +335,20 @@ async fn users_list_supports_filter_and_pagination() {
     let (realm, token) = setup_admin(&rig);
     for i in 0..5 {
         let post = scim_request("POST", "/scim/v2/Users", &realm, &token)
-            .body(Body::from(json!({
-                "userName": format!("u{i}@example.com"),
-                "name": {"givenName": "U", "familyName": format!("{i}")}
-            }).to_string()))
+            .body(Body::from(
+                json!({
+                    "userName": format!("u{i}@example.com"),
+                    "name": {"givenName": "U", "familyName": format!("{i}")}
+                })
+                .to_string(),
+            ))
             .unwrap();
         let (status, _) = send(&rig.app, post).await;
         assert_eq!(status, StatusCode::CREATED);
     }
     // Filter by userName exact match.
-    let filter: String = form_urlencoded::byte_serialize(r#"userName eq "u2@example.com""#.as_bytes())
-        .collect();
+    let filter: String =
+        form_urlencoded::byte_serialize(r#"userName eq "u2@example.com""#.as_bytes()).collect();
     let get = scim_request(
         "GET",
         &format!("/scim/v2/Users?filter={filter}"),
@@ -348,21 +373,27 @@ async fn groups_post_creates_organization_and_members() {
 
     // Provision a user first so we have something to reference.
     let user_post = scim_request("POST", "/scim/v2/Users", &realm, &token)
-        .body(Body::from(json!({
-            "userName": "m@example.com",
-            "name": {"givenName": "M", "familyName": "One"}
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "userName": "m@example.com",
+                "name": {"givenName": "M", "familyName": "One"}
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (_, created_user) = send(&rig.app, user_post).await;
     let user_id = created_user["id"].as_str().unwrap().to_string();
 
     let gpost = scim_request("POST", "/scim/v2/Groups", &realm, &token)
-        .body(Body::from(json!({
-            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
-            "displayName": "Engineering",
-            "externalId": "okta-eng",
-            "members": [{"value": user_id}]
-        }).to_string()))
+        .body(Body::from(
+            json!({
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+                "displayName": "Engineering",
+                "externalId": "okta-eng",
+                "members": [{"value": user_id}]
+            })
+            .to_string(),
+        ))
         .unwrap();
     let (status, body) = send(&rig.app, gpost).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -393,17 +424,19 @@ async fn missing_bearer_returns_scim_401() {
         .unwrap();
     let (status, body) = send(&rig.app, req).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(body["schemas"][0], "urn:ietf:params:scim:api:messages:2.0:Error");
+    assert_eq!(
+        body["schemas"][0],
+        "urn:ietf:params:scim:api:messages:2.0:Error"
+    );
 }
 
 #[tokio::test]
 async fn invalid_filter_returns_scim_400_with_scim_type() {
     let rig = build_rig();
     let (realm, token) = setup_admin(&rig);
-    let filter: String = form_urlencoded::byte_serialize(
-        r#"emails[type eq "work"].value eq "x""#.as_bytes(),
-    )
-    .collect();
+    let filter: String =
+        form_urlencoded::byte_serialize(r#"emails[type eq "work"].value eq "x""#.as_bytes())
+            .collect();
     let req = scim_request(
         "GET",
         &format!("/scim/v2/Users?filter={filter}"),

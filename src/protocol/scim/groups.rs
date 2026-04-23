@@ -44,7 +44,10 @@ fn iso8601(micros: i64) -> String {
     let nanos = i128::from(micros) * 1_000;
     time::OffsetDateTime::from_unix_timestamp_nanos(nanos)
         .ok()
-        .and_then(|dt| dt.format(&time::format_description::well_known::Rfc3339).ok())
+        .and_then(|dt| {
+            dt.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
@@ -142,24 +145,20 @@ fn reconcile_members(
         .identity
         .list_members(&auth.realm_id, org_id, None, 1000)
         .map_err(|e| from_identity_error(&e))?;
-    let current_ids: std::collections::HashSet<UserId> = current
-        .items
-        .iter()
-        .map(|m| m.user_id().clone())
-        .collect();
+    let current_ids: std::collections::HashSet<UserId> =
+        current.items.iter().map(|m| m.user_id().clone()).collect();
 
     let desired_ids: std::collections::HashSet<UserId> = desired
         .iter()
-        .filter_map(|m| {
-            uuid::Uuid::parse_str(&m.value).ok().map(UserId::new)
-        })
+        .filter_map(|m| uuid::Uuid::parse_str(&m.value).ok().map(UserId::new))
         .collect();
 
     // Add missing.
     for id in desired_ids.difference(&current_ids) {
-        if let Err(e) = state
-            .identity
-            .add_member(&auth.realm_id, org_id, id, OrganizationRole::Member)
+        if let Err(e) =
+            state
+                .identity
+                .add_member(&auth.realm_id, org_id, id, OrganizationRole::Member)
         {
             // AlreadyMember is benign here; surface anything else.
             if !matches!(e, crate::identity::IdentityError::AlreadyMember) {
@@ -333,7 +332,10 @@ pub async fn list_groups(
         None => None,
     };
 
-    let page = match state.identity.list_organizations(&auth.realm_id, None, 1000) {
+    let page = match state
+        .identity
+        .list_organizations(&auth.realm_id, None, 1000)
+    {
         Ok(p) => p,
         Err(e) => return from_identity_error(&e).into_response(),
     };
@@ -357,11 +359,7 @@ pub async fn list_groups(
     let start = q.start_index.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(100).min(200);
     let start_idx0 = start.saturating_sub(1);
-    let slice: Vec<ScimGroup> = resources
-        .into_iter()
-        .skip(start_idx0)
-        .take(count)
-        .collect();
+    let slice: Vec<ScimGroup> = resources.into_iter().skip(start_idx0).take(count).collect();
     Json(ListResponse::new(total, start, slice)).into_response()
 }
 
@@ -495,9 +493,10 @@ pub async fn patch_group(
     if scim.external_id != current_ext {
         match scim.external_id.as_deref() {
             Some(ext) if !ext.is_empty() => {
-                if let Err(e) = state
-                    .identity
-                    .set_scim_group_external_id(&auth.realm_id, &org_id, ext)
+                if let Err(e) =
+                    state
+                        .identity
+                        .set_scim_group_external_id(&auth.realm_id, &org_id, ext)
                 {
                     return from_identity_error(&e).into_response();
                 }

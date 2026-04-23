@@ -224,17 +224,29 @@ grpc_health_probe -addr=localhost:<port>
 - **Why It Matters:** Developer adoption requires discoverable, navigable documentation. Raw markdown in a Git repository is not a documentation site. This is explicitly a Phase 1 deliverable that was not completed.
 - **Priority Rationale:** P1 — Phase 1 exit criteria explicitly lists this. Open-source projects without documentation don't get adopted.
 
-### 10. Additional Migration Tools
+### 10. Additional Migration Tools — PARTIALLY COMPLETED ✅ (Auth0 Phase 1 shipped)
 
 - **Vision ref:** §8.3 describes migration paths for Auth0, Clerk, Cognito, Firebase Auth, and generic SCIM/CSV/JSON import.
-- **Current State:** Only Keycloak migration is implemented (`src/identity/migration/keycloak.rs`, `hearth migrate keycloak` CLI).
-- **What's Missing:**
-  - Auth0 migration: import users, connections, and applications via Auth0 Management API.
+- **Current State:**
+  - **Keycloak**: implemented (`src/identity/migration/keycloak.rs`, `hearth migrate keycloak` CLI).
+  - **Auth0 Phase 1**: implemented. Bundle-file input format (`{tenant, users, clients, organizations, roles}`); separate Node bundler (`examples/auth0-migration-bundler/`) assembles the bundle from the Management API. Bcrypt / argon2 / pbkdf2-sha256 / scrypt password-hash passthrough when exportable; md5/sha1 land the user without a credential + warning. Organizations + members + role assignments + `blocked` / `email_verified` → `UserStatus` all mapped.
+  - CLI: `hearth migrate auth0 --file bundle.json --data-dir ./data [--dry-run] [--realm <uuid>]`.
+  - Tests: 7 integration tests (`tests/migration_auth0.rs`) + 30 unit tests co-located in `src/identity/migration/auth0{,_credentials}.rs`.
+- **Still Missing:**
+  - **Auth0 live Management API client inside Hearth** (deferred — bundler is a separate Node process).
+  - **Auth0 federated-identity connections** (Google / SAML / AD — orthogonal to Hearth's own federation module).
+  - **Auth0 Rules / Actions / Hooks** (server-side logic has no Hearth equivalent).
   - Clerk migration: import users and organizations via Clerk API.
   - Generic import: CSV/JSON bulk import for custom user databases.
   - SCIM-based bulk import for systems with SCIM export.
   - Shadow mode: run Hearth alongside existing auth, replaying traffic to validate correctness before cutover (Vision §5.5).
   - Export tools: full realm export to standard formats.
+- **Key files (Auth0 Phase 1):**
+  - Engine-adjacent: `src/identity/migration/auth0.rs`, `auth0_credentials.rs`, `mod.rs` (re-exports)
+  - CLI: `src/main.rs` (`MigrateSource::Auth0`, `run_migrate_auth0`)
+  - Fixture: `tests/fixtures/auth0/tenant-export.json`
+  - Tests: `tests/migration_auth0.rs`
+  - Bundler: `examples/auth0-migration-bundler/{bundle.mjs,README.md,package.json,.env.example}`
 - **Why It Matters:** Migration friction is the #1 barrier to adoption. Keycloak is one source among many. Teams on Auth0, Clerk, or homegrown systems need a path in.
 - **Priority Rationale:** P1 for Auth0/Clerk (large addressable market). P2 for Cognito/Firebase. Shadow mode is P2.
 
@@ -565,7 +577,7 @@ Addresses two admin-setup bugs on multi-realm deployments: verification links hi
 | 7 | ~~SCIM 2.0~~ — **DONE** (Phase 1; hardening recommended) | P1 | §5.3, §6.1 | — |
 | 8 | ~~gRPC management API~~ — **DONE** | P1 | §6.1 | — |
 | 9 | Documentation site | P1 | Phase 1 exit | Medium |
-| 10 | Additional migration tools | P1 | §8.3 | Medium per tool |
+| 10 | Additional migration tools — **Auth0 Phase 1 DONE** ✅ (Clerk/CSV/shadow-mode pending) | P1 | §8.3 | Medium per tool |
 | 11 | Prometheus / OpenTelemetry | P2 | Phase 2 | Medium |
 | 12 | Backup / restore / snapshots | P2 | §6.1 | Large |
 | 13 | Webhook event delivery | P2 | §A Q#3 | Medium |
@@ -590,11 +602,13 @@ Gaps 1 ✅, 2 ✅, 3 ✅, and 4 ✅ complete. Remaining: 15 — CI/CD.
 Add gaps 9, 11 — documentation site, Prometheus metrics. (Consent screen ✅, social login ✅.)
 
 **Enterprise-ready (v1.0 per Phase 2 exit criteria):**
-Add gaps 10, 12, 14, 17, 21 — migration tools, backup, encryption, deployment artifacts, Raft. (gRPC ✅. SAML Phase 1 ✅ and SCIM Phase 1 ✅ — recommend hardening pass before enterprise GA.)
+Add gaps 10 (remaining — Clerk / CSV / shadow mode), 12, 14, 17, 21 — migration tools, backup, encryption, deployment artifacts, Raft. (gRPC ✅. SAML Phase 1 ✅ and SCIM Phase 1 ✅ — recommend hardening pass before enterprise GA. Auth0 migration Phase 1 ✅.)
 
 ---
 
 *Last updated: 2026-04-23. Revised to mark gap #7 (SCIM 2.0 provisioning) as completed — P1 list narrowed from 4 to 3 items.*
+
+*Updated 2026-04-23: gap #10 Auth0 migration Phase 1 shipped (bundle-file input + separate Node bundler). Clerk, CSV/JSON, SCIM-based import, shadow mode, and export tools remain open.*
 
 ---
 

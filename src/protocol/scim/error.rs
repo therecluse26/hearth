@@ -124,7 +124,8 @@ impl IntoResponse for ScimError {
         };
         let mut resp = (self.status, Json(body)).into_response();
         if let Ok(ct) = axum::http::HeaderValue::from_str("application/scim+json") {
-            resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, ct);
+            resp.headers_mut()
+                .insert(axum::http::header::CONTENT_TYPE, ct);
         }
         resp
     }
@@ -139,18 +140,14 @@ pub fn from_identity_error(err: &crate::identity::IdentityError) -> ScimError {
         IdentityError::UserNotFound | IdentityError::OrganizationNotFound => {
             ScimError::not_found("resource not found")
         }
-        IdentityError::DuplicateEmail => {
-            ScimError::uniqueness("userName/email already in use")
-        }
+        IdentityError::DuplicateEmail => ScimError::uniqueness("userName/email already in use"),
         IdentityError::DuplicateScimExternalId => {
             ScimError::uniqueness("externalId already in use")
         }
         IdentityError::DuplicateOrgSlug => {
             ScimError::uniqueness("displayName collides with existing group")
         }
-        IdentityError::InvalidInput { reason } => {
-            ScimError::invalid_value(reason.clone())
-        }
+        IdentityError::InvalidInput { reason } => ScimError::invalid_value(reason.clone()),
         IdentityError::RealmNotFound | IdentityError::RealmSuspended => {
             ScimError::forbidden("realm unavailable")
         }

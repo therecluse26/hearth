@@ -44,7 +44,11 @@ fn user_to_scim(user: &User, external_id: Option<String>, base_path: &str) -> Sc
         None
     } else {
         Some(ScimName {
-            formatted: Some(format!("{} {}", user.first_name(), user.last_name()).trim().to_string()),
+            formatted: Some(
+                format!("{} {}", user.first_name(), user.last_name())
+                    .trim()
+                    .to_string(),
+            ),
             given_name: if user.first_name().is_empty() {
                 None
             } else {
@@ -88,7 +92,10 @@ fn iso8601(micros: i64) -> String {
     let nanos = i128::from(micros) * 1_000;
     time::OffsetDateTime::from_unix_timestamp_nanos(nanos)
         .ok()
-        .and_then(|dt| dt.format(&time::format_description::well_known::Rfc3339).ok())
+        .and_then(|dt| {
+            dt.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
@@ -119,7 +126,13 @@ fn require_name(u: &ScimUser) -> Result<(String, String), ScimError> {
     }
 }
 
-fn audit(state: &AppState, auth: &crate::protocol::http::AdminAuth, action: AuditAction, user_id: &UserId, external_id: Option<&str>) {
+fn audit(
+    state: &AppState,
+    auth: &crate::protocol::http::AdminAuth,
+    action: AuditAction,
+    user_id: &UserId,
+    external_id: Option<&str>,
+) {
     let metadata = json!({
         "via": "scim",
         "external_id": external_id,
@@ -150,7 +163,10 @@ pub async fn create_user(
     // Idempotency: if the client supplies an externalId already seen in
     // this realm, refuse with 409 uniqueness (rather than create a dup).
     if let Some(ext) = &body.external_id {
-        match state.identity.find_user_by_scim_external_id(&auth.realm_id, ext) {
+        match state
+            .identity
+            .find_user_by_scim_external_id(&auth.realm_id, ext)
+        {
             Ok(Some(_)) => {
                 return ScimError::uniqueness("externalId already provisioned").into_response();
             }
@@ -321,11 +337,7 @@ pub async fn list_users(
     let start = q.start_index.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(100).min(200);
     let start_idx0 = start.saturating_sub(1);
-    let slice: Vec<ScimUser> = resources
-        .into_iter()
-        .skip(start_idx0)
-        .take(count)
-        .collect();
+    let slice: Vec<ScimUser> = resources.into_iter().skip(start_idx0).take(count).collect();
 
     Json(ListResponse::new(total, start, slice)).into_response()
 }
@@ -468,16 +480,28 @@ pub async fn patch_user(
     };
     // `display_name` Some("") would clear it — but `validate_display_name`
     // rejects empty. Re-synthesize if empty.
-    let display_name_final = req.display_name.clone().filter(|s| !s.is_empty()).or_else(|| {
-        let fn_ = scim.name.as_ref().and_then(|n| n.given_name.clone()).unwrap_or_default();
-        let ln = scim.name.as_ref().and_then(|n| n.family_name.clone()).unwrap_or_default();
-        let synth = format!("{fn_} {ln}").trim().to_string();
-        if synth.is_empty() {
-            Some(existing.display_name().to_string())
-        } else {
-            Some(synth)
-        }
-    });
+    let display_name_final = req
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let fn_ = scim
+                .name
+                .as_ref()
+                .and_then(|n| n.given_name.clone())
+                .unwrap_or_default();
+            let ln = scim
+                .name
+                .as_ref()
+                .and_then(|n| n.family_name.clone())
+                .unwrap_or_default();
+            let synth = format!("{fn_} {ln}").trim().to_string();
+            if synth.is_empty() {
+                Some(existing.display_name().to_string())
+            } else {
+                Some(synth)
+            }
+        });
     let req = UpdateUserRequest {
         display_name: display_name_final,
         ..req

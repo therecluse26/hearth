@@ -57,10 +57,7 @@ pub enum Value {
 /// unsupported-operator error.
 pub fn parse(input: &str) -> Result<FilterExpr, ScimError> {
     let tokens = tokenize(input)?;
-    let mut parser = Parser {
-        tokens,
-        pos: 0,
-    };
+    let mut parser = Parser { tokens, pos: 0 };
     let expr = parser.parse_or()?;
     if parser.pos < parser.tokens.len() {
         return Err(ScimError::invalid_filter("trailing input after filter"));
@@ -79,12 +76,16 @@ pub fn matches_user(expr: &FilterExpr, u: &ScimUser) -> bool {
             Value::Str(lit) => !s.eq_ignore_ascii_case(lit),
             Value::Bool(b) => *s != bool_as_str(*b),
         }),
-        FilterExpr::Co(attr, lit) => user_attr(u, attr)
-            .map_or(false, |s| s.to_ascii_lowercase().contains(&lit.to_ascii_lowercase())),
-        FilterExpr::Sw(attr, lit) => user_attr(u, attr)
-            .map_or(false, |s| s.to_ascii_lowercase().starts_with(&lit.to_ascii_lowercase())),
-        FilterExpr::Ew(attr, lit) => user_attr(u, attr)
-            .map_or(false, |s| s.to_ascii_lowercase().ends_with(&lit.to_ascii_lowercase())),
+        FilterExpr::Co(attr, lit) => user_attr(u, attr).map_or(false, |s| {
+            s.to_ascii_lowercase().contains(&lit.to_ascii_lowercase())
+        }),
+        FilterExpr::Sw(attr, lit) => user_attr(u, attr).map_or(false, |s| {
+            s.to_ascii_lowercase()
+                .starts_with(&lit.to_ascii_lowercase())
+        }),
+        FilterExpr::Ew(attr, lit) => user_attr(u, attr).map_or(false, |s| {
+            s.to_ascii_lowercase().ends_with(&lit.to_ascii_lowercase())
+        }),
         FilterExpr::Pr(attr) => user_attr(u, attr).is_some_and(|s| !s.is_empty()),
         FilterExpr::And(a, b) => matches_user(a, u) && matches_user(b, u),
         FilterExpr::Or(a, b) => matches_user(a, u) || matches_user(b, u),
@@ -102,12 +103,16 @@ pub fn matches_group(expr: &FilterExpr, g: &ScimGroup) -> bool {
             Value::Str(lit) => !s.eq_ignore_ascii_case(lit),
             Value::Bool(_) => true,
         }),
-        FilterExpr::Co(attr, lit) => group_attr(g, attr)
-            .map_or(false, |s| s.to_ascii_lowercase().contains(&lit.to_ascii_lowercase())),
-        FilterExpr::Sw(attr, lit) => group_attr(g, attr)
-            .map_or(false, |s| s.to_ascii_lowercase().starts_with(&lit.to_ascii_lowercase())),
-        FilterExpr::Ew(attr, lit) => group_attr(g, attr)
-            .map_or(false, |s| s.to_ascii_lowercase().ends_with(&lit.to_ascii_lowercase())),
+        FilterExpr::Co(attr, lit) => group_attr(g, attr).map_or(false, |s| {
+            s.to_ascii_lowercase().contains(&lit.to_ascii_lowercase())
+        }),
+        FilterExpr::Sw(attr, lit) => group_attr(g, attr).map_or(false, |s| {
+            s.to_ascii_lowercase()
+                .starts_with(&lit.to_ascii_lowercase())
+        }),
+        FilterExpr::Ew(attr, lit) => group_attr(g, attr).map_or(false, |s| {
+            s.to_ascii_lowercase().ends_with(&lit.to_ascii_lowercase())
+        }),
         FilterExpr::Pr(attr) => group_attr(g, attr).is_some_and(|s| !s.is_empty()),
         FilterExpr::And(a, b) => matches_group(a, g) && matches_group(b, g),
         FilterExpr::Or(a, b) => matches_group(a, g) || matches_group(b, g),
@@ -115,7 +120,11 @@ pub fn matches_group(expr: &FilterExpr, g: &ScimGroup) -> bool {
 }
 
 fn bool_as_str(b: bool) -> String {
-    if b { "true".to_string() } else { "false".to_string() }
+    if b {
+        "true".to_string()
+    } else {
+        "false".to_string()
+    }
 }
 
 fn user_attr(u: &ScimUser, attr: &str) -> Option<String> {
@@ -386,14 +395,15 @@ mod tests {
 
     #[test]
     fn or_composes() {
-        let expr = parse("userName eq \"bob\" or userName eq \"alice@example.com\"").expect("parse");
+        let expr =
+            parse("userName eq \"bob\" or userName eq \"alice@example.com\"").expect("parse");
         assert!(matches_user(&expr, &user()));
     }
 
     #[test]
     fn bracketed_path_rejected() {
-        let err = parse("emails[type eq \"work\"].value eq \"alice@example.com\"")
-            .expect_err("reject");
+        let err =
+            parse("emails[type eq \"work\"].value eq \"alice@example.com\"").expect_err("reject");
         assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
     }
 

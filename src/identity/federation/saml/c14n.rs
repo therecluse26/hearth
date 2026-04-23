@@ -87,10 +87,8 @@ pub fn canonicalize_with_inherited(
                     // Inside a stripped subtree; keep tracking depth but
                     // emit nothing.
                     if depth > d {
-                        emitted_stack
-                            .push(emitted_stack.last().cloned().unwrap_or_default());
-                        declared_stack
-                            .push(declared_stack.last().cloned().unwrap_or_default());
+                        emitted_stack.push(emitted_stack.last().cloned().unwrap_or_default());
+                        declared_stack.push(declared_stack.last().cloned().unwrap_or_default());
                         buf.clear();
                         continue;
                     }

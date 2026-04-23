@@ -104,6 +104,32 @@ enum MigrateSource {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Import an Auth0 tenant bundle (JSON).
+    ///
+    /// The bundle is assembled by a separate tool (see
+    /// `examples/auth0-migration-bundler/`) from the Auth0 Management API.
+    Auth0 {
+        /// Path to an Auth0 bundle file (JSON).
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Data directory of the target Hearth store. Required unless
+        /// `--dry-run` is set; the store will be created if it does not
+        /// exist.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+
+        /// Optional realm UUID to import into. When omitted, the bundle's
+        /// `tenant.id` is used (if a valid UUID); otherwise a fresh UUID
+        /// is generated.
+        #[arg(long)]
+        realm: Option<String>,
+
+        /// Validate the bundle and print the report without writing any
+        /// data. `--data-dir` is not required in this mode.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Realm management subcommands.
@@ -200,6 +226,19 @@ async fn main() {
             } => {
                 if let Err(e) =
                     run_migrate_keycloak(&file, data_dir.as_deref(), realm.as_deref(), dry_run)
+                {
+                    error!("{e}");
+                    std::process::exit(1);
+                }
+            }
+            MigrateSource::Auth0 {
+                file,
+                data_dir,
+                realm,
+                dry_run,
+            } => {
+                if let Err(e) =
+                    run_migrate_auth0(&file, data_dir.as_deref(), realm.as_deref(), dry_run)
                 {
                     error!("{e}");
                     std::process::exit(1);
@@ -1134,6 +1173,64 @@ fn run_migrate_keycloak(
 
     let report =
         importer.import_realm(&export, requested_realm, &ImportOptions { dry_run: false })?;
+    print_migration_report(&report);
+    Ok(())
+}
+
+/// Runs the `hearth migrate auth0` command.
+///
+/// Parses an Auth0 tenant bundle and imports its tenant, users, clients,
+/// organizations, and role assignments. In dry-run mode no state is
+/// written; otherwise a data directory is required.
+fn run_migrate_auth0(
+    file: &std::path::Path,
+    data_dir: Option<&std::path::Path>,
+    realm: Option<&str>,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use hearth::core::RealmId;
+    use hearth::identity::migration::{Auth0Bundle, Auth0ImportOptions, Auth0Importer};
+    use uuid::Uuid;
+
+    let bytes = std::fs::read(file)?;
+    let bundle: Auth0Bundle = Auth0Importer::parse(&bytes)?;
+
+    let requested_realm = realm
+        .map(|s| -> Result<RealmId, Box<dyn std::error::Error>> {
+            let uuid = Uuid::parse_str(s).map_err(|e| format!("invalid --realm UUID: {e}"))?;
+            Ok(RealmId::new(uuid))
+        })
+        .transpose()?;
+
+    if dry_run {
+        let temp_dir = tempfile::tempdir()?;
+        let storage_config = StorageConfig::dev(temp_dir.path().to_path_buf());
+        let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+        let (identity, authz) = build_engines(&storage, true)?;
+        let importer = Auth0Importer::new(identity, authz);
+        let report = importer.import_bundle(
+            &bundle,
+            requested_realm,
+            &Auth0ImportOptions { dry_run: true },
+        )?;
+        print_migration_report(&report);
+        return Ok(());
+    }
+
+    let data_dir = data_dir.ok_or(
+        "--data-dir is required for a real migration (use --dry-run to validate without writing)",
+    )?;
+    std::fs::create_dir_all(data_dir)?;
+    let storage_config = StorageConfig::dev(data_dir.to_path_buf());
+    let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+    let (identity, authz) = build_engines(&storage, false)?;
+    let importer = Auth0Importer::new(identity, authz);
+
+    let report = importer.import_bundle(
+        &bundle,
+        requested_realm,
+        &Auth0ImportOptions { dry_run: false },
+    )?;
     print_migration_report(&report);
     Ok(())
 }

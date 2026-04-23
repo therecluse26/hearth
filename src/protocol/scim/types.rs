@@ -43,7 +43,11 @@ pub struct ScimName {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formatted: Option<String>,
     /// Last (family) name.
-    #[serde(rename = "familyName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "familyName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub family_name: Option<String>,
     /// First (given) name.
     #[serde(rename = "givenName", default, skip_serializing_if = "Option::is_none")]
@@ -74,13 +78,21 @@ pub struct ScimUser {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Client-supplied external identifier (IdP's stable user key).
-    #[serde(rename = "externalId", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "externalId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub external_id: Option<String>,
     /// Unique login identifier. Hearth treats this as the email address.
     #[serde(rename = "userName")]
     pub user_name: String,
     /// Optional display name (human label).
-    #[serde(rename = "displayName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "displayName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub display_name: Option<String>,
     /// Structured name components.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,7 +139,11 @@ pub struct ScimGroup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Client-supplied external identifier.
-    #[serde(rename = "externalId", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "externalId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub external_id: Option<String>,
     /// Group name as displayed.
     #[serde(rename = "displayName")]
@@ -220,7 +236,10 @@ mod tests {
         let u: ScimUser = serde_json::from_str(payload).expect("parse");
         assert_eq!(u.user_name, "alice@example.com");
         assert_eq!(u.external_id.as_deref(), Some("okta-abc"));
-        assert_eq!(u.name.as_ref().unwrap().given_name.as_deref(), Some("Alice"));
+        assert_eq!(
+            u.name.as_ref().unwrap().given_name.as_deref(),
+            Some("Alice")
+        );
         assert_eq!(u.emails.len(), 1);
         assert!(u.active);
     }

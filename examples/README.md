@@ -14,6 +14,7 @@ outside"* — not exhaustive coverage, not a template starter kit.
 | [`saml-flow/`](./saml-flow/) | SAML 2.0 both ways. A Node driver impersonates an external IdP (signs a `<Response>` and POSTs it to Hearth's ACS, including a replay-rejection check) and then impersonates an external SP (POSTs an `<AuthnRequest>` to Hearth's IdP SSO endpoint and verifies the signed response against Hearth's published metadata cert). Single-command runner. | Node.js 18+ (plain ESM) |
 | [`grpc-admin-flow/`](./grpc-admin-flow/) | End-to-end tour of the gRPC management API: admin CRUD, authorization engine with live `Watch` streaming, audit log, health, reflection. Single-command runner (`./run.sh`) boots Hearth and tears it down when the demo exits. | Node.js 18+ (plain ESM) |
 | [`scim-provisioning/`](./scim-provisioning/) | SCIM 2.0 (RFC 7643 + 7644) user and group provisioning against Hearth's `/scim/v2/*` surface: discovery, user CRUD with `externalId` idempotency, filter, pagination, PATCH, group membership reconciliation, and the resulting `Scim*` audit trail. Single-command runner. | Node.js 18+ (plain ESM, zero deps) |
+| [`auth0-migration-bundler/`](./auth0-migration-bundler/) | Auth0 → Hearth migration tooling: assembles a tenant from the Auth0 Management API (users, clients, organizations with members, roles with assignments) into a single JSON bundle that `hearth migrate auth0` can import. Covers the password-hash export caveat explicitly. | Node.js 18+ (`auth0` SDK) |
 
 Contributions welcome — see [Adding a new example](#adding-a-new-example) below.
 

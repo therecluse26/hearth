@@ -38,9 +38,7 @@ fn apply_one_user(u: &mut ScimUser, op: &PatchOp) -> Result<(), ScimError> {
             // No path: operand must be a JSON object; its entries are
             // handled as individual sets.
             if verb == "remove" {
-                return Err(ScimError::invalid_syntax(
-                    "PATCH remove requires a path",
-                ));
+                return Err(ScimError::invalid_syntax("PATCH remove requires a path"));
             }
             let Some(serde_json::Value::Object(map)) = op.value.clone() else {
                 return Err(ScimError::invalid_syntax(
@@ -65,7 +63,11 @@ fn apply_one_user(u: &mut ScimUser, op: &PatchOp) -> Result<(), ScimError> {
     }
 }
 
-fn set_user_attr(u: &mut ScimUser, path: &str, value: Option<serde_json::Value>) -> Result<(), ScimError> {
+fn set_user_attr(
+    u: &mut ScimUser,
+    path: &str,
+    value: Option<serde_json::Value>,
+) -> Result<(), ScimError> {
     match path.to_ascii_lowercase().as_str() {
         "active" => {
             u.active = value

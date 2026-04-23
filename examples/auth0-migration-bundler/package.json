@@ -1,0 +1,16 @@
+{
+  "name": "hearth-auth0-migration-bundler",
+  "version": "0.1.0",
+  "description": "Assembles an Auth0 tenant into a Hearth migration bundle JSON.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bundle": "node bundle.mjs"
+  },
+  "dependencies": {
+    "auth0": "^4.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -442,8 +442,7 @@ async fn idp_complete_sso(
     // suitable for smoke-testing SAML wire-format interop; real
     // production deployments would gate on `UiSession`.)
 
-    let realm_url =
-        realm_base_url_for_realm(&headers, &state, &realm).unwrap_or_default();
+    let realm_url = realm_base_url_for_realm(&headers, &state, &realm).unwrap_or_default();
     let idp_entity_id = realm_url.clone();
 
     let key = match state
@@ -605,7 +604,11 @@ fn base_url_from_headers(headers: &axum::http::HeaderMap) -> String {
 }
 
 fn realm_base_url_from_headers(headers: &axum::http::HeaderMap, realm_name: &str) -> String {
-    format!("{}/ui/realms/{}", base_url_from_headers(headers), realm_name)
+    format!(
+        "{}/ui/realms/{}",
+        base_url_from_headers(headers),
+        realm_name
+    )
 }
 
 fn realm_base_url_for_realm(
