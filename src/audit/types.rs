@@ -61,6 +61,12 @@ pub enum AuditAction {
     OrgUpdated,
     /// An organization was deleted.
     OrgDeleted,
+    /// A user granted OAuth consent to a client for one or more scopes.
+    ConsentGranted,
+    /// A user denied an OAuth consent request.
+    ConsentDenied,
+    /// A previously granted OAuth consent was revoked (by the user or an admin).
+    ConsentRevoked,
 }
 
 impl AuditAction {
@@ -92,6 +98,9 @@ impl AuditAction {
             Self::OrgCreated => "org_created",
             Self::OrgUpdated => "org_updated",
             Self::OrgDeleted => "org_deleted",
+            Self::ConsentGranted => "consent_granted",
+            Self::ConsentDenied => "consent_denied",
+            Self::ConsentRevoked => "consent_revoked",
         }
     }
 }
@@ -126,6 +135,9 @@ impl std::str::FromStr for AuditAction {
             "org_created" => Ok(Self::OrgCreated),
             "org_updated" => Ok(Self::OrgUpdated),
             "org_deleted" => Ok(Self::OrgDeleted),
+            "consent_granted" => Ok(Self::ConsentGranted),
+            "consent_denied" => Ok(Self::ConsentDenied),
+            "consent_revoked" => Ok(Self::ConsentRevoked),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

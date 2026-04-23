@@ -777,6 +777,8 @@ async fn admin_app_detail_renders() {
                 redirect_uris: vec!["https://example.com/cb".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register_client");

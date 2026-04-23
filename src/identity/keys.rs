@@ -52,6 +52,16 @@ const USER_CODE_PREFIX: &str = "oauth:ucode:";
 /// Prefix for revoked token JTI storage (sessionless token revocation).
 const REVOKED_JTI_PREFIX: &str = "oauth:revjti:";
 
+/// Prefix for OAuth consent record storage.
+const OAUTH_CONSENT_PREFIX: &str = "oauth:consent:";
+
+/// Prefix for OAuth pending-authorization ticket storage.
+///
+/// Holds in-flight browser authorization requests awaiting consent, keyed
+/// by an opaque ticket UUID. Short-TTL (10 minutes) and single-use — the
+/// analog of `oauth:device:` for the browser flow.
+const OAUTH_PENDING_AUTH_PREFIX: &str = "oauth:pending_auth:";
+
 /// Prefix for MFA TOTP state per user.
 const MFA_TOTP_PREFIX: &str = "mfa:totp:";
 
@@ -402,6 +412,56 @@ pub(crate) fn password_reset_scan_prefix() -> Vec<u8> {
 /// that cannot be revoked via session revocation.
 pub(crate) fn encode_revoked_jti(jti: &str) -> Vec<u8> {
     format!("{REVOKED_JTI_PREFIX}{jti}").into_bytes()
+}
+
+// ===== OAuth consent key encoding =====
+
+/// Encodes the primary key for an OAuth consent record.
+///
+/// Format: `oauth:consent:{user_uuid}:{client_uuid}`
+///
+/// The compound key enables:
+/// - O(1) lookup of a specific `(user, client)` consent.
+/// - Prefix scan by user for "list my consents".
+/// - Cascade delete of all consent records on user deletion.
+pub(crate) fn encode_consent_key(user_id: &UserId, client_id: &ClientId) -> Vec<u8> {
+    format!(
+        "{OAUTH_CONSENT_PREFIX}{}:{}",
+        user_id.as_uuid(),
+        client_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for listing all consents granted by a user.
+///
+/// Format: `oauth:consent:{user_uuid}:`
+pub(crate) fn encode_consent_prefix_for_user(user_id: &UserId) -> Vec<u8> {
+    format!("{OAUTH_CONSENT_PREFIX}{}:", user_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all consent records in a realm.
+///
+/// Format: `oauth:consent:`
+///
+/// Used by `delete_realm` cascade and by `delete_oauth_client` cascade
+/// (which then filters by the trailing `:{client_uuid}` segment).
+pub(crate) fn oauth_consent_scan_prefix() -> Vec<u8> {
+    OAUTH_CONSENT_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the storage key for a pending-authorization ticket.
+///
+/// Format: `oauth:pending_auth:{ticket_uuid}`
+pub(crate) fn encode_pending_auth_key(ticket: &str) -> Vec<u8> {
+    format!("{OAUTH_PENDING_AUTH_PREFIX}{ticket}").into_bytes()
+}
+
+/// Returns the scan prefix for all pending-authorization tickets.
+///
+/// Format: `oauth:pending_auth:`
+pub(crate) fn oauth_pending_auth_scan_prefix() -> Vec<u8> {
+    OAUTH_PENDING_AUTH_PREFIX.as_bytes().to_vec()
 }
 
 // ===== Organization key encoding =====
@@ -912,6 +972,66 @@ mod tests {
         let inv_id = InvitationId::generate();
         let key = encode_invitation_list(&org_id, &inv_id);
         let prefix = invitation_list_prefix(&org_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    // ===== Consent key tests =====
+
+    #[test]
+    fn encode_consent_key_format() {
+        let user_uuid =
+            Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let client_uuid =
+            Uuid::parse_str("660e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let user_id = UserId::new(user_uuid);
+        let client_id = ClientId::new(client_uuid);
+        let key = encode_consent_key(&user_id, &client_id);
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(
+            key_str,
+            "oauth:consent:550e8400-e29b-41d4-a716-446655440000:660e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    #[test]
+    fn consent_key_starts_with_user_prefix() {
+        let user_id = UserId::generate();
+        let client_id = ClientId::generate();
+        let key = encode_consent_key(&user_id, &client_id);
+        let prefix = encode_consent_prefix_for_user(&user_id);
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn consent_key_starts_with_scan_prefix() {
+        let user_id = UserId::generate();
+        let client_id = ClientId::generate();
+        let key = encode_consent_key(&user_id, &client_id);
+        let prefix = oauth_consent_scan_prefix();
+        assert!(key.starts_with(&prefix));
+    }
+
+    #[test]
+    fn different_users_produce_different_consent_prefixes() {
+        let u1 = UserId::generate();
+        let u2 = UserId::generate();
+        assert_ne!(
+            encode_consent_prefix_for_user(&u1),
+            encode_consent_prefix_for_user(&u2)
+        );
+    }
+
+    #[test]
+    fn encode_pending_auth_key_format() {
+        let key = encode_pending_auth_key("ticket-abc-123");
+        let key_str = std::str::from_utf8(&key).expect("utf8");
+        assert_eq!(key_str, "oauth:pending_auth:ticket-abc-123");
+    }
+
+    #[test]
+    fn pending_auth_key_starts_with_scan_prefix() {
+        let key = encode_pending_auth_key("t1");
+        let prefix = oauth_pending_auth_scan_prefix();
         assert!(key.starts_with(&prefix));
     }
 }

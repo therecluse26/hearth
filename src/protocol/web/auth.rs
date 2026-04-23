@@ -134,6 +134,13 @@ impl CookieSecret {
     }
 }
 
+/// Exposes the raw secret bytes for sibling modules that need to compute
+/// their own HMAC tags (e.g. the OAuth consent ticket cookie). Kept
+/// `pub(super)` so it does not leak outside the web adapter.
+pub(super) fn cookie_secret_bytes(secret: &CookieSecret) -> &[u8] {
+    secret.as_bytes()
+}
+
 impl std::fmt::Debug for CookieSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CookieSecret(<redacted>)")
@@ -1003,23 +1010,27 @@ pub fn sanitize_return_to(value: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// Minimal URL percent-encoder for path+query strings we control.
+/// Percent-encodes a string for use as a single query-parameter VALUE.
+///
+/// Only the URI unreserved set (RFC 3986 §2.3) is passed through verbatim;
+/// every other byte — including `?`, `=`, `&`, `/` — is percent-encoded.
+/// `/` encodes to `%2F` rather than being preserved, since its role as a
+/// path separator does not apply inside a query value.
+///
+/// Used when folding an original request URL into `?return_to=...` on a
+/// login redirect: the whole return-to (path + query) has to survive
+/// round-tripping through the login form as a single query value, which
+/// means reserved query-component characters inside it MUST be escaped.
+/// Passing `?`/`&`/`=` through unchanged corrupts the login form's query
+/// string by turning inner OAuth params into siblings of `return_to`.
 fn url_encode(input: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(input.len());
     for b in input.bytes() {
         match b {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~'
-            | b'/'
-            | b'?'
-            | b'='
-            | b'&' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
             _ => {
                 // INVARIANT: writing to `String` via `fmt::Write` is infallible.
                 let _ = write!(out, "%{b:02X}");

@@ -273,14 +273,20 @@ pub(crate) fn reconcile_applications(
             .unwrap_or_else(|| vec!["authorization_code".to_string()]);
         let redirect_uris = app_cfg.redirect_uris.clone().unwrap_or_default();
 
+        let cfg_require_consent = app_cfg.require_consent.unwrap_or(true);
+        let cfg_logo = app_cfg.client_logo_url.clone();
+
         match engine.get_client(realm_id, &client_id) {
             Ok(Some(existing)) => {
                 // Client exists — update if changed
                 let name_changed = existing.client_name() != app_cfg.name;
                 let uris_changed = existing.redirect_uris() != redirect_uris;
                 let grants_changed = existing.grant_types() != grant_types;
+                let consent_changed = existing.require_consent() != cfg_require_consent;
+                let logo_changed = existing.client_logo_url() != cfg_logo.as_deref();
 
-                if name_changed || uris_changed || grants_changed {
+                if name_changed || uris_changed || grants_changed || consent_changed || logo_changed
+                {
                     engine.update_client(
                         realm_id,
                         &client_id,
@@ -297,6 +303,16 @@ pub(crate) fn reconcile_applications(
                             },
                             grant_types: if grants_changed {
                                 Some(grant_types)
+                            } else {
+                                None
+                            },
+                            require_consent: if consent_changed {
+                                Some(cfg_require_consent)
+                            } else {
+                                None
+                            },
+                            client_logo_url: if logo_changed {
+                                Some(cfg_logo.clone())
                             } else {
                                 None
                             },
@@ -325,13 +341,29 @@ pub(crate) fn reconcile_applications(
                 engine.import_client(
                     realm_id,
                     &ImportClientRequest {
-                        id: Some(client_id),
+                        id: Some(client_id.clone()),
                         client_name: app_cfg.name.clone(),
                         redirect_uris,
                         client_secret: secret,
                         grant_types,
                     },
                 )?;
+                // Apply consent-policy fields: the import path doesn't
+                // carry them, so a follow-up update_client puts the client
+                // in the intended state.
+                if !cfg_require_consent || cfg_logo.is_some() {
+                    engine.update_client(
+                        realm_id,
+                        &client_id,
+                        &UpdateClientRequest {
+                            client_name: None,
+                            redirect_uris: None,
+                            grant_types: None,
+                            require_consent: Some(cfg_require_consent),
+                            client_logo_url: Some(cfg_logo.clone()),
+                        },
+                    )?;
+                }
                 info!(
                     realm = realm_name,
                     app = app_key,

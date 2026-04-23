@@ -42,6 +42,8 @@ impl From<pb::RegisterClientRequest> for domain::RegisterClientRequest {
             } else {
                 r.grant_types
             },
+            require_consent: true,
+            client_logo_url: None,
         }
     }
 }
@@ -62,6 +64,8 @@ impl From<pb::UpdateClientRequest> for domain::UpdateClientRequest {
             } else {
                 Some(r.grant_types)
             },
+            require_consent: None,
+            client_logo_url: None,
         }
     }
 }

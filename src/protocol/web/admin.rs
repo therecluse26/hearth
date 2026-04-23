@@ -3825,3 +3825,181 @@ fn compute_unified_diff(old: &str, new: &str) -> String {
 
     output
 }
+
+// ---------------------------------------------------------------------------
+// Admin: user consents
+// ---------------------------------------------------------------------------
+
+struct AdminConsentRow {
+    client_id: String,
+    client_name: String,
+    client_logo_url: Option<String>,
+    scopes: Vec<String>,
+    granted_at: String,
+    updated_at: String,
+}
+
+#[derive(Template)]
+#[template(path = "ui/admin/users/consents.html")]
+#[allow(clippy::struct_excessive_bools)]
+struct AdminUserConsentsTemplate {
+    target_user_id: String,
+    target_user_email: String,
+    consents: Vec<AdminConsentRow>,
+    realm_name: String,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// `GET /ui/admin/users/{id}/consents` — lists every OAuth consent the
+/// target user has granted in the admin's target realm.
+pub async fn admin_user_consents_list(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target_realm: TargetRealm,
+    AxumPath(user_id_str): AxumPath<String>,
+) -> Response {
+    let Ok(uuid) = user_id_str.parse::<uuid::Uuid>() else {
+        return super::handlers_common::not_found("User not found");
+    };
+    let user_id = crate::core::UserId::new(uuid);
+
+    let target_user = match state.identity.get_user(target_realm.id(), &user_id) {
+        Ok(Some(u)) => u,
+        Ok(None) => return super::handlers_common::not_found("User not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "admin_user_consents_list: get_user failed");
+            return super::handlers_common::server_error();
+        }
+    };
+
+    let rows = state
+        .identity
+        .list_consents_by_user(target_realm.id(), &user_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| AdminConsentRow {
+            client_id: e.record.client_id.as_uuid().to_string(),
+            client_name: e.client_name,
+            client_logo_url: e.client_logo_url,
+            scopes: e.record.granted_scopes,
+            granted_at: format_ts_admin(e.record.granted_at),
+            updated_at: format_ts_admin(e.record.updated_at),
+        })
+        .collect();
+
+    let mut tmpl = AdminUserConsentsTemplate {
+        target_user_id: user_id.as_uuid().to_string(),
+        target_user_email: target_user.email().to_string(),
+        consents: rows,
+        realm_name: target_realm.0.name().to_string(),
+        chrome: true,
+        active: "users",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: true,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: String::new(),
+        realm_theme_css: None,
+    };
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.realm_theme_css = state.realm_theme_css();
+    render(&tmpl)
+}
+
+/// `POST /ui/admin/users/{id}/consents/{client_id}/revoke` — admin
+/// revoke-on-behalf. Emits a `ConsentRevoked` audit with
+/// `metadata.via = "admin"` so operators can distinguish from self-revokes.
+pub async fn admin_user_consent_revoke(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target_realm: TargetRealm,
+    AxumPath((user_id_str, client_id_str)): AxumPath<(String, String)>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let Ok(uuid_u) = user_id_str.parse::<uuid::Uuid>() else {
+        return super::handlers_common::not_found("User not found");
+    };
+    let Ok(uuid_c) = client_id_str.parse::<uuid::Uuid>() else {
+        return super::handlers_common::not_found("Client not found");
+    };
+    let user_id = crate::core::UserId::new(uuid_u);
+    let client_id = ClientId::new(uuid_c);
+
+    match state
+        .identity
+        .revoke_consent(target_realm.id(), &user_id, &client_id)
+    {
+        Ok(()) => {
+            let _ = state.audit.append(&crate::audit::CreateAuditEvent {
+                realm_id: target_realm.id().clone(),
+                actor: session.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::ConsentRevoked,
+                resource_type: "oauth_client".to_string(),
+                resource_id: client_id.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({
+                    "via": "admin",
+                    "target_user": user_id.as_uuid().to_string(),
+                    "client_id": client_id.as_uuid().to_string(),
+                })),
+            });
+            Redirect::to(&format!("/ui/admin/users/{}/consents", user_id.as_uuid())).into_response()
+        }
+        Err(IdentityError::ConsentNotFound) => {
+            super::handlers_common::not_found("Consent not found")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "admin revoke_consent failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// Shared CSRF-only form body for admin consent actions.
+#[derive(Debug, Deserialize)]
+pub struct CsrfOnlyForm {
+    /// CSRF double-submit token.
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+#[allow(
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    clippy::min_ident_chars
+)]
+fn format_ts_admin(ts: crate::core::Timestamp) -> String {
+    let secs = ts.as_micros() / 1_000_000;
+    let rem = secs.rem_euclid(86_400);
+    let days = secs.div_euclid(86_400);
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let (y, mo, d) = {
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        (if m <= 2 { y + 1 } else { y }, m, d)
+    };
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02} UTC")
+}

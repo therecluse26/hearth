@@ -125,6 +125,8 @@ async fn register_client_rejects_system_realm() {
             redirect_uris: vec!["https://evil.example.com/cb".to_string()],
             client_secret: None,
             grant_types: vec!["authorization_code".to_string()],
+            require_consent: true,
+            client_logo_url: None,
         },
     );
     assert!(

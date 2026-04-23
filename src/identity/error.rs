@@ -176,6 +176,25 @@ pub enum IdentityError {
     /// Self-service registration is enabled in invite-only mode and the
     /// caller did not present a valid invitation token.
     RegistrationRequiresInvitation,
+    /// The OAuth client requires user consent and no sufficient consent
+    /// record exists. Returned by `authorize_with_consent` when the caller
+    /// must route the user through the consent prompt, or by the OIDC
+    /// `prompt=none` branch when silent issuance cannot proceed without
+    /// interaction.
+    ConsentRequired,
+    /// The pending-authorization ticket was not found. The ticket may
+    /// have been consumed already, may belong to a different user, or
+    /// may never have existed.
+    ConsentTicketNotFound,
+    /// The pending-authorization ticket has expired. The user must restart
+    /// the authorization flow from the client.
+    ConsentTicketExpired,
+    /// The user attempted to approve a scope that was not present in the
+    /// original authorization request. Prevents clients from widening the
+    /// granted scope set through tampered form submissions.
+    ConsentScopeNotRequested,
+    /// No consent record exists for the requested `(user, client)` pair.
+    ConsentNotFound,
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -264,6 +283,13 @@ impl fmt::Display for IdentityError {
             Self::RegistrationRequiresInvitation => {
                 write!(f, "self-service registration requires a valid invitation")
             }
+            Self::ConsentRequired => write!(f, "user consent is required"),
+            Self::ConsentTicketNotFound => write!(f, "consent ticket not found"),
+            Self::ConsentTicketExpired => write!(f, "consent ticket expired"),
+            Self::ConsentScopeNotRequested => {
+                write!(f, "approved scope was not in the original request")
+            }
+            Self::ConsentNotFound => write!(f, "no consent record for this client"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -325,6 +351,11 @@ impl std::error::Error for IdentityError {
             | Self::RegistrationDisabled
             | Self::RegistrationDomainNotAllowed { .. }
             | Self::RegistrationRequiresInvitation
+            | Self::ConsentRequired
+            | Self::ConsentTicketNotFound
+            | Self::ConsentTicketExpired
+            | Self::ConsentScopeNotRequested
+            | Self::ConsentNotFound
             | Self::SystemRealmProtected { .. }
             | Self::Serialization { .. } => None,
         }
@@ -744,6 +775,16 @@ mod tests {
         let err = IdentityError::DuplicateInvitation;
         let display = format!("{err}");
         assert!(display.contains("already exists"), "got: {display}");
+    }
+
+    #[test]
+    fn display_consent_variants() {
+        assert!(format!("{}", IdentityError::ConsentRequired).contains("consent is required"));
+        assert!(format!("{}", IdentityError::ConsentTicketNotFound).contains("ticket not found"));
+        assert!(format!("{}", IdentityError::ConsentTicketExpired).contains("expired"));
+        assert!(format!("{}", IdentityError::ConsentScopeNotRequested)
+            .contains("not in the original request"));
+        assert!(format!("{}", IdentityError::ConsentNotFound).contains("no consent record"));
     }
 
     #[test]

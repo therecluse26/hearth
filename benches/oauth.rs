@@ -53,6 +53,8 @@ fn setup_oauth() -> (
                 redirect_uris: vec![],
                 client_secret: Some(secret.to_string()),
                 grant_types: vec!["client_credentials".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");
@@ -93,6 +95,8 @@ fn bench_client_credentials(c: &mut Criterion) {
                 redirect_uris: vec![],
                 client_secret: Some(secret.clone()),
                 grant_types: vec!["client_credentials".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client");

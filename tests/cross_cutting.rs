@@ -323,6 +323,8 @@ async fn input_size_limits_enforced() {
             redirect_uris: vec!["https://example.com/callback".to_string()],
             client_secret: None,
             grant_types: vec!["authorization_code".to_string()],
+            require_consent: true,
+            client_logo_url: None,
         },
     );
     assert!(result.is_err(), "oversized client name should be rejected");
@@ -336,6 +338,8 @@ async fn input_size_limits_enforced() {
             redirect_uris: vec![long_uri],
             client_secret: None,
             grant_types: vec!["authorization_code".to_string()],
+            require_consent: true,
+            client_logo_url: None,
         },
     );
     assert!(result.is_err(), "oversized redirect URI should be rejected");

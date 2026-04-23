@@ -114,6 +114,8 @@ fn setup_client(harness: &common::TestHarness, realm_id: &RealmId) -> OAuthClien
                 redirect_uris: vec!["https://app.example.com/callback".to_string()],
                 client_secret: None,
                 grant_types: vec!["authorization_code".to_string()],
+                require_consent: true,
+                client_logo_url: None,
             },
         )
         .expect("register client")
@@ -403,6 +405,8 @@ async fn crud_applications() {
                 client_name: Some("Updated App".to_string()),
                 redirect_uris: Some(vec!["https://new.example.com/cb".to_string()]),
                 grant_types: None,
+                require_consent: None,
+                client_logo_url: None,
             },
         )
         .expect("update client");

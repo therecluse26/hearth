@@ -49,10 +49,12 @@ use crate::identity::onboarding::OnboardingService;
 use crate::identity::{EmailService, IdentityEngine};
 
 pub mod account;
+pub mod account_consents;
 pub mod admin;
 pub mod auth;
 pub mod handlers;
 pub(crate) mod handlers_common;
+pub mod oauth_consent;
 pub mod realm_resolver;
 pub(crate) mod templates;
 pub mod themes;
@@ -522,6 +524,32 @@ pub fn router(state: WebState) -> Router {
             "/account/sessions/{sid}/revoke",
             axum::routing::post(account::revoke_session),
         )
+        // --- Self-service OAuth consent management ---
+        .route(
+            "/account/consents",
+            axum::routing::get(account_consents::consents_index),
+        )
+        .route(
+            "/account/consents/revoke-all",
+            axum::routing::post(account_consents::revoke_all_consents),
+        )
+        .route(
+            "/account/consents/{client_id}/revoke",
+            axum::routing::post(account_consents::revoke_consent),
+        )
+        // --- Browser-facing OAuth authorize + consent flow ---
+        .route(
+            "/oauth/authorize",
+            axum::routing::get(oauth_consent::authorize_get),
+        )
+        .route(
+            "/realms/{realm}/oauth/authorize",
+            axum::routing::get(oauth_consent::authorize_get_scoped),
+        )
+        .route(
+            "/oauth/consent",
+            axum::routing::get(oauth_consent::consent_page).post(oauth_consent::consent_submit),
+        )
         .route(
             "/admin/admin-users",
             axum::routing::get(admin::admin_admin_users_list),
@@ -558,6 +586,14 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/users/{id}/webauthn/{cred_id}/revoke",
             axum::routing::post(admin::admin_user_revoke_webauthn),
+        )
+        .route(
+            "/admin/users/{id}/consents",
+            axum::routing::get(admin::admin_user_consents_list),
+        )
+        .route(
+            "/admin/users/{id}/consents/{client_id}/revoke",
+            axum::routing::post(admin::admin_user_consent_revoke),
         )
         // --- Realms (read-only; managed via hearth.yaml) ---
         .route(
