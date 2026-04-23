@@ -23,22 +23,13 @@
 //!
 //! # Alias shape used by page templates
 //!
-//! Page templates declare fields like:
-//!
-//! ```ignore
-//! pub struct Page {
-//!     pub chrome: Chrome,
-//!     pub error: Option<String>,
-//!     // ...
-//! }
-//! ```
-//!
-//! and the layout references `active`, `user_email`, `is_admin`,
-//! `flash`, and `csrf` — those names come from the `chrome` field
-//! via the `Template` derive's ability to look through nested
-//! struct fields. To keep the lookup path short we flatten them
-//! with a `#[allow(dead_code)]` helper: pages carry the fields
-//! directly (not nested) which is what the layout expects.
+//! Page templates declare fields like `chrome: Chrome`, `error:
+//! Option<String>`, etc., and the layout references `active`,
+//! `user_email`, `is_admin`, `flash`, and `csrf` — those names come
+//! from the `chrome` field via the `Template` derive's ability to look
+//! through nested struct fields. To keep the lookup path short we
+//! flatten them with a `#[allow(dead_code)]` helper: pages carry the
+//! fields directly (not nested) which is what the layout expects.
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;

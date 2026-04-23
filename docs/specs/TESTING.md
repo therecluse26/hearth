@@ -25,6 +25,8 @@ src/authz/graph.rs       → #[cfg(test)] mod tests { ... }
 
 **Convention**: Every public function in an internal module has at least one unit test. Every bug fix adds a regression test before the fix.
 
+**No doctests.** Hearth deliberately does not use Rust doctests (runnable `///` example blocks). Every test goes in a `#[cfg(test)] mod tests` block or under `tests/`. Reasons: doctests compile as separate crates (slow), can't share the `tests/common` harness, require a second runner (`cargo test --doc`) because `cargo nextest` doesn't execute them, and offer no coverage that a regular test can't. Runnable documentation examples belong in [`examples/`](../../examples/); non-runnable illustrative snippets inside doc comments MUST be fenced as `\`\`\`text`, `\`\`\`json`, or similar — never a bare `\`\`\`` or `\`\`\`rust`, either of which rustdoc treats as an executable doctest.
+
 ### 2. Integration / Black Box Tests (`tests/` Directory)
 
 Black box tests interact with Hearth exclusively through its public API surface. They never import from internal modules — if a refactor breaks these tests, the public contract changed.

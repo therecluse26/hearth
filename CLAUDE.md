@@ -119,6 +119,10 @@ A PR that adds functionality without a test written *before* the implementation 
 
 Hearth uses eight testing layers (unit, integration, property, fuzz, simulation, adversarial, conformance, benchmarks). For each feature, consider which layers apply. See TESTING.md for the full matrix, locations, and conventions.
 
+### No Doctests — Ever
+
+Hearth does **not** use Rust doctests (runnable `///` example blocks). Do not write them. Do not introduce `\`\`\`` or `\`\`\`rust` fenced code blocks inside `///` or `//!` doc comments — rustdoc treats both as executable doctests. Illustrative snippets in doc comments MUST be fenced as `\`\`\`text`, `\`\`\`json`, `\`\`\`yaml`, or similar non-executable language, or omitted entirely. Runnable examples live under [`examples/`](examples/); behavioral tests live in `#[cfg(test)] mod tests` blocks or under `tests/`. `make test` / `cargo nextest run --workspace` is the single test entry point — there is no separate `cargo test --doc` step because there are no doctests to run.
+
 ### Testing Tooling
 
 - **Test runner**: `cargo-nextest` (not `cargo test`)

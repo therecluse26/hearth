@@ -46,8 +46,13 @@ tailwind-install:
 build: css
 	PROTOC=$(PROTOC) cargo build $(CARGO_FLAGS)
 
+## Run every Rust test across both workspace crates (main + simulation)
+## via nextest. Doctests are intentionally excluded — Hearth favors
+## regular `#[cfg(test)] mod tests` blocks over doctest round-trips:
+## same coverage, faster compile, shared helpers, single runner.
+## Runnable documentation examples live under `examples/`.
 test:
-	PROTOC=$(PROTOC) cargo nextest run $(CARGO_FLAGS)
+	PROTOC=$(PROTOC) cargo nextest run --workspace $(CARGO_FLAGS)
 
 clippy:
 	PROTOC=$(PROTOC) cargo clippy --all-targets $(CARGO_FLAGS) -- -D warnings

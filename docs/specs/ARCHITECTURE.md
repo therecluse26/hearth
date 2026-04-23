@@ -358,6 +358,7 @@ See [TESTING.md](./TESTING.md) for the full eight-layer testing strategy, toolin
 - `rustfmt` with the project's `rustfmt.toml`. No formatting debates in PRs.
 - Follow the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
 - All `pub` and `pub(crate)` items MUST have doc comments describing behavior and invariants, not implementation details.
+- Doc comments MUST NOT contain Rust doctests. Hearth does not use doctests as a testing layer (see TESTING.md § "No doctests"). Fenced code blocks inside `///` / `//!` MUST use non-Rust languages (`text`, `json`, `yaml`, etc.) or be omitted. Runnable examples belong under `examples/`; behavioral tests in `#[cfg(test)] mod tests` or under `tests/`.
 
 ---
 
