@@ -278,6 +278,136 @@ pub struct ObjectTypeConfig {
     pub relations: HashMap<String, RelationConfig>,
 }
 
+fn detect_cycle_dfs(
+    type_cfg: &ObjectTypeConfig,
+    node: &str,
+    on_path: &mut std::collections::HashSet<String>,
+    finished: &mut std::collections::HashSet<String>,
+    obj_type: &str,
+) -> Result<(), AuthzError> {
+    if finished.contains(node) {
+        return Ok(());
+    }
+    if !on_path.insert(node.to_string()) {
+        return Err(AuthzError::InvalidNamespace {
+            reason: format!(
+                "relation rewrite cycle detected on object type '{obj_type}' at relation '{node}'"
+            ),
+        });
+    }
+    if let Some(rel_cfg) = type_cfg.relations.get(node) {
+        if let Some(RelationRewrite::Union { includes }) = &rel_cfg.rewrite {
+            for child in includes {
+                detect_cycle_dfs(type_cfg, child, on_path, finished, obj_type)?;
+            }
+        }
+    }
+    on_path.remove(node);
+    finished.insert(node.to_string());
+    Ok(())
+}
+
+impl NamespaceConfig {
+    /// Returns the transitive forward rewrite closure for `(object_type, relation)`.
+    ///
+    /// The result always includes `relation` itself. If the relation's
+    /// `RelationRewrite::Union` lists other relations, those are included
+    /// transitively. Unknown object types / relations produce a singleton
+    /// closure containing just the input relation (callers decide whether
+    /// missing schema is an error).
+    ///
+    /// "Forward" means: given a query for `relation`, which sibling relations
+    /// also need to be checked. Used by `check()` / `expand()`.
+    pub fn rewrite_closure(&self, object_type: &str, relation: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut stack: Vec<String> = vec![relation.to_string()];
+
+        let Some(type_cfg) = self.object_types.get(object_type) else {
+            return vec![relation.to_string()];
+        };
+
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            out.push(cur.clone());
+            if let Some(rel_cfg) = type_cfg.relations.get(&cur) {
+                if let Some(RelationRewrite::Union { includes }) = &rel_cfg.rewrite {
+                    for inc in includes {
+                        if !seen.contains(inc) {
+                            stack.push(inc.clone());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Returns the transitive reverse rewrite closure for `(object_type, relation)`.
+    ///
+    /// Result includes `relation` itself plus every relation on the same
+    /// object type whose rewrite closure (transitively) contains `relation`.
+    /// Used to invalidate cache entries for dependent relations when a tuple
+    /// on `relation` is written or deleted.
+    pub fn reverse_rewrite_closure(&self, object_type: &str, relation: &str) -> Vec<String> {
+        let mut out: Vec<String> = vec![relation.to_string()];
+        let Some(type_cfg) = self.object_types.get(object_type) else {
+            return out;
+        };
+        // Collect candidate relations on this object type; include any whose
+        // forward closure contains `relation`.
+        for other in type_cfg.relations.keys() {
+            if other == relation {
+                continue;
+            }
+            let closure = self.rewrite_closure(object_type, other);
+            if closure.iter().any(|r| r == relation) {
+                out.push(other.clone());
+            }
+        }
+        out
+    }
+
+    /// Validates that every `Union.includes` target references a relation that
+    /// exists on the same object type, and that no rewrite cycles exist.
+    ///
+    /// # Errors
+    /// - `AuthzError::InvalidNamespace` if a union references an unknown
+    ///   relation or if a cycle is detected.
+    pub fn validate_rewrites(&self) -> Result<(), AuthzError> {
+        for (obj_type, type_cfg) in &self.object_types {
+            for (rel_name, rel_cfg) in &type_cfg.relations {
+                let Some(RelationRewrite::Union { includes }) = &rel_cfg.rewrite else {
+                    continue;
+                };
+                for inc in includes {
+                    if !type_cfg.relations.contains_key(inc) {
+                        return Err(AuthzError::InvalidNamespace {
+                            reason: format!(
+                                "relation '{obj_type}#{rel_name}' union references unknown relation '{inc}'"
+                            ),
+                        });
+                    }
+                }
+            }
+            // Cycle detection: for each relation, walk forward rewrite edges
+            // tracking the current DFS path. If we re-enter a node on the
+            // current path, the rewrite graph has a cycle. Cross-path
+            // revisits (already-finished subtrees) are fine.
+            for start in type_cfg.relations.keys() {
+                let mut on_path: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut finished: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                detect_cycle_dfs(type_cfg, start, &mut on_path, &mut finished, obj_type)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Configuration for a single relation within an object type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationConfig {
@@ -286,6 +416,31 @@ pub struct RelationConfig {
     /// If a tuple's subject type is not in this list, `write_tuples()` will
     /// reject it with `AuthzError::InvalidNamespace`.
     pub allowed_subject_types: Vec<String>,
+    /// Optional userset rewrite: other relations on the same object type that
+    /// implicitly satisfy this relation.
+    ///
+    /// For example, if `viewer` has `Union(["editor", "owner"])`, then any
+    /// subject with the `editor` or `owner` relation on the object is
+    /// automatically considered to have the `viewer` relation. Resolved
+    /// transitively by `check()` and `expand()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewrite: Option<RelationRewrite>,
+}
+
+/// A userset rewrite rule applied to a relation.
+///
+/// Phase 1 supports only the `Union` variant (relation-union). The enum is
+/// extensible so future variants (intersection, exclusion, `tupleToUserset`)
+/// can be added without breaking persisted namespace configs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelationRewrite {
+    /// The relation includes all subjects of the listed sibling relations on
+    /// the same object type.
+    Union {
+        /// Sibling relation names whose subjects satisfy this relation.
+        includes: Vec<String>,
+    },
 }
 
 /// The action type in a tuple change event.

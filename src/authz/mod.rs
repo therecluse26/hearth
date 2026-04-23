@@ -14,14 +14,16 @@ mod engine;
 pub mod error;
 #[allow(dead_code)]
 pub(crate) mod keys;
+pub mod presets;
 mod types;
 
 pub use engine::{AuthzConfig, EmbeddedAuthzEngine};
 pub use error::AuthzError;
+pub use presets::{ensure_preset_namespace, preset_namespace};
 pub use types::{
     ConsistencyToken, NamespaceConfig, ObjectRef, ObjectTypeConfig, RelationConfig,
-    RelationshipTuple, SubjectRef, TupleChangeAction, TupleChangeEvent, TupleWrite, WatchFilter,
-    WatchReceiver,
+    RelationRewrite, RelationshipTuple, SubjectRef, TupleChangeAction, TupleChangeEvent,
+    TupleWrite, WatchFilter, WatchReceiver,
 };
 
 use crate::core::RealmId;

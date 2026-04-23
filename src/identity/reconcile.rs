@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::authz::AuthorizationEngine;
 use crate::config::{
     ApplicationYamlConfig, AuthConfig, Config, FederationProviderYaml, FederationYamlConfig,
     OrganizationYamlConfig, RealmYamlConfig,
@@ -98,6 +99,7 @@ pub enum OrgReconcileAction {
 /// caller should retry on next startup.
 pub fn reconcile_realms(
     engine: &dyn IdentityEngine,
+    authz: &dyn AuthorizationEngine,
     config: &Config,
 ) -> Result<ReconcileReport, IdentityError> {
     let mut report = ReconcileReport::default();
@@ -109,25 +111,42 @@ pub fn reconcile_realms(
             if page.items.is_empty() {
                 // No realms and no YAML config → create "default"
                 let realm_config = default_realm_config(&config.auth, config);
-                engine.create_realm(&CreateRealmRequest {
+                let realm = engine.create_realm(&CreateRealmRequest {
                     name: "default".to_string(),
                     config: Some(realm_config),
                 })?;
+                install_preset_or_log(authz, realm.id(), "default");
                 report.created.push("default".to_string());
             }
             // If realms exist, skip reconciliation (backward compat)
         }
         Some(yaml_realms) => {
-            reconcile_declared_realms(engine, yaml_realms, config, &mut report)?;
+            reconcile_declared_realms(engine, authz, yaml_realms, config, &mut report)?;
         }
     }
 
     Ok(report)
 }
 
+/// Installs the Roles & Permissions preset namespace on a freshly created
+/// realm, logging (but not failing) if the install errors. The realm record
+/// is already durable at this point; a missing namespace is recoverable
+/// (the next visit to the Roles UI would install it), so we prefer a log
+/// over aborting reconciliation mid-run.
+fn install_preset_or_log(authz: &dyn AuthorizationEngine, realm_id: &RealmId, realm_name: &str) {
+    if let Err(e) = crate::authz::ensure_preset_namespace(authz, realm_id) {
+        tracing::warn!(
+            realm = realm_name,
+            error = %e,
+            "failed to install preset authz namespace on new realm"
+        );
+    }
+}
+
 /// Reconciles a declared `realms:` map.
 fn reconcile_declared_realms(
     engine: &dyn IdentityEngine,
+    authz: &dyn AuthorizationEngine,
     yaml_realms: &HashMap<String, RealmYamlConfig>,
     config: &Config,
     report: &mut ReconcileReport,
@@ -157,6 +176,7 @@ fn reconcile_declared_realms(
                     name: name.clone(),
                     config: Some(realm_config),
                 })?;
+                install_preset_or_log(authz, realm.id(), name);
                 report.created.push(name.clone());
                 realm.id().clone()
             }

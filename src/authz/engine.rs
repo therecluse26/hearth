@@ -109,6 +109,40 @@ fn invalidation_prefix(realm_id: &RealmId, object: &ObjectRef, relation: &str) -
 /// Default maximum BFS traversal depth.
 const DEFAULT_MAX_DEPTH: u32 = 10;
 
+/// Returns the rewrite closure for `(object_type, relation)` if a namespace
+/// is configured, or `vec![relation]` otherwise. Centralises the "no schema"
+/// fallback so callers can treat presence of rewrites uniformly.
+fn closure_or_self(ns: Option<&NamespaceConfig>, object_type: &str, relation: &str) -> Vec<String> {
+    match ns {
+        Some(cfg) => cfg.rewrite_closure(object_type, relation),
+        None => vec![relation.to_string()],
+    }
+}
+
+/// Enqueues `(object, relation)` and every sibling relation that transitively
+/// satisfies it via rewrite unions, guarded by the shared visited set. All
+/// closure entries share the same `depth` — rewrites are a schema-level
+/// expansion, not a tuple traversal, so they should not consume BFS depth.
+fn enqueue_with_closure(
+    queue: &mut VecDeque<(ObjectRef, String, u32)>,
+    visited: &mut HashSet<(String, String, String)>,
+    ns: Option<&NamespaceConfig>,
+    object: ObjectRef,
+    relation: &str,
+    depth: u32,
+) {
+    for rel in closure_or_self(ns, object.object_type(), relation) {
+        let visit_key = (
+            object.object_type().to_string(),
+            object.object_id().to_string(),
+            rel.clone(),
+        );
+        if visited.insert(visit_key) {
+            queue.push_back((object.clone(), rel, depth));
+        }
+    }
+}
+
 /// Configuration for the authorization engine.
 #[derive(Debug, Clone)]
 pub struct AuthzConfig {
@@ -223,27 +257,37 @@ impl EmbeddedAuthzEngine {
         #[cfg(feature = "test-hooks")]
         self.backend_calls.fetch_add(1, Ordering::Relaxed);
 
-        // 1. Direct lookup — single storage.get()
-        let fwd_key = keys::encode_forward(object, relation, subject);
-        let direct = self
-            .storage
-            .get(realm_id, &fwd_key)
-            .map_err(|e| AuthzError::Storage(Box::new(e)))?;
-        if direct.is_some() {
-            return Ok(true);
+        // Load the namespace once so rewrite closures can be consulted
+        // without repeated storage reads. If no namespace is configured the
+        // closure reduces to the singleton `[relation]`.
+        let ns = self.get_namespace(realm_id)?;
+
+        // 1. Direct lookup — check the target relation and every sibling
+        // relation that transitively satisfies it via rewrite unions.
+        let target_relations = closure_or_self(ns.as_ref(), object.object_type(), relation);
+        for rel in &target_relations {
+            let fwd_key = keys::encode_forward(object, rel, subject);
+            let direct = self
+                .storage
+                .get(realm_id, &fwd_key)
+                .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+            if direct.is_some() {
+                return Ok(true);
+            }
         }
 
-        // 2. BFS traversal through userset indirections
+        // 2. BFS traversal through userset indirections and rewrite unions.
         let mut queue: VecDeque<(ObjectRef, String, u32)> = VecDeque::new();
         let mut visited: HashSet<(String, String, String)> = HashSet::new();
 
-        visited.insert((
-            object.object_type().to_string(),
-            object.object_id().to_string(),
-            relation.to_string(),
-        ));
-
-        queue.push_back((object.clone(), relation.to_string(), 0));
+        enqueue_with_closure(
+            &mut queue,
+            &mut visited,
+            ns.as_ref(),
+            object.clone(),
+            relation,
+            0,
+        );
 
         while let Some((cur_object, cur_relation, depth)) = queue.pop_front() {
             if depth >= self.config.max_depth {
@@ -263,14 +307,14 @@ impl EmbeddedAuthzEngine {
                         object: userset_obj,
                         relation: userset_rel,
                     } => {
-                        let visit_key = (
-                            userset_obj.object_type().to_string(),
-                            userset_obj.object_id().to_string(),
-                            userset_rel.clone(),
+                        enqueue_with_closure(
+                            &mut queue,
+                            &mut visited,
+                            ns.as_ref(),
+                            userset_obj.clone(),
+                            userset_rel,
+                            depth + 1,
                         );
-                        if visited.insert(visit_key) {
-                            queue.push_back((userset_obj.clone(), userset_rel.clone(), depth + 1));
-                        }
                     }
                 }
             }
@@ -378,6 +422,7 @@ impl EmbeddedAuthzEngine {
     /// — it may evict unrelated entries for the same object/relation but
     /// guarantees no stale positives or negatives.
     fn invalidate_cache(&self, realm_id: &RealmId, writes: &[TupleWrite]) {
+        let ns = self.get_namespace(realm_id).ok().flatten();
         let mut prefixes_to_invalidate = HashSet::new();
         for write in writes {
             let tuple = match write {
@@ -386,11 +431,19 @@ impl EmbeddedAuthzEngine {
                 | TupleWrite::TouchIfAbsent(t)
                 | TupleWrite::DeleteIfPresent(t) => t,
             };
-            prefixes_to_invalidate.insert(invalidation_prefix(
-                realm_id,
-                &tuple.object,
-                &tuple.relation,
-            ));
+            // Adding or deleting a tuple on relation R affects cache entries
+            // for R and for every relation whose rewrite closure contains R.
+            // Compute the reverse closure so, e.g., a write on `editor`
+            // correctly evicts cached `viewer` answers.
+            let affected_relations: Vec<String> = match ns.as_ref() {
+                Some(cfg) => {
+                    cfg.reverse_rewrite_closure(tuple.object.object_type(), &tuple.relation)
+                }
+                None => vec![tuple.relation.clone()],
+            };
+            for rel in affected_relations {
+                prefixes_to_invalidate.insert(invalidation_prefix(realm_id, &tuple.object, &rel));
+            }
         }
 
         let old = self.cache.load();
@@ -636,18 +689,20 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
         relation: &str,
         _at_least: Option<&ConsistencyToken>,
     ) -> Result<Vec<SubjectRef>, AuthzError> {
+        let ns = self.get_namespace(realm_id)?;
         let mut result: Vec<SubjectRef> = Vec::new();
         let mut seen_direct: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(ObjectRef, String, u32)> = VecDeque::new();
         let mut visited: HashSet<(String, String, String)> = HashSet::new();
 
-        visited.insert((
-            object.object_type().to_string(),
-            object.object_id().to_string(),
-            relation.to_string(),
-        ));
-
-        queue.push_back((object.clone(), relation.to_string(), 0));
+        enqueue_with_closure(
+            &mut queue,
+            &mut visited,
+            ns.as_ref(),
+            object.clone(),
+            relation,
+            0,
+        );
 
         while let Some((cur_object, cur_relation, depth)) = queue.pop_front() {
             if depth >= self.config.max_depth {
@@ -668,14 +723,14 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
                         object: userset_obj,
                         relation: userset_rel,
                     } => {
-                        let visit_key = (
-                            userset_obj.object_type().to_string(),
-                            userset_obj.object_id().to_string(),
-                            userset_rel.clone(),
+                        enqueue_with_closure(
+                            &mut queue,
+                            &mut visited,
+                            ns.as_ref(),
+                            userset_obj.clone(),
+                            userset_rel,
+                            depth + 1,
                         );
-                        if visited.insert(visit_key) {
-                            queue.push_back((userset_obj.clone(), userset_rel.clone(), depth + 1));
-                        }
                     }
                 }
             }
@@ -771,11 +826,18 @@ impl AuthorizationEngine for EmbeddedAuthzEngine {
         realm_id: &RealmId,
         config: &NamespaceConfig,
     ) -> Result<(), AuthzError> {
+        // Reject configs whose rewrite unions reference unknown relations or
+        // form cycles before anything is persisted.
+        config.validate_rewrites()?;
         let key = keys::encode_namespace_config();
         let value = serde_json::to_vec(config).map_err(|e| AuthzError::Storage(Box::new(e)))?;
         self.storage
             .put(realm_id, key, &value)
             .map_err(|e| AuthzError::Storage(Box::new(e)))?;
+        // Installing or changing a namespace can change the logical
+        // meaning of cached check results (e.g. a new union rule makes
+        // previously-false checks true). Drop the cache to force re-resolve.
+        self.cache.store(Arc::new(HashMap::new()));
         Ok(())
     }
 
@@ -1432,6 +1494,7 @@ mod tests {
             "viewer".to_string(),
             RelationConfig {
                 allowed_subject_types: vec!["user".to_string(), "group".to_string()],
+                rewrite: None,
             },
         );
         let mut object_types = HashMap::new();
@@ -1468,6 +1531,7 @@ mod tests {
             "viewer".to_string(),
             RelationConfig {
                 allowed_subject_types: vec!["user".to_string()],
+                rewrite: None,
             },
         );
         let mut object_types = HashMap::new();
@@ -1502,6 +1566,7 @@ mod tests {
             "viewer".to_string(),
             RelationConfig {
                 allowed_subject_types: vec!["user".to_string()],
+                rewrite: None,
             },
         );
         let mut object_types = HashMap::new();
@@ -1533,6 +1598,7 @@ mod tests {
             "viewer".to_string(),
             RelationConfig {
                 allowed_subject_types: vec!["user".to_string()],
+                rewrite: None,
             },
         );
         let mut object_types = HashMap::new();
@@ -1564,6 +1630,7 @@ mod tests {
             "viewer".to_string(),
             RelationConfig {
                 allowed_subject_types: vec!["user".to_string(), "group".to_string()],
+                rewrite: None,
             },
         );
         let mut object_types = HashMap::new();

@@ -209,6 +209,14 @@ impl IdentityAdminService for IdentityAdminSvc {
             .identity
             .create_realm(&body)
             .map_err(identity_to_status)?;
+        // Install the Roles & Permissions preset namespace on every new
+        // realm. Logged-only on failure: the realm record is already
+        // committed and the namespace install is recoverable (idempotent
+        // on retry).
+        if let Err(e) = crate::authz::ensure_preset_namespace(self.state.authz.as_ref(), realm.id())
+        {
+            tracing::warn!(error = %e, "create_realm: preset namespace install failed");
+        }
         Ok(Response::new(pb::Realm::from(&realm)))
     }
 

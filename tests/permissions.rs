@@ -163,6 +163,7 @@ async fn namespace_schema_migration() {
         "viewer".to_string(),
         RelationConfig {
             allowed_subject_types: vec!["user".to_string()],
+            rewrite: None,
         },
     );
     let mut object_types = HashMap::new();
@@ -188,6 +189,7 @@ async fn namespace_schema_migration() {
         "viewer".to_string(),
         RelationConfig {
             allowed_subject_types: vec!["user".to_string(), "group".to_string()],
+            rewrite: None,
         },
     );
     let mut object_types_v2 = HashMap::new();

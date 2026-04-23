@@ -420,10 +420,21 @@ async fn run_serve(
         }
     }
 
+    // Build the authz engine before reconciliation so the preset Roles &
+    // Permissions namespace can be installed on every newly-created realm.
+    let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        AuthzConfig::default(),
+    ));
+
     // Reconcile YAML-declared realms with storage. Runs after setup-token
     // generation so reconciliation-created realms don't suppress the
     // setup URL on a fresh instance.
-    match hearth::identity::reconcile::reconcile_realms(identity_engine.as_ref(), &config) {
+    match hearth::identity::reconcile::reconcile_realms(
+        identity_engine.as_ref(),
+        authz_engine.as_ref(),
+        &config,
+    ) {
         Ok(report) => {
             if !report.created.is_empty()
                 || !report.archived.is_empty()
@@ -462,11 +473,6 @@ async fn run_serve(
             }
         }
     }
-
-    let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
-        Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    ));
 
     let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
@@ -682,6 +688,7 @@ async fn run_serve(
             cert_path,
             key_path,
             Arc::clone(&identity_engine),
+            Arc::clone(&authz_engine),
             reload_config_path,
             dev,
             Arc::clone(&reload_notify),
@@ -692,6 +699,7 @@ async fn run_serve(
         #[cfg(unix)]
         {
             let engine = Arc::clone(&identity_engine);
+            let authz = Arc::clone(&authz_engine);
             let cfg_path = reload_config_path.clone();
             let is_dev = dev;
             let notify = Arc::clone(&reload_notify);
@@ -708,7 +716,12 @@ async fn run_serve(
                             info!("programmatic reload triggered");
                         }
                     }
-                    run_config_reconciliation(engine.as_ref(), cfg_path.as_deref(), is_dev);
+                    run_config_reconciliation(
+                        engine.as_ref(),
+                        authz.as_ref(),
+                        cfg_path.as_deref(),
+                        is_dev,
+                    );
                 }
             });
         }
@@ -863,6 +876,7 @@ async fn run_serve_tls(
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
     identity_engine: Arc<dyn IdentityEngine>,
+    authz_engine: Arc<dyn AuthorizationEngine>,
     reload_config_path: Option<PathBuf>,
     dev: bool,
     reload_notify: Arc<Notify>,
@@ -907,6 +921,7 @@ async fn run_serve_tls(
         let reloadable = Arc::new(reloadable);
         let reloadable_clone = Arc::clone(&reloadable);
         let engine = identity_engine;
+        let authz = authz_engine;
         let cfg_path = reload_config_path;
         let is_dev = dev;
         tokio::spawn(async move {
@@ -926,7 +941,12 @@ async fn run_serve_tls(
                     error!(error = %e, "TLS certificate reload failed, keeping old cert");
                 }
                 // Reload configuration and reconcile
-                run_config_reconciliation(engine.as_ref(), cfg_path.as_deref(), is_dev);
+                run_config_reconciliation(
+                    engine.as_ref(),
+                    authz.as_ref(),
+                    cfg_path.as_deref(),
+                    is_dev,
+                );
             }
         });
     }
@@ -992,6 +1012,7 @@ fn load_config(
 /// crash the server — the previous config remains in effect.
 fn run_config_reconciliation(
     engine: &dyn IdentityEngine,
+    authz: &dyn AuthorizationEngine,
     config_path: Option<&std::path::Path>,
     dev: bool,
 ) {
@@ -1003,7 +1024,7 @@ fn run_config_reconciliation(
         }
     };
 
-    match hearth::identity::reconcile::reconcile_realms(engine, &config) {
+    match hearth::identity::reconcile::reconcile_realms(engine, authz, &config) {
         Ok(report) => {
             let app_created = report
                 .applications

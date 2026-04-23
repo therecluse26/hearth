@@ -26,7 +26,7 @@ async fn creates_default_realm_when_no_yaml_and_no_storage() {
     let identity = harness.identity();
 
     let config = config_with_realms(None);
-    let report = reconcile_realms(identity, &config).expect("reconcile");
+    let report = reconcile_realms(identity, harness.authz(), &config).expect("reconcile");
 
     assert_eq!(report.created, vec!["default"]);
     assert!(report.updated.is_empty());
@@ -39,6 +39,19 @@ async fn creates_default_realm_when_no_yaml_and_no_storage() {
         .expect("default realm should exist");
     assert_eq!(realm.name(), "default");
     assert_eq!(realm.status(), RealmStatus::Active);
+
+    // Reconciliation MUST install the Roles & Permissions preset namespace
+    // on every newly-created realm, so the Roles UI is usable immediately.
+    let ns = harness
+        .authz()
+        .get_namespace(realm.id())
+        .expect("get_namespace")
+        .expect("preset namespace must be installed on the default realm");
+    assert_eq!(
+        ns,
+        hearth::authz::preset_namespace(),
+        "reconciled realm should carry the canonical preset namespace"
+    );
 }
 
 // ===== Scenario 2: Backward compat — existing realms preserved =====
@@ -57,7 +70,7 @@ async fn skips_reconciliation_when_realms_exist_and_no_yaml_key() {
         .expect("create existing realm");
 
     let config = config_with_realms(None);
-    let report = reconcile_realms(identity, &config).expect("reconcile");
+    let report = reconcile_realms(identity, harness.authz(), &config).expect("reconcile");
 
     // Should not create "default" or touch existing
     assert!(report.created.is_empty());
@@ -82,7 +95,7 @@ async fn creates_realm_from_yaml() {
     realms.insert("portal".to_string(), RealmYamlConfig::default());
 
     let config = config_with_realms(Some(realms));
-    let report = reconcile_realms(identity, &config).expect("reconcile");
+    let report = reconcile_realms(identity, harness.authz(), &config).expect("reconcile");
 
     assert_eq!(report.created, vec!["portal"]);
 
@@ -124,7 +137,7 @@ async fn updates_realm_config_from_yaml() {
     let mut config = config_with_realms(Some(realms));
     config.auth = AuthConfig::default();
 
-    let report = reconcile_realms(identity, &config).expect("reconcile");
+    let report = reconcile_realms(identity, harness.authz(), &config).expect("reconcile");
 
     assert_eq!(report.updated, vec!["portal"]);
     assert!(report.created.is_empty());
@@ -162,7 +175,7 @@ async fn archives_realm_removed_from_yaml() {
     realms.insert("keep".to_string(), RealmYamlConfig::default());
 
     let config = config_with_realms(Some(realms));
-    let report = reconcile_realms(identity, &config).expect("reconcile");
+    let report = reconcile_realms(identity, harness.authz(), &config).expect("reconcile");
 
     assert_eq!(report.archived, vec!["remove-me"]);
 
@@ -209,7 +222,7 @@ async fn unarchives_realm_that_reappears_in_yaml() {
     realms.insert("comeback".to_string(), RealmYamlConfig::default());
 
     let config = config_with_realms(Some(realms));
-    let report = reconcile_realms(identity, &config).expect("reconcile");
+    let report = reconcile_realms(identity, harness.authz(), &config).expect("reconcile");
 
     assert_eq!(report.unarchived, vec!["comeback"]);
 
@@ -233,11 +246,11 @@ async fn idempotent_reconciliation() {
     let config = config_with_realms(Some(realms));
 
     // First reconcile creates
-    let report1 = reconcile_realms(identity, &config).expect("reconcile 1");
+    let report1 = reconcile_realms(identity, harness.authz(), &config).expect("reconcile 1");
     assert_eq!(report1.created, vec!["stable"]);
 
     // Second reconcile should be a no-op
-    let report2 = reconcile_realms(identity, &config).expect("reconcile 2");
+    let report2 = reconcile_realms(identity, harness.authz(), &config).expect("reconcile 2");
     assert!(report2.created.is_empty(), "no creates on second run");
     assert!(report2.updated.is_empty(), "no updates on second run");
     assert!(report2.archived.is_empty(), "no archives on second run");

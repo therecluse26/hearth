@@ -2099,6 +2099,13 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     let realm_id = realm.id().clone();
 
+    // Install the Roles & Permissions preset namespace. Logged-only on
+    // failure so the dev bootstrap doesn't brick on a storage blip — the
+    // realm record already exists and the preset install is recoverable.
+    if let Err(e) = crate::authz::ensure_preset_namespace(state.authz.as_ref(), &realm_id) {
+        tracing::warn!(error = %e, "dev bootstrap: preset namespace install failed");
+    }
+
     // Create admin user
     let user = match state.identity.create_user(
         &realm_id,
