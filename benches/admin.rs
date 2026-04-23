@@ -47,6 +47,8 @@ fn setup_admin() -> (tempfile::TempDir, EmbeddedIdentityEngine, RealmId) {
                 &CreateUserRequest {
                     email: format!("user-{i:05}@bench.example.com"),
                     display_name: format!("Bench User {i}"),
+                    first_name: String::new(),
+                    last_name: String::new(),
                 },
             )
             .expect("create user");

@@ -89,6 +89,8 @@ proptest! {
             let user = h.identity().create_user(&realm, &CreateUserRequest {
                 email: format!("{}@x.c", sub),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             }).unwrap();
 
             h.identity().link_external_identity(&realm, user.id(), &idp, &sub).unwrap();
@@ -125,6 +127,8 @@ proptest! {
             let user = h.identity().create_user(&realm, &CreateUserRequest {
                 email: format!("{}@x.c", sub),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             }).unwrap();
 
             h.identity().link_external_identity(&realm, user.id(), &idp, &sub).unwrap();
@@ -140,6 +144,8 @@ proptest! {
             let user2 = h.identity().create_user(&realm, &CreateUserRequest {
                 email: format!("new-{}@x.c", sub),
                 display_name: "B".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             }).unwrap();
             h.identity().link_external_identity(&realm, user2.id(), &idp, &sub).unwrap();
             let found = h.identity().find_user_by_external_identity(&realm, &idp, &sub).unwrap();
@@ -166,10 +172,14 @@ proptest! {
             let alice = h.identity().create_user(&realm, &CreateUserRequest {
                 email: format!("a-{}@x.c", sub),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             }).unwrap();
             let bob = h.identity().create_user(&realm, &CreateUserRequest {
                 email: format!("b-{}@x.c", sub),
                 display_name: "B".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             }).unwrap();
 
             h.identity().link_external_identity(&realm, alice.id(), &idp, &sub).unwrap();

@@ -45,6 +45,8 @@ async fn setup_oidc_env() -> (
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice Smith".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

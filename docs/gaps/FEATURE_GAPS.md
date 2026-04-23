@@ -4,7 +4,7 @@
 
 Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection) with a **browser-facing consent screen** (per-scope checkboxes, trusted-client bypass, self-service + admin consent management, `prompt=none|consent` semantics), OIDC (discovery, UserInfo, dynamic client registration, conformance), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection) with a **browser-facing consent screen** (per-scope checkboxes, trusted-client bypass, self-service + admin consent management, `prompt=none|consent` semantics), OIDC (discovery, UserInfo, dynamic client registration, conformance), SAML 2.0 (SP + IdP sides, signed assertions, SLO wiring), **SCIM 2.0 provisioning** (Users + Groups CRUD + PATCH + filter + discovery endpoints, externalId idempotency, admin-scoped Bearer auth), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, gRPC management API, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
 
 This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
@@ -113,19 +113,58 @@ Implemented in one pass: SP side, IdP side, both SSO directions, metadata in bot
 
 **Security note:** XML-DSIG has a long CVE history in mature SAML libraries. The single-session implementation reuses `ring::signature::RSA_PKCS1_2048_8192_SHA256` (the same primitive as OIDC RS256 verification in this codebase) and narrows the algorithm suite aggressively. Even so, any production deployment consuming untrusted IdP assertions should have the `signature.rs` + `c14n.rs` + `xml.rs` trio independently reviewed before being exposed to real enterprise traffic.
 
-### 7. SCIM 2.0 Provisioning
+### 7. SCIM 2.0 Provisioning — COMPLETED ✅ (Phase 1 — requires hardening)
 
-- **Vision ref:** §5.3 explicitly lists "SCIM 2.0 provisioning." §6.1 architecture diagram shows SCIM as a protocol layer component.
-- **Current State:** SCIM is referenced in architecture and vision documents. No SCIM code exists.
-- **What's Missing:**
-  - SCIM 2.0 server endpoints: `/Users` and `/Groups` CRUD with filtering (`filter=userName eq "john"`), pagination, and PATCH.
-  - Schema discovery endpoints (`/Schemas`, `/ResourceTypes`, `/ServiceProviderConfig`).
-  - SCIM User → Hearth User attribute mapping.
-  - SCIM Group → Zanzibar relation / organization membership mapping.
-  - Event hooks: audit when users are provisioned/deprovisioned via SCIM.
-  - Bearer token or OAuth authentication for SCIM endpoints.
-- **Why It Matters:** Enterprises sync HR directories (Workday, BambooHR) and IdPs (Okta, Azure AD) via SCIM. Without SCIM, user provisioning is manual or requires custom API integration.
-- **Priority Rationale:** P1 because automated provisioning is a procurement requirement for mid-to-large enterprises.
+Implemented in one pass: users + groups CRUD + PATCH + filter + discovery endpoints, mounted at `/scim/v2/*`. Phase 1 covers the subset of RFC 7643 / 7644 that Okta and Azure AD actually exercise against provisioning endpoints; the deferred items are documented below rather than hidden.
+
+**What ships:**
+
+- **Endpoints:** `POST|GET /scim/v2/Users`, `GET|PUT|PATCH|DELETE /scim/v2/Users/{id}`, `POST|GET /scim/v2/Groups`, `GET|PUT|PATCH|DELETE /scim/v2/Groups/{id}`, `GET /scim/v2/{ServiceProviderConfig,Schemas,ResourceTypes}`.
+- **User schema:** `userName` (maps to `User.email`), `externalId` (idempotent IdP provisioning key), `name.{givenName,familyName}` (first-class fields on `User`), `displayName`, `emails[]` (primary only persisted), `active` (↔ `UserStatus::{Active,Disabled}`), `meta` (includes weak ETag).
+- **Group schema:** `displayName` (↔ `Organization.name`), `externalId`, `members[]` with role `Member`. Slug is derived via `slugify(displayName)` with UUID suffix on collision.
+- **Filter:** flat `eq` / `ne` / `co` / `sw` / `ew` / `pr` with `and` / `or`. Bracketed paths (`emails[type eq "work"].value`) return `400 invalidFilter`. Case-insensitive string comparison.
+- **PATCH:** simple dotted paths (`active`, `name.familyName`, `emails`, `members`, …) and root-object replacement with an implicit per-field apply. `add` / `replace` / `remove` all supported.
+- **Auth:** reuses the admin Bearer + `X-Realm-ID` extractor (now `pub(crate)` on `http.rs`) and the shared `AdminRateLimiter` — SCIM calls count against the same 100/min bucket as REST and gRPC admin. Non-admin tokens → 403 with the SCIM error envelope, not the plain `{error}` envelope.
+- **Engine-level externalId indexes:** new storage prefixes `scim:ext_user:*`, `scim:ext_user_fwd:*`, `scim:ext_group:*`, `scim:ext_group_fwd:*`, plus six new `IdentityEngine` methods (`{set,clear,get}_scim_external_id`, `find_user_by_scim_external_id`, same four for groups). Duplicate externalId returns the new `IdentityError::DuplicateScimExternalId`. Cascade in `delete_user`, `delete_organization`, `delete_realm`.
+- **Audit:** six new `AuditAction` variants — `ScimUser{Created,Updated,Deleted}` + `ScimGroup{Created,Updated,Deleted}`. Metadata carries `{"via": "scim", "external_id": "..."}`. Proto enum + wire conversion tables updated in lockstep.
+- **ETag:** weak `W/"<updated_at_micros>"` on every individual-resource response. Inbound `If-Match` is accepted and ignored (see hardening).
+- **First-class name fields on `User`:** `first_name` + `last_name` are now required (empty string allowed) on the core user model — not a SCIM-only sidecar. Federation JIT provisioning and Keycloak import populate them from upstream `given_name` / `family_name` / `firstName` / `lastName`. Admin-UI and self-registration forms expose them. `display_name` auto-synthesizes as `"{first} {last}"` when the caller omits it.
+
+**Key files (new):**
+- Module: `src/protocol/scim/{mod,types,filter,patch_apply,error,users,groups,discovery}.rs` (~2100 LOC)
+- Tests: `src/identity/engine.rs::tests::scim_*` (6 engine unit tests), `src/protocol/scim/{filter,patch_apply,types}::tests` (18 unit tests), `tests/scim.rs` (11 integration tests).
+
+**Key files (modified):**
+- `src/identity/types.rs` — `User`, `CreateUserRequest`, `UpdateUserRequest`, `ImportUserRequest`, `RegisterUserRequest` gained `first_name` / `last_name`. `UpdateUserRequest` treats them as `Option<String>` (patch-marker).
+- `src/identity/engine.rs` — synthesis of `display_name` when caller omits it; SCIM externalId trait methods; cascade in `delete_user` + `delete_organization` + `delete_realm`.
+- `src/identity/mod.rs` — six new `IdentityEngine` methods.
+- `src/identity/validation.rs` — new `validate_name_part` (empty allowed, null + length bounds).
+- `src/identity/keys.rs` — four new prefix constants + encoders.
+- `src/identity/error.rs` — `DuplicateScimExternalId` variant.
+- `src/identity/federation/{types,oidc,github,saml/sp}.rs` — `ExternalIdentity` gained `first_name` / `last_name`; OIDC `IdTokenClaims` reads `given_name` / `family_name`; SAML attribute map resolves `first_name` / `last_name`.
+- `src/identity/federation/oidc.rs` — populate names from upstream claims.
+- `src/identity/migration/keycloak.rs` — import Keycloak `firstName` / `lastName`.
+- `src/protocol/http.rs` — `extract_admin_auth` + `AdminAuth` exposed `pub(crate)`; `/scim/v2` mounted.
+- `src/protocol/convert/identity.rs` + `proto/hearth/identity/v1/identity.proto` — wire types carry `first_name` / `last_name`.
+- `src/protocol/web/admin.rs` + `templates/ui/admin/users/{new,edit}.html` — first/last inputs.
+- `src/protocol/web/handlers.rs` + `templates/ui/register.html` — first/last inputs on the registration form.
+- `src/audit/types.rs` + `proto/hearth/events/v1/audit.proto` + `src/protocol/{convert,grpc}/audit.rs` — six new `AuditAction` variants.
+
+**Known limitations / planned hardening:**
+
+- **Bracketed filter paths** (`emails[type eq "work"].value`) are rejected. Real IdPs don't send them against provisioning endpoints, but RFC 7644 §3.4.2.2 allows them.
+- **Bracketed PATCH paths** are also rejected. Same justification.
+- **`/Bulk` endpoint** is not implemented. Okta + Azure batch behind the scenes by issuing many individual requests, which the current endpoints handle.
+- **Sorting / attribute projection / `excludedAttributes`** are not implemented. List responses always return the full resource representation.
+- **Enterprise User schema extension** (`urn:ietf:params:scim:schemas:extension:enterprise:2.0:User`) is not advertised or accepted. Manager, cost-center, division, etc. are dropped if the client sends them.
+- **Pagination is in-memory.** The handler scans up to 1000 resources via the existing `list_users` / `list_organizations` cursor and slices the result in process. Engine-level filter / pagination push-down is Phase 2.
+- **`If-Match` is accepted and ignored.** ETag is emitted on responses but optimistic concurrency is not enforced; two concurrent PUTs both win-last.
+- **Service-account / long-lived SCIM tokens** are not a separate construct. Phase 1 reuses admin Bearer tokens — production deployments typically want a scope-limited SCIM-only token.
+- **`displayName` uniqueness for Groups** is not enforced. Hearth's `Organization.slug` uniqueness is preserved by appending a UUID suffix on collision; a SCIM client that renames via PATCH triggers the same slug-rewrite path.
+- **Non-primary emails** in a user POST are accepted-and-dropped. Hearth stores a single email; subsequent emails are visible only as the `primary: true` entry on GET.
+- **`userName` assumed to equal email.** Azure AD configurations that emit `userPrincipalName` as non-email are out of scope.
+
+**Security note:** All SCIM writes go through the same `IdentityEngine` paths that admin UI / gRPC use — the SCIM layer is a thin translator, so existing invariants (email uniqueness, Argon2id hashing, audit trail) hold uniformly. There is no credential provisioning via SCIM; Phase 1 clients cannot set passwords through the endpoint.
 
 ### 8. gRPC Management API — COMPLETED ✅
 
@@ -523,7 +562,7 @@ Addresses two admin-setup bugs on multi-realm deployments: verification links hi
 | 4 | ~~Password reset~~ — **DONE** (verified) | P0 | §5.3 | — |
 | 5 | ~~Social login / external IdP~~ — **DONE** | P1 | §5.3 | — |
 | 6 | ~~SAML 2.0~~ — **DONE** (Phase 1; hardening recommended) | P1 | §5.3, §6.1 | — |
-| 7 | SCIM 2.0 | P1 | §5.3, §6.1 | Large |
+| 7 | ~~SCIM 2.0~~ — **DONE** (Phase 1; hardening recommended) | P1 | §5.3, §6.1 | — |
 | 8 | ~~gRPC management API~~ — **DONE** | P1 | §6.1 | — |
 | 9 | Documentation site | P1 | Phase 1 exit | Medium |
 | 10 | Additional migration tools | P1 | §8.3 | Medium per tool |
@@ -551,11 +590,11 @@ Gaps 1 ✅, 2 ✅, 3 ✅, and 4 ✅ complete. Remaining: 15 — CI/CD.
 Add gaps 9, 11 — documentation site, Prometheus metrics. (Consent screen ✅, social login ✅.)
 
 **Enterprise-ready (v1.0 per Phase 2 exit criteria):**
-Add gaps 7, 10, 12, 14, 17, 21 — SCIM, migration tools, backup, encryption, deployment artifacts, Raft. (gRPC ✅. SAML Phase 1 ✅ — recommend hardening pass before enterprise GA.)
+Add gaps 10, 12, 14, 17, 21 — migration tools, backup, encryption, deployment artifacts, Raft. (gRPC ✅. SAML Phase 1 ✅ and SCIM Phase 1 ✅ — recommend hardening pass before enterprise GA.)
 
 ---
 
-*Last updated: 2026-04-22. Revised to mark gap #8 (gRPC management API) as completed — P1 list narrowed from 5 to 4 items.*
+*Last updated: 2026-04-23. Revised to mark gap #7 (SCIM 2.0 provisioning) as completed — P1 list narrowed from 4 to 3 items.*
 
 ---
 

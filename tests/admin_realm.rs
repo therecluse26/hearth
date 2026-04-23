@@ -104,6 +104,8 @@ async fn register_user_rejects_system_realm() {
             password: CleartextPassword::from_string("correct-horse-battery-staple".to_string()),
             client_ip: None,
             invitation_token: None,
+            first_name: String::new(),
+            last_name: String::new(),
         },
     );
     assert!(
@@ -145,6 +147,8 @@ async fn create_user_rejects_system_realm() {
         &CreateUserRequest {
             email: "sneaky@example.com".to_string(),
             display_name: "Sneaky".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         },
     );
     assert!(
@@ -162,6 +166,8 @@ async fn create_admin_user_succeeds_on_system_realm() {
         .create_admin_user(&CreateUserRequest {
             email: "second-admin@example.com".to_string(),
             display_name: "Second Admin".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         })
         .expect("create_admin_user");
     // The user is persisted in the system realm.

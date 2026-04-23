@@ -278,6 +278,8 @@ async fn login_does_not_walk_realms() {
                 ),
                 client_ip: None,
                 invitation_token: None,
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("register_user");
@@ -324,6 +326,8 @@ async fn verify_email_respects_path_realm() {
                 ),
                 client_ip: None,
                 invitation_token: None,
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("register_user");

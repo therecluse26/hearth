@@ -24,6 +24,8 @@ async fn create_and_read_user_by_id() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice Smith".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create");
@@ -53,6 +55,8 @@ async fn create_and_read_user_by_email() {
             &CreateUserRequest {
                 email: "Bob@Example.COM".to_string(),
                 display_name: "Bob".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create");
@@ -82,6 +86,8 @@ async fn update_user_fields() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create");
@@ -119,6 +125,8 @@ async fn delete_user_removes_from_both_indexes() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create");
@@ -154,6 +162,8 @@ async fn duplicate_email_rejected() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("first create");
@@ -165,6 +175,8 @@ async fn duplicate_email_rejected() {
             &CreateUserRequest {
                 email: "Alice@Example.COM".to_string(),
                 display_name: "Other".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect_err("should fail");
@@ -191,6 +203,8 @@ async fn delete_frees_email_for_reuse() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice 1".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create");
@@ -208,6 +222,8 @@ async fn delete_frees_email_for_reuse() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice 2".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("re-create should succeed");
@@ -232,6 +248,8 @@ async fn cross_realm_isolation() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create in realm A");
@@ -244,6 +262,8 @@ async fn cross_realm_isolation() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice B".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create in realm B should succeed");

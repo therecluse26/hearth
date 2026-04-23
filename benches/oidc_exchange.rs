@@ -54,6 +54,8 @@ fn setup_oidc() -> (
             &CreateUserRequest {
                 email: "bench-oidc@example.com".to_string(),
                 display_name: "Bench OIDC User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

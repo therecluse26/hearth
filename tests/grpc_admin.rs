@@ -141,6 +141,8 @@ fn setup_admin(harness: &common::TestHarness) -> (RealmId, UserId, String) {
             &CreateUserRequest {
                 email: "admin@example.com".to_string(),
                 display_name: "Admin".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -282,6 +284,8 @@ async fn non_admin_request_is_forbidden() {
             &CreateUserRequest {
                 email: "not-admin@example.com".to_string(),
                 display_name: "NotAdmin".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("user");
@@ -318,6 +322,8 @@ async fn create_and_get_user_via_grpc() {
     let mut create = Request::new(pb::CreateUserRequest {
         email: "alice@example.com".to_string(),
         display_name: "Alice".to_string(),
+        first_name: String::new(),
+        last_name: String::new(),
     });
     apply_headers(&mut create, &realm_id, &token);
     let created = client
@@ -355,6 +361,8 @@ async fn cross_realm_isolation_returns_not_found() {
             &CreateUserRequest {
                 email: "bob@example.com".to_string(),
                 display_name: "Bob".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("user b");

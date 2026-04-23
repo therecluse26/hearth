@@ -17,6 +17,8 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
             &CreateUserRequest {
                 email: format!("user-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "Test User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user")
@@ -120,6 +122,8 @@ async fn session_persists_across_restart() {
                 &CreateUserRequest {
                     email: "persist@example.com".to_string(),
                     display_name: "Persist User".to_string(),
+                    first_name: String::new(),
+                    last_name: String::new(),
                 },
             )
             .expect("create user");
@@ -449,6 +453,8 @@ async fn enumeration_resistance() {
             &CreateUserRequest {
                 email: "enum@example.com".to_string(),
                 display_name: "Enum User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

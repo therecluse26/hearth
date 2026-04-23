@@ -58,6 +58,8 @@ async fn full_realm_lifecycle() {
             &CreateUserRequest {
                 email: "alice@lifecycle.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -125,6 +127,8 @@ async fn multi_realm_token_isolation() {
             &CreateUserRequest {
                 email: "alice@a.com".to_string(),
                 display_name: "Alice A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user A");
@@ -238,6 +242,8 @@ async fn adversarial_cross_realm_session_injection() {
             &CreateUserRequest {
                 email: "victim@a.com".to_string(),
                 display_name: "Victim".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -288,6 +294,8 @@ async fn adversarial_realm_id_spoofing() {
             &CreateUserRequest {
                 email: "alice@real.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

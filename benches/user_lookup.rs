@@ -41,6 +41,8 @@ fn setup_user() -> (
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create");
@@ -103,6 +105,8 @@ fn bench_user_creation(c: &mut Criterion) {
                     &CreateUserRequest {
                         email: email.clone(),
                         display_name: "Bench User".to_string(),
+                        first_name: String::new(),
+                        last_name: String::new(),
                     },
                 )
                 .expect("create");

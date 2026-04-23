@@ -153,6 +153,8 @@ async fn constant_time_comparisons_for_secrets() {
             &CreateUserRequest {
                 email: "timing-test@example.com".to_string(),
                 display_name: "Timing Test".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -282,6 +284,8 @@ async fn input_size_limits_enforced() {
         &CreateUserRequest {
             email: long_email,
             display_name: "Normal Name".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         },
     );
     assert!(result.is_err(), "oversized email should be rejected");
@@ -292,6 +296,8 @@ async fn input_size_limits_enforced() {
         &CreateUserRequest {
             email: "valid@example.com".to_string(),
             display_name: "x".repeat(10_000),
+            first_name: String::new(),
+            last_name: String::new(),
         },
     );
     assert!(result.is_err(), "oversized display name should be rejected");
@@ -304,6 +310,8 @@ async fn input_size_limits_enforced() {
             &CreateUserRequest {
                 email: "limits@example.com".to_string(),
                 display_name: "Limits Test".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

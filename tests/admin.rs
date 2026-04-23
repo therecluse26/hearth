@@ -39,6 +39,8 @@ fn setup_user(
             &CreateUserRequest {
                 email: email.to_string(),
                 display_name: email.split('@').next().unwrap_or("User").to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -212,22 +214,32 @@ async fn bulk_operations() {
         CreateUserRequest {
             email: "new1@example.com".to_string(),
             display_name: "New 1".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         },
         CreateUserRequest {
             email: "dup1@example.com".to_string(), // duplicate
             display_name: "Dup 1".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         },
         CreateUserRequest {
             email: "new2@example.com".to_string(),
             display_name: "New 2".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         },
         CreateUserRequest {
             email: "dup2@example.com".to_string(), // duplicate
             display_name: "Dup 2".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         },
         CreateUserRequest {
             email: "new3@example.com".to_string(),
             display_name: "New 3".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         },
     ];
 
@@ -271,6 +283,8 @@ async fn crud_users() {
             &CreateUserRequest {
                 email: "crud@example.com".to_string(),
                 display_name: "CRUD User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -458,6 +472,8 @@ async fn admin_audit_trail() {
             &CreateUserRequest {
                 email: "audit-test@example.com".to_string(),
                 display_name: "Audit Test".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -576,6 +592,8 @@ async fn privilege_escalation_prevention() {
             &CreateUserRequest {
                 email: "innocent@example.com".to_string(),
                 display_name: "Innocent".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("non-admin can create via identity engine directly");

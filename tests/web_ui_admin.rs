@@ -105,6 +105,8 @@ fn build_rig() -> TestRig {
         .create_admin_user(&CreateUserRequest {
             email: "admin@acme.test".to_string(),
             display_name: "Admin".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         })
         .expect("create admin user");
     let pw = CleartextPassword::from_string("correct-horse-battery-staple".to_string());
@@ -119,6 +121,8 @@ fn build_rig() -> TestRig {
                 email: None,
                 display_name: None,
                 status: Some(UserStatus::Active),
+                first_name: None,
+                last_name: None,
             },
         )
         .expect("activate admin");
@@ -145,6 +149,8 @@ fn build_rig() -> TestRig {
             &CreateUserRequest {
                 email: "bob@acme.test".to_string(),
                 display_name: "Bob".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create non-admin user");
@@ -160,6 +166,8 @@ fn build_rig() -> TestRig {
                 email: None,
                 display_name: None,
                 status: Some(UserStatus::Active),
+                first_name: None,
+                last_name: None,
             },
         )
         .expect("activate non-admin");

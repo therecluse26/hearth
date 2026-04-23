@@ -104,6 +104,8 @@ fn seed_realm(identity: &EmbeddedIdentityEngine, authz: &EmbeddedAuthzEngine) ->
                 &CreateUserRequest {
                     email: format!("user-{i}@crash.example.com"),
                     display_name: format!("Crash User {i}"),
+                    first_name: String::new(),
+                    last_name: String::new(),
                 },
             )
             .expect("create user");

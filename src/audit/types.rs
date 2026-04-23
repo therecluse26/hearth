@@ -99,6 +99,19 @@ pub enum AuditAction {
     SamlSloRequested,
     /// A SAML Single Logout completed.
     SamlSloCompleted,
+    /// A user was provisioned via the SCIM 2.0 API. Metadata carries
+    /// `external_id` (SCIM `externalId`) when supplied by the client.
+    ScimUserCreated,
+    /// A user was updated (PUT or PATCH) via SCIM.
+    ScimUserUpdated,
+    /// A user was deprovisioned (DELETE) via SCIM.
+    ScimUserDeleted,
+    /// A group was provisioned via SCIM.
+    ScimGroupCreated,
+    /// A group was updated via SCIM.
+    ScimGroupUpdated,
+    /// A group was deleted via SCIM.
+    ScimGroupDeleted,
 }
 
 impl AuditAction {
@@ -146,6 +159,12 @@ impl AuditAction {
             Self::SamlIdpInitiatedSso => "saml_idp_initiated_sso",
             Self::SamlSloRequested => "saml_slo_requested",
             Self::SamlSloCompleted => "saml_slo_completed",
+            Self::ScimUserCreated => "scim_user_created",
+            Self::ScimUserUpdated => "scim_user_updated",
+            Self::ScimUserDeleted => "scim_user_deleted",
+            Self::ScimGroupCreated => "scim_group_created",
+            Self::ScimGroupUpdated => "scim_group_updated",
+            Self::ScimGroupDeleted => "scim_group_deleted",
         }
     }
 }
@@ -196,6 +215,12 @@ impl std::str::FromStr for AuditAction {
             "saml_idp_initiated_sso" => Ok(Self::SamlIdpInitiatedSso),
             "saml_slo_requested" => Ok(Self::SamlSloRequested),
             "saml_slo_completed" => Ok(Self::SamlSloCompleted),
+            "scim_user_created" => Ok(Self::ScimUserCreated),
+            "scim_user_updated" => Ok(Self::ScimUserUpdated),
+            "scim_user_deleted" => Ok(Self::ScimUserDeleted),
+            "scim_group_created" => Ok(Self::ScimGroupCreated),
+            "scim_group_updated" => Ok(Self::ScimGroupUpdated),
+            "scim_group_deleted" => Ok(Self::ScimGroupDeleted),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

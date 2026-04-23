@@ -37,7 +37,8 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::DuplicateInvitation
         | IdentityError::MfaAlreadyEnabled
         | IdentityError::AlreadyMember
-        | IdentityError::FederationAlreadyLinked => (Code::AlreadyExists, err.to_string()),
+        | IdentityError::FederationAlreadyLinked
+        | IdentityError::DuplicateScimExternalId => (Code::AlreadyExists, err.to_string()),
         IdentityError::InvalidToken
         | IdentityError::TokenExpired
         | IdentityError::InvalidCredential { .. }

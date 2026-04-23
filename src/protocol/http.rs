@@ -127,9 +127,9 @@ impl AppState {
 /// Contains the realm and user that passed both token validation
 /// and Zanzibar admin role check.
 #[derive(Debug, Clone)]
-struct AdminAuth {
-    realm_id: RealmId,
-    user_id: UserId,
+pub(crate) struct AdminAuth {
+    pub(crate) realm_id: RealmId,
+    pub(crate) user_id: UserId,
 }
 
 /// Extracts and validates admin authentication from request headers.
@@ -138,7 +138,7 @@ struct AdminAuth {
 /// 2. Validates the token via `identity.validate_token()`
 /// 3. Checks admin role via `authz.check(hearth#admin@user:uuid)`
 /// 4. Checks rate limit (100 req/min per admin user)
-fn extract_admin_auth(
+pub(crate) fn extract_admin_auth(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<AdminAuth, (StatusCode, Json<serde_json::Value>)> {
@@ -315,6 +315,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .nest("/admin", admin_routes)
         .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
+        .nest("/scim/v2", crate::protocol::scim::router())
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
         .with_state(state)
 }
@@ -773,6 +774,9 @@ fn identity_error_to_response(
         }
         IdentityError::FederationAlreadyLinked => {
             (StatusCode::CONFLICT, "external identity already linked")
+        }
+        IdentityError::DuplicateScimExternalId => {
+            (StatusCode::CONFLICT, "SCIM externalId already in use")
         }
         IdentityError::SamlParse { .. }
         | IdentityError::SamlSignature
@@ -2101,6 +2105,7 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
         &crate::identity::CreateUserRequest {
             email: "admin@dev.local".to_string(),
             display_name: "Dev Admin".to_string(),
+            ..Default::default()
         },
     ) {
         Ok(u) => u,

@@ -362,10 +362,15 @@ impl KeycloakImporter {
             None => None,
         };
 
+        let first_name = ku.first_name.clone().unwrap_or_default();
+        let last_name = ku.last_name.clone().unwrap_or_default();
+
         let request = ImportUserRequest {
             id,
             email,
             display_name,
+            first_name,
+            last_name,
             status,
             credential,
         };

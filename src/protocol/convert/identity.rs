@@ -14,6 +14,8 @@ impl From<&domain::User> for pb::User {
             status: domain_user_status_to_proto(u.status()).into(),
             created_at: u.created_at().as_micros(),
             updated_at: u.updated_at().as_micros(),
+            first_name: u.first_name().to_string(),
+            last_name: u.last_name().to_string(),
         }
     }
 }
@@ -48,6 +50,8 @@ impl From<pb::CreateUserRequest> for domain::CreateUserRequest {
         Self {
             email: r.email,
             display_name: r.display_name,
+            first_name: r.first_name,
+            last_name: r.last_name,
         }
     }
 }
@@ -59,6 +63,8 @@ impl From<pb::UpdateUserRequest> for domain::UpdateUserRequest {
         Self {
             email: r.email,
             display_name: r.display_name,
+            first_name: r.first_name,
+            last_name: r.last_name,
             status: r.status.and_then(proto_user_status_to_domain),
         }
     }
@@ -222,6 +228,8 @@ mod tests {
             UserId::generate(),
             "alice@example.com".to_string(),
             "Alice".to_string(),
+            "Alice".to_string(),
+            "Smith".to_string(),
             DomainUserStatus::Active,
             Timestamp::from_micros(1_000_000),
             Timestamp::from_micros(2_000_000),
@@ -301,6 +309,7 @@ mod tests {
         let proto_req = pb::CreateUserRequest {
             email: "bob@example.com".to_string(),
             display_name: "Bob".to_string(),
+            ..Default::default()
         };
         let domain_req = domain::CreateUserRequest::from(proto_req);
         assert_eq!(domain_req.email, "bob@example.com");
@@ -313,6 +322,7 @@ mod tests {
             email: Some("new@example.com".to_string()),
             display_name: None,
             status: Some(pb::UserStatus::Disabled as i32),
+            ..Default::default()
         };
         let domain_req = domain::UpdateUserRequest::from(proto_req);
         assert_eq!(domain_req.email.as_deref(), Some("new@example.com"));

@@ -158,6 +158,8 @@ async fn confirm_link_ticket_cannot_be_replayed() {
             &CreateUserRequest {
                 email: "a@x.c".to_string(),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -172,6 +174,8 @@ async fn confirm_link_ticket_cannot_be_replayed() {
             email_verified: true,
             display_name: "A".to_string(),
             picture_url: None,
+            first_name: String::new(),
+            last_name: String::new(),
         },
         expires_at: Timestamp::from_micros(i64::MAX),
     };
@@ -198,6 +202,8 @@ fn claims_with(iss: &str, aud: serde_json::Value, exp: i64, nonce: &str) -> IdTo
         email: Some("alice@example.com".to_string()),
         email_verified: Some(true),
         name: Some("Alice".to_string()),
+        given_name: None,
+        family_name: None,
         picture: None,
     }
 }
@@ -299,6 +305,8 @@ async fn userinfo_display_name_with_html_is_preserved_verbatim() {
         email_verified: false,
         display_name: "<script>alert(1)</script>".to_string(),
         picture_url: None,
+        first_name: String::new(),
+        last_name: String::new(),
     };
     let json = serde_json::to_string(&id).unwrap();
     let back: ExternalIdentity = serde_json::from_str(&json).unwrap();
@@ -324,6 +332,8 @@ async fn link_external_identity_refuses_to_rehome_across_users() {
             &CreateUserRequest {
                 email: "a@x.c".to_string(),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -334,6 +344,8 @@ async fn link_external_identity_refuses_to_rehome_across_users() {
             &CreateUserRequest {
                 email: "b@x.c".to_string(),
                 display_name: "B".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();

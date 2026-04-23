@@ -125,6 +125,12 @@ fn proto_action_to_domain(v: i32) -> Result<AuditAction, ()> {
         pb::AuditAction::SamlIdpInitiatedSso => AuditAction::SamlIdpInitiatedSso,
         pb::AuditAction::SamlSloRequested => AuditAction::SamlSloRequested,
         pb::AuditAction::SamlSloCompleted => AuditAction::SamlSloCompleted,
+        pb::AuditAction::ScimUserCreated => AuditAction::ScimUserCreated,
+        pb::AuditAction::ScimUserUpdated => AuditAction::ScimUserUpdated,
+        pb::AuditAction::ScimUserDeleted => AuditAction::ScimUserDeleted,
+        pb::AuditAction::ScimGroupCreated => AuditAction::ScimGroupCreated,
+        pb::AuditAction::ScimGroupUpdated => AuditAction::ScimGroupUpdated,
+        pb::AuditAction::ScimGroupDeleted => AuditAction::ScimGroupDeleted,
     })
 }
 

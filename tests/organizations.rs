@@ -139,6 +139,8 @@ async fn membership_lifecycle() {
             &CreateUserRequest {
                 email: "alice@test.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create alice");
@@ -149,6 +151,8 @@ async fn membership_lifecycle() {
             &CreateUserRequest {
                 email: "bob@test.com".to_string(),
                 display_name: "Bob".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create bob");
@@ -239,6 +243,8 @@ async fn invitation_e2e_flow() {
             &CreateUserRequest {
                 email: "admin@test.com".to_string(),
                 display_name: "Admin".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create admin");
@@ -325,6 +331,8 @@ async fn cascading_delete_org_cleans_memberships_and_invitations() {
             &CreateUserRequest {
                 email: "cascade@test.com".to_string(),
                 display_name: "Cascade User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -394,6 +402,8 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
             &CreateUserRequest {
                 email: "owner@test.com".to_string(),
                 display_name: "Owner".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create owner");
@@ -430,6 +440,8 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
             &CreateUserRequest {
                 email: "owner2@test.com".to_string(),
                 display_name: "Owner 2".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create owner2");
@@ -511,6 +523,8 @@ async fn member_limit_enforced() {
             &CreateUserRequest {
                 email: "user1@test.com".to_string(),
                 display_name: "User 1".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user1");
@@ -521,6 +535,8 @@ async fn member_limit_enforced() {
             &CreateUserRequest {
                 email: "user2@test.com".to_string(),
                 display_name: "User 2".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user2");
@@ -567,6 +583,8 @@ async fn delete_user_cascades_org_memberships() {
             &CreateUserRequest {
                 email: "deleteme@test.com".to_string(),
                 display_name: "Delete Me".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -578,6 +596,8 @@ async fn delete_user_cascades_org_memberships() {
             &CreateUserRequest {
                 email: "stayowner@test.com".to_string(),
                 display_name: "Stay Owner".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create owner");
@@ -632,6 +652,8 @@ async fn invitation_revocation() {
             &CreateUserRequest {
                 email: "admin-revoke@test.com".to_string(),
                 display_name: "Admin".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create admin");
@@ -771,6 +793,8 @@ mod proptests {
                         &CreateUserRequest {
                             email: format!("sym-{i}-{member_count}@test.com"),
                             display_name: format!("User {i}"),
+                            first_name: String::new(),
+                            last_name: String::new(),
                         },
                     )
                     .expect("create user");
@@ -924,6 +948,8 @@ async fn role_escalation_prevention() {
             &CreateUserRequest {
                 email: "sole-owner@test.com".to_string(),
                 display_name: "Sole Owner".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create owner");

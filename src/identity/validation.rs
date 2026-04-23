@@ -128,6 +128,30 @@ pub(crate) fn validate_display_name(name: &str) -> Result<String, IdentityError>
     Ok(normalized)
 }
 
+/// Normalizes a name component (first or last name) for storage.
+///
+/// Unlike `validate_display_name`, empty values are accepted — callers may
+/// lack name data for a user. Only null bytes and length bounds are enforced.
+pub(crate) fn validate_name_part(name: &str, field: &str) -> Result<String, IdentityError> {
+    let normalized: String = name.trim().nfc().collect();
+
+    if normalized.contains('\0') {
+        return Err(IdentityError::InvalidInput {
+            reason: format!("{field} must not contain null bytes"),
+        });
+    }
+
+    if normalized.len() > MAX_DISPLAY_NAME_LENGTH {
+        return Err(IdentityError::InvalidInput {
+            reason: format!(
+                "{field} exceeds maximum length of {MAX_DISPLAY_NAME_LENGTH} characters"
+            ),
+        });
+    }
+
+    Ok(normalized)
+}
+
 /// Enforces a realm's [`PasswordPolicy`] against a candidate password.
 ///
 /// Complements `validate_password_length` (which only guards against the

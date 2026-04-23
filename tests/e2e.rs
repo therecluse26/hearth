@@ -37,6 +37,8 @@ async fn developer_onramp_realm_app_oidc_login() {
             &CreateUserRequest {
                 email: "dev@startup.io".to_string(),
                 display_name: "Developer".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -141,6 +143,8 @@ async fn user_lifecycle_register_authenticate_session_token() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -223,6 +227,8 @@ async fn auth_plus_authz_permission_grant_and_check() {
             &CreateUserRequest {
                 email: "bob@example.com".to_string(),
                 display_name: "Bob".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -320,6 +326,8 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
             &CreateUserRequest {
                 email: "charlie@example.com".to_string(),
                 display_name: "Charlie".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

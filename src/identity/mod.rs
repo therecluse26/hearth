@@ -1205,4 +1205,68 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         request: &ImportClientRequest,
     ) -> Result<OAuthClient, IdentityError>;
+
+    // ===== SCIM externalId management =====
+
+    /// Sets the SCIM `externalId` for a user. Replaces any prior value.
+    ///
+    /// Returns `DuplicateScimExternalId` when the `external_id` is already
+    /// associated with a different user in this realm.
+    fn set_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        external_id: &str,
+    ) -> Result<(), IdentityError>;
+
+    /// Clears the SCIM `externalId` for a user, if one was set.
+    /// Idempotent — no error when none is present.
+    fn clear_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError>;
+
+    /// Returns the SCIM `externalId` associated with the user, if any.
+    fn get_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Option<String>, IdentityError>;
+
+    /// Resolves a SCIM `externalId` to the Hearth user that owns it.
+    fn find_user_by_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        external_id: &str,
+    ) -> Result<Option<User>, IdentityError>;
+
+    /// Sets the SCIM `externalId` for an organization (group).
+    fn set_scim_group_external_id(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        external_id: &str,
+    ) -> Result<(), IdentityError>;
+
+    /// Clears the SCIM `externalId` for an organization. Idempotent.
+    fn clear_scim_group_external_id(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+    ) -> Result<(), IdentityError>;
+
+    /// Returns the SCIM `externalId` associated with the organization, if any.
+    fn get_scim_group_external_id(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+    ) -> Result<Option<String>, IdentityError>;
+
+    /// Resolves a SCIM `externalId` to the Hearth organization that owns it.
+    fn find_group_by_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        external_id: &str,
+    ) -> Result<Option<Organization>, IdentityError>;
 }

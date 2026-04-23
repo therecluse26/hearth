@@ -166,6 +166,8 @@ impl IdpConnector for GithubConnector {
                 .unwrap_or((String::new(), false)),
         };
 
+        // GitHub doesn't split names; leave first/last empty so the engine
+        // can synthesize display_name from the existing `display_name` field.
         Ok(ExternalIdentity {
             idp_id: self.config.id.clone(),
             external_sub: user
@@ -177,6 +179,8 @@ impl IdpConnector for GithubConnector {
             email,
             email_verified,
             display_name: user.name.unwrap_or(user.login),
+            first_name: String::new(),
+            last_name: String::new(),
             picture_url: user.avatar_url,
         })
     }

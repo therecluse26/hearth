@@ -120,6 +120,12 @@ pub struct IdTokenClaims {
     /// Best-effort display name (optional per Core §5.1).
     #[serde(default)]
     pub name: Option<String>,
+    /// First (given) name (optional per Core §5.1).
+    #[serde(default)]
+    pub given_name: Option<String>,
+    /// Last (family) name (optional per Core §5.1).
+    #[serde(default)]
+    pub family_name: Option<String>,
     /// Optional picture URL (Core §5.1).
     #[serde(default)]
     pub picture: Option<String>,
@@ -464,6 +470,8 @@ fn claims_to_identity(claims: &IdTokenClaims, cfg: &IdpConfig) -> ExternalIdenti
         email: claims.email.clone().unwrap_or_default(),
         email_verified: claims.email_verified.unwrap_or(false),
         display_name: claims.name.clone().unwrap_or_default(),
+        first_name: claims.given_name.clone().unwrap_or_default(),
+        last_name: claims.family_name.clone().unwrap_or_default(),
         picture_url: claims.picture.clone(),
     }
 }
@@ -539,6 +547,8 @@ mod tests {
             email: Some("alice@example.com".to_string()),
             email_verified: Some(true),
             name: Some("Alice".to_string()),
+            given_name: None,
+            family_name: None,
             picture: Some("https://pic/".to_string()),
         }
     }

@@ -9,5 +9,6 @@ pub mod convert;
 pub mod grpc;
 pub mod http;
 pub mod proto;
+pub mod scim;
 pub mod tls;
 pub mod web;

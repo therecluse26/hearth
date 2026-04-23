@@ -33,6 +33,8 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
             &CreateUserRequest {
                 email: format!("oauth-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "OAuth Test User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user")

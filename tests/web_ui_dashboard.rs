@@ -108,6 +108,8 @@ fn build_rig() -> TestRig {
             &CreateUserRequest {
                 email: "alice@acme.test".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -124,6 +126,8 @@ fn build_rig() -> TestRig {
                 email: None,
                 display_name: None,
                 status: Some(UserStatus::Active),
+                first_name: None,
+                last_name: None,
             },
         )
         .expect("activate user");

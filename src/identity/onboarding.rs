@@ -415,6 +415,7 @@ impl OnboardingService {
         let user = self.identity.create_admin_user(&CreateUserRequest {
             email: admin_email.to_string(),
             display_name: admin_display_name.to_string(),
+            ..Default::default()
         })?;
         let user_id = user.id().clone();
 
@@ -428,6 +429,7 @@ impl OnboardingService {
                 email: None,
                 display_name: None,
                 status: Some(UserStatus::PendingVerification),
+                ..Default::default()
             },
         )?;
 

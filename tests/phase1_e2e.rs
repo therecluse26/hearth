@@ -239,6 +239,8 @@ async fn mfa_enrollment_plus_login() {
             &CreateUserRequest {
                 email: "e2e-mfa@example.com".to_string(),
                 display_name: "E2E MFA User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -349,6 +351,8 @@ async fn passkey_only_authentication() {
             &CreateUserRequest {
                 email: "e2e-passkey@example.com".to_string(),
                 display_name: "E2E Passkey User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -479,6 +483,8 @@ async fn multi_realm_isolation_roundtrip() {
             &CreateUserRequest {
                 email: "alice@realm-a.example".to_string(),
                 display_name: "Alice A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user A");
@@ -490,6 +496,8 @@ async fn multi_realm_isolation_roundtrip() {
             &CreateUserRequest {
                 email: "bob@realm-b.example".to_string(),
                 display_name: "Bob B".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user B");

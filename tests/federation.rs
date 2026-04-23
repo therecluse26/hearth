@@ -174,6 +174,8 @@ async fn link_external_identity_roundtrip() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -212,6 +214,8 @@ async fn link_refuses_to_rehome_to_different_user() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -222,6 +226,8 @@ async fn link_refuses_to_rehome_to_different_user() {
             &CreateUserRequest {
                 email: "bob@example.com".to_string(),
                 display_name: "B".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -252,6 +258,8 @@ async fn unlink_is_idempotent_second_call_errors() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -290,6 +298,8 @@ async fn delete_user_cascades_both_federation_indexes() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -321,6 +331,8 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
             &CreateUserRequest {
                 email: "a@x.c".to_string(),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -331,6 +343,8 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
             &CreateUserRequest {
                 email: "b@x.c".to_string(),
                 display_name: "B".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -372,6 +386,8 @@ async fn confirm_link_ticket_is_single_use() {
             &CreateUserRequest {
                 email: "a@x.c".to_string(),
                 display_name: "A".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .unwrap();
@@ -386,6 +402,8 @@ async fn confirm_link_ticket_is_single_use() {
             email_verified: true,
             display_name: "A".to_string(),
             picture_url: None,
+            first_name: String::new(),
+            last_name: String::new(),
         },
         expires_at: Timestamp::from_micros(i64::MAX),
     };

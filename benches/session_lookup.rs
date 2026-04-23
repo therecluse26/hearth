@@ -38,6 +38,8 @@ fn setup_session() -> (
             &CreateUserRequest {
                 email: "bench-session@example.com".to_string(),
                 display_name: "Bench Session User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

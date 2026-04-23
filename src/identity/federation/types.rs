@@ -199,6 +199,14 @@ pub struct ExternalIdentity {
     /// Best-available display name (OIDC `name`, GitHub `name` or
     /// `login`). May be empty.
     pub display_name: String,
+    /// First (given) name from the upstream IdP (OIDC `given_name`, SAML
+    /// `first_name` attribute). Empty when the upstream didn't provide one.
+    #[serde(default)]
+    pub first_name: String,
+    /// Last (family) name from the upstream IdP (OIDC `family_name`, SAML
+    /// `last_name` attribute). Empty when the upstream didn't provide one.
+    #[serde(default)]
+    pub last_name: String,
     /// Optional picture URL (OIDC `picture`, GitHub `avatar_url`).
     pub picture_url: Option<String>,
 }
@@ -276,6 +284,8 @@ mod tests {
             email: email.to_string(),
             email_verified: verified,
             display_name: "Alice".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
             picture_url: None,
         }
     }

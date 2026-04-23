@@ -97,6 +97,8 @@ async fn phase1_error_responses_leak_no_internal_state() {
             &CreateUserRequest {
                 email: format!("cc-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "Cross-cutting".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -241,6 +243,8 @@ async fn phase1_sensitive_types_zero_on_drop() {
             &CreateUserRequest {
                 email: format!("zero-{}@example.com", uuid::Uuid::new_v4()),
                 display_name: "Zero".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

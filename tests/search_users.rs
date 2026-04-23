@@ -30,6 +30,8 @@ async fn search_users_by_email_prefix() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice Smith".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create alice");
@@ -39,6 +41,8 @@ async fn search_users_by_email_prefix() {
             &CreateUserRequest {
                 email: "bob@example.com".to_string(),
                 display_name: "Bob Jones".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create bob");
@@ -62,6 +66,8 @@ async fn search_users_by_display_name() {
             &CreateUserRequest {
                 email: "user1@test.com".to_string(),
                 display_name: "Charlie Brown".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -85,6 +91,8 @@ async fn search_users_case_insensitive() {
             &CreateUserRequest {
                 email: "Alice@Example.COM".to_string(),
                 display_name: "ALICE SMITH".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -114,6 +122,8 @@ async fn search_users_respects_limit() {
                 &CreateUserRequest {
                     email: format!("user{i}@example.com"),
                     display_name: format!("User {i}"),
+                    first_name: String::new(),
+                    last_name: String::new(),
                 },
             )
             .expect("create user");
@@ -137,6 +147,8 @@ async fn search_users_empty_query_returns_empty() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -161,6 +173,8 @@ async fn search_users_no_matches_returns_empty() {
             &CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

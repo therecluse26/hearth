@@ -177,6 +177,31 @@ const SAML_SP_SESSION_PREFIX: &str = "saml:sp_session:";
 /// LogoutResponse received). 5-minute TTL; single-use.
 const SAML_LOGOUT_STATE_PREFIX: &str = "saml:logout:";
 
+/// Prefix for the SCIM `externalId` → Hearth `UserId` index.
+///
+/// Format: `scim:ext_user:{external_id}` — value is the stringified
+/// `UserId` UUID. External IDs are supplied by the SCIM client (IdP) for
+/// idempotent provisioning; enforced unique per realm.
+const SCIM_EXT_USER_PREFIX: &str = "scim:ext_user:";
+
+/// Prefix for the reverse Hearth `UserId` → SCIM `externalId` index.
+///
+/// Format: `scim:ext_user_fwd:{user_uuid}` — value is the external ID.
+/// Maintained in lockstep with `scim:ext_user:*` so cascade cleanup on
+/// `delete_user` doesn't require scanning the forward space.
+const SCIM_EXT_USER_FWD_PREFIX: &str = "scim:ext_user_fwd:";
+
+/// Prefix for the SCIM `externalId` → Hearth `OrganizationId` index.
+///
+/// Format: `scim:ext_group:{external_id}` — value is the stringified
+/// `OrganizationId` UUID.
+const SCIM_EXT_GROUP_PREFIX: &str = "scim:ext_group:";
+
+/// Prefix for the reverse Hearth `OrganizationId` → SCIM `externalId` index.
+///
+/// Format: `scim:ext_group_fwd:{org_uuid}` — value is the external ID.
+const SCIM_EXT_GROUP_FWD_PREFIX: &str = "scim:ext_group_fwd:";
+
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
 
@@ -829,6 +854,68 @@ pub(crate) fn encode_federation_ext_fwd_prefix_for_user(user_id: &UserId) -> Vec
 /// Used by `delete_realm` cascade.
 pub(crate) fn fed_ext_fwd_scan_prefix() -> Vec<u8> {
     FED_EXT_FWD_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the SCIM `externalId` → `UserId` index key.
+///
+/// Format: `scim:ext_user:{external_id}` — value is the stringified
+/// `UserId` UUID. Called by the SCIM layer to provide idempotent
+/// provisioning: an IdP that sends the same `externalId` twice resolves
+/// to the same Hearth user.
+pub(crate) fn encode_scim_ext_user_key(external_id: &str) -> Vec<u8> {
+    format!("{SCIM_EXT_USER_PREFIX}{external_id}").into_bytes()
+}
+
+/// Returns the scan prefix for every SCIM external-id-to-user mapping.
+///
+/// Format: `scim:ext_user:` — used by `delete_realm` cascade.
+pub(crate) fn scim_ext_user_scan_prefix() -> Vec<u8> {
+    SCIM_EXT_USER_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the reverse `UserId` → SCIM `externalId` index key.
+///
+/// Format: `scim:ext_user_fwd:{user_uuid}` — value is the external id.
+/// Lets `delete_user` cascade revoke the SCIM mapping in O(1) without
+/// scanning the forward space.
+pub(crate) fn encode_scim_ext_user_fwd_key(user_id: &UserId) -> Vec<u8> {
+    format!("{SCIM_EXT_USER_FWD_PREFIX}{}", user_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for every SCIM forward index entry in a realm.
+///
+/// Format: `scim:ext_user_fwd:` — used by `delete_realm` cascade.
+pub(crate) fn scim_ext_user_fwd_scan_prefix() -> Vec<u8> {
+    SCIM_EXT_USER_FWD_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the SCIM `externalId` → `OrganizationId` (group) index key.
+///
+/// Format: `scim:ext_group:{external_id}` — value is the stringified
+/// `OrganizationId` UUID.
+pub(crate) fn encode_scim_ext_group_key(external_id: &str) -> Vec<u8> {
+    format!("{SCIM_EXT_GROUP_PREFIX}{external_id}").into_bytes()
+}
+
+/// Returns the scan prefix for every SCIM group external-id mapping.
+///
+/// Format: `scim:ext_group:` — used by `delete_realm` cascade.
+pub(crate) fn scim_ext_group_scan_prefix() -> Vec<u8> {
+    SCIM_EXT_GROUP_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the reverse `OrganizationId` → SCIM `externalId` index key.
+///
+/// Format: `scim:ext_group_fwd:{org_uuid}` — value is the external id.
+pub(crate) fn encode_scim_ext_group_fwd_key(org_id: &OrganizationId) -> Vec<u8> {
+    format!("{SCIM_EXT_GROUP_FWD_PREFIX}{}", org_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for every SCIM group forward index entry.
+///
+/// Format: `scim:ext_group_fwd:` — used by `delete_realm` cascade.
+pub(crate) fn scim_ext_group_fwd_scan_prefix() -> Vec<u8> {
+    SCIM_EXT_GROUP_FWD_PREFIX.as_bytes().to_vec()
 }
 
 /// Encodes the storage key for a realm's SAML signing key (RSA-2048 PKCS#8).

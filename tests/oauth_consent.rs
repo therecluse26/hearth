@@ -182,6 +182,8 @@ fn seed_active_user(
             &CreateUserRequest {
                 email: email.to_string(),
                 display_name: display_name.to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -200,6 +202,8 @@ fn seed_active_user(
                 email: None,
                 display_name: None,
                 status: Some(UserStatus::Active),
+                first_name: None,
+                last_name: None,
             },
         )
         .expect("activate");
@@ -1350,6 +1354,8 @@ fn build_admin_rig() -> AdminRig {
         .create_admin_user(&CreateUserRequest {
             email: "admin@hearth.local".to_string(),
             display_name: "Admin".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
         })
         .expect("create admin user");
     identity
@@ -1367,6 +1373,8 @@ fn build_admin_rig() -> AdminRig {
                 email: None,
                 display_name: None,
                 status: Some(UserStatus::Active),
+                first_name: None,
+                last_name: None,
             },
         )
         .expect("activate");

@@ -55,6 +55,12 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::SamlIdpInitiatedSso => pb::AuditAction::SamlIdpInitiatedSso,
         domain::AuditAction::SamlSloRequested => pb::AuditAction::SamlSloRequested,
         domain::AuditAction::SamlSloCompleted => pb::AuditAction::SamlSloCompleted,
+        domain::AuditAction::ScimUserCreated => pb::AuditAction::ScimUserCreated,
+        domain::AuditAction::ScimUserUpdated => pb::AuditAction::ScimUserUpdated,
+        domain::AuditAction::ScimUserDeleted => pb::AuditAction::ScimUserDeleted,
+        domain::AuditAction::ScimGroupCreated => pb::AuditAction::ScimGroupCreated,
+        domain::AuditAction::ScimGroupUpdated => pb::AuditAction::ScimGroupUpdated,
+        domain::AuditAction::ScimGroupDeleted => pb::AuditAction::ScimGroupDeleted,
     }
 }
 
@@ -150,6 +156,12 @@ mod tests {
             domain::AuditAction::SamlIdpInitiatedSso,
             domain::AuditAction::SamlSloRequested,
             domain::AuditAction::SamlSloCompleted,
+            domain::AuditAction::ScimUserCreated,
+            domain::AuditAction::ScimUserUpdated,
+            domain::AuditAction::ScimUserDeleted,
+            domain::AuditAction::ScimGroupCreated,
+            domain::AuditAction::ScimGroupUpdated,
+            domain::AuditAction::ScimGroupDeleted,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

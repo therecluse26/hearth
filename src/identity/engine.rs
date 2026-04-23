@@ -713,7 +713,21 @@ impl EmbeddedIdentityEngine {
         status: UserStatus,
     ) -> Result<User, IdentityError> {
         let email = validation::validate_email(&request.email)?;
-        let display_name = validation::validate_display_name(&request.display_name)?;
+        let first_name = validation::validate_name_part(&request.first_name, "first_name")?;
+        let last_name = validation::validate_name_part(&request.last_name, "last_name")?;
+        let display_name = if request.display_name.trim().is_empty() {
+            let synthesized = format!("{} {}", first_name, last_name)
+                .trim()
+                .to_string();
+            if synthesized.is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "display_name or first_name/last_name required".to_string(),
+                });
+            }
+            validation::validate_display_name(&synthesized)?
+        } else {
+            validation::validate_display_name(&request.display_name)?
+        };
 
         let email_key = keys::encode_user_email(&email);
         let existing = self
@@ -730,6 +744,8 @@ impl EmbeddedIdentityEngine {
             user_id.clone(),
             email.clone(),
             display_name,
+            first_name,
+            last_name,
             status,
             now,
             now,
@@ -1455,13 +1471,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // 8c. Federation connectors, state tokens, confirm-link tickets,
-        //     and the external-identity indexes (both directions).
+        //     the external-identity indexes (both directions), and the
+        //     SCIM externalId indexes (both directions, users + groups).
         for prefix in [
             &b"fed:idp:"[..],
             &b"fed:state:"[..],
             &b"fed:confirm:"[..],
             &b"fed:ext:"[..],
             &b"fed:ext_fwd:"[..],
+            &b"scim:ext_user:"[..],
+            &b"scim:ext_user_fwd:"[..],
+            &b"scim:ext_group:"[..],
+            &b"scim:ext_group_fwd:"[..],
         ] {
             let end = keys::prefix_end(prefix);
             let entries = self
@@ -1684,6 +1705,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             user.set_display_name(normalized);
         }
 
+        // 3a. Apply first_name change if requested
+        if let Some(ref new_first) = request.first_name {
+            let normalized = validation::validate_name_part(new_first, "first_name")?;
+            user.set_first_name(normalized);
+        }
+
+        // 3b. Apply last_name change if requested
+        if let Some(ref new_last) = request.last_name {
+            let normalized = validation::validate_name_part(new_last, "last_name")?;
+            user.set_last_name(normalized);
+        }
+
         // 4. Apply status change if requested
         if let Some(new_status) = request.status {
             user.set_status(new_status);
@@ -1853,6 +1886,27 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
             self.storage
                 .delete(realm_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 10. Cascade SCIM externalId mapping. Forward index holds the
+        //     external_id string as its value; use it to resolve the
+        //     reverse key. Both directions MUST go so a future SCIM POST
+        //     with the same externalId can reprovision.
+        let scim_fwd_key = keys::encode_scim_ext_user_fwd_key(user_id);
+        if let Some(ext_bytes) = self
+            .storage
+            .get(realm_id, &scim_fwd_key)
+            .map_err(Self::storage_err)?
+        {
+            if let Ok(ext_str) = std::str::from_utf8(&ext_bytes) {
+                let reverse_key = keys::encode_scim_ext_user_key(ext_str);
+                self.storage
+                    .delete(realm_id, &reverse_key)
+                    .map_err(Self::storage_err)?;
+            }
+            self.storage
+                .delete(realm_id, &scim_fwd_key)
                 .map_err(Self::storage_err)?;
         }
 
@@ -3768,6 +3822,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let request = crate::identity::types::CreateUserRequest {
                 email: stored.email.clone(),
                 display_name: stored.email.clone(),
+                ..Default::default()
             };
             let user = self.create_user(realm_id, &request)?;
             Ok(user.id().clone())
@@ -3883,6 +3938,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             &CreateUserRequest {
                 email: email.clone(),
                 display_name,
+                ..Default::default()
             },
             UserStatus::PendingVerification,
         )?;
@@ -4924,7 +4980,21 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
         // 1. Validate and normalize input (same invariants as create_user)
         let email = validation::validate_email(&request.email)?;
-        let display_name = validation::validate_display_name(&request.display_name)?;
+        let first_name = validation::validate_name_part(&request.first_name, "first_name")?;
+        let last_name = validation::validate_name_part(&request.last_name, "last_name")?;
+        let display_name = if request.display_name.trim().is_empty() {
+            let synthesized = format!("{} {}", first_name, last_name)
+                .trim()
+                .to_string();
+            if synthesized.is_empty() {
+                return Err(IdentityError::InvalidInput {
+                    reason: "display_name or first_name/last_name required".to_string(),
+                });
+            }
+            validation::validate_display_name(&synthesized)?
+        } else {
+            validation::validate_display_name(&request.display_name)?
+        };
 
         // 2. Check email uniqueness
         let email_key = keys::encode_user_email(&email);
@@ -4957,6 +5027,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             user_id.clone(),
             email.clone(),
             display_name,
+            first_name,
+            last_name,
             request.status,
             now,
             now,
@@ -5314,7 +5386,25 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .delete(realm_id, &slug_key)
             .map_err(Self::storage_err)?;
 
-        // 4. Delete org record
+        // 4. Cascade SCIM externalId mapping (forward + reverse).
+        let scim_fwd_key = keys::encode_scim_ext_group_fwd_key(org_id);
+        if let Some(ext_bytes) = self
+            .storage
+            .get(realm_id, &scim_fwd_key)
+            .map_err(Self::storage_err)?
+        {
+            if let Ok(ext_str) = std::str::from_utf8(&ext_bytes) {
+                let reverse_key = keys::encode_scim_ext_group_key(ext_str);
+                self.storage
+                    .delete(realm_id, &reverse_key)
+                    .map_err(Self::storage_err)?;
+            }
+            self.storage
+                .delete(realm_id, &scim_fwd_key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 5. Delete org record
         let id_key = keys::encode_org_id(org_id);
         self.storage
             .delete(realm_id, &id_key)
@@ -5835,6 +5925,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 &CreateUserRequest {
                     email: invitation.email().to_string(),
                     display_name: invitation.email().to_string(),
+                    ..Default::default()
                 },
             )?
         };
@@ -6276,6 +6367,246 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(out)
     }
 
+    // ===== SCIM externalId management =====
+
+    fn set_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        external_id: &str,
+    ) -> Result<(), IdentityError> {
+        if external_id.is_empty() {
+            return Err(IdentityError::InvalidInput {
+                reason: "externalId must not be empty".to_string(),
+            });
+        }
+        // Refuse to steal an externalId from another user.
+        let reverse_key = keys::encode_scim_ext_user_key(external_id);
+        if let Some(bytes) = self
+            .storage
+            .get(realm_id, &reverse_key)
+            .map_err(Self::storage_err)?
+        {
+            if bytes.len() == 16 {
+                let mut b = [0u8; 16];
+                b.copy_from_slice(&bytes);
+                let existing = UserId::new(uuid::Uuid::from_bytes(b));
+                if &existing != user_id {
+                    return Err(IdentityError::DuplicateScimExternalId);
+                }
+            }
+        }
+        // Retire any prior externalId for this user.
+        let fwd_key = keys::encode_scim_ext_user_fwd_key(user_id);
+        if let Some(old_ext) = self
+            .storage
+            .get(realm_id, &fwd_key)
+            .map_err(Self::storage_err)?
+        {
+            if let Ok(old_ext_str) = std::str::from_utf8(&old_ext) {
+                if old_ext_str != external_id {
+                    let old_reverse = keys::encode_scim_ext_user_key(old_ext_str);
+                    self.storage
+                        .delete(realm_id, &old_reverse)
+                        .map_err(Self::storage_err)?;
+                }
+            }
+        }
+        self.storage
+            .put(realm_id, &reverse_key, user_id.as_uuid().as_bytes())
+            .map_err(Self::storage_err)?;
+        self.storage
+            .put(realm_id, &fwd_key, external_id.as_bytes())
+            .map_err(Self::storage_err)
+    }
+
+    fn clear_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<(), IdentityError> {
+        let fwd_key = keys::encode_scim_ext_user_fwd_key(user_id);
+        let Some(ext_bytes) = self
+            .storage
+            .get(realm_id, &fwd_key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(());
+        };
+        let ext_str =
+            std::str::from_utf8(&ext_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let reverse_key = keys::encode_scim_ext_user_key(ext_str);
+        self.storage
+            .delete(realm_id, &reverse_key)
+            .map_err(Self::storage_err)?;
+        self.storage
+            .delete(realm_id, &fwd_key)
+            .map_err(Self::storage_err)
+    }
+
+    fn get_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Option<String>, IdentityError> {
+        let fwd_key = keys::encode_scim_ext_user_fwd_key(user_id);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &fwd_key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        let s = std::str::from_utf8(&bytes).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        Ok(Some(s.to_string()))
+    }
+
+    fn find_user_by_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        external_id: &str,
+    ) -> Result<Option<User>, IdentityError> {
+        let key = keys::encode_scim_ext_user_key(external_id);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        if bytes.len() != 16 {
+            return Err(IdentityError::Serialization {
+                reason: "SCIM reverse index has wrong length".to_string(),
+            });
+        }
+        let mut b = [0u8; 16];
+        b.copy_from_slice(&bytes);
+        let user_id = UserId::new(uuid::Uuid::from_bytes(b));
+        self.get_user(realm_id, &user_id)
+    }
+
+    fn set_scim_group_external_id(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        external_id: &str,
+    ) -> Result<(), IdentityError> {
+        if external_id.is_empty() {
+            return Err(IdentityError::InvalidInput {
+                reason: "externalId must not be empty".to_string(),
+            });
+        }
+        let reverse_key = keys::encode_scim_ext_group_key(external_id);
+        if let Some(bytes) = self
+            .storage
+            .get(realm_id, &reverse_key)
+            .map_err(Self::storage_err)?
+        {
+            if bytes.len() == 16 {
+                let mut b = [0u8; 16];
+                b.copy_from_slice(&bytes);
+                let existing = OrganizationId::new(uuid::Uuid::from_bytes(b));
+                if &existing != org_id {
+                    return Err(IdentityError::DuplicateScimExternalId);
+                }
+            }
+        }
+        let fwd_key = keys::encode_scim_ext_group_fwd_key(org_id);
+        if let Some(old_ext) = self
+            .storage
+            .get(realm_id, &fwd_key)
+            .map_err(Self::storage_err)?
+        {
+            if let Ok(old_ext_str) = std::str::from_utf8(&old_ext) {
+                if old_ext_str != external_id {
+                    let old_reverse = keys::encode_scim_ext_group_key(old_ext_str);
+                    self.storage
+                        .delete(realm_id, &old_reverse)
+                        .map_err(Self::storage_err)?;
+                }
+            }
+        }
+        self.storage
+            .put(realm_id, &reverse_key, org_id.as_uuid().as_bytes())
+            .map_err(Self::storage_err)?;
+        self.storage
+            .put(realm_id, &fwd_key, external_id.as_bytes())
+            .map_err(Self::storage_err)
+    }
+
+    fn clear_scim_group_external_id(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+    ) -> Result<(), IdentityError> {
+        let fwd_key = keys::encode_scim_ext_group_fwd_key(org_id);
+        let Some(ext_bytes) = self
+            .storage
+            .get(realm_id, &fwd_key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(());
+        };
+        let ext_str =
+            std::str::from_utf8(&ext_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let reverse_key = keys::encode_scim_ext_group_key(ext_str);
+        self.storage
+            .delete(realm_id, &reverse_key)
+            .map_err(Self::storage_err)?;
+        self.storage
+            .delete(realm_id, &fwd_key)
+            .map_err(Self::storage_err)
+    }
+
+    fn get_scim_group_external_id(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+    ) -> Result<Option<String>, IdentityError> {
+        let fwd_key = keys::encode_scim_ext_group_fwd_key(org_id);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &fwd_key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        let s = std::str::from_utf8(&bytes).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        Ok(Some(s.to_string()))
+    }
+
+    fn find_group_by_scim_external_id(
+        &self,
+        realm_id: &RealmId,
+        external_id: &str,
+    ) -> Result<Option<crate::identity::Organization>, IdentityError> {
+        let key = keys::encode_scim_ext_group_key(external_id);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        if bytes.len() != 16 {
+            return Err(IdentityError::Serialization {
+                reason: "SCIM group reverse index has wrong length".to_string(),
+            });
+        }
+        let mut b = [0u8; 16];
+        b.copy_from_slice(&bytes);
+        let org_id = OrganizationId::new(uuid::Uuid::from_bytes(b));
+        self.get_organization(realm_id, &org_id)
+    }
+
     // ===== SAML =====
 
     fn get_or_create_saml_signing_key(
@@ -6567,6 +6898,7 @@ mod tests {
         let request = CreateUserRequest {
             email: "Alice@Example.COM".to_string(),
             display_name: "Alice Smith".to_string(),
+            ..Default::default()
         };
 
         let user = engine.create_user(&realm, &request).expect("create");
@@ -6589,6 +6921,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6599,6 +6932,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "bob@example.com".to_string(),
                     display_name: "Bob".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6619,6 +6953,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6642,6 +6977,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6687,6 +7023,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6728,6 +7065,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "old@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6770,6 +7108,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6812,6 +7151,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6851,6 +7191,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6864,6 +7205,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice 2".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create should succeed after delete");
@@ -6884,6 +7226,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("first create");
@@ -6894,6 +7237,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice 2".to_string(),
+                    ..Default::default()
                 },
             )
             .expect_err("should fail");
@@ -6911,6 +7255,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "Alice@Example.COM".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -6921,6 +7266,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Other".to_string(),
+                    ..Default::default()
                 },
             )
             .expect_err("should fail");
@@ -6938,6 +7284,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create alice");
@@ -6948,6 +7295,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "bob@example.com".to_string(),
                     display_name: "Bob".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create bob");
@@ -6978,6 +7326,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice\0@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect_err("should fail");
@@ -6995,6 +7344,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice\0Smith".to_string(),
+                    ..Default::default()
                 },
             )
             .expect_err("should fail");
@@ -7013,6 +7363,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "caf\u{0065}\u{0301}@example.com".to_string(),
                     display_name: "User 1".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -7024,6 +7375,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "caf\u{00E9}@example.com".to_string(),
                     display_name: "User 2".to_string(),
+                    ..Default::default()
                 },
             )
             .expect_err("should fail");
@@ -7044,6 +7396,7 @@ mod tests {
                 &CreateUserRequest {
                     email: long_email,
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect_err("should fail");
@@ -7061,6 +7414,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "A".repeat(257),
+                    ..Default::default()
                 },
             )
             .expect_err("should fail");
@@ -7081,6 +7435,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -7092,6 +7447,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice B".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create in different realm should succeed");
@@ -7120,6 +7476,7 @@ mod tests {
                 &CreateUserRequest {
                     email: format!("user-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Test User".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create user")
@@ -7678,6 +8035,7 @@ mod tests {
                     let user = engine.create_user(&realm, &CreateUserRequest {
                         email: email.clone(),
                         display_name: format!("User {i}"),
+                        ..Default::default()
                     }).expect("create");
                     created_ids.push(user.id().clone());
                 }
@@ -7720,6 +8078,7 @@ mod tests {
                 let result = engine.create_user(&realm, &CreateUserRequest {
                     email: email.clone(),
                     display_name: "User 0".to_string(),
+                    ..Default::default()
                 });
                 prop_assert!(result.is_ok(), "first creation should succeed");
 
@@ -7728,6 +8087,7 @@ mod tests {
                     let result = engine.create_user(&realm, &CreateUserRequest {
                         email: email.clone(),
                         display_name: format!("User {i}"),
+                        ..Default::default()
                     });
                     prop_assert!(result.is_err(), "duplicate email should fail");
                     if let Err(ref err) = result {
@@ -7750,6 +8110,7 @@ mod tests {
                 let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("session-prop-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Prop User".to_string(),
+                    ..Default::default()
                 }).expect("create user");
 
                 // Create N sessions
@@ -7795,6 +8156,7 @@ mod tests {
                 let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("collision-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Collision User".to_string(),
+                    ..Default::default()
                 }).expect("create user");
 
                 let mut ids = std::collections::HashSet::new();
@@ -8500,6 +8862,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create user in A");
@@ -8523,6 +8886,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice B".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create same email in B");
@@ -8641,6 +9005,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "user1@example.com".to_string(),
                     display_name: "User 1".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create user 1");
@@ -8650,6 +9015,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "user2@example.com".to_string(),
                     display_name: "User 2".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create user 2");
@@ -8750,6 +9116,7 @@ mod tests {
                         let user = engine.create_user(realm.id(), &CreateUserRequest {
                             email: email.clone(),
                             display_name: format!("User {i}"),
+                            ..Default::default()
                         }).expect("create user");
                         ids.push(user.id().clone());
                     }
@@ -8842,6 +9209,7 @@ mod tests {
                 let user = engine.create_user(realm.id(), &CreateUserRequest {
                     email: format!("rotation-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Rotation User".to_string(),
+                    ..Default::default()
                 }).expect("create user");
 
                 let session = engine.create_session(realm.id(), user.id(), &SessionContext::default())
@@ -9354,6 +9722,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "theft-victim@test.com".to_string(),
                     display_name: "Theft Victim".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create user");
@@ -9602,6 +9971,7 @@ mod tests {
                     let user = engine.create_user(&realm_id, &CreateUserRequest {
                         email,
                         display_name: format!("Prop User {i}"),
+                        ..Default::default()
                     }).expect("create user");
 
                     let auth = engine.authorize(&realm_id, &AuthorizationRequest {
@@ -9697,6 +10067,7 @@ mod tests {
                 let user = engine.create_user(&realm_id, &CreateUserRequest {
                     email,
                     display_name: "Rotate User".to_string(),
+                    ..Default::default()
                 }).expect("create user");
 
                 let client = engine.register_client(
@@ -9892,6 +10263,7 @@ mod tests {
                 &crate::identity::types::CreateUserRequest {
                     email: format!("ml-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "ML Test User".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create user");
@@ -10082,6 +10454,7 @@ mod tests {
                 &CreateUserRequest {
                     email: "alice@example.com".to_string(),
                     display_name: "Alice".to_string(),
+                    ..Default::default()
                 },
             )
             .expect("create user");
@@ -10330,5 +10703,202 @@ mod tests {
             .get_consent(realm_b.id(), &user, &client)
             .expect("get");
         assert!(other.is_none());
+    }
+
+    // ===== SCIM externalId tests =====
+
+    fn create_scim_user(
+        engine: &EmbeddedIdentityEngine,
+        realm: &RealmId,
+        email: &str,
+    ) -> UserId {
+        engine
+            .create_user(
+                realm,
+                &CreateUserRequest {
+                    email: email.to_string(),
+                    display_name: "Alice".to_string(),
+                    first_name: "Alice".to_string(),
+                    last_name: "Example".to_string(),
+                },
+            )
+            .expect("create")
+            .id()
+            .clone()
+    }
+
+    #[test]
+    fn scim_external_id_set_and_find_roundtrip() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "scim-r1".to_string(),
+                config: None,
+            })
+            .expect("create realm");
+        let user = create_scim_user(&engine, realm.id(), "a@x.com");
+
+        engine
+            .set_scim_external_id(realm.id(), &user, "okta-abc")
+            .expect("set");
+        let found = engine
+            .find_user_by_scim_external_id(realm.id(), "okta-abc")
+            .expect("find")
+            .expect("some");
+        assert_eq!(found.id(), &user);
+        let ext = engine
+            .get_scim_external_id(realm.id(), &user)
+            .expect("get")
+            .expect("some");
+        assert_eq!(ext, "okta-abc");
+    }
+
+    #[test]
+    fn scim_external_id_duplicate_refused() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "scim-r2".to_string(),
+                config: None,
+            })
+            .expect("create realm");
+        let alice = create_scim_user(&engine, realm.id(), "a@x.com");
+        let bob = create_scim_user(&engine, realm.id(), "b@x.com");
+
+        engine
+            .set_scim_external_id(realm.id(), &alice, "okta-abc")
+            .expect("set alice");
+        let err = engine
+            .set_scim_external_id(realm.id(), &bob, "okta-abc")
+            .expect_err("bob collision");
+        assert!(matches!(err, IdentityError::DuplicateScimExternalId));
+    }
+
+    #[test]
+    fn scim_external_id_reassigning_same_user_succeeds() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "scim-r3".to_string(),
+                config: None,
+            })
+            .expect("create realm");
+        let user = create_scim_user(&engine, realm.id(), "a@x.com");
+
+        engine
+            .set_scim_external_id(realm.id(), &user, "v1")
+            .expect("v1");
+        engine
+            .set_scim_external_id(realm.id(), &user, "v2")
+            .expect("v2");
+        // Old externalId must no longer resolve.
+        assert!(engine
+            .find_user_by_scim_external_id(realm.id(), "v1")
+            .expect("find v1")
+            .is_none());
+        let via_v2 = engine
+            .find_user_by_scim_external_id(realm.id(), "v2")
+            .expect("find v2");
+        assert!(via_v2.is_some());
+    }
+
+    #[test]
+    fn scim_clear_external_id_is_idempotent() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "scim-r4".to_string(),
+                config: None,
+            })
+            .expect("create realm");
+        let user = create_scim_user(&engine, realm.id(), "a@x.com");
+
+        // Clearing when unset is a no-op.
+        engine
+            .clear_scim_external_id(realm.id(), &user)
+            .expect("clear empty");
+
+        engine
+            .set_scim_external_id(realm.id(), &user, "okta-abc")
+            .expect("set");
+        engine
+            .clear_scim_external_id(realm.id(), &user)
+            .expect("clear");
+        // A second clear is also fine.
+        engine
+            .clear_scim_external_id(realm.id(), &user)
+            .expect("clear again");
+        assert!(engine
+            .find_user_by_scim_external_id(realm.id(), "okta-abc")
+            .expect("find")
+            .is_none());
+    }
+
+    #[test]
+    fn scim_external_id_cascades_on_delete_user() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "scim-r5".to_string(),
+                config: None,
+            })
+            .expect("create realm");
+        let user = create_scim_user(&engine, realm.id(), "a@x.com");
+        engine
+            .set_scim_external_id(realm.id(), &user, "okta-abc")
+            .expect("set");
+        engine.delete_user(realm.id(), &user).expect("delete");
+        assert!(engine
+            .find_user_by_scim_external_id(realm.id(), "okta-abc")
+            .expect("find")
+            .is_none());
+        // Re-creating a user and assigning the same externalId should
+        // succeed because the cascade freed it.
+        let reborn = create_scim_user(&engine, realm.id(), "a@x.com");
+        engine
+            .set_scim_external_id(realm.id(), &reborn, "okta-abc")
+            .expect("reuse");
+    }
+
+    #[test]
+    fn scim_external_id_realm_isolated() {
+        let (_dir, engine, _clock) = setup_engine();
+        let r1 = engine
+            .create_realm(&CreateRealmRequest {
+                name: "scim-ra".to_string(),
+                config: None,
+            })
+            .expect("create r1");
+        let r2 = engine
+            .create_realm(&CreateRealmRequest {
+                name: "scim-rb".to_string(),
+                config: None,
+            })
+            .expect("create r2");
+        let u1 = create_scim_user(&engine, r1.id(), "a@x.com");
+        let u2 = create_scim_user(&engine, r2.id(), "a@x.com");
+        engine
+            .set_scim_external_id(r1.id(), &u1, "same-id")
+            .expect("r1");
+        // Same externalId is allowed in r2 because index is realm-scoped.
+        engine
+            .set_scim_external_id(r2.id(), &u2, "same-id")
+            .expect("r2");
+        assert_eq!(
+            engine
+                .find_user_by_scim_external_id(r1.id(), "same-id")
+                .expect("find r1")
+                .expect("some")
+                .id(),
+            &u1
+        );
+        assert_eq!(
+            engine
+                .find_user_by_scim_external_id(r2.id(), "same-id")
+                .expect("find r2")
+                .expect("some")
+                .id(),
+            &u2
+        );
     }
 }

@@ -40,6 +40,8 @@ fn setup_tokens() -> (
             &CreateUserRequest {
                 email: "bench@example.com".to_string(),
                 display_name: "Bench User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");
@@ -97,6 +99,8 @@ fn bench_token_issuance(c: &mut Criterion) {
             &CreateUserRequest {
                 email: "bench-issue@example.com".to_string(),
                 display_name: "Issue Bench".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

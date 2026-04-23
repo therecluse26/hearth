@@ -291,6 +291,9 @@ pub enum IdentityError {
         /// Short sanitized description.
         reason: String,
     },
+    /// The supplied SCIM `externalId` is already associated with a
+    /// different user (or organization) in this realm.
+    DuplicateScimExternalId,
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -402,6 +405,9 @@ impl fmt::Display for IdentityError {
             }
             Self::FederationNotLinked => write!(f, "external identity is not linked"),
             Self::FederationAlreadyLinked => write!(f, "external identity is already linked"),
+            Self::DuplicateScimExternalId => {
+                write!(f, "SCIM externalId is already associated with another user")
+            }
             Self::SamlParse { reason } => write!(f, "SAML parse error: {reason}"),
             Self::SamlSignature => write!(f, "SAML signature verification failed"),
             Self::SamlExpired => write!(f, "SAML assertion expired or not yet valid"),
@@ -505,6 +511,7 @@ impl std::error::Error for IdentityError {
             | Self::SamlUnknownIdp
             | Self::SamlInvalidAuthnRequest { .. }
             | Self::SystemRealmProtected { .. }
+            | Self::DuplicateScimExternalId
             | Self::Serialization { .. } => None,
         }
     }

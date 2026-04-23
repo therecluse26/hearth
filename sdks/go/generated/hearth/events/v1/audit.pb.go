@@ -67,6 +67,12 @@ const (
 	AuditAction_AUDIT_ACTION_SAML_IDP_INITIATED_SSO          AuditAction = 39
 	AuditAction_AUDIT_ACTION_SAML_SLO_REQUESTED              AuditAction = 40
 	AuditAction_AUDIT_ACTION_SAML_SLO_COMPLETED              AuditAction = 41
+	AuditAction_AUDIT_ACTION_SCIM_USER_CREATED               AuditAction = 42
+	AuditAction_AUDIT_ACTION_SCIM_USER_UPDATED               AuditAction = 43
+	AuditAction_AUDIT_ACTION_SCIM_USER_DELETED               AuditAction = 44
+	AuditAction_AUDIT_ACTION_SCIM_GROUP_CREATED              AuditAction = 45
+	AuditAction_AUDIT_ACTION_SCIM_GROUP_UPDATED              AuditAction = 46
+	AuditAction_AUDIT_ACTION_SCIM_GROUP_DELETED              AuditAction = 47
 )
 
 // Enum value maps for AuditAction.
@@ -114,6 +120,12 @@ var (
 		39: "AUDIT_ACTION_SAML_IDP_INITIATED_SSO",
 		40: "AUDIT_ACTION_SAML_SLO_REQUESTED",
 		41: "AUDIT_ACTION_SAML_SLO_COMPLETED",
+		42: "AUDIT_ACTION_SCIM_USER_CREATED",
+		43: "AUDIT_ACTION_SCIM_USER_UPDATED",
+		44: "AUDIT_ACTION_SCIM_USER_DELETED",
+		45: "AUDIT_ACTION_SCIM_GROUP_CREATED",
+		46: "AUDIT_ACTION_SCIM_GROUP_UPDATED",
+		47: "AUDIT_ACTION_SCIM_GROUP_DELETED",
 	}
 	AuditAction_value = map[string]int32{
 		"AUDIT_ACTION_UNSPECIFIED":                     0,
@@ -158,6 +170,12 @@ var (
 		"AUDIT_ACTION_SAML_IDP_INITIATED_SSO":          39,
 		"AUDIT_ACTION_SAML_SLO_REQUESTED":              40,
 		"AUDIT_ACTION_SAML_SLO_COMPLETED":              41,
+		"AUDIT_ACTION_SCIM_USER_CREATED":               42,
+		"AUDIT_ACTION_SCIM_USER_UPDATED":               43,
+		"AUDIT_ACTION_SCIM_USER_DELETED":               44,
+		"AUDIT_ACTION_SCIM_GROUP_CREATED":              45,
+		"AUDIT_ACTION_SCIM_GROUP_UPDATED":              46,
+		"AUDIT_ACTION_SCIM_GROUP_DELETED":              47,
 	}
 )
 
@@ -663,7 +681,7 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\x12broken_at_event_id\x18\x02 \x01(\tH\x00R\x0fbrokenAtEventId\x88\x01\x01\x12\x1f\n" +
 	"\vevent_count\x18\x03 \x01(\x04R\n" +
 	"eventCountB\x15\n" +
-	"\x13_broken_at_event_id*\x85\f\n" +
+	"\x13_broken_at_event_id*\xe0\r\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -707,7 +725,13 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"%AUDIT_ACTION_SAML_IDP_RESPONSE_ISSUED\x10&\x12'\n" +
 	"#AUDIT_ACTION_SAML_IDP_INITIATED_SSO\x10'\x12#\n" +
 	"\x1fAUDIT_ACTION_SAML_SLO_REQUESTED\x10(\x12#\n" +
-	"\x1fAUDIT_ACTION_SAML_SLO_COMPLETED\x10)2\xc4\x01\n" +
+	"\x1fAUDIT_ACTION_SAML_SLO_COMPLETED\x10)\x12\"\n" +
+	"\x1eAUDIT_ACTION_SCIM_USER_CREATED\x10*\x12\"\n" +
+	"\x1eAUDIT_ACTION_SCIM_USER_UPDATED\x10+\x12\"\n" +
+	"\x1eAUDIT_ACTION_SCIM_USER_DELETED\x10,\x12#\n" +
+	"\x1fAUDIT_ACTION_SCIM_GROUP_CREATED\x10-\x12#\n" +
+	"\x1fAUDIT_ACTION_SCIM_GROUP_UPDATED\x10.\x12#\n" +
+	"\x1fAUDIT_ACTION_SCIM_GROUP_DELETED\x10/2\xc4\x01\n" +
 	"\fAuditService\x12L\n" +
 	"\n" +
 	"ListEvents\x12\x1c.hearth.events.v1.AuditQuery\x1a .hearth.events.v1.AuditEventPage\x12f\n" +

@@ -233,6 +233,8 @@ async fn user_deletion_does_not_cascade_authz_tuples() {
             &hearth::identity::CreateUserRequest {
                 email: "alice@example.com".to_string(),
                 display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

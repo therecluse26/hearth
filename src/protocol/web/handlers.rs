@@ -2116,8 +2116,15 @@ impl RegisterSentTemplate {
 pub struct RegisterForm {
     /// Email address.
     pub email: String,
-    /// Display name.
+    /// Display name (optional — synthesized from first/last if empty).
+    #[serde(default)]
     pub display_name: String,
+    /// First (given) name.
+    #[serde(default)]
+    pub first_name: String,
+    /// Last (family) name.
+    #[serde(default)]
+    pub last_name: String,
     /// New password.
     pub password: String,
     /// Password confirmation.
@@ -2307,6 +2314,8 @@ fn register_submit_impl(
     let request = crate::identity::RegisterUserRequest {
         email: form.email.clone(),
         display_name: form.display_name.clone(),
+        first_name: form.first_name.clone(),
+        last_name: form.last_name.clone(),
         password: CleartextPassword::from_string(form.password.clone()),
         client_ip: register_client_ip(&headers),
         invitation_token: form.invitation_token.clone(),

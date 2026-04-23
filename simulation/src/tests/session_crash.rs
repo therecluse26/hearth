@@ -46,6 +46,8 @@ fn simulation_crash_recovery_sessions() {
                     &CreateUserRequest {
                         email: format!("crash-{i}@example.com"),
                         display_name: format!("Crash User {i}"),
+                        first_name: String::new(),
+                        last_name: String::new(),
                     },
                 )
                 .expect("create user");
@@ -122,6 +124,8 @@ fn simulation_ttl_clock_skew() {
             &CreateUserRequest {
                 email: "skew@example.com".to_string(),
                 display_name: "Clock Skew User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user");

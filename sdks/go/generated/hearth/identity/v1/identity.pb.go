@@ -183,6 +183,8 @@ type User struct {
 	Status        UserStatus             `protobuf:"varint,4,opt,name=status,proto3,enum=hearth.identity.v1.UserStatus" json:"status,omitempty"`
 	CreatedAt     int64                  `protobuf:"varint,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     int64                  `protobuf:"varint,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	FirstName     string                 `protobuf:"bytes,7,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`
+	LastName      string                 `protobuf:"bytes,8,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -257,6 +259,20 @@ func (x *User) GetUpdatedAt() int64 {
 		return x.UpdatedAt
 	}
 	return 0
+}
+
+func (x *User) GetFirstName() string {
+	if x != nil {
+		return x.FirstName
+	}
+	return ""
+}
+
+func (x *User) GetLastName() string {
+	if x != nil {
+		return x.LastName
+	}
+	return ""
 }
 
 // An authentication session bound to a user.
@@ -487,6 +503,8 @@ type CreateUserRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Email         string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
 	DisplayName   string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	FirstName     string                 `protobuf:"bytes,3,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`
+	LastName      string                 `protobuf:"bytes,4,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -535,12 +553,28 @@ func (x *CreateUserRequest) GetDisplayName() string {
 	return ""
 }
 
+func (x *CreateUserRequest) GetFirstName() string {
+	if x != nil {
+		return x.FirstName
+	}
+	return ""
+}
+
+func (x *CreateUserRequest) GetLastName() string {
+	if x != nil {
+		return x.LastName
+	}
+	return ""
+}
+
 // Request to update an existing user.
 type UpdateUserRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Email         *string                `protobuf:"bytes,1,opt,name=email,proto3,oneof" json:"email,omitempty"`
 	DisplayName   *string                `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3,oneof" json:"display_name,omitempty"`
 	Status        *UserStatus            `protobuf:"varint,3,opt,name=status,proto3,enum=hearth.identity.v1.UserStatus,oneof" json:"status,omitempty"`
+	FirstName     *string                `protobuf:"bytes,4,opt,name=first_name,json=firstName,proto3,oneof" json:"first_name,omitempty"`
+	LastName      *string                `protobuf:"bytes,5,opt,name=last_name,json=lastName,proto3,oneof" json:"last_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -594,6 +628,20 @@ func (x *UpdateUserRequest) GetStatus() UserStatus {
 		return *x.Status
 	}
 	return UserStatus_USER_STATUS_UNSPECIFIED
+}
+
+func (x *UpdateUserRequest) GetFirstName() string {
+	if x != nil && x.FirstName != nil {
+		return *x.FirstName
+	}
+	return ""
+}
+
+func (x *UpdateUserRequest) GetLastName() string {
+	if x != nil && x.LastName != nil {
+		return *x.LastName
+	}
+	return ""
 }
 
 // Request to create a new realm.
@@ -1845,7 +1893,7 @@ var File_hearth_identity_v1_identity_proto protoreflect.FileDescriptor
 
 const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"!hearth/identity/v1/identity.proto\x12\x12hearth.identity.v1\"\xc5\x01\n" +
+	"!hearth/identity/v1/identity.proto\x12\x12hearth.identity.v1\"\x81\x02\n" +
 	"\x04User\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05email\x18\x02 \x01(\tR\x05email\x12!\n" +
@@ -1854,7 +1902,10 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\x9c\x01\n" +
+	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"first_name\x18\a \x01(\tR\tfirstName\x12\x1b\n" +
+	"\tlast_name\x18\b \x01(\tR\blastName\"\x9c\x01\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1d\n" +
@@ -1878,17 +1929,26 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"L\n" +
+	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\x88\x01\n" +
 	"\x11CreateUserRequest\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12!\n" +
-	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\"\xb9\x01\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
+	"\n" +
+	"first_name\x18\x03 \x01(\tR\tfirstName\x12\x1b\n" +
+	"\tlast_name\x18\x04 \x01(\tR\blastName\"\x9c\x02\n" +
 	"\x11UpdateUserRequest\x12\x19\n" +
 	"\x05email\x18\x01 \x01(\tH\x00R\x05email\x88\x01\x01\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x01R\vdisplayName\x88\x01\x01\x12;\n" +
-	"\x06status\x18\x03 \x01(\x0e2\x1e.hearth.identity.v1.UserStatusH\x02R\x06status\x88\x01\x01B\b\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x1e.hearth.identity.v1.UserStatusH\x02R\x06status\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"first_name\x18\x04 \x01(\tH\x03R\tfirstName\x88\x01\x01\x12 \n" +
+	"\tlast_name\x18\x05 \x01(\tH\x04R\blastName\x88\x01\x01B\b\n" +
 	"\x06_emailB\x0f\n" +
 	"\r_display_nameB\t\n" +
-	"\a_status\"q\n" +
+	"\a_statusB\r\n" +
+	"\v_first_nameB\f\n" +
+	"\n" +
+	"_last_name\"q\n" +
 	"\x12CreateRealmRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
 	"\x06config\x18\x02 \x01(\v2\x1f.hearth.identity.v1.RealmConfigH\x00R\x06config\x88\x01\x01B\t\n" +

@@ -218,6 +218,8 @@ struct UserNewTemplate {
     error: Option<String>,
     form_email: String,
     form_display_name: String,
+    form_first_name: String,
+    form_last_name: String,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -241,6 +243,8 @@ pub async fn admin_user_create_form(
         error: None,
         form_email: String::new(),
         form_display_name: String::new(),
+        form_first_name: String::new(),
+        form_last_name: String::new(),
         chrome: true,
         active: "users",
         user_email: Some(session.user_email.clone()),
@@ -263,6 +267,10 @@ pub struct CreateUserForm {
     #[serde(default)]
     pub display_name: String,
     #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
     pub password: String,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
@@ -282,6 +290,8 @@ pub async fn admin_user_create_submit(
     let req = CreateUserRequest {
         email: form.email.clone(),
         display_name: form.display_name.clone(),
+        first_name: form.first_name.clone(),
+        last_name: form.last_name.clone(),
     };
 
     match state.identity.create_user(target.id(), &req) {
@@ -300,6 +310,7 @@ pub async fn admin_user_create_submit(
                     email: None,
                     display_name: None,
                     status: Some(UserStatus::Active),
+                    ..Default::default()
                 },
             );
 
@@ -309,8 +320,10 @@ pub async fn admin_user_create_submit(
         }
         Err(IdentityError::DuplicateEmail) => render(&UserNewTemplate {
             error: Some("A user with that email already exists.".to_string()),
-            form_email: form.email,
-            form_display_name: form.display_name,
+            form_email: form.email.clone(),
+            form_display_name: form.display_name.clone(),
+            form_first_name: form.first_name.clone(),
+            form_last_name: form.last_name.clone(),
             chrome: true,
             active: "users",
             user_email: Some(session.user_email.clone()),
@@ -325,8 +338,10 @@ pub async fn admin_user_create_submit(
         }),
         Err(IdentityError::InvalidInput { reason }) => render(&UserNewTemplate {
             error: Some(reason),
-            form_email: form.email,
-            form_display_name: form.display_name,
+            form_email: form.email.clone(),
+            form_display_name: form.display_name.clone(),
+            form_first_name: form.first_name.clone(),
+            form_last_name: form.last_name.clone(),
             chrome: true,
             active: "users",
             user_email: Some(session.user_email.clone()),
@@ -343,8 +358,10 @@ pub async fn admin_user_create_submit(
             tracing::warn!(error = %e, "create_user failed");
             render(&UserNewTemplate {
                 error: Some("Unable to create user right now.".to_string()),
-                form_email: form.email,
-                form_display_name: form.display_name,
+                form_email: form.email.clone(),
+                form_display_name: form.display_name.clone(),
+                form_first_name: form.first_name.clone(),
+                form_last_name: form.last_name.clone(),
                 chrome: true,
                 active: "users",
                 user_email: Some(session.user_email.clone()),
@@ -701,6 +718,8 @@ struct UserEditTemplate {
     error: Option<String>,
     form_email: String,
     form_display_name: String,
+    form_first_name: String,
+    form_last_name: String,
     form_status: String,
     /// Whether the user currently has the `hearth#admin` role.
     is_user_admin: bool,
@@ -749,6 +768,8 @@ pub async fn admin_user_edit_form(
             render(&UserEditTemplate {
                 form_email: user.email().to_string(),
                 form_display_name: user.display_name().to_string(),
+                form_first_name: user.first_name().to_string(),
+                form_last_name: user.last_name().to_string(),
                 form_status: format!("{:?}", user.status()),
                 user,
                 error: None,
@@ -783,6 +804,10 @@ pub struct EditUserForm {
     #[serde(default)]
     pub display_name: String,
     #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
     pub status: String,
     /// If present (checkbox checked), the user should have the admin role.
     #[serde(default)]
@@ -812,6 +837,8 @@ pub async fn admin_user_edit_submit(
     let req = UpdateUserRequest {
         email: Some(form.email.clone()),
         display_name: Some(form.display_name.clone()),
+        first_name: Some(form.first_name.clone()),
+        last_name: Some(form.last_name.clone()),
         status,
     };
 
@@ -930,6 +957,8 @@ fn render_edit_error(
                 error: Some(msg.to_string()),
                 form_email: form.email.clone(),
                 form_display_name: form.display_name.clone(),
+                form_first_name: form.first_name.clone(),
+                form_last_name: form.last_name.clone(),
                 form_status: form.status.clone(),
                 is_user_admin,
                 org_memberships,

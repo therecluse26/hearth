@@ -61,6 +61,8 @@ pub struct User {
     id: UserId,
     email: String,
     display_name: String,
+    first_name: String,
+    last_name: String,
     status: UserStatus,
     created_at: Timestamp,
     updated_at: Timestamp,
@@ -72,6 +74,8 @@ impl User {
         id: UserId,
         email: String,
         display_name: String,
+        first_name: String,
+        last_name: String,
         status: UserStatus,
         created_at: Timestamp,
         updated_at: Timestamp,
@@ -80,6 +84,8 @@ impl User {
             id,
             email,
             display_name,
+            first_name,
+            last_name,
             status,
             created_at,
             updated_at,
@@ -99,6 +105,16 @@ impl User {
     /// Returns the user's display name.
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+
+    /// Returns the user's first (given) name. May be empty.
+    pub fn first_name(&self) -> &str {
+        &self.first_name
+    }
+
+    /// Returns the user's last (family) name. May be empty.
+    pub fn last_name(&self) -> &str {
+        &self.last_name
     }
 
     /// Returns the user's account status.
@@ -124,6 +140,16 @@ impl User {
     /// Updates the display name. Used internally during user updates.
     pub(crate) fn set_display_name(&mut self, display_name: String) {
         self.display_name = display_name;
+    }
+
+    /// Updates the first name. Used internally during user updates.
+    pub(crate) fn set_first_name(&mut self, first_name: String) {
+        self.first_name = first_name;
+    }
+
+    /// Updates the last name. Used internally during user updates.
+    pub(crate) fn set_last_name(&mut self, last_name: String) {
+        self.last_name = last_name;
     }
 
     /// Updates the status. Used internally during user updates.
@@ -256,12 +282,22 @@ impl Session {
 }
 
 /// Request to create a new user.
-#[derive(Clone, Debug)]
+///
+/// `display_name` may be left empty; when empty, the identity engine
+/// synthesizes it from `"{first_name} {last_name}"` (trimmed). `first_name`
+/// and `last_name` are required fields on the model but may themselves be
+/// empty strings for callers that genuinely have no name data.
+#[derive(Clone, Debug, Default)]
 pub struct CreateUserRequest {
     /// Email address (will be normalized).
     pub email: String,
-    /// Display name (will be trimmed and NFC-normalized).
+    /// Display name (will be trimmed and NFC-normalized). If empty, the
+    /// engine synthesizes `"{first_name} {last_name}"`.
     pub display_name: String,
+    /// User's first (given) name. Empty string allowed.
+    pub first_name: String,
+    /// User's last (family) name. Empty string allowed.
+    pub last_name: String,
 }
 
 /// Request to self-register a new user via the public signup flow.
@@ -274,8 +310,13 @@ pub struct CreateUserRequest {
 pub struct RegisterUserRequest {
     /// Email address (will be normalized).
     pub email: String,
-    /// Display name (will be trimmed and NFC-normalized).
+    /// Display name (will be trimmed and NFC-normalized). If empty, the engine
+    /// synthesizes `"{first_name} {last_name}"`.
     pub display_name: String,
+    /// User's first (given) name.
+    pub first_name: String,
+    /// User's last (family) name.
+    pub last_name: String,
     /// The user's chosen password. Subject to the realm's password policy.
     pub password: CleartextPassword,
     /// Client IP for anti-abuse rate limiting. `None` skips the IP bucket
@@ -309,6 +350,10 @@ pub struct UpdateUserRequest {
     pub email: Option<String>,
     /// New display name (will be trimmed and NFC-normalized).
     pub display_name: Option<String>,
+    /// New first name. `Some("")` clears the field; `None` leaves it unchanged.
+    pub first_name: Option<String>,
+    /// New last name. `Some("")` clears the field; `None` leaves it unchanged.
+    pub last_name: Option<String>,
     /// New account status.
     pub status: Option<UserStatus>,
 }
@@ -910,8 +955,13 @@ pub struct ImportUserRequest {
     pub id: Option<UserId>,
     /// Email address (will be normalized).
     pub email: String,
-    /// Display name (will be trimmed and NFC-normalized).
+    /// Display name (will be trimmed and NFC-normalized). If empty, the
+    /// engine synthesizes `"{first_name} {last_name}"`.
     pub display_name: String,
+    /// User's first (given) name. Empty string allowed.
+    pub first_name: String,
+    /// User's last (family) name. Empty string allowed.
+    pub last_name: String,
     /// Account status.
     pub status: UserStatus,
     /// Pre-hashed credential. `None` imports the user with no password.
@@ -1098,6 +1148,8 @@ mod tests {
             id.clone(),
             "alice@example.com".to_string(),
             "Alice".to_string(),
+            "Alice".to_string(),
+            String::new(),
             UserStatus::Active,
             now,
             now,
@@ -1117,6 +1169,8 @@ mod tests {
             UserId::generate(),
             "bob@example.com".to_string(),
             "Bob".to_string(),
+            "Bob".to_string(),
+            String::new(),
             UserStatus::PendingVerification,
             Timestamp::from_micros(1_000),
             Timestamp::from_micros(2_000),
@@ -1146,6 +1200,8 @@ mod tests {
             UserId::generate(),
             "old@example.com".to_string(),
             "Old Name".to_string(),
+            "Old".to_string(),
+            "Name".to_string(),
             UserStatus::Active,
             Timestamp::from_micros(1_000),
             Timestamp::from_micros(1_000),

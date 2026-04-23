@@ -79,6 +79,8 @@ fn rejects_mismatched_issuer() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     assert!(matches!(
         verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000),
@@ -102,6 +104,8 @@ fn accepts_audience_as_string() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).expect("aud=string");
 }
@@ -126,6 +130,8 @@ fn accepts_audience_as_array_containing_client() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).expect("aud=array");
 }
@@ -146,6 +152,8 @@ fn rejects_audience_array_without_client() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).is_err());
 }
@@ -167,6 +175,8 @@ fn rejects_missing_nonce_when_expected() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).is_err());
 }
@@ -187,6 +197,8 @@ fn rejects_exp_past_skew_tolerance() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     // exp + 120s > 60s skew → reject.
     assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_120).is_err());
@@ -208,6 +220,8 @@ fn accepts_exp_within_skew_tolerance() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     // exp + 30s is within 60s skew.
     verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_030).expect("within skew");
@@ -230,6 +244,8 @@ fn rejects_nbf_in_the_future_past_skew() {
         email_verified: None,
         name: None,
         picture: None,
+        given_name: None,
+        family_name: None,
     };
     assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).is_err());
 }

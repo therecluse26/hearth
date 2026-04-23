@@ -30,6 +30,8 @@ fn create_user_with_email(harness: &common::TestHarness, realm: &RealmId, email:
             &CreateUserRequest {
                 email: email.to_string(),
                 display_name: "Magic Link Test User".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
             },
         )
         .expect("create user")

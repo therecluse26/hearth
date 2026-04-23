@@ -34,6 +34,8 @@ fn default_request(email: &str) -> RegisterUserRequest {
     RegisterUserRequest {
         email: email.to_string(),
         display_name: email.to_string(),
+        first_name: String::new(),
+        last_name: String::new(),
         password: CleartextPassword::from_string("correct-horse-battery-staple".to_string()),
         client_ip: Some("203.0.113.1".to_string()),
         invitation_token: None,

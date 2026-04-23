@@ -119,6 +119,8 @@ fn assertion_to_external_identity(
 
     let email = resolve(map, "email", a, &nameid).unwrap_or_else(|| nameid.clone());
     let display_name = resolve(map, "display_name", a, &nameid).unwrap_or_default();
+    let first_name = resolve(map, "first_name", a, &nameid).unwrap_or_default();
+    let last_name = resolve(map, "last_name", a, &nameid).unwrap_or_default();
     let external_sub = resolve(map, "external_sub", a, &nameid).unwrap_or_else(|| nameid.clone());
 
     Ok(ExternalIdentity {
@@ -131,6 +133,8 @@ fn assertion_to_external_identity(
         // caller to opt into auto-link via YAML.
         email_verified: false,
         display_name,
+        first_name,
+        last_name,
         picture_url: None,
     })
 }
