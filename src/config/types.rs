@@ -769,6 +769,91 @@ pub struct RealmYamlConfig {
     /// Reconciled with storage at startup. Members/invitations are runtime-only.
     #[serde(default)]
     pub organizations: Option<std::collections::HashMap<String, OrganizationYamlConfig>>,
+    /// External IdP federation: per-realm connector definitions + account-
+    /// linking policy. Reconciled with storage at startup; runtime-registered
+    /// connectors not represented in YAML are removed.
+    #[serde(default)]
+    pub federation: Option<FederationYamlConfig>,
+}
+
+/// YAML for `realms.{name}.federation.*`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FederationYamlConfig {
+    /// How to link external identities that match existing local users
+    /// by email: `disabled` / `confirm` / `auto`. Defaults to `confirm`
+    /// (Keycloak-equivalent safety posture).
+    #[serde(default)]
+    pub link_existing_accounts: Option<LinkModeYaml>,
+    /// Declarative connector definitions keyed by the operator-assigned
+    /// `idp_name` (same string that ends up in `?idp=<name>`).
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, FederationProviderYaml>,
+}
+
+/// Realm-level federation account-linking mode.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkModeYaml {
+    /// Never link — always JIT-provision.
+    Disabled,
+    /// Require local-credential re-auth before linking (default).
+    Confirm,
+    /// Auto-link on verified email match.
+    Auto,
+}
+
+impl LinkModeYaml {
+    /// Converts to the domain enum.
+    pub fn to_domain(self) -> crate::identity::federation::LinkMode {
+        match self {
+            Self::Disabled => crate::identity::federation::LinkMode::Disabled,
+            Self::Confirm => crate::identity::federation::LinkMode::Confirm,
+            Self::Auto => crate::identity::federation::LinkMode::Auto,
+        }
+    }
+}
+
+/// YAML for a single federation connector.
+///
+/// `type` selects the underlying protocol. Four flavors:
+///
+/// - `oidc` — generic OIDC (operator MUST supply `issuer`,
+///   `authorization_endpoint`, `token_endpoint`, `jwks_uri`).
+/// - `google` / `microsoft` / `apple` — preset OIDC shapes with
+///   issuer/endpoints/scopes prefilled.
+/// - `github` — OAuth2 (no OIDC).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FederationProviderYaml {
+    /// Preset or protocol selector (`"oidc"`, `"google"`, `"microsoft"`,
+    /// `"apple"`, `"github"`).
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Optional human-readable label (overrides the preset default).
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// OIDC issuer override. Required for generic `oidc`; optional for
+    /// presets (operators use it to pin to a specific Azure AD tenant).
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// Authorization endpoint override.
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
+    /// Token endpoint override.
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    /// Userinfo endpoint override.
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+    /// JWKS URL override.
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
+    /// OAuth client id registered at the upstream IdP.
+    pub client_id: String,
+    /// OAuth client secret.
+    pub client_secret: String,
+    /// Scopes override. Default is the preset's or `["openid","email","profile"]`.
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// Parses a human-readable duration string into microseconds.
@@ -892,10 +977,14 @@ impl RealmYamlConfig {
             lockout_duration_micros,
             passkey_requires_mfa,
             registration_policy,
-            // Federation connectors + link mode land via a dedicated
-            // reconcile pass in Checkpoint E; the YAML surface lands at
-            // that point. For now every realm gets the safe default.
-            federation_link_mode: None,
+            // Realm-level federation link mode. `None` → `Confirm`
+            // (Keycloak-equivalent default). Connector records are
+            // reconciled separately via `reconcile_federation_for_realm`.
+            federation_link_mode: self
+                .federation
+                .as_ref()
+                .and_then(|f| f.link_existing_accounts)
+                .map(LinkModeYaml::to_domain),
         }
     }
 }

@@ -1,0 +1,32 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Linked accounts{% endblock %}
+{% block body %}
+<div class="mb-8 flex items-start justify-between gap-6">
+  <div>
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">Linked accounts</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">External identity providers you've connected to your account.</p>
+  </div>
+  <a href="/ui/account" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Back to account</a>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  {% if linked.is_empty() %}
+  <p class="py-8 text-center text-sm text-ht-content-muted">You haven't linked any external accounts yet.</p>
+  {% else %}
+  <ul class="divide-y divide-divider-faint">
+    {% for row in linked %}
+    <li class="flex items-center justify-between py-4" data-idp-id="{{ row.idp_id }}">
+      <div>
+        <h3 class="text-sm font-semibold text-ht-content-primary">{{ row.display_name }}</h3>
+        <p class="mt-1 font-mono text-[11px] text-ht-content-muted">Subject: {{ row.external_sub }}</p>
+      </div>
+      <form method="post" action="/ui/account/linked-accounts/{{ row.idp_id }}/unlink" data-testid="unlink-form">
+        {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+        <button type="submit" class="text-xs font-medium text-danger-fg hover:text-red-300">Unlink</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endblock %}

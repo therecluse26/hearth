@@ -24,20 +24,26 @@
 //! Off the hot path entirely — federation callbacks are infrequent.
 
 pub mod connector;
+pub mod github;
 pub mod http;
 pub mod oidc;
+pub mod presets;
+pub mod service;
 pub mod state;
 pub mod types;
 
 pub use connector::{AuthorizeUrl, IdpConnector};
-pub use oidc::{
-    verify_id_token_claims, verify_rs256, DiscoveryDocument, GenericOidcConnector, IdTokenClaims,
-    Jwk, JwksDoc,
-};
+pub use github::GithubConnector;
 pub use http::{
     FedHttpRequest, FedHttpResponse, FederationHttpTransport, StubFederationTransport,
     StubResponse, UreqFederationTransport,
 };
+pub use oidc::{
+    verify_id_token_claims, verify_rs256, DiscoveryDocument, GenericOidcConnector, IdTokenClaims,
+    Jwk, JwksDoc,
+};
+pub use presets::{lookup as preset_lookup, Preset};
+pub use service::{FederationOutcome, FederationService};
 pub use state::{
     compute_confirm_ticket_mac, generate_nonce, generate_pkce_verifier, generate_state_token,
     pkce_s256_challenge, verify_confirm_ticket_mac,

@@ -1278,8 +1278,7 @@ mod tests {
     fn encode_federation_ext_fwd_key_format() {
         let user_uuid =
             Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
-        let idp_uuid =
-            Uuid::parse_str("660e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
+        let idp_uuid = Uuid::parse_str("660e8400-e29b-41d4-a716-446655440000").expect("valid uuid");
         let user_id = UserId::new(user_uuid);
         let idp_id = IdpId::new(idp_uuid);
         let key = encode_federation_ext_fwd_key(&user_id, &idp_id);

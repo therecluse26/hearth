@@ -87,8 +87,8 @@ pub fn pkce_s256_challenge(verifier: &str) -> String {
 /// Mirrors `oauth_consent::compute_ticket_mac` so the same cookie
 /// secret can be reused server-wide without mixing key material.
 pub fn compute_confirm_ticket_mac(secret: &[u8; 32], user_id: &UserId, ticket: &str) -> String {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret)
-        .expect("HMAC-SHA256 accepts any 32-byte key");
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(secret).expect("HMAC-SHA256 accepts any 32-byte key");
     mac.update(b"fed-confirm|");
     mac.update(user_id.as_uuid().as_bytes());
     mac.update(b"|");

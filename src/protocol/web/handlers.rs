@@ -147,6 +147,14 @@ impl SetupSentTemplate {
     }
 }
 
+/// One federation sign-in button rendered on the login page.
+pub(super) struct FederationButton {
+    /// URL of the `/federation/begin?idp=...` endpoint.
+    pub(super) begin_url: String,
+    /// Human-readable label for the button ("Google", "GitHub", etc.).
+    pub(super) display_name: String,
+}
+
 /// Login form template.
 #[derive(Template)]
 #[template(path = "ui/login.html")]
@@ -168,6 +176,8 @@ struct LoginTemplate {
     /// Endpoint prefix for passkey AJAX calls, scope-matched.
     passkey_begin_url: String,
     passkey_complete_url: String,
+    /// Federation sign-in buttons, one per configured connector.
+    federation_buttons: Vec<FederationButton>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -199,6 +209,7 @@ impl LoginTemplate {
             show_register,
             passkey_begin_url: format!("{action_prefix}/login/passkey-begin"),
             passkey_complete_url: format!("{action_prefix}/login/passkey-complete"),
+            federation_buttons: Vec::new(),
             chrome: false,
             active: "",
             user_email: None,
@@ -673,7 +684,35 @@ fn login_form_impl(state: Arc<WebState>, query: LoginQuery, source: RealmSource)
     );
     tmpl.theme_css.clone_from(&state.theme_css);
     tmpl.realm_theme_css = state.realm_theme_css_for(realm.id());
+    tmpl.federation_buttons = federation_buttons_for(&state, realm.id(), &action_prefix);
     render(&tmpl)
+}
+
+/// Builds the list of federation sign-in buttons rendered on a login
+/// page. Returns an empty vector when the realm has no connectors
+/// registered or the engine errors (which we log and swallow — the
+/// password form still works).
+pub(super) fn federation_buttons_for(
+    state: &WebState,
+    realm_id: &crate::core::RealmId,
+    action_prefix: &str,
+) -> Vec<FederationButton> {
+    let idps = match state.identity.list_idps(realm_id) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "list_idps for login page failed");
+            return Vec::new();
+        }
+    };
+    idps.into_iter()
+        .map(|cfg| FederationButton {
+            begin_url: format!(
+                "{action_prefix}/federation/begin?idp={}",
+                form_urlencoded::byte_serialize(cfg.name.as_bytes()).collect::<String>()
+            ),
+            display_name: cfg.display_name,
+        })
+        .collect()
 }
 
 /// Credentials submitted by the login form.

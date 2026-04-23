@@ -1,0 +1,24 @@
+{% extends "ui/_layout.html" %}
+{% block title %}Hearth · Confirm account link{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-md">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Link your {{ idp_display_name }} account</h1>
+  <p class="mt-2 text-sm text-ht-content-muted">
+    The email <span class="font-mono text-ht-content-secondary">{{ external_email }}</span>
+    is already registered with {{ product_name }}. Enter your password to link your
+    {{ idp_display_name }} account. On future sign-ins, you can use either.
+  </p>
+  <form method="post" action="/ui/federation/confirm-link" class="mt-6 space-y-4">
+    <input type="hidden" name="ticket" value="{{ ticket }}">
+    <div>
+      <label for="password" class="block text-sm text-ht-content-secondary">Password</label>
+      <input id="password" name="password" type="password" required
+             class="mt-1 w-full rounded-sm bg-ht-surface-base px-3 py-2 text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ember-500 focus:outline-none">
+    </div>
+    <button type="submit" class="btn-ember w-full">Link account</button>
+  </form>
+  <p class="mt-4 text-xs text-ht-content-muted">
+    <a href="/ui/login" class="underline hover:text-ht-content-secondary">Cancel</a>
+  </p>
+</div>
+{% endblock %}

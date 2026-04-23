@@ -1000,6 +1000,99 @@ pub trait IdentityEngine: Send + Sync {
         nonce: Option<String>,
     ) -> Result<AuthorizationResponse, IdentityError>;
 
+    // ===== External IdP federation (Phase 2: Gap #5) =====
+
+    /// Persists (or updates) an external IdP connector for a realm.
+    fn register_idp(&self, config: &federation::IdpConfig) -> Result<(), IdentityError>;
+
+    /// Retrieves a connector by id.
+    fn get_idp(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+    ) -> Result<Option<federation::IdpConfig>, IdentityError>;
+
+    /// Retrieves a connector by operator-assigned name (e.g., `"google"`).
+    fn get_idp_by_name(
+        &self,
+        realm_id: &RealmId,
+        name: &str,
+    ) -> Result<Option<federation::IdpConfig>, IdentityError>;
+
+    /// Lists all connectors registered in a realm.
+    fn list_idps(&self, realm_id: &RealmId) -> Result<Vec<federation::IdpConfig>, IdentityError>;
+
+    /// Deletes a connector and all its external-identity links.
+    fn delete_idp(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+    ) -> Result<(), IdentityError>;
+
+    /// Persists a state bag under its `state_token` for a federation
+    /// login round trip. 10-minute TTL enforced by `take_federation_state`.
+    fn put_federation_state(&self, bag: &federation::StateBag) -> Result<(), IdentityError>;
+
+    /// Retrieves and deletes a state bag (single-use). Returns
+    /// `FederationInvalidState` on miss or expiry.
+    fn take_federation_state(
+        &self,
+        realm_id: &RealmId,
+        state_token: &str,
+    ) -> Result<federation::StateBag, IdentityError>;
+
+    /// Persists a pending confirm-to-link ticket.
+    fn put_confirm_link_ticket(
+        &self,
+        ticket: &federation::ConfirmLinkTicket,
+    ) -> Result<(), IdentityError>;
+
+    /// Retrieves and deletes a confirm-to-link ticket (single-use).
+    fn take_confirm_link_ticket(
+        &self,
+        realm_id: &RealmId,
+        ticket: &str,
+    ) -> Result<federation::ConfirmLinkTicket, IdentityError>;
+
+    /// Attaches an external identity to a Hearth user. Idempotent on
+    /// `(user, idp)` — re-linking the same tuple replaces the external
+    /// sub. Returns `FederationAlreadyLinked` if the external identity
+    /// is currently owned by a *different* user in the realm.
+    fn link_external_identity(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        idp_id: &crate::core::IdpId,
+        external_sub: &str,
+    ) -> Result<(), IdentityError>;
+
+    /// Severs a user's link to a specific connector. `FederationNotLinked`
+    /// when no such link exists.
+    fn unlink_external_identity(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        idp_id: &crate::core::IdpId,
+    ) -> Result<(), IdentityError>;
+
+    /// Resolves an external identity to its Hearth `UserId`. `None` when
+    /// no Hearth user has linked this upstream subject in this realm.
+    fn find_user_by_external_identity(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+        external_sub: &str,
+    ) -> Result<Option<UserId>, IdentityError>;
+
+    /// Enumerates a user's linked external identities for the
+    /// `/ui/account/linked-accounts` page. Returns `(idp_id, external_sub)`
+    /// pairs.
+    fn list_external_identities_for_user(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<(crate::core::IdpId, String)>, IdentityError>;
+
     // ===== Migration / import (Phase 1 Step 30) =====
 
     /// Imports a realm, optionally with a caller-supplied `RealmId`.

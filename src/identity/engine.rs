@@ -1447,6 +1447,30 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .map_err(Self::storage_err)?;
         }
 
+        // 8c. Federation connectors, state tokens, confirm-link tickets,
+        //     and the external-identity indexes (both directions).
+        for prefix in [
+            &b"fed:idp:"[..],
+            &b"fed:state:"[..],
+            &b"fed:confirm:"[..],
+            &b"fed:ext:"[..],
+            &b"fed:ext_fwd:"[..],
+        ] {
+            let end = keys::prefix_end(prefix);
+            let entries = self
+                .storage
+                .scan(realm_id, prefix, &end)
+                .map_err(Self::storage_err)?;
+            if !entries.is_empty() {
+                cascade_work_done = true;
+            }
+            for entry in &entries {
+                self.storage
+                    .delete(realm_id, &entry.key)
+                    .map_err(Self::storage_err)?;
+            }
+        }
+
         // 9. Delete realm signing key (check existence first so we can attribute
         //    cascade work even when only the signing key survives a prior crash).
         let key_storage_key = keys::encode_realm_signing_key(realm_id);
@@ -1749,6 +1773,39 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .scan(realm_id, &consent_prefix, &consent_end)
             .map_err(Self::storage_err)?;
         for entry in &consent_entries {
+            self.storage
+                .delete(realm_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+
+        // 8. Cascade: scrub all federated external-identity links for
+        //    this user. Each forward index entry holds the external_sub
+        //    string as its value — we use it to compute the matching
+        //    reverse `fed:ext:{idp_id}:{external_sub}` key and delete
+        //    both in one pass. A user must be able to sign up freshly
+        //    via the same external identity after deletion, so both
+        //    directions MUST go.
+        let fed_fwd_prefix = keys::encode_federation_ext_fwd_prefix_for_user(user_id);
+        let fed_fwd_end = keys::prefix_end(&fed_fwd_prefix);
+        let fed_fwd_entries = self
+            .storage
+            .scan(realm_id, &fed_fwd_prefix, &fed_fwd_end)
+            .map_err(Self::storage_err)?;
+        for entry in &fed_fwd_entries {
+            // Key format: fed:ext_fwd:{user_uuid}:{idp_uuid}
+            let key_str = std::str::from_utf8(&entry.key).unwrap_or("");
+            if let Some(idp_uuid_str) = key_str.rsplit(':').next() {
+                if let Ok(idp_uuid) = uuid::Uuid::parse_str(idp_uuid_str) {
+                    let idp_id = crate::core::IdpId::new(idp_uuid);
+                    let external_sub = std::str::from_utf8(&entry.value).unwrap_or("");
+                    if !external_sub.is_empty() {
+                        let reverse_key = keys::encode_federation_ext_key(&idp_id, external_sub);
+                        self.storage
+                            .delete(realm_id, &reverse_key)
+                            .map_err(Self::storage_err)?;
+                    }
+                }
+            }
             self.storage
                 .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
@@ -5864,6 +5921,314 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         };
 
         Ok(Page { items, next_cursor })
+    }
+
+    // ===== External IdP federation =====
+
+    fn register_idp(
+        &self,
+        config: &crate::identity::federation::IdpConfig,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_idp_key(&config.id);
+        let bytes = serde_json::to_vec(config).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(&config.realm_id, &key, &bytes)
+            .map_err(Self::storage_err)
+    }
+
+    fn get_idp(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+    ) -> Result<Option<crate::identity::federation::IdpConfig>, IdentityError> {
+        let key = keys::encode_idp_key(idp_id);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        let cfg: crate::identity::federation::IdpConfig =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        Ok(Some(cfg))
+    }
+
+    fn get_idp_by_name(
+        &self,
+        realm_id: &RealmId,
+        name: &str,
+    ) -> Result<Option<crate::identity::federation::IdpConfig>, IdentityError> {
+        // Linear scan — N is tiny (realms have a handful of connectors
+        // at most). Avoids the cost of a secondary `fed:idp_name:` index.
+        let prefix = keys::fed_idp_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+        for entry in &entries {
+            let cfg: crate::identity::federation::IdpConfig = serde_json::from_slice(&entry.value)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            if cfg.name == name {
+                return Ok(Some(cfg));
+            }
+        }
+        Ok(None)
+    }
+
+    fn list_idps(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<Vec<crate::identity::federation::IdpConfig>, IdentityError> {
+        let prefix = keys::fed_idp_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let cfg: crate::identity::federation::IdpConfig = serde_json::from_slice(&entry.value)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            out.push(cfg);
+        }
+        Ok(out)
+    }
+
+    fn delete_idp(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+    ) -> Result<(), IdentityError> {
+        // Sever every external-identity link this connector owns before
+        // removing the connector record itself. Forward indexes
+        // `fed:ext_fwd:{user}:{idp}` are cleaned by first enumerating
+        // reverse entries and deriving `(user_id, sub)` from the value.
+        let ext_prefix = keys::encode_federation_ext_prefix_for_idp(idp_id);
+        let ext_end = keys::prefix_end(&ext_prefix);
+        let ext_entries = self
+            .storage
+            .scan(realm_id, &ext_prefix, &ext_end)
+            .map_err(Self::storage_err)?;
+        for entry in &ext_entries {
+            // value = UserId UUID bytes (16)
+            if entry.value.len() == 16 {
+                let mut b = [0u8; 16];
+                b.copy_from_slice(&entry.value);
+                let user_id = UserId::new(uuid::Uuid::from_bytes(b));
+                let fwd_key = keys::encode_federation_ext_fwd_key(&user_id, idp_id);
+                self.storage
+                    .delete(realm_id, &fwd_key)
+                    .map_err(Self::storage_err)?;
+            }
+            self.storage
+                .delete(realm_id, &entry.key)
+                .map_err(Self::storage_err)?;
+        }
+        // Now remove the connector record itself.
+        let key = keys::encode_idp_key(idp_id);
+        self.storage
+            .delete(realm_id, &key)
+            .map_err(Self::storage_err)
+    }
+
+    fn put_federation_state(
+        &self,
+        bag: &crate::identity::federation::StateBag,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_federation_state_key(&bag.state_token);
+        let bytes = serde_json::to_vec(bag).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(&bag.realm_id, &key, &bytes)
+            .map_err(Self::storage_err)
+    }
+
+    fn take_federation_state(
+        &self,
+        realm_id: &RealmId,
+        state_token: &str,
+    ) -> Result<crate::identity::federation::StateBag, IdentityError> {
+        let key = keys::encode_federation_state_key(state_token);
+        let bytes = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::FederationInvalidState)?;
+        // Single-use: delete before we even validate.
+        self.storage
+            .delete(realm_id, &key)
+            .map_err(Self::storage_err)?;
+        let bag: crate::identity::federation::StateBag =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        if self.clock.now().as_micros() >= bag.expires_at.as_micros() {
+            return Err(IdentityError::FederationInvalidState);
+        }
+        Ok(bag)
+    }
+
+    fn put_confirm_link_ticket(
+        &self,
+        ticket: &crate::identity::federation::ConfirmLinkTicket,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_federation_confirm_key(&ticket.ticket);
+        let bytes = serde_json::to_vec(ticket).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(&ticket.realm_id, &key, &bytes)
+            .map_err(Self::storage_err)
+    }
+
+    fn take_confirm_link_ticket(
+        &self,
+        realm_id: &RealmId,
+        ticket: &str,
+    ) -> Result<crate::identity::federation::ConfirmLinkTicket, IdentityError> {
+        let key = keys::encode_federation_confirm_key(ticket);
+        let bytes = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::FederationInvalidState)?;
+        self.storage
+            .delete(realm_id, &key)
+            .map_err(Self::storage_err)?;
+        let t: crate::identity::federation::ConfirmLinkTicket = serde_json::from_slice(&bytes)
+            .map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        if self.clock.now().as_micros() >= t.expires_at.as_micros() {
+            return Err(IdentityError::FederationInvalidState);
+        }
+        Ok(t)
+    }
+
+    fn link_external_identity(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        idp_id: &crate::core::IdpId,
+        external_sub: &str,
+    ) -> Result<(), IdentityError> {
+        let reverse_key = keys::encode_federation_ext_key(idp_id, external_sub);
+        // Refuse to re-home an external identity that already belongs
+        // to a different user. The owner must unlink first. This is
+        // also the guard against a malicious IdP trying to "steal" an
+        // already-linked account.
+        if let Some(bytes) = self
+            .storage
+            .get(realm_id, &reverse_key)
+            .map_err(Self::storage_err)?
+        {
+            if bytes.len() == 16 {
+                let mut b = [0u8; 16];
+                b.copy_from_slice(&bytes);
+                let existing = UserId::new(uuid::Uuid::from_bytes(b));
+                if &existing != user_id {
+                    return Err(IdentityError::FederationAlreadyLinked);
+                }
+                // Same user re-linking — no-op write below is idempotent.
+            }
+        }
+        let forward_key = keys::encode_federation_ext_fwd_key(user_id, idp_id);
+        self.storage
+            .put(realm_id, &reverse_key, user_id.as_uuid().as_bytes())
+            .map_err(Self::storage_err)?;
+        self.storage
+            .put(realm_id, &forward_key, external_sub.as_bytes())
+            .map_err(Self::storage_err)
+    }
+
+    fn unlink_external_identity(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        idp_id: &crate::core::IdpId,
+    ) -> Result<(), IdentityError> {
+        let forward_key = keys::encode_federation_ext_fwd_key(user_id, idp_id);
+        let external_sub_bytes = self
+            .storage
+            .get(realm_id, &forward_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::FederationNotLinked)?;
+        let external_sub =
+            std::str::from_utf8(&external_sub_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let reverse_key = keys::encode_federation_ext_key(idp_id, external_sub);
+        self.storage
+            .delete(realm_id, &reverse_key)
+            .map_err(Self::storage_err)?;
+        self.storage
+            .delete(realm_id, &forward_key)
+            .map_err(Self::storage_err)
+    }
+
+    fn find_user_by_external_identity(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+        external_sub: &str,
+    ) -> Result<Option<UserId>, IdentityError> {
+        let key = keys::encode_federation_ext_key(idp_id, external_sub);
+        let Some(bytes) = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        else {
+            return Ok(None);
+        };
+        if bytes.len() != 16 {
+            return Err(IdentityError::Serialization {
+                reason: "federation reverse index has wrong length".to_string(),
+            });
+        }
+        let mut b = [0u8; 16];
+        b.copy_from_slice(&bytes);
+        Ok(Some(UserId::new(uuid::Uuid::from_bytes(b))))
+    }
+
+    fn list_external_identities_for_user(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<(crate::core::IdpId, String)>, IdentityError> {
+        let prefix = keys::encode_federation_ext_fwd_prefix_for_user(user_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let key_str = std::str::from_utf8(&entry.key).unwrap_or("");
+            let Some(idp_uuid_str) = key_str.rsplit(':').next() else {
+                continue;
+            };
+            let Ok(idp_uuid) = uuid::Uuid::parse_str(idp_uuid_str) else {
+                continue;
+            };
+            let external_sub = std::str::from_utf8(&entry.value)
+                .map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?
+                .to_string();
+            out.push((crate::core::IdpId::new(idp_uuid), external_sub));
+        }
+        Ok(out)
     }
 }
 

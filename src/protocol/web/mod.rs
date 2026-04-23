@@ -50,8 +50,10 @@ use crate::identity::{EmailService, IdentityEngine};
 
 pub mod account;
 pub mod account_consents;
+pub mod account_linked;
 pub mod admin;
 pub mod auth;
+pub mod federation;
 pub mod handlers;
 pub(crate) mod handlers_common;
 pub mod oauth_consent;
@@ -536,6 +538,33 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/account/consents/{client_id}/revoke",
             axum::routing::post(account_consents::revoke_consent),
+        )
+        // --- Self-service federation management ---
+        .route(
+            "/account/linked-accounts",
+            axum::routing::get(account_linked::linked_accounts_index),
+        )
+        .route(
+            "/account/linked-accounts/{idp_id}/unlink",
+            axum::routing::post(account_linked::unlink),
+        )
+        // --- Federation login flow (pre-auth) ---
+        .route("/federation/begin", axum::routing::get(federation::begin))
+        .route(
+            "/federation/callback",
+            axum::routing::get(federation::callback),
+        )
+        .route(
+            "/federation/confirm-link",
+            axum::routing::get(federation::confirm_link_page).post(federation::confirm_link_submit),
+        )
+        .route(
+            "/realms/{realm}/federation/begin",
+            axum::routing::get(federation::begin_scoped),
+        )
+        .route(
+            "/realms/{realm}/federation/callback",
+            axum::routing::get(federation::callback_scoped),
         )
         // --- Browser-facing OAuth authorize + consent flow ---
         .route(

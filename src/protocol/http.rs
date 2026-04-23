@@ -764,9 +764,10 @@ fn identity_error_to_response(
         IdentityError::FederationUpstreamError { .. } => {
             (StatusCode::BAD_GATEWAY, "federation upstream error")
         }
-        IdentityError::FederationTokenVerificationFailed => {
-            (StatusCode::UNAUTHORIZED, "federation token verification failed")
-        }
+        IdentityError::FederationTokenVerificationFailed => (
+            StatusCode::UNAUTHORIZED,
+            "federation token verification failed",
+        ),
         IdentityError::FederationEmailNotVerified => {
             (StatusCode::FORBIDDEN, "upstream email not verified")
         }
@@ -774,7 +775,10 @@ fn identity_error_to_response(
             // Browser flows redirect to /ui/federation/confirm-link; JSON
             // callers (rare for federation) get a terse 409 so they know
             // a linking decision is required.
-            (StatusCode::CONFLICT, "federation link confirmation required")
+            (
+                StatusCode::CONFLICT,
+                "federation link confirmation required",
+            )
         }
         IdentityError::FederationNotLinked => {
             (StatusCode::NOT_FOUND, "external identity not linked")

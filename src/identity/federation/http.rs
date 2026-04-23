@@ -231,7 +231,9 @@ mod tests {
             body: vec![],
             content_type: None,
         };
-        let resp = stub.send(&req).expect("stub should still return a response");
+        let resp = stub
+            .send(&req)
+            .expect("stub should still return a response");
         assert_eq!(resp.status, 501);
         assert!(resp.body.contains("no stub registered"));
     }

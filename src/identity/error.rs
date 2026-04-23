@@ -881,8 +881,10 @@ mod tests {
             }
         )
         .contains("bad response"));
-        assert!(format!("{}", IdentityError::FederationTokenVerificationFailed)
-            .contains("token verification failed"));
+        assert!(
+            format!("{}", IdentityError::FederationTokenVerificationFailed)
+                .contains("token verification failed")
+        );
         assert!(format!("{}", IdentityError::FederationEmailNotVerified)
             .contains("email is not verified"));
         assert!(format!(
@@ -894,8 +896,7 @@ mod tests {
         .contains("confirm-to-link"));
         assert!(format!("{}", IdentityError::FederationNotLinked)
             .contains("external identity is not linked"));
-        assert!(format!("{}", IdentityError::FederationAlreadyLinked)
-            .contains("already linked"));
+        assert!(format!("{}", IdentityError::FederationAlreadyLinked).contains("already linked"));
     }
 
     #[test]

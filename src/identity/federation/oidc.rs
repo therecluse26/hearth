@@ -26,9 +26,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::federation::connector::{AuthorizeUrl, IdpConnector};
-use crate::identity::federation::http::{
-    FedHttpRequest, FedHttpResponse, FederationHttpTransport,
-};
+use crate::identity::federation::http::{FedHttpRequest, FedHttpResponse, FederationHttpTransport};
 use crate::identity::federation::state::pkce_s256_challenge;
 use crate::identity::federation::types::{ExternalIdentity, IdpConfig, IdpKind, StateBag};
 use crate::identity::IdentityError;
@@ -176,11 +174,7 @@ impl IdpConnector for GenericOidcConnector {
         build_authorize_url(&self.config, &self.redirect_uri, state)
     }
 
-    fn exchange(
-        &self,
-        code: &str,
-        state: &StateBag,
-    ) -> Result<ExternalIdentity, IdentityError> {
+    fn exchange(&self, code: &str, state: &StateBag) -> Result<ExternalIdentity, IdentityError> {
         exchange_code(&self.config, &*self.http, &self.redirect_uri, code, state)
     }
 }
@@ -249,18 +243,19 @@ fn exchange_code(
     struct TokenResponse {
         id_token: String,
     }
-    let parsed: TokenResponse =
-        serde_json::from_str(&token_resp.body).map_err(|e| IdentityError::FederationUpstreamError {
+    let parsed: TokenResponse = serde_json::from_str(&token_resp.body).map_err(|e| {
+        IdentityError::FederationUpstreamError {
             provider: IdpKind::Oidc.label().to_string(),
             reason: format!("invalid token response: {e}"),
-        })?;
+        }
+    })?;
 
     // 2. Parse JWT header → pick signing key → verify signature.
     let (header_b64, payload_b64, _sig_b64) = split_jwt(&parsed.id_token)?;
     let header: JwtHeader = serde_json::from_slice(
-        &URL_SAFE_NO_PAD.decode(header_b64).map_err(|_| {
-            IdentityError::FederationTokenVerificationFailed
-        })?,
+        &URL_SAFE_NO_PAD
+            .decode(header_b64)
+            .map_err(|_| IdentityError::FederationTokenVerificationFailed)?,
     )
     .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
 
@@ -279,9 +274,9 @@ fn exchange_code(
 
     // 3. Decode claims and validate iss / aud / exp / nonce.
     let claims: IdTokenClaims = serde_json::from_slice(
-        &URL_SAFE_NO_PAD.decode(payload_b64).map_err(|_| {
-            IdentityError::FederationTokenVerificationFailed
-        })?,
+        &URL_SAFE_NO_PAD
+            .decode(payload_b64)
+            .map_err(|_| IdentityError::FederationTokenVerificationFailed)?,
     )
     .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
     verify_id_token_claims(&claims, cfg, state, now_unix())?;
@@ -300,9 +295,15 @@ struct JwtHeader {
 
 fn split_jwt(jwt: &str) -> Result<(&str, &str, &str), IdentityError> {
     let mut parts = jwt.splitn(3, '.');
-    let header = parts.next().ok_or(IdentityError::FederationTokenVerificationFailed)?;
-    let payload = parts.next().ok_or(IdentityError::FederationTokenVerificationFailed)?;
-    let sig = parts.next().ok_or(IdentityError::FederationTokenVerificationFailed)?;
+    let header = parts
+        .next()
+        .ok_or(IdentityError::FederationTokenVerificationFailed)?;
+    let payload = parts
+        .next()
+        .ok_or(IdentityError::FederationTokenVerificationFailed)?;
+    let sig = parts
+        .next()
+        .ok_or(IdentityError::FederationTokenVerificationFailed)?;
     if parts.next().is_some() {
         return Err(IdentityError::FederationTokenVerificationFailed);
     }
@@ -313,12 +314,13 @@ fn fetch_jwks(
     cfg: &IdpConfig,
     http: &dyn FederationHttpTransport,
 ) -> Result<JwksDoc, IdentityError> {
-    let url = cfg.jwks_uri.as_deref().ok_or_else(|| {
-        IdentityError::FederationUpstreamError {
+    let url = cfg
+        .jwks_uri
+        .as_deref()
+        .ok_or_else(|| IdentityError::FederationUpstreamError {
             provider: IdpKind::Oidc.label().to_string(),
             reason: "connector has no jwks_uri".to_string(),
-        }
-    })?;
+        })?;
     let resp: FedHttpResponse = http.send(&FedHttpRequest {
         method: "GET",
         url: url.to_string(),
@@ -360,8 +362,14 @@ pub fn verify_rs256(jwt: &str, key: &Jwk) -> Result<(), IdentityError> {
     if key.kty != "RSA" {
         return Err(IdentityError::FederationTokenVerificationFailed);
     }
-    let n_b64 = key.n.as_deref().ok_or(IdentityError::FederationTokenVerificationFailed)?;
-    let e_b64 = key.e.as_deref().ok_or(IdentityError::FederationTokenVerificationFailed)?;
+    let n_b64 = key
+        .n
+        .as_deref()
+        .ok_or(IdentityError::FederationTokenVerificationFailed)?;
+    let e_b64 = key
+        .e
+        .as_deref()
+        .ok_or(IdentityError::FederationTokenVerificationFailed)?;
     let n = URL_SAFE_NO_PAD
         .decode(n_b64)
         .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
@@ -369,7 +377,9 @@ pub fn verify_rs256(jwt: &str, key: &Jwk) -> Result<(), IdentityError> {
         .decode(e_b64)
         .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
 
-    let dot1 = jwt.find('.').ok_or(IdentityError::FederationTokenVerificationFailed)?;
+    let dot1 = jwt
+        .find('.')
+        .ok_or(IdentityError::FederationTokenVerificationFailed)?;
     let dot2 = jwt[dot1 + 1..]
         .find('.')
         .ok_or(IdentityError::FederationTokenVerificationFailed)?
@@ -598,7 +608,10 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(select_jwk(&jwks, Some("k2")).unwrap().n.as_deref(), Some("n2"));
+        assert_eq!(
+            select_jwk(&jwks, Some("k2")).unwrap().n.as_deref(),
+            Some("n2")
+        );
         assert!(select_jwk(&jwks, Some("missing")).is_none());
     }
 
@@ -743,7 +756,9 @@ mod tests {
         let mut cfg = sample_config();
         cfg.authorization_endpoint = "https://idp.example/auth?tenant=acme".to_string();
         let state = sample_state("n", "v");
-        let url = build_authorize_url(&cfg, "https://h/cb", &state).expect("url").0;
+        let url = build_authorize_url(&cfg, "https://h/cb", &state)
+            .expect("url")
+            .0;
         assert!(url.starts_with("https://idp.example/auth?tenant=acme&"));
         assert!(url.contains("client_id=client-abc"));
     }
@@ -833,7 +848,10 @@ mod tests {
             &Some(serde_json::json!(["x", "abc"])),
             "abc"
         ));
-        assert!(!audience_contains(&Some(serde_json::json!(["x", "y"])), "abc"));
+        assert!(!audience_contains(
+            &Some(serde_json::json!(["x", "y"])),
+            "abc"
+        ));
         assert!(!audience_contains(&None, "abc"));
     }
 }

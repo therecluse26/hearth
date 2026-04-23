@@ -19,7 +19,8 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::config::{
-    ApplicationYamlConfig, AuthConfig, Config, OrganizationYamlConfig, RealmYamlConfig,
+    ApplicationYamlConfig, AuthConfig, Config, FederationProviderYaml, FederationYamlConfig,
+    OrganizationYamlConfig, RealmYamlConfig,
 };
 use crate::core::{ClientId, RealmId};
 use crate::identity::error::IdentityError;
@@ -190,6 +191,11 @@ fn reconcile_declared_realms(
         // Reconcile organizations declared under this realm
         if let Some(orgs) = &yaml_cfg.organizations {
             reconcile_organizations(engine, &realm_id, name, orgs, report)?;
+        }
+
+        // Reconcile federation connectors declared under this realm.
+        if let Some(fed) = &yaml_cfg.federation {
+            reconcile_federation_for_realm(engine, &realm_id, name, fed, report)?;
         }
     }
 
@@ -503,4 +509,149 @@ pub(crate) fn reconcile_organizations(
     }
 
     Ok(())
+}
+
+/// Reconciles the `realms.{name}.federation.providers` block against
+/// storage. Idempotent:
+///
+/// - YAML connector absent in storage → create via `register_idp`.
+/// - YAML connector present → upsert (`register_idp` replaces fields).
+/// - Storage connector not in YAML → remove (`delete_idp` severs links).
+///
+/// The connector's stable `IdpId` is derived deterministically from
+/// `(realm_name, idp_name)` so config edits don't orphan existing
+/// external-identity links.
+pub(crate) fn reconcile_federation_for_realm(
+    engine: &dyn IdentityEngine,
+    realm_id: &RealmId,
+    realm_name: &str,
+    fed: &FederationYamlConfig,
+    _report: &mut ReconcileReport,
+) -> Result<(), IdentityError> {
+    use crate::core::IdpId;
+
+    // Deterministic UUID namespace for federation connector IDs —
+    // ensures `realms.acme.federation.providers.google` always resolves
+    // to the same `IdpId` across restarts and reconciles.
+    let ns = Uuid::new_v5(&Uuid::NAMESPACE_OID, b"hearth.federation.connector.id");
+    let mut yaml_ids: std::collections::HashSet<IdpId> = std::collections::HashSet::new();
+
+    for (idp_name, provider) in &fed.providers {
+        let seed = format!("{realm_name}:{idp_name}");
+        let idp_id = IdpId::new(Uuid::new_v5(&ns, seed.as_bytes()));
+        yaml_ids.insert(idp_id.clone());
+
+        let cfg = build_idp_config(realm_id, &idp_id, idp_name, provider)?;
+        engine.register_idp(&cfg)?;
+        info!(realm = %realm_name, idp = %idp_name, "reconciled federation connector");
+    }
+
+    // Remove storage connectors not in YAML.
+    let storage_idps = engine.list_idps(realm_id)?;
+    for cfg in &storage_idps {
+        if !yaml_ids.contains(&cfg.id) {
+            engine.delete_idp(realm_id, &cfg.id)?;
+            info!(realm = %realm_name, idp = %cfg.name, "removed federation connector no longer in YAML");
+        }
+    }
+
+    Ok(())
+}
+
+fn build_idp_config(
+    realm_id: &RealmId,
+    idp_id: &crate::core::IdpId,
+    idp_name: &str,
+    provider: &FederationProviderYaml,
+) -> Result<crate::identity::federation::IdpConfig, IdentityError> {
+    use crate::core::Timestamp;
+    use crate::identity::federation::{preset_lookup, FederationSecret, IdpConfig, IdpKind};
+
+    // Resolve the preset (if any) and derive defaults, letting explicit
+    // YAML fields override.
+    let preset = preset_lookup(&provider.kind);
+    let kind = match provider.kind.as_str() {
+        "oidc" => IdpKind::Oidc,
+        "google" | "microsoft" | "apple" => IdpKind::Oidc,
+        "github" => IdpKind::GitHub,
+        other => {
+            return Err(IdentityError::InvalidInput {
+                reason: format!(
+                    "unknown federation provider type '{other}' \
+                     (expected: oidc|google|microsoft|apple|github)"
+                ),
+            });
+        }
+    };
+
+    let display_name = provider
+        .display_name
+        .clone()
+        .or_else(|| preset.map(|p| p.display_name.to_string()))
+        .unwrap_or_else(|| idp_name.to_string());
+
+    let issuer = provider
+        .issuer
+        .clone()
+        .or_else(|| preset.map(|p| p.issuer.to_string()))
+        .ok_or_else(|| IdentityError::InvalidInput {
+            reason: format!("federation connector '{idp_name}' is missing `issuer`"),
+        })?;
+    let authorization_endpoint = provider
+        .authorization_endpoint
+        .clone()
+        .or_else(|| preset.map(|p| p.authorization_endpoint.to_string()))
+        .ok_or_else(|| IdentityError::InvalidInput {
+            reason: format!(
+                "federation connector '{idp_name}' is missing `authorization_endpoint`"
+            ),
+        })?;
+    let token_endpoint = provider
+        .token_endpoint
+        .clone()
+        .or_else(|| preset.map(|p| p.token_endpoint.to_string()))
+        .ok_or_else(|| IdentityError::InvalidInput {
+            reason: format!("federation connector '{idp_name}' is missing `token_endpoint`"),
+        })?;
+    let userinfo_endpoint = provider
+        .userinfo_endpoint
+        .clone()
+        .or_else(|| preset.and_then(|p| p.userinfo_endpoint.map(str::to_string)));
+    let jwks_uri = provider
+        .jwks_uri
+        .clone()
+        .or_else(|| preset.and_then(|p| p.jwks_uri.map(str::to_string)));
+
+    let scopes = provider
+        .scopes
+        .clone()
+        .or_else(|| preset.map(|p| p.default_scopes.iter().map(|s| (*s).to_string()).collect()))
+        .unwrap_or_else(|| {
+            vec![
+                "openid".to_string(),
+                "email".to_string(),
+                "profile".to_string(),
+            ]
+        });
+
+    let now = Timestamp::from_micros(0); // engine persists as-is; reconcile uses epoch
+
+    Ok(IdpConfig {
+        id: idp_id.clone(),
+        realm_id: realm_id.clone(),
+        name: idp_name.to_string(),
+        kind,
+        display_name,
+        issuer,
+        authorization_endpoint,
+        token_endpoint,
+        userinfo_endpoint,
+        jwks_uri,
+        scopes,
+        client_id: provider.client_id.clone(),
+        client_secret: FederationSecret::new(provider.client_secret.clone()),
+        claim_mappings: std::collections::BTreeMap::new(),
+        created_at: now,
+        updated_at: now,
+    })
 }

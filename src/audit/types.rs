@@ -67,6 +67,18 @@ pub enum AuditAction {
     ConsentDenied,
     /// A previously granted OAuth consent was revoked (by the user or an admin).
     ConsentRevoked,
+    /// A federation login was initiated (user clicked "Sign in with X").
+    FederationLoginStarted,
+    /// A federation login completed successfully — either for an
+    /// existing user (linked), a JIT-provisioned user, or after a
+    /// confirm-to-link step.
+    FederationLoginCompleted,
+    /// An external identity was attached to a Hearth user.
+    FederationAccountLinked,
+    /// An external identity was detached from a Hearth user.
+    FederationAccountUnlinked,
+    /// A fresh Hearth user was JIT-provisioned from a federation login.
+    FederationJitProvisioned,
 }
 
 impl AuditAction {
@@ -101,6 +113,11 @@ impl AuditAction {
             Self::ConsentGranted => "consent_granted",
             Self::ConsentDenied => "consent_denied",
             Self::ConsentRevoked => "consent_revoked",
+            Self::FederationLoginStarted => "federation_login_started",
+            Self::FederationLoginCompleted => "federation_login_completed",
+            Self::FederationAccountLinked => "federation_account_linked",
+            Self::FederationAccountUnlinked => "federation_account_unlinked",
+            Self::FederationJitProvisioned => "federation_jit_provisioned",
         }
     }
 }
@@ -138,6 +155,11 @@ impl std::str::FromStr for AuditAction {
             "consent_granted" => Ok(Self::ConsentGranted),
             "consent_denied" => Ok(Self::ConsentDenied),
             "consent_revoked" => Ok(Self::ConsentRevoked),
+            "federation_login_started" => Ok(Self::FederationLoginStarted),
+            "federation_login_completed" => Ok(Self::FederationLoginCompleted),
+            "federation_account_linked" => Ok(Self::FederationAccountLinked),
+            "federation_account_unlinked" => Ok(Self::FederationAccountUnlinked),
+            "federation_jit_provisioned" => Ok(Self::FederationJitProvisioned),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

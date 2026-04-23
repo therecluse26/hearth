@@ -54,6 +54,11 @@ const (
 	AuditAction_AUDIT_ACTION_CONSENT_GRANTED              AuditAction = 26
 	AuditAction_AUDIT_ACTION_CONSENT_DENIED               AuditAction = 27
 	AuditAction_AUDIT_ACTION_CONSENT_REVOKED              AuditAction = 28
+	AuditAction_AUDIT_ACTION_FEDERATION_LOGIN_STARTED     AuditAction = 29
+	AuditAction_AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED   AuditAction = 30
+	AuditAction_AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED    AuditAction = 31
+	AuditAction_AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED  AuditAction = 32
+	AuditAction_AUDIT_ACTION_FEDERATION_JIT_PROVISIONED   AuditAction = 33
 )
 
 // Enum value maps for AuditAction.
@@ -88,6 +93,11 @@ var (
 		26: "AUDIT_ACTION_CONSENT_GRANTED",
 		27: "AUDIT_ACTION_CONSENT_DENIED",
 		28: "AUDIT_ACTION_CONSENT_REVOKED",
+		29: "AUDIT_ACTION_FEDERATION_LOGIN_STARTED",
+		30: "AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED",
+		31: "AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED",
+		32: "AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED",
+		33: "AUDIT_ACTION_FEDERATION_JIT_PROVISIONED",
 	}
 	AuditAction_value = map[string]int32{
 		"AUDIT_ACTION_UNSPECIFIED":                  0,
@@ -119,6 +129,11 @@ var (
 		"AUDIT_ACTION_CONSENT_GRANTED":              26,
 		"AUDIT_ACTION_CONSENT_DENIED":               27,
 		"AUDIT_ACTION_CONSENT_REVOKED":              28,
+		"AUDIT_ACTION_FEDERATION_LOGIN_STARTED":     29,
+		"AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED":   30,
+		"AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED":    31,
+		"AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED":  32,
+		"AUDIT_ACTION_FEDERATION_JIT_PROVISIONED":   33,
 	}
 )
 
@@ -470,7 +485,7 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\t_end_timeB\b\n" +
 	"\x06_actorB\t\n" +
 	"\a_actionB\b\n" +
-	"\x06_limit*\xe4\a\n" +
+	"\x06_limit*\xc3\t\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -501,7 +516,12 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\x18AUDIT_ACTION_ORG_DELETED\x10\x19\x12 \n" +
 	"\x1cAUDIT_ACTION_CONSENT_GRANTED\x10\x1a\x12\x1f\n" +
 	"\x1bAUDIT_ACTION_CONSENT_DENIED\x10\x1b\x12 \n" +
-	"\x1cAUDIT_ACTION_CONSENT_REVOKED\x10\x1cBAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
+	"\x1cAUDIT_ACTION_CONSENT_REVOKED\x10\x1c\x12)\n" +
+	"%AUDIT_ACTION_FEDERATION_LOGIN_STARTED\x10\x1d\x12+\n" +
+	"'AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED\x10\x1e\x12*\n" +
+	"&AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED\x10\x1f\x12,\n" +
+	"(AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED\x10 \x12+\n" +
+	"'AUDIT_ACTION_FEDERATION_JIT_PROVISIONED\x10!BAZ?github.com/hearthdb/hearth/sdks/go/generated/events/v1;eventsv1b\x06proto3"
 
 var (
 	file_hearth_events_v1_audit_proto_rawDescOnce sync.Once

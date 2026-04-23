@@ -141,6 +141,12 @@ pub(super) fn cookie_secret_bytes(secret: &CookieSecret) -> &[u8] {
     secret.as_bytes()
 }
 
+/// Exposes the 32-byte cookie secret for federation confirm-link HMAC.
+/// Sibling module accessor — not part of the public API.
+pub(super) fn cookie_secret_bytes_32(secret: &CookieSecret) -> &[u8; 32] {
+    secret.as_bytes()
+}
+
 impl std::fmt::Debug for CookieSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CookieSecret(<redacted>)")

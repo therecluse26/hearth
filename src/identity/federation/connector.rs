@@ -60,11 +60,7 @@ pub trait IdpConnector: Send + Sync {
     /// Exchanges `code` at the token endpoint using the PKCE verifier
     /// stored in `state`, verifies the ID token (OIDC) or fetches
     /// `/user` (OAuth2), and returns the resolved external identity.
-    fn exchange(
-        &self,
-        code: &str,
-        state: &StateBag,
-    ) -> Result<ExternalIdentity, IdentityError>;
+    fn exchange(&self, code: &str, state: &StateBag) -> Result<ExternalIdentity, IdentityError>;
 }
 
 #[cfg(test)]
