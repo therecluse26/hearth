@@ -45,6 +45,16 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
             pb::AuditAction::FederationAccountUnlinked
         }
         domain::AuditAction::FederationJitProvisioned => pb::AuditAction::FederationJitProvisioned,
+        domain::AuditAction::SamlLoginInitiated => pb::AuditAction::SamlLoginInitiated,
+        domain::AuditAction::SamlLoginCompleted => pb::AuditAction::SamlLoginCompleted,
+        domain::AuditAction::SamlLoginFailed => pb::AuditAction::SamlLoginFailed,
+        domain::AuditAction::SamlIdpAuthnRequestReceived => {
+            pb::AuditAction::SamlIdpAuthnRequestReceived
+        }
+        domain::AuditAction::SamlIdpResponseIssued => pb::AuditAction::SamlIdpResponseIssued,
+        domain::AuditAction::SamlIdpInitiatedSso => pb::AuditAction::SamlIdpInitiatedSso,
+        domain::AuditAction::SamlSloRequested => pb::AuditAction::SamlSloRequested,
+        domain::AuditAction::SamlSloCompleted => pb::AuditAction::SamlSloCompleted,
     }
 }
 
@@ -132,6 +142,14 @@ mod tests {
             domain::AuditAction::FederationAccountLinked,
             domain::AuditAction::FederationAccountUnlinked,
             domain::AuditAction::FederationJitProvisioned,
+            domain::AuditAction::SamlLoginInitiated,
+            domain::AuditAction::SamlLoginCompleted,
+            domain::AuditAction::SamlLoginFailed,
+            domain::AuditAction::SamlIdpAuthnRequestReceived,
+            domain::AuditAction::SamlIdpResponseIssued,
+            domain::AuditAction::SamlIdpInitiatedSso,
+            domain::AuditAction::SamlSloRequested,
+            domain::AuditAction::SamlSloCompleted,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

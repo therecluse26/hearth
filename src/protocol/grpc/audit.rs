@@ -117,6 +117,14 @@ fn proto_action_to_domain(v: i32) -> Result<AuditAction, ()> {
         pb::AuditAction::FederationAccountLinked => AuditAction::FederationAccountLinked,
         pb::AuditAction::FederationAccountUnlinked => AuditAction::FederationAccountUnlinked,
         pb::AuditAction::FederationJitProvisioned => AuditAction::FederationJitProvisioned,
+        pb::AuditAction::SamlLoginInitiated => AuditAction::SamlLoginInitiated,
+        pb::AuditAction::SamlLoginCompleted => AuditAction::SamlLoginCompleted,
+        pb::AuditAction::SamlLoginFailed => AuditAction::SamlLoginFailed,
+        pb::AuditAction::SamlIdpAuthnRequestReceived => AuditAction::SamlIdpAuthnRequestReceived,
+        pb::AuditAction::SamlIdpResponseIssued => AuditAction::SamlIdpResponseIssued,
+        pb::AuditAction::SamlIdpInitiatedSso => AuditAction::SamlIdpInitiatedSso,
+        pb::AuditAction::SamlSloRequested => AuditAction::SamlSloRequested,
+        pb::AuditAction::SamlSloCompleted => AuditAction::SamlSloCompleted,
     })
 }
 

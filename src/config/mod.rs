@@ -15,8 +15,9 @@ pub use types::{
     FederationProviderYaml, FederationYamlConfig, LinkModeYaml, MailgunConfig, MailgunRegion,
     MailtrapConfig, ObservabilityConfig, OidcYamlConfig, OnboardingConfig, OperationalConfig,
     OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml, PostmarkConfig, RateLimitYaml,
-    RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig, SendgridConfig,
-    ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
+    RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig,
+    SamlServiceProviderYaml, SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption,
+    StorageSection, TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct

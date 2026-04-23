@@ -32,6 +32,7 @@ clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 crossbeam-epoch = "0.9"
 data-encoding = "2"
+flate2 = "1"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "service", "server-auto"] }
 hmac = "0.12"
@@ -45,6 +46,9 @@ memmap2 = "0.9"
 password-hash = "0.5"
 pbkdf2 = { version = "0.12", default-features = false }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+quick-xml = "0.36"
+rcgen = "0.13"
+rsa = { version = "0.9", features = ["pem"] }
 sha2 = "0.10"
 subtle = "2"
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -59,6 +63,7 @@ serde_yaml = "0.9"
 tempfile = "3"
 tera = "1"
 thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -90,11 +95,7 @@ tonic-build = { version = "0.12", default-features = false, features = ["prost",
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
-rcgen = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# RSA keypair generation for federation conformance tests (happy-path
-# RS256 signature verification). Dev-only; no production surface.
-rsa = { version = "0.9", features = ["pem"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
 

@@ -1093,6 +1093,82 @@ pub trait IdentityEngine: Send + Sync {
         user_id: &UserId,
     ) -> Result<Vec<(crate::core::IdpId, String)>, IdentityError>;
 
+    // ===== SAML 2.0 =====
+
+    /// Returns (or lazily creates) this realm's RSA signing key used for
+    /// SAML metadata and `<Response>`/`<Assertion>` signing.
+    ///
+    /// Off the hot path: RSA keygen is slow and happens once per realm.
+    fn get_or_create_saml_signing_key(
+        &self,
+        realm_id: &RealmId,
+        issuer_cn: &str,
+    ) -> Result<std::sync::Arc<crate::identity::tokens::RsaSigningKey>, IdentityError>;
+
+    /// Registers (or updates) a SAML Service Provider in a realm.
+    fn register_saml_sp(
+        &self,
+        realm_id: &RealmId,
+        sp: &federation::saml::SamlServiceProvider,
+    ) -> Result<(), IdentityError>;
+
+    /// Resolves a registered SP by its entity ID.
+    fn get_saml_sp_by_entity_id(
+        &self,
+        realm_id: &RealmId,
+        entity_id: &str,
+    ) -> Result<Option<federation::saml::SamlServiceProvider>, IdentityError>;
+
+    /// Resolves a registered SP by operator-assigned key.
+    fn get_saml_sp_by_key(
+        &self,
+        realm_id: &RealmId,
+        sp_key: &str,
+    ) -> Result<Option<federation::saml::SamlServiceProvider>, IdentityError>;
+
+    /// Lists all registered SPs in a realm.
+    fn list_saml_sps(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<Vec<federation::saml::SamlServiceProvider>, IdentityError>;
+
+    /// Deletes a registered SP.
+    fn delete_saml_sp(&self, realm_id: &RealmId, sp_key: &str) -> Result<(), IdentityError>;
+
+    /// Persists a SAML state bag (SP-initiated login; 10-minute TTL).
+    fn put_saml_state(&self, bag: &federation::saml::SamlStateBag) -> Result<(), IdentityError>;
+
+    /// Retrieves and deletes a SAML state bag (single-use).
+    fn take_saml_state(
+        &self,
+        realm_id: &RealmId,
+        token: &str,
+    ) -> Result<federation::saml::SamlStateBag, IdentityError>;
+
+    /// Marks an assertion ID consumed for this IdP (replay guard).
+    /// Returns `SamlReplay` if the ID has already been seen.
+    fn mark_saml_assertion_consumed(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+        assertion_id: &str,
+    ) -> Result<(), IdentityError>;
+
+    /// Records that the IdP issued an assertion to an SP for a user session.
+    /// Enables SLO fan-out at logout time.
+    fn record_saml_sp_session(
+        &self,
+        realm_id: &RealmId,
+        registration: &federation::saml::SamlSessionRegistration,
+    ) -> Result<(), IdentityError>;
+
+    /// Enumerates an IdP-issued session's SP registrations for SLO.
+    fn list_saml_sp_sessions(
+        &self,
+        realm_id: &RealmId,
+        session_id: &SessionId,
+    ) -> Result<Vec<federation::saml::SamlSessionRegistration>, IdentityError>;
+
     // ===== Migration / import (Phase 1 Step 30) =====
 
     /// Imports a realm, optionally with a caller-supplied `RealmId`.

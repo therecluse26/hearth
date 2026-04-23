@@ -243,6 +243,54 @@ pub enum IdentityError {
     /// (conflict). Hearth refuses to re-home a link without an explicit
     /// unlink from the current owner.
     FederationAlreadyLinked,
+    /// SAML XML parsing failed. Generic by design — never leaks parser
+    /// internals (XXE vectors, entity expansion attempts) to the caller.
+    SamlParse {
+        /// Short sanitized description. Safe to log and return.
+        reason: String,
+    },
+    /// SAML XML-DSIG signature verification failed. Covers:
+    /// missing `<Signature>`, invalid digest, invalid signature value,
+    /// wrong signing cert, signature-wrapping attack. Intentionally
+    /// conflated — the caller MUST NOT learn which check failed.
+    SamlSignature,
+    /// A SAML assertion's `NotBefore`/`NotOnOrAfter` bounds place it
+    /// outside the clock-skew tolerance window.
+    SamlExpired,
+    /// A SAML assertion with this ID has already been consumed for this
+    /// IdP. Replay attack (or a confused client retrying a consumed
+    /// assertion). Rejected.
+    SamlReplay,
+    /// A SAML assertion's `AudienceRestriction` list does not include
+    /// this SP's entity ID.
+    SamlAudienceMismatch,
+    /// A SAML `<Response>` or `<LogoutRequest>` names an issuer that does
+    /// not match the expected IdP / SP entity ID.
+    SamlIssuerMismatch,
+    /// A SAML `<Response>` names a `Destination` that does not match this
+    /// SP's ACS URL. Defense against cookie-less CSRF.
+    SamlDestinationMismatch,
+    /// A SAML XML-DSIG element uses an algorithm not supported by Hearth
+    /// (SHA-1 digests, RSA-SHA1 signatures, inclusive C14N). Algorithm
+    /// downgrade is rejected by design.
+    SamlUnsupportedAlgorithm,
+    /// Fetching SAML IdP metadata from the configured URL failed.
+    SamlMetadataFetch {
+        /// Sanitized reason — never contains full URL or upstream body.
+        reason: String,
+    },
+    /// A SAML `<AuthnRequest>` referenced an SP entity ID that is not
+    /// registered for this realm.
+    SamlUnknownSp,
+    /// A SAML callback referenced an IdP that is not registered for
+    /// this realm.
+    SamlUnknownIdp,
+    /// A SAML `<AuthnRequest>` failed validation (malformed, bad signature
+    /// when required, missing required attributes).
+    SamlInvalidAuthnRequest {
+        /// Short sanitized description.
+        reason: String,
+    },
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -354,6 +402,22 @@ impl fmt::Display for IdentityError {
             }
             Self::FederationNotLinked => write!(f, "external identity is not linked"),
             Self::FederationAlreadyLinked => write!(f, "external identity is already linked"),
+            Self::SamlParse { reason } => write!(f, "SAML parse error: {reason}"),
+            Self::SamlSignature => write!(f, "SAML signature verification failed"),
+            Self::SamlExpired => write!(f, "SAML assertion expired or not yet valid"),
+            Self::SamlReplay => write!(f, "SAML assertion replay detected"),
+            Self::SamlAudienceMismatch => write!(f, "SAML audience mismatch"),
+            Self::SamlIssuerMismatch => write!(f, "SAML issuer mismatch"),
+            Self::SamlDestinationMismatch => write!(f, "SAML destination mismatch"),
+            Self::SamlUnsupportedAlgorithm => write!(f, "SAML unsupported algorithm"),
+            Self::SamlMetadataFetch { reason } => {
+                write!(f, "SAML metadata fetch failed: {reason}")
+            }
+            Self::SamlUnknownSp => write!(f, "unknown SAML service provider"),
+            Self::SamlUnknownIdp => write!(f, "unknown SAML identity provider"),
+            Self::SamlInvalidAuthnRequest { reason } => {
+                write!(f, "invalid SAML AuthnRequest: {reason}")
+            }
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }
@@ -428,6 +492,18 @@ impl std::error::Error for IdentityError {
             | Self::FederationLinkConfirmationRequired { .. }
             | Self::FederationNotLinked
             | Self::FederationAlreadyLinked
+            | Self::SamlParse { .. }
+            | Self::SamlSignature
+            | Self::SamlExpired
+            | Self::SamlReplay
+            | Self::SamlAudienceMismatch
+            | Self::SamlIssuerMismatch
+            | Self::SamlDestinationMismatch
+            | Self::SamlUnsupportedAlgorithm
+            | Self::SamlMetadataFetch { .. }
+            | Self::SamlUnknownSp
+            | Self::SamlUnknownIdp
+            | Self::SamlInvalidAuthnRequest { .. }
             | Self::SystemRealmProtected { .. }
             | Self::Serialization { .. } => None,
         }

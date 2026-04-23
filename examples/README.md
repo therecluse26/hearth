@@ -11,6 +11,7 @@ outside"* — not exhaustive coverage, not a template starter kit.
 |---|---|---|
 | [`oauth-consent-flow/`](./oauth-consent-flow/) | Browser-facing OAuth 2.0 / OIDC authorization code flow with the consent screen, per-scope approval, trusted-client bypass, and user-driven revocation. Hearth as an OIDC **provider**. | Node.js 18+ / TypeScript |
 | [`federation-flow/`](./federation-flow/) | External IdP federation (social login): Hearth as an OIDC **relying party**. Local upstream built on `node-oidc-provider`, walkthrough of JIT provisioning, confirm-to-link, auto-link, and self-service unlinking. | Node.js 18+ / TypeScript |
+| [`saml-flow/`](./saml-flow/) | SAML 2.0 both ways. A Node driver impersonates an external IdP (signs a `<Response>` and POSTs it to Hearth's ACS, including a replay-rejection check) and then impersonates an external SP (POSTs an `<AuthnRequest>` to Hearth's IdP SSO endpoint and verifies the signed response against Hearth's published metadata cert). Single-command runner. | Node.js 18+ (plain ESM) |
 | [`grpc-admin-flow/`](./grpc-admin-flow/) | End-to-end tour of the gRPC management API: admin CRUD, authorization engine with live `Watch` streaming, audit log, health, reflection. Single-command runner (`./run.sh`) boots Hearth and tears it down when the demo exits. | Node.js 18+ (plain ESM) |
 
 Contributions welcome — see [Adding a new example](#adding-a-new-example) below.

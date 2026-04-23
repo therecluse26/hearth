@@ -25,40 +25,48 @@ const (
 type AuditAction int32
 
 const (
-	AuditAction_AUDIT_ACTION_UNSPECIFIED                  AuditAction = 0
-	AuditAction_AUDIT_ACTION_USER_CREATED                 AuditAction = 1
-	AuditAction_AUDIT_ACTION_USER_UPDATED                 AuditAction = 2
-	AuditAction_AUDIT_ACTION_USER_DELETED                 AuditAction = 3
-	AuditAction_AUDIT_ACTION_CREDENTIAL_SET               AuditAction = 4
-	AuditAction_AUDIT_ACTION_CREDENTIAL_CHANGED           AuditAction = 5
-	AuditAction_AUDIT_ACTION_CREDENTIAL_VERIFIED          AuditAction = 6
-	AuditAction_AUDIT_ACTION_SESSION_CREATED              AuditAction = 7
-	AuditAction_AUDIT_ACTION_SESSION_REVOKED              AuditAction = 8
-	AuditAction_AUDIT_ACTION_TOKEN_ISSUED                 AuditAction = 9
-	AuditAction_AUDIT_ACTION_TOKEN_REFRESHED              AuditAction = 10
-	AuditAction_AUDIT_ACTION_REALM_CREATED                AuditAction = 11
-	AuditAction_AUDIT_ACTION_REALM_UPDATED                AuditAction = 12
-	AuditAction_AUDIT_ACTION_REALM_DELETED                AuditAction = 13
-	AuditAction_AUDIT_ACTION_CLIENT_REGISTERED            AuditAction = 14
-	AuditAction_AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED    AuditAction = 15
-	AuditAction_AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED AuditAction = 16
-	AuditAction_AUDIT_ACTION_TUPLE_WRITTEN                AuditAction = 17
-	AuditAction_AUDIT_ACTION_TUPLE_DELETED                AuditAction = 18
-	AuditAction_AUDIT_ACTION_CLIENT_UPDATED               AuditAction = 19
-	AuditAction_AUDIT_ACTION_CLIENT_DELETED               AuditAction = 20
-	AuditAction_AUDIT_ACTION_BULK_USERS_CREATED           AuditAction = 21
-	AuditAction_AUDIT_ACTION_BULK_USERS_DISABLED          AuditAction = 22
-	AuditAction_AUDIT_ACTION_ORG_CREATED                  AuditAction = 23
-	AuditAction_AUDIT_ACTION_ORG_UPDATED                  AuditAction = 24
-	AuditAction_AUDIT_ACTION_ORG_DELETED                  AuditAction = 25
-	AuditAction_AUDIT_ACTION_CONSENT_GRANTED              AuditAction = 26
-	AuditAction_AUDIT_ACTION_CONSENT_DENIED               AuditAction = 27
-	AuditAction_AUDIT_ACTION_CONSENT_REVOKED              AuditAction = 28
-	AuditAction_AUDIT_ACTION_FEDERATION_LOGIN_STARTED     AuditAction = 29
-	AuditAction_AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED   AuditAction = 30
-	AuditAction_AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED    AuditAction = 31
-	AuditAction_AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED  AuditAction = 32
-	AuditAction_AUDIT_ACTION_FEDERATION_JIT_PROVISIONED   AuditAction = 33
+	AuditAction_AUDIT_ACTION_UNSPECIFIED                     AuditAction = 0
+	AuditAction_AUDIT_ACTION_USER_CREATED                    AuditAction = 1
+	AuditAction_AUDIT_ACTION_USER_UPDATED                    AuditAction = 2
+	AuditAction_AUDIT_ACTION_USER_DELETED                    AuditAction = 3
+	AuditAction_AUDIT_ACTION_CREDENTIAL_SET                  AuditAction = 4
+	AuditAction_AUDIT_ACTION_CREDENTIAL_CHANGED              AuditAction = 5
+	AuditAction_AUDIT_ACTION_CREDENTIAL_VERIFIED             AuditAction = 6
+	AuditAction_AUDIT_ACTION_SESSION_CREATED                 AuditAction = 7
+	AuditAction_AUDIT_ACTION_SESSION_REVOKED                 AuditAction = 8
+	AuditAction_AUDIT_ACTION_TOKEN_ISSUED                    AuditAction = 9
+	AuditAction_AUDIT_ACTION_TOKEN_REFRESHED                 AuditAction = 10
+	AuditAction_AUDIT_ACTION_REALM_CREATED                   AuditAction = 11
+	AuditAction_AUDIT_ACTION_REALM_UPDATED                   AuditAction = 12
+	AuditAction_AUDIT_ACTION_REALM_DELETED                   AuditAction = 13
+	AuditAction_AUDIT_ACTION_CLIENT_REGISTERED               AuditAction = 14
+	AuditAction_AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED       AuditAction = 15
+	AuditAction_AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED    AuditAction = 16
+	AuditAction_AUDIT_ACTION_TUPLE_WRITTEN                   AuditAction = 17
+	AuditAction_AUDIT_ACTION_TUPLE_DELETED                   AuditAction = 18
+	AuditAction_AUDIT_ACTION_CLIENT_UPDATED                  AuditAction = 19
+	AuditAction_AUDIT_ACTION_CLIENT_DELETED                  AuditAction = 20
+	AuditAction_AUDIT_ACTION_BULK_USERS_CREATED              AuditAction = 21
+	AuditAction_AUDIT_ACTION_BULK_USERS_DISABLED             AuditAction = 22
+	AuditAction_AUDIT_ACTION_ORG_CREATED                     AuditAction = 23
+	AuditAction_AUDIT_ACTION_ORG_UPDATED                     AuditAction = 24
+	AuditAction_AUDIT_ACTION_ORG_DELETED                     AuditAction = 25
+	AuditAction_AUDIT_ACTION_CONSENT_GRANTED                 AuditAction = 26
+	AuditAction_AUDIT_ACTION_CONSENT_DENIED                  AuditAction = 27
+	AuditAction_AUDIT_ACTION_CONSENT_REVOKED                 AuditAction = 28
+	AuditAction_AUDIT_ACTION_FEDERATION_LOGIN_STARTED        AuditAction = 29
+	AuditAction_AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED      AuditAction = 30
+	AuditAction_AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED       AuditAction = 31
+	AuditAction_AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED     AuditAction = 32
+	AuditAction_AUDIT_ACTION_FEDERATION_JIT_PROVISIONED      AuditAction = 33
+	AuditAction_AUDIT_ACTION_SAML_LOGIN_INITIATED            AuditAction = 34
+	AuditAction_AUDIT_ACTION_SAML_LOGIN_COMPLETED            AuditAction = 35
+	AuditAction_AUDIT_ACTION_SAML_LOGIN_FAILED               AuditAction = 36
+	AuditAction_AUDIT_ACTION_SAML_IDP_AUTHN_REQUEST_RECEIVED AuditAction = 37
+	AuditAction_AUDIT_ACTION_SAML_IDP_RESPONSE_ISSUED        AuditAction = 38
+	AuditAction_AUDIT_ACTION_SAML_IDP_INITIATED_SSO          AuditAction = 39
+	AuditAction_AUDIT_ACTION_SAML_SLO_REQUESTED              AuditAction = 40
+	AuditAction_AUDIT_ACTION_SAML_SLO_COMPLETED              AuditAction = 41
 )
 
 // Enum value maps for AuditAction.
@@ -98,42 +106,58 @@ var (
 		31: "AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED",
 		32: "AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED",
 		33: "AUDIT_ACTION_FEDERATION_JIT_PROVISIONED",
+		34: "AUDIT_ACTION_SAML_LOGIN_INITIATED",
+		35: "AUDIT_ACTION_SAML_LOGIN_COMPLETED",
+		36: "AUDIT_ACTION_SAML_LOGIN_FAILED",
+		37: "AUDIT_ACTION_SAML_IDP_AUTHN_REQUEST_RECEIVED",
+		38: "AUDIT_ACTION_SAML_IDP_RESPONSE_ISSUED",
+		39: "AUDIT_ACTION_SAML_IDP_INITIATED_SSO",
+		40: "AUDIT_ACTION_SAML_SLO_REQUESTED",
+		41: "AUDIT_ACTION_SAML_SLO_COMPLETED",
 	}
 	AuditAction_value = map[string]int32{
-		"AUDIT_ACTION_UNSPECIFIED":                  0,
-		"AUDIT_ACTION_USER_CREATED":                 1,
-		"AUDIT_ACTION_USER_UPDATED":                 2,
-		"AUDIT_ACTION_USER_DELETED":                 3,
-		"AUDIT_ACTION_CREDENTIAL_SET":               4,
-		"AUDIT_ACTION_CREDENTIAL_CHANGED":           5,
-		"AUDIT_ACTION_CREDENTIAL_VERIFIED":          6,
-		"AUDIT_ACTION_SESSION_CREATED":              7,
-		"AUDIT_ACTION_SESSION_REVOKED":              8,
-		"AUDIT_ACTION_TOKEN_ISSUED":                 9,
-		"AUDIT_ACTION_TOKEN_REFRESHED":              10,
-		"AUDIT_ACTION_REALM_CREATED":                11,
-		"AUDIT_ACTION_REALM_UPDATED":                12,
-		"AUDIT_ACTION_REALM_DELETED":                13,
-		"AUDIT_ACTION_CLIENT_REGISTERED":            14,
-		"AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED":    15,
-		"AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED": 16,
-		"AUDIT_ACTION_TUPLE_WRITTEN":                17,
-		"AUDIT_ACTION_TUPLE_DELETED":                18,
-		"AUDIT_ACTION_CLIENT_UPDATED":               19,
-		"AUDIT_ACTION_CLIENT_DELETED":               20,
-		"AUDIT_ACTION_BULK_USERS_CREATED":           21,
-		"AUDIT_ACTION_BULK_USERS_DISABLED":          22,
-		"AUDIT_ACTION_ORG_CREATED":                  23,
-		"AUDIT_ACTION_ORG_UPDATED":                  24,
-		"AUDIT_ACTION_ORG_DELETED":                  25,
-		"AUDIT_ACTION_CONSENT_GRANTED":              26,
-		"AUDIT_ACTION_CONSENT_DENIED":               27,
-		"AUDIT_ACTION_CONSENT_REVOKED":              28,
-		"AUDIT_ACTION_FEDERATION_LOGIN_STARTED":     29,
-		"AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED":   30,
-		"AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED":    31,
-		"AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED":  32,
-		"AUDIT_ACTION_FEDERATION_JIT_PROVISIONED":   33,
+		"AUDIT_ACTION_UNSPECIFIED":                     0,
+		"AUDIT_ACTION_USER_CREATED":                    1,
+		"AUDIT_ACTION_USER_UPDATED":                    2,
+		"AUDIT_ACTION_USER_DELETED":                    3,
+		"AUDIT_ACTION_CREDENTIAL_SET":                  4,
+		"AUDIT_ACTION_CREDENTIAL_CHANGED":              5,
+		"AUDIT_ACTION_CREDENTIAL_VERIFIED":             6,
+		"AUDIT_ACTION_SESSION_CREATED":                 7,
+		"AUDIT_ACTION_SESSION_REVOKED":                 8,
+		"AUDIT_ACTION_TOKEN_ISSUED":                    9,
+		"AUDIT_ACTION_TOKEN_REFRESHED":                 10,
+		"AUDIT_ACTION_REALM_CREATED":                   11,
+		"AUDIT_ACTION_REALM_UPDATED":                   12,
+		"AUDIT_ACTION_REALM_DELETED":                   13,
+		"AUDIT_ACTION_CLIENT_REGISTERED":               14,
+		"AUDIT_ACTION_AUTHORIZATION_CODE_ISSUED":       15,
+		"AUDIT_ACTION_AUTHORIZATION_CODE_EXCHANGED":    16,
+		"AUDIT_ACTION_TUPLE_WRITTEN":                   17,
+		"AUDIT_ACTION_TUPLE_DELETED":                   18,
+		"AUDIT_ACTION_CLIENT_UPDATED":                  19,
+		"AUDIT_ACTION_CLIENT_DELETED":                  20,
+		"AUDIT_ACTION_BULK_USERS_CREATED":              21,
+		"AUDIT_ACTION_BULK_USERS_DISABLED":             22,
+		"AUDIT_ACTION_ORG_CREATED":                     23,
+		"AUDIT_ACTION_ORG_UPDATED":                     24,
+		"AUDIT_ACTION_ORG_DELETED":                     25,
+		"AUDIT_ACTION_CONSENT_GRANTED":                 26,
+		"AUDIT_ACTION_CONSENT_DENIED":                  27,
+		"AUDIT_ACTION_CONSENT_REVOKED":                 28,
+		"AUDIT_ACTION_FEDERATION_LOGIN_STARTED":        29,
+		"AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED":      30,
+		"AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED":       31,
+		"AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED":     32,
+		"AUDIT_ACTION_FEDERATION_JIT_PROVISIONED":      33,
+		"AUDIT_ACTION_SAML_LOGIN_INITIATED":            34,
+		"AUDIT_ACTION_SAML_LOGIN_COMPLETED":            35,
+		"AUDIT_ACTION_SAML_LOGIN_FAILED":               36,
+		"AUDIT_ACTION_SAML_IDP_AUTHN_REQUEST_RECEIVED": 37,
+		"AUDIT_ACTION_SAML_IDP_RESPONSE_ISSUED":        38,
+		"AUDIT_ACTION_SAML_IDP_INITIATED_SSO":          39,
+		"AUDIT_ACTION_SAML_SLO_REQUESTED":              40,
+		"AUDIT_ACTION_SAML_SLO_COMPLETED":              41,
 	}
 )
 
@@ -639,7 +663,7 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"\x12broken_at_event_id\x18\x02 \x01(\tH\x00R\x0fbrokenAtEventId\x88\x01\x01\x12\x1f\n" +
 	"\vevent_count\x18\x03 \x01(\x04R\n" +
 	"eventCountB\x15\n" +
-	"\x13_broken_at_event_id*\xc3\t\n" +
+	"\x13_broken_at_event_id*\x85\f\n" +
 	"\vAuditAction\x12\x1c\n" +
 	"\x18AUDIT_ACTION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AUDIT_ACTION_USER_CREATED\x10\x01\x12\x1d\n" +
@@ -675,7 +699,15 @@ const file_hearth_events_v1_audit_proto_rawDesc = "" +
 	"'AUDIT_ACTION_FEDERATION_LOGIN_COMPLETED\x10\x1e\x12*\n" +
 	"&AUDIT_ACTION_FEDERATION_ACCOUNT_LINKED\x10\x1f\x12,\n" +
 	"(AUDIT_ACTION_FEDERATION_ACCOUNT_UNLINKED\x10 \x12+\n" +
-	"'AUDIT_ACTION_FEDERATION_JIT_PROVISIONED\x10!2\xc4\x01\n" +
+	"'AUDIT_ACTION_FEDERATION_JIT_PROVISIONED\x10!\x12%\n" +
+	"!AUDIT_ACTION_SAML_LOGIN_INITIATED\x10\"\x12%\n" +
+	"!AUDIT_ACTION_SAML_LOGIN_COMPLETED\x10#\x12\"\n" +
+	"\x1eAUDIT_ACTION_SAML_LOGIN_FAILED\x10$\x120\n" +
+	",AUDIT_ACTION_SAML_IDP_AUTHN_REQUEST_RECEIVED\x10%\x12)\n" +
+	"%AUDIT_ACTION_SAML_IDP_RESPONSE_ISSUED\x10&\x12'\n" +
+	"#AUDIT_ACTION_SAML_IDP_INITIATED_SSO\x10'\x12#\n" +
+	"\x1fAUDIT_ACTION_SAML_SLO_REQUESTED\x10(\x12#\n" +
+	"\x1fAUDIT_ACTION_SAML_SLO_COMPLETED\x10)2\xc4\x01\n" +
 	"\fAuditService\x12L\n" +
 	"\n" +
 	"ListEvents\x12\x1c.hearth.events.v1.AuditQuery\x1a .hearth.events.v1.AuditEventPage\x12f\n" +

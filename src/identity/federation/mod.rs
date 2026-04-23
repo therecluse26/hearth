@@ -28,6 +28,7 @@ pub mod github;
 pub mod http;
 pub mod oidc;
 pub mod presets;
+pub mod saml;
 pub mod service;
 pub mod state;
 pub mod types;

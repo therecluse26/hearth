@@ -465,6 +465,156 @@ fn compute_key_id(public_key_bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(&digest.as_ref()[..16])
 }
 
+/// An RSA-2048 signing key for SAML XML-DSIG.
+///
+/// SAML uses RSA-SHA256 signatures almost universally; Hearth's JWT path
+/// uses Ed25519 which is not interoperable with SAML SPs/IdPs. This type
+/// mirrors [`SigningKey`]'s zeroize-on-drop + PKCS#8 DER round-trip posture
+/// but for RSA. Per-realm RSA keys are generated lazily on first SAML
+/// operation and persisted under the system realm.
+pub struct RsaSigningKey {
+    /// The raw PKCS#8 DER document, zeroized on drop.
+    pkcs8_doc: ZeroizingBytes,
+    /// `ring` key pair reconstructed from the PKCS#8 bytes, used for
+    /// signing. `ring` signing is both fast and side-channel-hardened.
+    ring_key: ring::signature::RsaKeyPair,
+    /// Self-signed X.509 certificate DER (for embedding in SAML metadata).
+    cert_der: Vec<u8>,
+    /// SHA-256 fingerprint of the public key, truncated + base64url. Used
+    /// as a kid in metadata descriptors.
+    key_id: String,
+}
+
+impl std::fmt::Debug for RsaSigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RsaSigningKey")
+            .field("key_id", &self.key_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RsaSigningKey {
+    /// Generates a new RSA-2048 keypair and a self-signed X.509
+    /// certificate bound to `subject_cn` (SAML metadata requires an X.509
+    /// wrapper around the raw key).
+    ///
+    /// `valid_days` sets the certificate validity window. 3650 (10 years)
+    /// is a common default for long-lived IdP signing certs.
+    pub fn generate(subject_cn: &str, valid_days: u32) -> Result<Self, IdentityError> {
+        use rsa::pkcs8::EncodePrivateKey as _;
+        use rsa::RsaPrivateKey;
+
+        // RSA keygen is genuinely slow (~0.5–1s on stock hardware). This
+        // is off the hot path and called once per realm at most.
+        let mut rng = rand_core::OsRng;
+        let private =
+            RsaPrivateKey::new(&mut rng, 2048).map_err(|e| IdentityError::SigningError {
+                reason: format!("RSA key generation failed: {e}"),
+            })?;
+        let pkcs8 = private
+            .to_pkcs8_der()
+            .map_err(|e| IdentityError::SigningError {
+                reason: format!("RSA PKCS#8 encoding failed: {e}"),
+            })?;
+        let pkcs8_bytes = pkcs8.as_bytes().to_vec();
+
+        let cert_der = build_self_signed_cert(&pkcs8_bytes, subject_cn, valid_days)?;
+
+        Self::from_pkcs8_and_cert(&pkcs8_bytes, &cert_der)
+    }
+
+    /// Reconstructs an RSA signing key from stored PKCS#8 DER bytes plus
+    /// the associated X.509 certificate DER.
+    pub fn from_pkcs8_and_cert(pkcs8_der: &[u8], cert_der: &[u8]) -> Result<Self, IdentityError> {
+        let ring_key = ring::signature::RsaKeyPair::from_pkcs8(pkcs8_der).map_err(|e| {
+            IdentityError::SigningError {
+                reason: format!("RSA PKCS#8 parse failed: {e}"),
+            }
+        })?;
+        // key_id is derived from the PKCS#8 bytes (SHA-256 fingerprint,
+        // truncated). Deterministic for a given key.
+        let key_id = compute_key_id(pkcs8_der);
+        Ok(Self {
+            pkcs8_doc: ZeroizingBytes(pkcs8_der.to_vec()),
+            ring_key,
+            cert_der: cert_der.to_vec(),
+            key_id,
+        })
+    }
+
+    /// Returns the PKCS#8 DER bytes for persistence.
+    ///
+    /// Callers MUST NOT log or display these bytes.
+    pub fn pkcs8_bytes(&self) -> &[u8] {
+        &self.pkcs8_doc.0
+    }
+
+    /// Returns the self-signed X.509 certificate DER.
+    ///
+    /// Embedded in SAML metadata's `<X509Certificate>` element.
+    pub fn cert_der(&self) -> &[u8] {
+        &self.cert_der
+    }
+
+    /// Returns the key identifier.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// Signs `message` with RSA-PKCS1-v1.5-SHA256 and returns the
+    /// signature bytes.
+    ///
+    /// The produced signature is exactly the byte string that goes into
+    /// `<ds:SignatureValue>` after base64 encoding.
+    pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, IdentityError> {
+        let mut sig = vec![0u8; self.ring_key.public().modulus_len()];
+        let rng = ring::rand::SystemRandom::new();
+        self.ring_key
+            .sign(&ring::signature::RSA_PKCS1_SHA256, &rng, message, &mut sig)
+            .map_err(|e| IdentityError::SigningError {
+                reason: format!("RSA sign failed: {e}"),
+            })?;
+        Ok(sig)
+    }
+}
+
+/// Builds a minimal self-signed X.509 certificate wrapping the RSA public
+/// key extracted from `pkcs8_der`.
+///
+/// SAML metadata requires an X.509 wrapper; the cert's CN, validity, and
+/// issuer are cosmetic — only the embedded `SubjectPublicKeyInfo` matters
+/// for signature verification.
+fn build_self_signed_cert(
+    pkcs8_der: &[u8],
+    subject_cn: &str,
+    valid_days: u32,
+) -> Result<Vec<u8>, IdentityError> {
+    use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
+
+    // rcgen 0.13 cannot generate RSA keys itself, but it can consume a
+    // PKCS#8 DER we already generated and sign a self-signed cert with it.
+    let keypair = KeyPair::try_from(pkcs8_der).map_err(|e| IdentityError::SigningError {
+        reason: format!("rcgen keypair load failed: {e}"),
+    })?;
+
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, subject_cn);
+
+    let mut params = CertificateParams::default();
+    params.distinguished_name = dn;
+    #[allow(clippy::cast_possible_wrap)]
+    let days = i64::from(valid_days);
+    params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+    params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(days);
+
+    let cert = params
+        .self_signed(&keypair)
+        .map_err(|e| IdentityError::SigningError {
+            reason: format!("rcgen self-sign failed: {e}"),
+        })?;
+    Ok(cert.der().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

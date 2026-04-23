@@ -76,7 +76,19 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::WebAuthnRegistrationFailed { .. }
         | IdentityError::WebAuthnAuthenticationFailed { .. }
         | IdentityError::InvalidAttestation { .. }
-        | IdentityError::InvalidAssertion { .. } => (Code::InvalidArgument, err.to_string()),
+        | IdentityError::InvalidAssertion { .. }
+        | IdentityError::SamlParse { .. }
+        | IdentityError::SamlSignature
+        | IdentityError::SamlExpired
+        | IdentityError::SamlReplay
+        | IdentityError::SamlAudienceMismatch
+        | IdentityError::SamlIssuerMismatch
+        | IdentityError::SamlDestinationMismatch
+        | IdentityError::SamlUnsupportedAlgorithm
+        | IdentityError::SamlInvalidAuthnRequest { .. } => (Code::InvalidArgument, err.to_string()),
+        IdentityError::SamlUnknownSp | IdentityError::SamlUnknownIdp => {
+            (Code::NotFound, err.to_string())
+        }
         IdentityError::MfaRequired
         | IdentityError::AuthorizationPending
         | IdentityError::SlowDown
@@ -89,7 +101,8 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         IdentityError::Storage(_)
         | IdentityError::Serialization { .. }
         | IdentityError::SigningError { .. }
-        | IdentityError::FederationUpstreamError { .. } => {
+        | IdentityError::FederationUpstreamError { .. }
+        | IdentityError::SamlMetadataFetch { .. } => {
             tracing::error!(error = %err, "internal gRPC error");
             (Code::Internal, "internal error".to_string())
         }

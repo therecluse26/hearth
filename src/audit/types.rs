@@ -79,6 +79,26 @@ pub enum AuditAction {
     FederationAccountUnlinked,
     /// A fresh Hearth user was JIT-provisioned from a federation login.
     FederationJitProvisioned,
+    /// A SAML SP-initiated login was started (AuthnRequest sent).
+    SamlLoginInitiated,
+    /// A SAML SP-initiated login completed — assertion accepted.
+    SamlLoginCompleted,
+    /// A SAML assertion was rejected.
+    ///
+    /// Metadata carries `reason`: `signature` / `expired` / `replay` /
+    /// `audience` / `issuer` / `destination` / `parse`.
+    SamlLoginFailed,
+    /// Hearth (acting as IdP) received a SAML `<AuthnRequest>` from an SP.
+    SamlIdpAuthnRequestReceived,
+    /// Hearth (acting as IdP) issued a SAML `<Response>` to an SP.
+    SamlIdpResponseIssued,
+    /// A SAML IdP-initiated SSO was fired (operator launched a login at
+    /// a registered SP).
+    SamlIdpInitiatedSso,
+    /// A SAML Single Logout was requested.
+    SamlSloRequested,
+    /// A SAML Single Logout completed.
+    SamlSloCompleted,
 }
 
 impl AuditAction {
@@ -118,6 +138,14 @@ impl AuditAction {
             Self::FederationAccountLinked => "federation_account_linked",
             Self::FederationAccountUnlinked => "federation_account_unlinked",
             Self::FederationJitProvisioned => "federation_jit_provisioned",
+            Self::SamlLoginInitiated => "saml_login_initiated",
+            Self::SamlLoginCompleted => "saml_login_completed",
+            Self::SamlLoginFailed => "saml_login_failed",
+            Self::SamlIdpAuthnRequestReceived => "saml_idp_authn_request_received",
+            Self::SamlIdpResponseIssued => "saml_idp_response_issued",
+            Self::SamlIdpInitiatedSso => "saml_idp_initiated_sso",
+            Self::SamlSloRequested => "saml_slo_requested",
+            Self::SamlSloCompleted => "saml_slo_completed",
         }
     }
 }
@@ -160,6 +188,14 @@ impl std::str::FromStr for AuditAction {
             "federation_account_linked" => Ok(Self::FederationAccountLinked),
             "federation_account_unlinked" => Ok(Self::FederationAccountUnlinked),
             "federation_jit_provisioned" => Ok(Self::FederationJitProvisioned),
+            "saml_login_initiated" => Ok(Self::SamlLoginInitiated),
+            "saml_login_completed" => Ok(Self::SamlLoginCompleted),
+            "saml_login_failed" => Ok(Self::SamlLoginFailed),
+            "saml_idp_authn_request_received" => Ok(Self::SamlIdpAuthnRequestReceived),
+            "saml_idp_response_issued" => Ok(Self::SamlIdpResponseIssued),
+            "saml_idp_initiated_sso" => Ok(Self::SamlIdpInitiatedSso),
+            "saml_slo_requested" => Ok(Self::SamlSloRequested),
+            "saml_slo_completed" => Ok(Self::SamlSloCompleted),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

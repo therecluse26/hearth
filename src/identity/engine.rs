@@ -181,6 +181,11 @@ pub struct EmbeddedIdentityEngine {
     /// Each realm gets its own Ed25519 key pair so tokens from one
     /// realm cannot validate in another.
     realm_signing_keys: Mutex<HashMap<String, Arc<SigningKey>>>,
+    /// Per-realm RSA signing keys used for SAML metadata + response signing.
+    ///
+    /// Lazily loaded. Regeneration happens only on first SAML operation in
+    /// a realm that has no prior key — not on every startup.
+    realm_saml_keys: Mutex<HashMap<String, Arc<crate::identity::tokens::RsaSigningKey>>>,
     /// Per-user failed attempt trackers for rate limiting.
     ///
     /// Key is `(RealmId, UserId)` serialized as a string to avoid
@@ -254,6 +259,7 @@ impl EmbeddedIdentityEngine {
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
+            realm_saml_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
@@ -285,6 +291,7 @@ impl EmbeddedIdentityEngine {
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
+            realm_saml_keys: Mutex::new(HashMap::new()),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
@@ -1469,6 +1476,44 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     .delete(realm_id, &entry.key)
                     .map_err(Self::storage_err)?;
             }
+        }
+
+        // 8d. SAML registrations, state, replay sentinels, SP-session
+        //     registrations, and logout state.
+        for prefix in [
+            &b"saml:sp:"[..],
+            &b"saml:state:"[..],
+            &b"saml:asn:"[..],
+            &b"saml:sp_session:"[..],
+            &b"saml:logout:"[..],
+        ] {
+            let end = keys::prefix_end(prefix);
+            let entries = self
+                .storage
+                .scan(realm_id, prefix, &end)
+                .map_err(Self::storage_err)?;
+            if !entries.is_empty() {
+                cascade_work_done = true;
+            }
+            for entry in &entries {
+                self.storage
+                    .delete(realm_id, &entry.key)
+                    .map_err(Self::storage_err)?;
+            }
+        }
+
+        // 8e. SAML per-realm RSA signing key (under system realm scope).
+        let saml_key_storage_key = keys::encode_realm_saml_key(realm_id);
+        if self
+            .storage
+            .get(&sys_realm, &saml_key_storage_key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            cascade_work_done = true;
+            self.storage
+                .delete(&sys_realm, &saml_key_storage_key)
+                .map_err(Self::storage_err)?;
         }
 
         // 9. Delete realm signing key (check existence first so we can attribute
@@ -6227,6 +6272,240 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 })?
                 .to_string();
             out.push((crate::core::IdpId::new(idp_uuid), external_sub));
+        }
+        Ok(out)
+    }
+
+    // ===== SAML =====
+
+    fn get_or_create_saml_signing_key(
+        &self,
+        realm_id: &RealmId,
+        issuer_cn: &str,
+    ) -> Result<Arc<crate::identity::tokens::RsaSigningKey>, IdentityError> {
+        let key_str = realm_id.as_uuid().to_string();
+        {
+            let cache = self.realm_saml_keys.lock().expect("saml key cache");
+            if let Some(k) = cache.get(&key_str) {
+                return Ok(k.clone());
+            }
+        }
+        let sys_realm = keys::system_realm_id();
+        let storage_key = keys::encode_realm_saml_key(realm_id);
+
+        // Two-part value: [8-byte cert_der_len BE, pkcs8_der | cert_der].
+        // Simpler to use JSON, but key bytes must not serialize cleartext
+        // into logs — JSON is fine since this struct isn't logged.
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Stored {
+            pkcs8: Vec<u8>,
+            cert: Vec<u8>,
+        }
+
+        let key = if let Some(bytes) = self
+            .storage
+            .get(&sys_realm, &storage_key)
+            .map_err(Self::storage_err)?
+        {
+            let stored: Stored =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            crate::identity::tokens::RsaSigningKey::from_pkcs8_and_cert(
+                &stored.pkcs8,
+                &stored.cert,
+            )?
+        } else {
+            let generated = crate::identity::tokens::RsaSigningKey::generate(issuer_cn, 3650)?;
+            let stored = Stored {
+                pkcs8: generated.pkcs8_bytes().to_vec(),
+                cert: generated.cert_der().to_vec(),
+            };
+            let body = serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+            self.storage
+                .put(&sys_realm, &storage_key, &body)
+                .map_err(Self::storage_err)?;
+            generated
+        };
+        let arc = Arc::new(key);
+        {
+            let mut cache = self.realm_saml_keys.lock().expect("saml key cache");
+            cache.insert(key_str, arc.clone());
+        }
+        Ok(arc)
+    }
+
+    fn register_saml_sp(
+        &self,
+        realm_id: &RealmId,
+        sp: &crate::identity::federation::saml::SamlServiceProvider,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_saml_sp_key(&sp.sp_key);
+        let bytes = serde_json::to_vec(sp).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(realm_id, &key, &bytes)
+            .map_err(Self::storage_err)
+    }
+
+    fn get_saml_sp_by_entity_id(
+        &self,
+        realm_id: &RealmId,
+        entity_id: &str,
+    ) -> Result<Option<crate::identity::federation::saml::SamlServiceProvider>, IdentityError> {
+        for sp in self.list_saml_sps(realm_id)? {
+            if sp.entity_id == entity_id {
+                return Ok(Some(sp));
+            }
+        }
+        Ok(None)
+    }
+
+    fn get_saml_sp_by_key(
+        &self,
+        realm_id: &RealmId,
+        sp_key: &str,
+    ) -> Result<Option<crate::identity::federation::saml::SamlServiceProvider>, IdentityError> {
+        let key = keys::encode_saml_sp_key(sp_key);
+        match self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        {
+            Some(bytes) => {
+                let sp =
+                    serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(sp))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_saml_sps(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<Vec<crate::identity::federation::saml::SamlServiceProvider>, IdentityError> {
+        let prefix = keys::saml_sp_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let sp: crate::identity::federation::saml::SamlServiceProvider =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            out.push(sp);
+        }
+        Ok(out)
+    }
+
+    fn delete_saml_sp(&self, realm_id: &RealmId, sp_key: &str) -> Result<(), IdentityError> {
+        let key = keys::encode_saml_sp_key(sp_key);
+        self.storage
+            .delete(realm_id, &key)
+            .map_err(Self::storage_err)
+    }
+
+    fn put_saml_state(
+        &self,
+        bag: &crate::identity::federation::saml::SamlStateBag,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_saml_state_key(&bag.token);
+        let bytes = serde_json::to_vec(bag).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(&bag.realm_id, &key, &bytes)
+            .map_err(Self::storage_err)
+    }
+
+    fn take_saml_state(
+        &self,
+        realm_id: &RealmId,
+        token: &str,
+    ) -> Result<crate::identity::federation::saml::SamlStateBag, IdentityError> {
+        let key = keys::encode_saml_state_key(token);
+        let bytes = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::FederationInvalidState)?;
+        self.storage
+            .delete(realm_id, &key)
+            .map_err(Self::storage_err)?;
+        let bag: crate::identity::federation::saml::SamlStateBag =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        // 10-minute TTL.
+        let age_secs = (self.clock.now().as_micros() - bag.created_at.as_micros()) / 1_000_000;
+        if age_secs > 600 {
+            return Err(IdentityError::FederationInvalidState);
+        }
+        Ok(bag)
+    }
+
+    fn mark_saml_assertion_consumed(
+        &self,
+        realm_id: &RealmId,
+        idp_id: &crate::core::IdpId,
+        assertion_id: &str,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_saml_assertion_id(idp_id, assertion_id);
+        if self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+            .is_some()
+        {
+            return Err(IdentityError::SamlReplay);
+        }
+        self.storage
+            .put(realm_id, &key, &[])
+            .map_err(Self::storage_err)
+    }
+
+    fn record_saml_sp_session(
+        &self,
+        realm_id: &RealmId,
+        registration: &crate::identity::federation::saml::SamlSessionRegistration,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_saml_sp_session(&registration.session_id, &registration.sp_key);
+        let bytes = serde_json::to_vec(registration).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(realm_id, &key, &bytes)
+            .map_err(Self::storage_err)
+    }
+
+    fn list_saml_sp_sessions(
+        &self,
+        realm_id: &RealmId,
+        session_id: &SessionId,
+    ) -> Result<Vec<crate::identity::federation::saml::SamlSessionRegistration>, IdentityError>
+    {
+        let prefix = keys::encode_saml_sp_session_prefix(session_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(Self::storage_err)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let reg: crate::identity::federation::saml::SamlSessionRegistration =
+                serde_json::from_slice(&entry.value).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            out.push(reg);
         }
         Ok(out)
     }

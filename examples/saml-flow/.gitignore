@@ -1,0 +1,8 @@
+node_modules/
+package-lock.json
+data/
+.hearth.log
+.hearth.pid
+.idp-cred.json
+.idp-cert.pem
+hearth.yaml.rendered

@@ -197,6 +197,11 @@ fn reconcile_declared_realms(
         if let Some(fed) = &yaml_cfg.federation {
             reconcile_federation_for_realm(engine, &realm_id, name, fed, report)?;
         }
+
+        // Reconcile SAML Service Provider registrations (Hearth as IdP).
+        if let Some(sps) = &yaml_cfg.saml_service_providers {
+            reconcile_saml_sps_for_realm(engine, &realm_id, name, sps, report)?;
+        }
     }
 
     // Archive storage realms not in YAML
@@ -567,6 +572,13 @@ fn build_idp_config(
     use crate::core::Timestamp;
     use crate::identity::federation::{preset_lookup, FederationSecret, IdpConfig, IdpKind};
 
+    // SAML is stored through the same IdpConfig shape but with fields
+    // re-mapped: entity_id→issuer, sso_url→authorization_endpoint,
+    // slo_url→userinfo_endpoint, idp_certificate_pem→client_secret.
+    if provider.kind == "saml" {
+        return build_saml_idp_config(realm_id, idp_id, idp_name, provider);
+    }
+
     // Resolve the preset (if any) and derive defaults, letting explicit
     // YAML fields override.
     let preset = preset_lookup(&provider.kind);
@@ -578,7 +590,7 @@ fn build_idp_config(
             return Err(IdentityError::InvalidInput {
                 reason: format!(
                     "unknown federation provider type '{other}' \
-                     (expected: oidc|google|microsoft|apple|github)"
+                     (expected: oidc|google|microsoft|apple|github|saml)"
                 ),
             });
         }
@@ -648,10 +660,114 @@ fn build_idp_config(
         userinfo_endpoint,
         jwks_uri,
         scopes,
-        client_id: provider.client_id.clone(),
-        client_secret: FederationSecret::new(provider.client_secret.clone()),
+        client_id: provider.client_id.clone().unwrap_or_default(),
+        client_secret: FederationSecret::new(provider.client_secret.clone().unwrap_or_default()),
         claim_mappings: std::collections::BTreeMap::new(),
         created_at: now,
         updated_at: now,
     })
+}
+
+fn build_saml_idp_config(
+    realm_id: &RealmId,
+    idp_id: &crate::core::IdpId,
+    idp_name: &str,
+    provider: &FederationProviderYaml,
+) -> Result<crate::identity::federation::IdpConfig, IdentityError> {
+    use crate::core::Timestamp;
+    use crate::identity::federation::{FederationSecret, IdpConfig, IdpKind};
+
+    let entity_id = provider
+        .entity_id
+        .clone()
+        .ok_or_else(|| IdentityError::InvalidInput {
+            reason: format!("SAML federation connector '{idp_name}' missing `entity_id`"),
+        })?;
+    let sso_url = provider
+        .sso_url
+        .clone()
+        .ok_or_else(|| IdentityError::InvalidInput {
+            reason: format!("SAML federation connector '{idp_name}' missing `sso_url`"),
+        })?;
+    let cert = provider
+        .idp_certificate_pem
+        .clone()
+        .ok_or_else(|| IdentityError::InvalidInput {
+            reason: format!("SAML federation connector '{idp_name}' missing `idp_certificate_pem`"),
+        })?;
+
+    let display_name = provider
+        .display_name
+        .clone()
+        .unwrap_or_else(|| idp_name.to_string());
+    let attribute_map = provider.attribute_map.clone().unwrap_or_default();
+
+    let now = Timestamp::from_micros(0);
+    Ok(IdpConfig {
+        id: idp_id.clone(),
+        realm_id: realm_id.clone(),
+        name: idp_name.to_string(),
+        kind: IdpKind::Saml,
+        display_name,
+        issuer: entity_id,
+        authorization_endpoint: sso_url,
+        token_endpoint: String::new(),
+        userinfo_endpoint: provider.slo_url.clone(),
+        jwks_uri: None,
+        scopes: Vec::new(),
+        client_id: String::new(),
+        client_secret: FederationSecret::new(cert),
+        claim_mappings: attribute_map,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// Reconciles SAML Service Providers (Hearth-as-IdP side) declared in
+/// `realms.{name}.saml_service_providers`.
+pub(crate) fn reconcile_saml_sps_for_realm(
+    engine: &dyn IdentityEngine,
+    realm_id: &RealmId,
+    realm_name: &str,
+    sps: &std::collections::HashMap<String, crate::config::SamlServiceProviderYaml>,
+    _report: &mut ReconcileReport,
+) -> Result<(), IdentityError> {
+    use crate::identity::federation::saml::{SamlNameIdFormat, SamlServiceProvider};
+
+    let mut yaml_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (sp_key, yaml) in sps {
+        yaml_keys.insert(sp_key.clone());
+        let nameid_format = match yaml.nameid_format.as_deref().unwrap_or("emailAddress") {
+            "persistent" => SamlNameIdFormat::Persistent,
+            "transient" => SamlNameIdFormat::Transient,
+            "unspecified" => SamlNameIdFormat::Unspecified,
+            _ => SamlNameIdFormat::EmailAddress,
+        };
+        let attribute_map = yaml.attribute_map.clone().unwrap_or_default();
+
+        let sp = SamlServiceProvider {
+            sp_key: sp_key.clone(),
+            entity_id: yaml.entity_id.clone(),
+            acs_url: yaml.acs_url.clone(),
+            slo_url: yaml.slo_url.clone(),
+            sp_certificate_pem: yaml.sp_certificate_pem.clone(),
+            sign_assertions: yaml.sign_assertions.unwrap_or(true),
+            sign_responses: yaml.sign_responses.unwrap_or(true),
+            want_authn_requests_signed: yaml.want_authn_requests_signed.unwrap_or(false),
+            nameid_format,
+            attribute_map,
+        };
+        engine.register_saml_sp(realm_id, &sp)?;
+        info!(realm = %realm_name, sp_key = %sp_key, "reconciled SAML SP");
+    }
+
+    // Remove SPs no longer in YAML.
+    for existing in engine.list_saml_sps(realm_id)? {
+        if !yaml_keys.contains(&existing.sp_key) {
+            engine.delete_saml_sp(realm_id, &existing.sp_key)?;
+            info!(realm = %realm_name, sp_key = %existing.sp_key, "removed SAML SP no longer in YAML");
+        }
+    }
+
+    Ok(())
 }

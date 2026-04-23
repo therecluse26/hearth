@@ -58,6 +58,7 @@ pub mod handlers;
 pub(crate) mod handlers_common;
 pub mod oauth_consent;
 pub mod realm_resolver;
+pub mod saml;
 pub(crate) mod templates;
 pub mod themes;
 
@@ -584,6 +585,31 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/realms/{realm}/federation/callback",
             axum::routing::get(federation::callback_scoped),
+        )
+        // --- SAML 2.0 SP + IdP endpoints ---
+        .route(
+            "/realms/{realm}/federation/saml/metadata",
+            axum::routing::get(saml::sp_metadata),
+        )
+        .route(
+            "/realms/{realm}/federation/saml/acs",
+            axum::routing::post(saml::sp_acs),
+        )
+        .route(
+            "/realms/{realm}/federation/saml/begin",
+            axum::routing::get(saml::sp_begin),
+        )
+        .route(
+            "/realms/{realm}/saml/metadata",
+            axum::routing::get(saml::idp_metadata),
+        )
+        .route(
+            "/realms/{realm}/saml/sso",
+            axum::routing::get(saml::idp_sso_get).post(saml::idp_sso_post),
+        )
+        .route(
+            "/realms/{realm}/saml/sso/init",
+            axum::routing::get(saml::idp_sso_init),
         )
         // --- Browser-facing OAuth authorize + consent flow ---
         .route(

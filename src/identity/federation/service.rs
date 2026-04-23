@@ -201,6 +201,16 @@ impl FederationService {
                 self.http.clone(),
                 self.redirect_uri.clone(),
             ))),
+            IdpKind::Saml => {
+                // SAML is not driven through the OAuth-shaped IdpConnector
+                // trait; callers must dispatch on kind before reaching here
+                // and invoke `federation::saml::SamlSpService` directly.
+                Err(IdentityError::InvalidInput {
+                    reason: "SAML IdPs use a dedicated SP service path — \
+                             FederationService::begin / exchange are not applicable"
+                        .to_string(),
+                })
+            }
         }
     }
 }

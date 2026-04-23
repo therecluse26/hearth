@@ -784,6 +784,32 @@ pub struct RealmYamlConfig {
     /// connectors not represented in YAML are removed.
     #[serde(default)]
     pub federation: Option<FederationYamlConfig>,
+    /// SAML 2.0 Service Provider registrations (IdP side — Hearth as IdP).
+    /// Reconciled at startup; runtime SPs not represented here are removed.
+    #[serde(default)]
+    pub saml_service_providers: Option<std::collections::HashMap<String, SamlServiceProviderYaml>>,
+}
+
+/// YAML for a single SAML SP registration (Hearth as IdP issues to this SP).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SamlServiceProviderYaml {
+    pub entity_id: String,
+    pub acs_url: String,
+    #[serde(default)]
+    pub slo_url: Option<String>,
+    #[serde(default)]
+    pub sp_certificate_pem: Option<String>,
+    #[serde(default)]
+    pub sign_assertions: Option<bool>,
+    #[serde(default)]
+    pub sign_responses: Option<bool>,
+    #[serde(default)]
+    pub want_authn_requests_signed: Option<bool>,
+    /// One of `emailAddress` / `persistent` / `transient` / `unspecified`.
+    #[serde(default)]
+    pub nameid_format: Option<String>,
+    #[serde(default)]
+    pub attribute_map: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// YAML for `realms.{name}.federation.*`.
@@ -858,12 +884,37 @@ pub struct FederationProviderYaml {
     #[serde(default)]
     pub jwks_uri: Option<String>,
     /// OAuth client id registered at the upstream IdP.
-    pub client_id: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
     /// OAuth client secret.
-    pub client_secret: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
     /// Scopes override. Default is the preset's or `["openid","email","profile"]`.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+
+    // --- SAML-specific fields (when `type: saml`) ---
+    /// SAML IdP entity ID (SAML issuer).
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    /// SAML IdP SingleSignOnService URL (HTTP-Redirect binding).
+    #[serde(default)]
+    pub sso_url: Option<String>,
+    /// SAML IdP SingleLogoutService URL.
+    #[serde(default)]
+    pub slo_url: Option<String>,
+    /// SAML IdP signing certificate PEM (inline).
+    #[serde(default)]
+    pub idp_certificate_pem: Option<String>,
+    /// Whether outbound AuthnRequests should be signed.
+    #[serde(default)]
+    pub sign_authn_requests: Option<bool>,
+    /// Whether Hearth requires Assertion-level signatures.
+    #[serde(default)]
+    pub want_assertions_signed: Option<bool>,
+    /// Attribute mapping: Hearth field → SAML attribute URI.
+    #[serde(default)]
+    pub attribute_map: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Parses a human-readable duration string into microseconds.

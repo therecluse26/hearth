@@ -1,0 +1,18 @@
+{
+  "name": "hearth-saml-flow",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end SAML 2.0 demo: fake IdP posts a signed Response to Hearth's ACS; fake SP posts an AuthnRequest to Hearth's SSO endpoint and receives a signed Response.",
+  "scripts": {
+    "start": "node demo.mjs"
+  },
+  "dependencies": {
+    "node-forge": "^1.3.1",
+    "xml-crypto": "^6.0.0",
+    "xmldom": "^0.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

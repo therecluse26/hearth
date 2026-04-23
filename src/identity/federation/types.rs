@@ -31,6 +31,9 @@ pub enum IdpKind {
     /// audit events stay aligned.
     #[serde(rename = "github")]
     GitHub,
+    /// SAML 2.0 IdP (SP-side — Hearth consumes assertions from upstream).
+    #[serde(rename = "saml")]
+    Saml,
 }
 
 impl IdpKind {
@@ -40,6 +43,7 @@ impl IdpKind {
         match self {
             Self::Oidc => "oidc",
             Self::GitHub => "github",
+            Self::Saml => "saml",
         }
     }
 }
