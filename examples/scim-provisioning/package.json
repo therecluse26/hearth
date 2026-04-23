@@ -1,0 +1,11 @@
+{
+  "name": "hearth-scim-provisioning-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end walkthrough of Hearth's SCIM 2.0 provisioning API: user + group CRUD, filter, PATCH, externalId idempotency, audit trail.",
+  "type": "module",
+  "scripts": {
+    "start": "node demo.mjs"
+  },
+  "dependencies": {}
+}
