@@ -446,22 +446,37 @@ realms:
 
 ### `realms.<name>.rbac`
 
-Declarative role, permission, group, and scope setup for the realm's RBAC model. See [`AUTHORIZATION.md`](./AUTHORIZATION.md) for the semantic model.
+Declarative role, permission, group, and scope setup for the realm's RBAC model. See [`AUTHORIZATION.md`](./AUTHORIZATION.md) for the semantic model and [`AUTHZ_EXPANSION.md`](./AUTHZ_EXPANSION.md) for the full registry, scope-bundle, and claim-profile surfaces.
 
-**Reconciliation:** entities declared here are created or updated at startup. Entities NOT declared here are untouched — mixing YAML-declared and admin-API-created state is allowed, but once an entity is in YAML the admin API refuses to mutate it (single source of truth per entity).
+**Authoring model:** permissions, roles, and scope bundles are YAML-only. The admin UI displays them read-only. Runtime data (group memberships, user role assignments, user extras, OAuth consents) is admin-UI-managed. A YAML reload hot-swaps the registry via `ArcSwap`; dangling references are handled lazily (fail-closed at resolution).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `permissions` | array of strings | `[]` | Permission strings to register. Must match `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. Reserved namespace `hearth.*` is rejected. |
-| `roles` | map of role | `{}` | Roles keyed by name. |
-| `roles.<name>.permissions` | array of strings | `[]` | Permissions this role grants. Must all be declared in the realm's permission set (or a seed permission). |
-| `roles.<name>.parents` | array of strings | `[]` | Parent role names. Resolution unions parent permissions (composition depth capped at 10, cycle-detected). |
-| `roles.<name>.description` | string | — | Optional description for admin UI display. |
-| `groups` | map of group | `{}` | Groups keyed by slug. |
+| `permissions` | array of permission | `[]` | Permission definitions. See rules below. |
+| `permissions[].name` | string | *required* | Permission identifier. Must contain `.`, must not contain `:`. Pattern: `^[A-Za-z0-9_\-]+(\.[A-Za-z0-9_\-]+)+$`. ≤128 chars. Reserved namespace `hearth.*` rejected. Single-word names (e.g. `admin`) rejected — use `system.admin`. |
+| `permissions[].display_name` | string | *required* | Human-readable label for admin UI and consent screens. |
+| `permissions[].description` | string | — | Optional longer explanation. |
+| `permissions[].category` | string | — | Optional tag for admin UI grouping. |
+| `roles` | array of role | `[]` | Role definitions. |
+| `roles[].name` | string | *required* | Role identifier, unique per realm. |
+| `roles[].scope_kind` | `realm` \| `organization` \| `any` | `realm` | Controls where this role may be assigned. Realm-kind roles cannot be assigned at org scope and vice versa; `any` accepts either. |
+| `roles[].permissions` | array of strings | `[]` | Permission names granted by this role. All must be declared in the realm's `permissions` list. |
+| `roles[].parents` | array of strings | `[]` | Parent role names. Resolution unions parent permissions (composition depth capped at 10, cycle-detected). |
+| `roles[].description` | string | — | Optional description for admin UI display. |
+| `groups` | map of group | `{}` | Groups keyed by slug. Group memberships are runtime data (admin-UI-managed). |
 | `groups.<slug>.name` | string | *required* | Human-readable name. |
 | `groups.<slug>.description` | string | — | Optional description. |
-| `scopes` | map of scope | `{}` | OAuth 2.0 scope value → permission filter. When a token request specifies `scope=<name>`, the resolved permission set is intersected with the scope's permissions. |
-| `scopes.<name>` | array of strings | *required* | Permissions (or dotted prefix + wildcard like `docs.*`) that this scope allows. |
+| `scopes` | array of scope bundle | `[]` | OPTIONAL coarse-grained consent bundles. When a token request specifies `scope=<name>`, the user's effective permissions are intersected with the bundle's permissions (per AUTHZ_EXPANSION). A client may also request individual permission names directly as scopes without needing a bundle. |
+| `scopes[].name` | string | *required* | Bundle identifier. Must contain `:`, must not contain `.`. Pattern: `^[A-Za-z0-9_\-]+(:[A-Za-z0-9_\-]+)+$`. ≤128 chars. Single-word names rejected. |
+| `scopes[].display_name` | string | *required* | Shown on consent screens. |
+| `scopes[].description` | string | — | Shown on consent screens. |
+| `scopes[].permissions` | array of strings | *required* | Permission names this bundle expands to. All must be declared in the realm's `permissions` list. |
+| `claims` | object | *(defaults)* | OPTIONAL override of the realm's token claim profile. Absent → default profile emits `roles`, `groups`, `permissions`, `oid` with their standard shapes. |
+| `claims.mappings` | array of mapping | `[]` | Ordered list of claim mappings merged over defaults by claim name (last-wins). |
+| `claims.mappings[].claim` | string | *required* | Target JWT claim name. Tier 1 claims (`iss`, `exp`, `sub`, `permissions`, `scope`, `sid`, etc.) rejected at config load. |
+| `claims.mappings[].source` | enum | *required* | One of: `roles_from_assignments`, `groups_from_memberships`, `effective_permissions`, `org_context`, `user_attribute` (with `attribute`), `role_subset` (with `prefix`), `constant` (with `value`), `omit`. |
+| `claims.mappings[].include_in_access_token` | bool | `true` | Whether this claim appears in access tokens. |
+| `claims.mappings[].include_in_id_token` | bool | `true` | Whether this claim appears in ID tokens. |
 
 **Example:**
 
@@ -470,24 +485,29 @@ realms:
   prod:
     rbac:
       permissions:
-        - docs.view
-        - docs.edit
-        - docs.delete
-        - billing.view
-        - billing.write
+        - { name: docs.view,       display_name: "View documents",   category: Documents }
+        - { name: docs.edit,       display_name: "Edit documents",   category: Documents }
+        - { name: docs.delete,     display_name: "Delete documents", category: Documents }
+        - { name: billing.view,    display_name: "View billing",     category: Billing }
+        - { name: billing.write,   display_name: "Manage billing",   category: Billing }
+        - { name: system.admin,    display_name: "System administrator", category: System }
 
       roles:
-        docs.viewer:
+        - name: docs.viewer
+          scope_kind: realm
           permissions: [docs.view]
           description: "Read-only access to docs"
-        docs.editor:
+        - name: docs.editor
+          scope_kind: realm
           permissions: [docs.view, docs.edit]
           parents: [docs.viewer]
-        docs.admin:
+        - name: docs.admin
+          scope_kind: realm
           permissions: [docs.delete]
           parents: [docs.editor]
           description: "Full docs administration"
-        billing.admin:
+        - name: billing.admin
+          scope_kind: organization
           permissions: [billing.view, billing.write]
 
       groups:
@@ -498,9 +518,21 @@ realms:
           name: "Engineering Leads"
 
       scopes:
-        docs:   [docs.*]
-        billing: [billing.*]
-        admin:  [docs.admin, billing.write]
+        # OPTIONAL — only define when you want coarse-grained consent bundling
+        - name: read:docs
+          display_name: "Read your documents"
+          description: "View documents you own or have been shared with you."
+          permissions: [docs.view]
+        - name: manage:billing
+          display_name: "Manage your billing"
+          description: "View and update billing settings."
+          permissions: [billing.view, billing.write]
+
+    claims:
+      # OPTIONAL — omit for default shape
+      mappings:
+        - { claim: groups,     source: omit }
+        - { claim: department, source: user_attribute, attribute: dept }
 ```
 
 The first user created in a realm is automatically assigned the seed `realm.admin` role (not configurable). All other role assignments happen at runtime via the admin API.

@@ -6,6 +6,7 @@ Terminology follows [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119): **MUST**
 
 Related documents:
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — layer placement, module conventions, lateral-dependency rules.
+- [`AUTHZ_EXPANSION.md`](./AUTHZ_EXPANSION.md) — follow-on spec for the permission registry, OAuth scopes, configurable claim profiles, and user extras. Extends this document; naming rules and scope semantics live there.
 - [`CONFIGURATION.md`](./CONFIGURATION.md) — realm YAML for declarative role, permission, and scope setup.
 - [`IMPLEMENTATION_ORDER.md`](./IMPLEMENTATION_ORDER.md) — where RBAC falls in the build sequence.
 - [`TEST_SCENARIOS.md`](./TEST_SCENARIOS.md) — enumerated test coverage for this spec.
@@ -91,13 +92,18 @@ Resolution NEVER crosses realm boundaries. A role in realm A cannot be resolved 
 
 ### 2.5 Permission string grammar
 
-Permissions MUST match: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
+Permissions MUST match: `^[A-Za-z0-9_\-]+(\.[A-Za-z0-9_\-]+)+$`
 
-- Dot-delimited lowercase segments.
-- Each segment starts with a letter, continues with letters/digits/underscores.
+- Dot-delimited segments — MUST contain at least one dot (≥2 non-empty segments).
+- Each segment may contain alphanumerics, underscore, and hyphen.
+- MUST NOT contain `:` anywhere (reserved for scope bundles per [AUTHZ_EXPANSION](./AUTHZ_EXPANSION.md)).
+- MUST NOT contain whitespace or URL-reserved characters (`/ ? # % & =`).
 - Maximum total length: 128 characters.
 - Reserved namespace: `hearth.*` is engine-level and only grantable by Hearth itself or by roles seeded at realm bootstrap. Operator-defined roles MUST NOT include `hearth.*` permissions.
-- Convention: `realm.*` for realm administration, `org.*` for organization-scoped permissions, everything else app-defined.
+- Convention: `system.*` for legitimately global (non-resource-scoped) permissions, `realm.*` for realm administration, `org.*` for organization-scoped permissions, everything else app-defined.
+- Single-word permission names (e.g., `admin`, `editor`) are rejected. Use `system.admin` or a resource-scoped equivalent. This is a forcing function toward resource-oriented naming.
+
+Nesting is allowed at arbitrary depth (`user.self.write` vs `user.write`, `docs.versions.read`). There is **no implicit inheritance** between segments — `docs.read` does not grant `docs.versions.read`. Each fully-qualified name is an independent atomic permission. Group related permissions via roles or scope bundles, not via the permission hierarchy.
 
 ### 2.6 Caps and bounds
 
