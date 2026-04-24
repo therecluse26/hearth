@@ -70,8 +70,8 @@ RUN mkdir -p src simulation/src benches \
     && echo 'fn main() {}' > src/main.rs \
     && echo '' > src/lib.rs \
     && echo '' > simulation/src/lib.rs \
-    && for b in permission_check user_lookup token_validation oidc_exchange \
-                session_lookup tiered_storage oauth admin audit zanzibar_watch; do \
+    && for b in user_lookup token_validation oidc_exchange \
+                session_lookup tiered_storage oauth admin audit rbac_check; do \
          echo 'fn main() {}' > "benches/${b}.rs"; \
        done \
     && (test -f Cargo.lock || cargo generate-lockfile)

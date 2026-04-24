@@ -365,10 +365,10 @@ grpc_health_probe -addr=localhost:<port>
 ### 19. Dedicated Authorization-Service Integration (optional)
 
 - **Vision ref:** §A Open Question #2.
-- **Current State:** Teams that need graph-structured authorization (delegated sharing, Google-Drive-shaped ACLs) pair Hearth with a dedicated Zanzibar-family service (SpiceDB, OpenFGA, Cerbos). Hearth's JWT claims provide the identity context these services need.
+- **Current State:** Teams that need graph-structured authorization (delegated sharing, Google-Drive-shaped ACLs) pair Hearth with a dedicated ReBAC service (SpiceDB, OpenFGA, Cerbos). Hearth's JWT claims provide the identity context these services need.
 - **What's Missing (optional):**
   - Canonical integration example wiring a Hearth-authenticated request through to a SpiceDB / OpenFGA permission check.
-  - SDK helper for threading the JWT `sub` / `tid` into Zanzibar API calls idiomatically.
+  - SDK helper for threading the JWT `sub` / `tid` into external ReBAC API calls idiomatically.
 - **Priority Rationale:** P3 — narrow audience; the integration pattern is standard across identity vendors.
 
 ### 20. Additional SDKs

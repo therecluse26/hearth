@@ -20,7 +20,7 @@ Hearth uses **claims-based role-based access control (RBAC)**. A user accumulate
 Three intentional boundaries:
 
 1. **Hearth answers "what roles, groups, and permissions does this user have."** Apps answer "can this user do this action on this specific resource, given its state." Resource-specific authorization (ownership checks, quota enforcement, business rules) lives in the application layer with Hearth claims as one input.
-2. **No graph-structured ACLs, no delegated sharing, no per-object grants.** Teams that need those semantics pair Hearth with a dedicated Zanzibar-style authorization service (SpiceDB, OpenFGA). Hearth does not attempt to own that problem.
+2. **No graph-structured ACLs, no delegated sharing, no per-object grants.** Teams that need those semantics pair Hearth with a dedicated ReBAC service (SpiceDB, OpenFGA). Hearth does not attempt to own that problem.
 3. **Short-lived tokens, eventually-consistent revocation.** Permission changes take effect on next access-token refresh. For emergency revocation, session revocation invalidates all tokens immediately. Operators choose access-token TTL per security posture.
 
 This matches the authorization pattern used by Auth0, Clerk, Keycloak, Okta, and Firebase Auth.
@@ -816,7 +816,7 @@ SDKs MUST NOT:
 - Poll any endpoint for permission changes.
 - Hold persistent connections (SSE, WebSocket, gRPC streams) for cache coherence.
 - Accept a `subject` parameter in any check method — the subject is always the bearer-token user, enforced by the token itself.
-- Expose vocabulary from any previous authorization model (tuple, relation, userset, consistency token, object reference). Those concepts are not part of Hearth's authorization surface.
+- Expose vocabulary from prior tuple-based authorization models. Those concepts are not part of Hearth's authorization surface.
 - Persist decoded permissions to disk or across process restarts. Tokens are short-lived; persistence is the app's responsibility if required.
 
 ### 11.9 Testing requirements

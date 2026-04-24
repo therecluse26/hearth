@@ -1,8 +1,7 @@
 //! Criterion benchmarks for claims-based RBAC checks.
 //!
-//! Covers the hot-path authorization pattern after the Zanzibar → RBAC
-//! migration: client and server authorization decisions are JWT claim
-//! lookups, never network calls.
+//! Covers the hot-path authorization pattern: client and server
+//! authorization decisions are JWT claim lookups, never network calls.
 //!
 //! Targets (from `docs/specs/AUTHORIZATION.md` § 10):
 //! - JWT payload decode + permission lookup: p99 < 1 μs

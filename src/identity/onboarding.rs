@@ -323,7 +323,7 @@ fn write_file_mode_0600(path: &Path, bytes: &[u8]) -> Result<(), OnboardingError
 
 /// Orchestrates first-run setup.
 ///
-/// Composes `IdentityEngine` + `AuthorizationEngine` + `EmailService`
+/// Composes `IdentityEngine` + `RbacEngine` + `EmailService`
 /// without owning any of them. Handler code holds an `Arc<OnboardingService>`.
 pub struct OnboardingService {
     identity: Arc<dyn IdentityEngine>,

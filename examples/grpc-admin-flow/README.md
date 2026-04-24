@@ -1,8 +1,9 @@
 # gRPC Admin Flow — Runnable Example
 
 An end-to-end walkthrough of Hearth's gRPC management API in a single
-command. Demonstrates the admin surface, authorization engine with live
-`Watch` streaming, audit log, health checking, and reflection.
+command. Demonstrates the admin surface, claims-based RBAC (role CRUD +
+role assignment + permission resolution), audit log, health checking,
+and reflection.
 
 ## Run it
 
@@ -18,28 +19,28 @@ wipes any prior demo data, starts Hearth with `--dev` bound to HTTP
 ## What the demo does
 
 1. **Bootstrap admin** — `POST /admin/bootstrap` (HTTP, dev-only) to
-   create a realm + admin user + Zanzibar `hearth#admin` tuple + access
-   token. Everything after this point talks gRPC.
+   create a realm + admin user + seeded `realm.admin` role assignment
+   (which carries `hearth.admin` via role composition) + access token.
+   Everything after this point talks gRPC.
 2. **Health** — `grpc.health.v1.Health/Check` → `SERVING`.
 3. **Reflection** — `grpc.reflection.v1.ServerReflection/ListServices`
    enumerates every service Hearth exposes (useful for `grpcurl`).
 4. **Users** — `IdentityAdminService/CreateUser` twice, then
    `ListUsers` returns them.
-5. **Watch streaming** — subscribe to
-   `AuthorizationService/Watch`, then `WriteTuples` a fresh tuple in a
-   second call. The subscribed stream yields the tuple-change event
-   live.
-6. **Check** — `AuthorizationService/Check` confirms the tuple takes
-   effect.
-7. **Audit** — `AuditService/ListEvents` shows the last few events
-   (realm created, user created, tuples written…); `VerifyIntegrity`
-   walks the SHA-256 hash chain.
+5. **RBAC role CRUD** — `RbacAdminService/CreateRole` creates
+   `docs.editor` with `docs.view` + `docs.edit` permissions;
+   `AssignUserRole` binds it to Alice;
+   `ResolveEffectivePermissions` returns Alice's resolved role and
+   permission set; `UnassignUserRole` removes the binding.
+6. **Audit** — `AuditService/ListEvents` shows the last few events
+   (realm created, user created, …); `VerifyIntegrity` walks the
+   SHA-256 hash chain.
 
 ## Prerequisites
 
 - Rust toolchain (to build Hearth from source).
 - Node.js 18 or later.
-- Three free local ports: **8420** (Hearth HTTP), **9420** (Hearth
+- Two free local ports: **8420** (Hearth HTTP), **9420** (Hearth
   gRPC). The Node demo opens no ports of its own.
 
 ## Poking around after the demo

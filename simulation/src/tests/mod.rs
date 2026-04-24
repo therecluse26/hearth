@@ -1,4 +1,5 @@
 mod audit_crash;
+mod rbac_concurrent_assignments;
 mod realm_concurrent_io;
 mod realm_crash;
 mod session_crash;
