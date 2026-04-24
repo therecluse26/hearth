@@ -115,6 +115,34 @@ type OAuthClient struct {
 	GrantTypes   []string `json:"grant_types"`
 }
 
+// CheckRequestItem is one entry in a batch permission check.
+type CheckRequestItem struct {
+	// Object is a "type:id" reference, e.g. "doc:readme".
+	Object string `json:"object"`
+	// Relation is the relation name, e.g. "viewer".
+	Relation string `json:"relation"`
+}
+
+// CheckResultItem is one result returned from a batch permission check.
+type CheckResultItem struct {
+	Allowed bool `json:"allowed"`
+}
+
+// CheckResponse is the response from POST /v1/authz/check.
+type CheckResponse struct {
+	Results []CheckResultItem `json:"results"`
+	// Token is the zookie echoed back by the server. Used by AuthzCache
+	// for read-after-write consistency via at_least_as_fresh_as.
+	Token uint64 `json:"token"`
+}
+
+// CapabilityBundle is the response from GET /v1/me/capabilities.
+type CapabilityBundle struct {
+	// Capabilities maps "object#relation" to allowed.
+	Capabilities map[string]bool `json:"capabilities"`
+	Token        uint64          `json:"token"`
+}
+
 // APIError represents an error from the Hearth API.
 type APIError struct {
 	StatusCode int

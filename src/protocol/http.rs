@@ -21,7 +21,9 @@ use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
-use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
+use crate::authz::{
+    AuthorizationEngine, ConsistencyToken, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite,
+};
 use crate::core::{ClientId, RealmId, UserId};
 use crate::identity::IdentityEngine;
 use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
@@ -50,6 +52,35 @@ const BODY_LIMIT_DEFAULT: usize = 1024 * 1024;
 /// of resource-exhaustion attempts.
 const BODY_LIMIT_SMALL: usize = 64 * 1024;
 
+/// A named capability page: maps a page key to the list of
+/// `(object_template, relations)` pairs to check for `GET /v1/me/capabilities`.
+///
+/// Object templates may contain `{var}` placeholders that are substituted
+/// from the request's query string at lookup time.
+#[derive(Debug, Clone)]
+pub struct CapabilityPage {
+    /// The list of `(object_template, relations)` entries to check.
+    ///
+    /// Each entry expands to `relations.len()` check results in the response,
+    /// keyed by `"resolved_object#relation"`.
+    pub entries: Vec<CapabilityPageEntry>,
+}
+
+/// One entry inside a [`CapabilityPage`].
+#[derive(Debug, Clone)]
+pub struct CapabilityPageEntry {
+    /// Object template (e.g. `org:{org_id}` or `doc:{id}`).
+    ///
+    /// `{var}` segments are substituted from the request's query string.
+    pub object_template: String,
+    /// Relations to check against the resolved object.
+    pub relations: Vec<String>,
+}
+
+/// Map from page key (e.g. `"org.settings"`) to its [`CapabilityPage`]
+/// definition. Shared via `Arc` so route handlers can read without cloning.
+pub type CapabilityPages = std::collections::HashMap<String, CapabilityPage>;
+
 /// Shared application state passed to all route handlers.
 pub struct AppState {
     /// The identity engine for all domain operations.
@@ -67,6 +98,9 @@ pub struct AppState {
     /// admin surfaces so a caller cannot evade the limit by switching
     /// protocols.
     pub admin_rate_limiter: Arc<AdminRateLimiter>,
+    /// Named capability-page bundles for `GET /v1/me/capabilities`.
+    /// Empty by default. Populated from config at startup.
+    pub capability_pages: Arc<CapabilityPages>,
 }
 
 impl AppState {
@@ -82,6 +116,7 @@ impl AppState {
             audit,
             dev_mode: false,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
+            capability_pages: Arc::new(CapabilityPages::new()),
         }
     }
 
@@ -99,6 +134,7 @@ impl AppState {
             audit,
             dev_mode: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
+            capability_pages: Arc::new(CapabilityPages::new()),
         }
     }
 
@@ -118,6 +154,7 @@ impl AppState {
             audit,
             dev_mode: false,
             admin_rate_limiter,
+            capability_pages: Arc::new(CapabilityPages::new()),
         }
     }
 }
@@ -308,6 +345,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(device_authorization),
         )
         .route("/userinfo", axum::routing::get(userinfo))
+        .route("/v1/authz/check", axum::routing::post(authz_check))
+        .route("/v1/me/capabilities", axum::routing::get(me_capabilities))
         .route("/oauth/consents", axum::routing::get(self_list_consents))
         .route(
             "/oauth/consents/{client_id}",
@@ -1152,6 +1191,385 @@ async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
             .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+// === Authz check endpoint (SPA / BFF facing) ===
+
+/// Maximum permission checks allowed in a single `POST /v1/authz/check`
+/// request. Batching more than this at once is almost always a sign the
+/// caller should be using `/v1/me/capabilities` with a page key instead.
+const AUTHZ_CHECK_BATCH_MAX: usize = 64;
+
+/// One entry in a batch authz check request.
+#[derive(Debug, Deserialize)]
+struct AuthzCheckItem {
+    /// `type:id` object reference, e.g. `doc:readme`.
+    object: String,
+    /// Relation name, e.g. `viewer`.
+    relation: String,
+}
+
+/// Request body for `POST /v1/authz/check`. The subject is ALWAYS the
+/// authenticated user derived from the bearer token — callers cannot
+/// ask "is someone else allowed to X".
+#[derive(Debug, Deserialize)]
+struct AuthzCheckRequest {
+    checks: Vec<AuthzCheckItem>,
+    /// Optional zookie: guarantees each check sees at least this version.
+    at_least_as_fresh_as: Option<u64>,
+}
+
+/// One result in the response, positionally paired with the request's
+/// `checks` array.
+#[derive(Debug, Serialize)]
+struct AuthzCheckItemResult {
+    allowed: bool,
+}
+
+/// Response body for `POST /v1/authz/check`.
+#[derive(Debug, Serialize)]
+struct AuthzCheckResponse {
+    results: Vec<AuthzCheckItemResult>,
+    /// Echoed zookie for SDK cache bookkeeping. Currently echoes the
+    /// input `at_least_as_fresh_as` or `0` — `check()` itself does not
+    /// expose the engine's current version. Clients only use this field
+    /// for monotonicity, not for "latest known state".
+    token: u64,
+}
+
+/// Parses an `"object_type:object_id"` string into its two parts.
+fn parse_object_pair(s: &str) -> Option<(&str, &str)> {
+    let mut parts = s.splitn(2, ':');
+    let t = parts.next()?;
+    let i = parts.next()?;
+    if t.is_empty() || i.is_empty() {
+        return None;
+    }
+    Some((t, i))
+}
+
+/// `POST /v1/authz/check` — batch permission check for the authenticated user.
+///
+/// Subject is derived from the bearer token (`user:<sub>`). Clients supply
+/// only `(object, relation)` pairs. Results are positionally paired with the
+/// request's `checks` array; a `token` field is echoed back for SDK zookie
+/// bookkeeping.
+async fn authz_check(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<AuthzCheckRequest>,
+) -> axum::response::Response {
+    let realm_id = match extract_realm_id(&headers) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid_token"})),
+        )
+            .into_response();
+    };
+
+    let claims = match state.identity.validate_token(&realm_id, token) {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid_token"})),
+            )
+                .into_response();
+        }
+    };
+
+    // `sub` is `user_<uuid>` — strip the prefix and parse.
+    let uuid_str = claims.sub.strip_prefix("user_").unwrap_or(&claims.sub);
+    let user_uuid: uuid::Uuid = match uuid_str.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid_token"})),
+            )
+                .into_response();
+        }
+    };
+
+    if body.checks.is_empty() || body.checks.len() > AUTHZ_CHECK_BATCH_MAX {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": format!(
+                    "checks must contain between 1 and {AUTHZ_CHECK_BATCH_MAX} entries"
+                ),
+            })),
+        )
+            .into_response();
+    }
+
+    let subject = match SubjectRef::direct("user", &user_uuid.to_string()) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal_error"})),
+            )
+                .into_response();
+        }
+    };
+    let at_least = body.at_least_as_fresh_as.map(ConsistencyToken::new);
+
+    let mut results = Vec::with_capacity(body.checks.len());
+    for item in &body.checks {
+        let Some((ot, oi)) = parse_object_pair(&item.object) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "error_description": "object must be formatted as 'type:id'",
+                })),
+            )
+                .into_response();
+        };
+        let object = match ObjectRef::new(ot, oi) {
+            Ok(o) => o,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_request",
+                        "error_description": "invalid object reference",
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        let allowed = match state.authz.check(
+            &realm_id,
+            &object,
+            &item.relation,
+            &subject,
+            at_least.as_ref(),
+        ) {
+            Ok(b) => b,
+            Err(crate::authz::AuthzError::InvalidReference { .. })
+            | Err(crate::authz::AuthzError::InvalidTuple { .. }) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_request",
+                        "error_description": "invalid relation or reference",
+                    })),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "internal_error"})),
+                )
+                    .into_response();
+            }
+        };
+        results.push(AuthzCheckItemResult { allowed });
+    }
+
+    (
+        StatusCode::OK,
+        Json(AuthzCheckResponse {
+            results,
+            token: at_least.map_or(0, |t| t.version()),
+        }),
+    )
+        .into_response()
+}
+
+/// Response body for `GET /v1/me/capabilities`.
+#[derive(Debug, Serialize)]
+struct MeCapabilitiesResponse {
+    /// Map of `"object#relation"` → `bool`, one entry per
+    /// `(resolved_object, relation)` pair defined by the page.
+    capabilities: std::collections::BTreeMap<String, bool>,
+    /// Echoed zookie; see [`AuthzCheckResponse::token`].
+    token: u64,
+}
+
+/// Substitutes `{var}` placeholders in `template` using `params`.
+///
+/// Returns `Err(var_name)` if a placeholder has no matching param.
+/// Returns `Err("__malformed__")` on an unterminated brace.
+fn resolve_template(
+    template: &str,
+    params: &std::collections::HashMap<String, String>,
+) -> Result<String, String> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open + 1..];
+        let Some(close) = rest.find('}') else {
+            return Err("__malformed__".to_string());
+        };
+        let var = &rest[..close];
+        let val = params.get(var).ok_or_else(|| var.to_string())?;
+        out.push_str(val);
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// `GET /v1/me/capabilities?page=<key>&<var>=<val>...` — returns the
+/// capability bundle for the named page, resolved against the authenticated
+/// user.
+async fn me_capabilities(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    let realm_id = match extract_realm_id(&headers) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid_token"})),
+        )
+            .into_response();
+    };
+
+    let claims = match state.identity.validate_token(&realm_id, token) {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid_token"})),
+            )
+                .into_response();
+        }
+    };
+
+    let uuid_str = claims.sub.strip_prefix("user_").unwrap_or(&claims.sub);
+    let user_uuid: uuid::Uuid = match uuid_str.parse() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid_token"})),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(page_key) = params.get("page") else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "missing 'page' query parameter",
+            })),
+        )
+            .into_response();
+    };
+
+    let Some(page) = state.capability_pages.get(page_key) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "unknown_page",
+                "error_description": format!("no capability page configured for '{page_key}'"),
+            })),
+        )
+            .into_response();
+    };
+
+    let subject = match SubjectRef::direct("user", &user_uuid.to_string()) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal_error"})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut capabilities = std::collections::BTreeMap::new();
+    for entry in &page.entries {
+        let resolved = match resolve_template(&entry.object_template, &params) {
+            Ok(s) => s,
+            Err(var) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_request",
+                        "error_description": format!("missing template variable: {var}"),
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        let Some((ot, oi)) = parse_object_pair(&resolved) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "error_description": "resolved object must be 'type:id'",
+                })),
+            )
+                .into_response();
+        };
+        let object = match ObjectRef::new(ot, oi) {
+            Ok(o) => o,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_request",
+                        "error_description": "invalid resolved object reference",
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        for relation in &entry.relations {
+            let allowed = match state
+                .authz
+                .check(&realm_id, &object, relation, &subject, None)
+            {
+                Ok(b) => b,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "internal_error"})),
+                    )
+                        .into_response();
+                }
+            };
+            capabilities.insert(format!("{resolved}#{relation}"), allowed);
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(MeCapabilitiesResponse {
+            capabilities,
+            token: 0,
+        }),
+    )
+        .into_response()
 }
 
 // === Admin API endpoints ===

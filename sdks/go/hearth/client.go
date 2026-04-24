@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // Client is a Go client for the Hearth identity API.
@@ -78,6 +79,63 @@ func (c *Client) RefreshTokens(ctx context.Context, clientID, refreshToken strin
 	}
 	var result TokenResponse
 	if err := c.post(ctx, "/token", req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// CheckOptions are optional parameters for Check.
+type CheckOptions struct {
+	// Zookie, if non-nil, is sent as at_least_as_fresh_as for
+	// read-after-write consistency.
+	Zookie *uint64
+}
+
+// Check performs a batch permission check for the bearer-token user.
+// The subject is always derived server-side from the access token; callers
+// cannot check permissions on behalf of another user.
+func (c *Client) Check(ctx context.Context, accessToken string, checks []CheckRequestItem, opts *CheckOptions) (*CheckResponse, error) {
+	body := map[string]any{"checks": checks}
+	if opts != nil && opts.Zookie != nil {
+		body["at_least_as_fresh_as"] = *opts.Zookie
+	}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/authz/check", bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Realm-ID", c.realmID)
+	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+
+	var result CheckResponse
+	if err := doRequest(c.http, httpReq, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Capabilities fetches a named capability bundle for the bearer-token user.
+// The params map resolves "{var}" placeholders in the server-configured
+// object templates for the page.
+func (c *Client) Capabilities(ctx context.Context, accessToken, page string, params map[string]string) (*CapabilityBundle, error) {
+	query := url.Values{}
+	query.Set("page", page)
+	for k, v := range params {
+		query.Set(k, v)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/v1/me/capabilities?"+query.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("X-Realm-ID", c.realmID)
+	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+
+	var result CapabilityBundle
+	if err := doRequest(c.http, httpReq, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

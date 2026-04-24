@@ -150,6 +150,17 @@ All API contracts MUST be defined in `.proto` files. Protobuf is the single sour
 - The HTTP framework MUST be `tower`-compatible to share middleware with the gRPC stack (`tonic`). The specific framework choice is an implementation decision.
 - The **Identity Engine MUST NOT depend on any wire format or serialization framework.** Protocol adapters are thin translation layers that call into the Identity Engine's trait interface. This decoupling ensures new wire formats can be added without restructuring the core.
 
+### 4.2.1 SPA-facing Authz HTTP Surface
+
+Full reference: [`AUTHZ_HTTP.md`](AUTHZ_HTTP.md) — endpoint specs, error matrices, SDK usage, capability-page config.
+
+The Zanzibar authorization engine exposes a gRPC admin surface (`AuthorizationService`, see `proto/hearth/authz/v1/authz.proto`) for service-to-service integrations. Browser-based SPAs — which cannot speak native gRPC without a heavy gateway — use a small HTTP surface instead:
+
+- **`POST /v1/authz/check`** — batch permission check for the bearer-token user. The request carries `checks: [{ object, relation }, ...]` and an optional `at_least_as_fresh_as` zookie. The subject is ALWAYS derived from the token's `sub` claim; callers cannot check permissions on behalf of another user. Response: `{ results: [{ allowed }], token }`. Hard batch cap: 64 entries. Subject-free by design — per-user authz checks only, admin-style "check on behalf of X" lives on the gRPC surface where admin relation enforcement applies.
+- **`GET /v1/me/capabilities?page=<key>&<var>=<val>`** — named capability bundle. The server owns the `(object, relation)` list per page key via `AppState::capability_pages`; templates like `"org:{org_id}"` resolve from query params. Response: `{ capabilities: { "object#relation": bool }, token }`. Returns 404 on unknown page keys, 400 on unresolved template variables. Designed so that one round-trip per page replaces N per-element `Check` calls.
+
+The zookie (`ConsistencyToken`) returned from these endpoints is monotonic and SHOULD be threaded through subsequent reads via `at_least_as_fresh_as`; the TS SDK `AuthzCache` automates this. Because the Rust `AuthorizationEngine::check` trait does not expose a "current version" accessor, the HTTP response currently echoes the input zookie (or `0`). Clients only rely on monotonicity, not latest-known-version semantics.
+
 ### 4.3 API Versioning
 
 **Pre-1.0**: Breaking changes to wire format, config, and on-disk storage are permitted with a changelog entry. However, on-disk format changes MUST NOT silently corrupt data — if the format is incompatible, startup MUST fail with a clear error directing the operator to re-initialize.

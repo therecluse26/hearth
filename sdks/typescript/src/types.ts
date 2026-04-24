@@ -131,3 +131,30 @@ export interface JsonWebKey {
   use?: string;
   alg?: string;
 }
+
+/** One item in a batch permission check. */
+export interface CheckRequestItem {
+  /** `type:id` object reference, e.g. `doc:readme`. */
+  object: string;
+  /** Relation name, e.g. `viewer`. */
+  relation: string;
+}
+
+/** One result returned from a batch permission check. */
+export interface CheckResultItem {
+  allowed: boolean;
+}
+
+/** Response from `POST /v1/authz/check`. */
+export interface CheckResponse {
+  results: CheckResultItem[];
+  /** Zookie — monotonically increasing version for cache bookkeeping. */
+  token: number;
+}
+
+/** Response from `GET /v1/me/capabilities`. */
+export interface CapabilityBundle {
+  /** Map of `"object#relation"` → `boolean`. */
+  capabilities: Record<string, boolean>;
+  token: number;
+}

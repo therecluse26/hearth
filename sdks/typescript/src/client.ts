@@ -2,6 +2,9 @@ import type {
   AuthorizeParams,
   AuthorizeResponse,
   BootstrapResponse,
+  CapabilityBundle,
+  CheckRequestItem,
+  CheckResponse,
   JwksDocument,
   RegisterClientParams,
   OAuthClient,
@@ -95,6 +98,64 @@ export class HearthClient {
       grant_type: "refresh_token",
       refresh_token: refreshToken,
     });
+  }
+
+  /**
+   * POST /v1/authz/check — batch permission check.
+   *
+   * The subject is always the bearer-token user; only `(object, relation)`
+   * pairs are supplied by the caller. Pass the zookie from a previous
+   * mutation via `options.zookie` to guarantee read-after-write consistency.
+   */
+  async check(
+    accessToken: string,
+    checks: CheckRequestItem[],
+    options: { zookie?: number } = {},
+  ): Promise<CheckResponse> {
+    const body: Record<string, unknown> = { checks };
+    if (options.zookie !== undefined) {
+      body.at_least_as_fresh_as = options.zookie;
+    }
+    const resp = await fetch(`${this.baseUrl}/v1/authz/check`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Realm-ID": this.realmId,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      throw new HearthError(resp.status, await resp.json());
+    }
+    return resp.json() as Promise<CheckResponse>;
+  }
+
+  /**
+   * GET /v1/me/capabilities — fetch the capability bundle for the named page.
+   *
+   * `page` selects a server-configured capability page; `params` resolve
+   * `{var}` placeholders in the page's object templates.
+   */
+  async capabilities(
+    accessToken: string,
+    page: string,
+    params: Record<string, string> = {},
+  ): Promise<CapabilityBundle> {
+    const query = new URLSearchParams({ page, ...params });
+    const resp = await fetch(
+      `${this.baseUrl}/v1/me/capabilities?${query.toString()}`,
+      {
+        headers: {
+          "X-Realm-ID": this.realmId,
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    );
+    if (!resp.ok) {
+      throw new HearthError(resp.status, await resp.json());
+    }
+    return resp.json() as Promise<CapabilityBundle>;
   }
 
   /** GET /userinfo — retrieve user claims using an access token. */
