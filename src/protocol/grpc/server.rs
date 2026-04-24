@@ -15,14 +15,14 @@ use tonic::transport::Server;
 use tracing::{debug, info};
 
 use crate::audit::AuditEngine;
-use crate::authz::AuthorizationEngine;
 use crate::identity::IdentityEngine;
 use crate::protocol::admin_auth::AdminRateLimiter;
+use crate::rbac::RbacEngine;
 
 use super::audit::AuditSvc;
-use super::authz::AuthzSvc;
 use super::identity::{AppAdminSvc, IdentityAdminSvc};
 use super::oauth::OAuthSvc;
+use super::rbac_admin::RbacAdminSvc;
 
 /// Shared state for all gRPC services.
 ///
@@ -30,7 +30,7 @@ use super::oauth::OAuthSvc;
 #[derive(Clone)]
 pub struct GrpcState {
     pub identity: Arc<dyn IdentityEngine>,
-    pub authz: Arc<dyn AuthorizationEngine>,
+    pub rbac: Arc<dyn RbacEngine>,
     pub audit: Arc<dyn AuditEngine>,
     pub admin_rate_limiter: Arc<AdminRateLimiter>,
 }
@@ -38,13 +38,13 @@ pub struct GrpcState {
 impl GrpcState {
     pub fn new(
         identity: Arc<dyn IdentityEngine>,
-        authz: Arc<dyn AuthorizationEngine>,
+        rbac: Arc<dyn RbacEngine>,
         audit: Arc<dyn AuditEngine>,
         admin_rate_limiter: Arc<AdminRateLimiter>,
     ) -> Self {
         Self {
             identity,
-            authz,
+            rbac,
             audit,
             admin_rate_limiter,
         }
@@ -61,11 +61,11 @@ const MAX_DECODING_MESSAGE_SIZE: usize = 1024 * 1024;
 pub async fn build_router(
     state: GrpcState,
 ) -> Result<tonic::transport::server::Router, Box<dyn std::error::Error + Send + Sync>> {
-    use crate::protocol::proto::authz::v1::authorization_service_server::AuthorizationServiceServer;
     use crate::protocol::proto::events::v1::audit_service_server::AuditServiceServer;
     use crate::protocol::proto::identity::v1::application_admin_service_server::ApplicationAdminServiceServer;
     use crate::protocol::proto::identity::v1::identity_admin_service_server::IdentityAdminServiceServer;
     use crate::protocol::proto::identity::v1::o_auth_service_server::OAuthServiceServer;
+    use crate::protocol::proto::rbac::v1::rbac_admin_service_server::RbacAdminServiceServer;
 
     let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
     // Mark every Hearth service SERVING by default; graceful shutdown will
@@ -77,7 +77,7 @@ pub async fn build_router(
         .set_serving::<ApplicationAdminServiceServer<AppAdminSvc>>()
         .await;
     health_reporter
-        .set_serving::<AuthorizationServiceServer<AuthzSvc>>()
+        .set_serving::<RbacAdminServiceServer<RbacAdminSvc>>()
         .await;
     health_reporter
         .set_serving::<AuditServiceServer<AuditSvc>>()
@@ -94,7 +94,7 @@ pub async fn build_router(
         .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
     let app_svc = ApplicationAdminServiceServer::new(AppAdminSvc::new(state.clone()))
         .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
-    let authz_svc = AuthorizationServiceServer::new(AuthzSvc::new(state.clone()))
+    let rbac_svc = RbacAdminServiceServer::new(RbacAdminSvc::new(state.clone()))
         .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
     let audit_svc = AuditServiceServer::new(AuditSvc::new(state.clone()))
         .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
@@ -107,7 +107,7 @@ pub async fn build_router(
         .add_service(reflection)
         .add_service(identity_svc)
         .add_service(app_svc)
-        .add_service(authz_svc)
+        .add_service(rbac_svc)
         .add_service(audit_svc)
         .add_service(oauth_svc);
 

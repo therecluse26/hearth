@@ -6,12 +6,12 @@
 
 mod common;
 
-use hearth::authz::{ObjectRef, SubjectRef, TupleWrite};
 use hearth::core::RealmId;
 use hearth::identity::{
     AuthorizationRequest, CleartextPassword, CodeChallengeMethod, CreateUserRequest,
     RegisterClientRequest, TokenExchangeRequest,
 };
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -209,11 +209,11 @@ async fn user_lifecycle_register_authenticate_session_token() {
     assert_eq!(refreshed_claims.sub, user.id().to_string());
 }
 
-// === TEST_SCENARIOS: Auth + authz ===
-// authenticate → write permission → check permission → authorized action succeeds
+// === TEST_SCENARIOS: Auth + RBAC ===
+// authenticate → create role + assign → resolve permissions → authorized action succeeds
 
 #[tokio::test]
-async fn auth_plus_authz_permission_grant_and_check() {
+async fn auth_plus_rbac_permission_grant_and_check() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
@@ -266,45 +266,63 @@ async fn auth_plus_authz_permission_grant_and_check() {
         .expect("validate");
     assert_eq!(claims.sub, user.id().to_string());
 
-    // 4. Write a permission tuple: user is owner of document
-    let object = ObjectRef::new("document", "doc-123").expect("valid object ref");
-    let subject_obj =
-        ObjectRef::new("user", &user.id().as_uuid().to_string()).expect("valid subject ref");
-    let subject = SubjectRef::Direct(subject_obj);
-
-    harness
-        .authz()
-        .write_tuples(
+    // 4. Create a role that carries `docs.edit` and assign it to the user.
+    let doc_perm = hearth::rbac::Permission::new("docs.edit").expect("valid perm");
+    let role = harness
+        .rbac()
+        .create_role(
             &realm,
-            &[TupleWrite::Touch(
-                hearth::authz::RelationshipTuple::new(object.clone(), "owner", subject.clone())
-                    .expect("valid tuple"),
-            )],
+            &hearth::rbac::CreateRoleRequest {
+                name: "doc-owner".to_string(),
+                description: None,
+                permissions: vec![doc_perm.clone()],
+                parent_roles: Vec::new(),
+            },
         )
-        .expect("write tuple");
+        .expect("create role");
+    harness
+        .rbac()
+        .assign_role(
+            &realm,
+            &hearth::rbac::AssignRoleRequest {
+                subject: hearth::rbac::Subject::User(user.id().clone()),
+                role_id: role.id.clone(),
+                scope: hearth::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign role");
 
-    // 5. Check permission — should be granted
-    let has_access = harness
-        .authz()
-        .check(&realm, &object, "owner", &subject, None)
-        .expect("check");
-    assert!(has_access, "user should have owner permission");
-
-    // 6. Check non-existent permission — should be denied
-    let no_access = harness
-        .authz()
-        .check(&realm, &object, "admin", &subject, None)
-        .expect("check admin");
-    assert!(!no_access, "user should NOT have admin permission");
-
-    // 7. Expand should list the user as owner
-    let owners = harness
-        .authz()
-        .expand(&realm, &object, "owner", None)
-        .expect("expand");
+    // 5. Resolve — should carry docs.edit.
+    let resolved = harness
+        .rbac()
+        .resolve_permissions(user.id(), &realm, None, None)
+        .expect("resolve");
     assert!(
-        owners.contains(&subject),
-        "expand should include the user as owner"
+        resolved.permissions.contains(&doc_perm),
+        "user should have docs.edit permission"
+    );
+
+    // 6. Non-granted permission should NOT be present.
+    assert!(
+        !resolved
+            .permissions
+            .iter()
+            .any(|p| p.as_str() == "hearth.admin"),
+        "user should NOT carry hearth.admin"
+    );
+
+    // 7. list_role_members should include the user.
+    let members = harness
+        .rbac()
+        .list_role_members(&realm, &role.id, None, 10)
+        .expect("list members");
+    assert!(
+        members
+            .items
+            .iter()
+            .any(|s| matches!(s, hearth::rbac::RoleSubject::User(u) if u == user.id())),
+        "list_role_members should include the user"
     );
 }
 

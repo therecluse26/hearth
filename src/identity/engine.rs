@@ -168,6 +168,9 @@ pub struct EmbeddedIdentityEngine {
     clock: Arc<dyn Clock>,
     /// Engine configuration (global defaults, overridable per-realm).
     config: IdentityConfig,
+    /// Claims-based RBAC engine used to resolve effective permissions
+    /// at token-issue time. See `docs/specs/AUTHORIZATION.md`.
+    rbac: Arc<dyn crate::rbac::RbacEngine>,
     /// Pre-computed dummy hash for timing-oracle prevention.
     ///
     /// When `verify_password` is called for a nonexistent user or missing
@@ -240,15 +243,32 @@ impl std::fmt::Debug for EmbeddedIdentityEngine {
 }
 
 impl EmbeddedIdentityEngine {
-    /// Creates a new identity engine.
-    ///
-    /// Generates an Ed25519 signing key and pre-computes a dummy Argon2id
-    /// hash on construction for timing-oracle prevention during password
-    /// verification.
+    /// Creates a new identity engine, constructing a fresh
+    /// [`crate::rbac::EmbeddedRbacEngine`] sharing the same storage and
+    /// clock. Convenience for tests and benches that don't need to hold
+    /// a separate handle to the RBAC engine.
     pub fn new(
         storage: Arc<dyn StorageEngine>,
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
+    ) -> Result<Self, IdentityError> {
+        let rbac: Arc<dyn crate::rbac::RbacEngine> = Arc::new(
+            crate::rbac::EmbeddedRbacEngine::new(Arc::clone(&storage), Arc::clone(&clock)),
+        );
+        Self::with_rbac(storage, clock, config, rbac)
+    }
+
+    /// Creates a new identity engine wired to an explicit RBAC engine.
+    ///
+    /// Production wiring (where the rbac engine is shared with admin
+    /// surfaces) should use this constructor. Generates an Ed25519
+    /// signing key and pre-computes a dummy Argon2id hash on construction
+    /// for timing-oracle prevention during password verification.
+    pub fn with_rbac(
+        storage: Arc<dyn StorageEngine>,
+        clock: Arc<dyn Clock>,
+        config: IdentityConfig,
+        rbac: Arc<dyn crate::rbac::RbacEngine>,
     ) -> Result<Self, IdentityError> {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let signing_key = Arc::new(SigningKey::generate()?);
@@ -256,6 +276,7 @@ impl EmbeddedIdentityEngine {
             storage,
             clock,
             config,
+            rbac,
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
@@ -282,12 +303,14 @@ impl EmbeddedIdentityEngine {
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
         signing_key: Arc<SigningKey>,
+        rbac: Arc<dyn crate::rbac::RbacEngine>,
     ) -> Self {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let engine = Self {
             storage,
             clock,
             config,
+            rbac,
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
@@ -895,11 +918,15 @@ impl EmbeddedIdentityEngine {
             iat,
             sid: session_id.to_string(),
             tid: realm_id.to_string(),
+            oid: claims.oid.clone(),
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(fid.to_string()),
             scope: claims.scope.clone(),
             nonce: None,
+            roles: claims.roles.clone(),
+            groups: claims.groups.clone(),
+            permissions: claims.permissions.clone(),
         };
         let new_refresh_claims = TokenClaims {
             sub: user_id.to_string(),
@@ -909,11 +936,15 @@ impl EmbeddedIdentityEngine {
             iat,
             sid: session_id.to_string(),
             tid: realm_id.to_string(),
+            oid: claims.oid.clone(),
             token_type: "refresh".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(fid.to_string()),
             scope: claims.scope.clone(),
             nonce: None,
+            roles: claims.roles.clone(),
+            groups: claims.groups.clone(),
+            permissions: claims.permissions.clone(),
         };
 
         let new_access = signing_key.issue_token(&new_access_claims)?;
@@ -1582,11 +1613,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     ) -> Result<User, IdentityError> {
         // The system realm is reserved for Hearth admins and must be
         // reached only through `create_admin_user`, which also provisions
-        // the `hearth#admin` Zanzibar tuple atomically. Without this
+        // the `realm.admin` RBAC assignment atomically. Without this
         // guard an operator could create a non-admin account in the
         // system realm and gain a session bound to it but without the
-        // admin tuple — harmless today (the tuple check would reject the
-        // session) but a trap for future refactors.
+        // admin role — harmless today (the permission check would reject
+        // the session) but a trap for future refactors.
         if keys::is_system_realm(realm_id) {
             return Err(IdentityError::SystemRealmProtected {
                 operation: "create_user",
@@ -1598,8 +1629,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError> {
         // Bypasses the `create_user` system-realm guard deliberately.
         // This is the sole public entry point that may create a record
-        // in the system realm; callers are responsible for writing the
-        // `hearth#admin` Zanzibar tuple after the user is persisted.
+        // in the system realm; callers are responsible for assigning
+        // the `realm.admin` RBAC role after the user is persisted.
         let realm_id = keys::system_realm_id();
         self.create_user_with_status(&realm_id, request, self.config.default_status)
     }
@@ -2252,12 +2283,28 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         let now = self.clock.now();
+        // Resolve effective permissions via RBAC at token-issue time.
+        let resolved = self
+            .rbac
+            .resolve_permissions(user_id, realm_id, None, None)
+            .map_err(|e| IdentityError::Internal {
+                reason: format!("rbac resolve failed: {e}"),
+            })?;
+        let perm_strs: Vec<String> = resolved
+            .permissions
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect();
         self.signing_key.issue_token_pair(&IssueTokenRequest {
             sub: &user_id.to_string(),
             sid: &session_id.to_string(),
             tid: &realm_id.to_string(),
+            oid: None,
             now,
             config: &self.config.token,
+            roles: &resolved.roles,
+            groups: &resolved.groups,
+            permissions: &perm_strs,
         })
     }
 
@@ -2645,11 +2692,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
             scope: None,
             nonce: None,
+            roles: Vec::new(),
+            groups: Vec::new(),
+            permissions: Vec::new(),
         };
         let refresh_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
@@ -2659,11 +2710,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "refresh".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
             scope: None,
             nonce: None,
+            roles: Vec::new(),
+            groups: Vec::new(),
+            permissions: Vec::new(),
         };
 
         let access_token =
@@ -2708,11 +2763,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "id_token".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
             scope: None,
             nonce: stored_code.nonce.clone(),
+            roles: Vec::new(),
+            groups: Vec::new(),
+            permissions: Vec::new(),
         };
         let id_token =
             signing_key
@@ -2826,11 +2885,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: "none".to_string(), // No session for client credentials
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
             scope: scope.clone(),
             nonce: None,
+            roles: Vec::new(),
+            groups: Vec::new(),
+            permissions: Vec::new(),
         };
 
         let access_token =
@@ -3048,11 +3111,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     iat,
                     sid: session.id().to_string(),
                     tid: realm_id.to_string(),
+                    oid: None,
                     token_type: "id_token".to_string(),
                     jti: Some(uuid::Uuid::new_v4().to_string()),
                     fid: None,
                     scope: stored.scope.clone(),
                     nonce: None,
+                    roles: Vec::new(),
+                    groups: Vec::new(),
+                    permissions: Vec::new(),
                 };
                 let signing_key = self.get_or_load_realm_signing_key(realm_id)?;
                 let id_token = signing_key.issue_token(&id_token_claims).map_err(|e| {

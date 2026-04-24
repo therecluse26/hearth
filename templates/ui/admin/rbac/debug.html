@@ -1,0 +1,73 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} &middot; Permission resolver{% endblock %}
+{% block body %}
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Permission resolver</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">
+    Enter a user UUID (optionally narrowed to an organization or OAuth scope) and see the effective roles, groups, and permissions the RBAC engine resolves for token issuance in the currently selected realm.
+  </p>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <form method="get" action="/ui/admin/rbac/debug" class="space-y-4">
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <label class="block">
+        <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">User ID (UUID or user_&lt;uuid&gt;)</span>
+        <input type="text" name="user_id" value="{{ user_id_input }}"
+               class="mt-1 block w-full rounded-sm bg-ht-surface-default px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ht-accent focus:outline-none font-mono" />
+      </label>
+      <label class="block">
+        <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">Org ID (optional)</span>
+        <input type="text" name="org_id" value="{{ org_id_input }}"
+               class="mt-1 block w-full rounded-sm bg-ht-surface-default px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ht-accent focus:outline-none font-mono" />
+      </label>
+      <label class="block">
+        <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">OAuth scope (optional)</span>
+        <input type="text" name="scope" value="{{ scope_input }}"
+               class="mt-1 block w-full rounded-sm bg-ht-surface-default px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ht-accent focus:outline-none" />
+      </label>
+    </div>
+    <div class="flex items-center gap-3">
+      <button type="submit" class="rounded bg-ht-accent px-4 py-2 text-sm font-medium text-ht-surface-default hover:bg-ht-accent-hover">
+        Resolve permissions
+      </button>
+      <p class="text-xs text-ht-content-muted">Realm: <code class="font-mono">{{ realm_uuid }}</code></p>
+    </div>
+  </form>
+</div>
+
+{% match error %}{% when Some with (msg) %}
+  <div class="mt-6 rounded border border-ht-state-danger/30 bg-ht-state-danger/10 p-4 text-sm text-ht-state-danger">
+    {{ msg }}
+  </div>
+{% when None %}{% endmatch %}
+
+{% if !permissions.is_empty() || !roles.is_empty() || !groups.is_empty() %}
+  <div class="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
+    <section class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+      <h2 class="text-sm font-medium uppercase tracking-wider text-ht-content-muted">Roles ({{ roles.len() }})</h2>
+      <ul class="mt-2 space-y-1 font-mono text-sm text-ht-content-primary">
+        {% for role in roles %}
+          <li>{{ role }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    <section class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+      <h2 class="text-sm font-medium uppercase tracking-wider text-ht-content-muted">Groups ({{ groups.len() }})</h2>
+      <ul class="mt-2 space-y-1 font-mono text-sm text-ht-content-primary">
+        {% for group in groups %}
+          <li>{{ group }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    <section class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+      <h2 class="text-sm font-medium uppercase tracking-wider text-ht-content-muted">Permissions ({{ permissions.len() }})</h2>
+      <ul class="mt-2 space-y-1 font-mono text-sm text-ht-content-primary">
+        {% for perm in permissions %}
+          <li>{{ perm }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+{% endif %}
+{% endblock %}

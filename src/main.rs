@@ -8,7 +8,6 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine};
 use hearth::config::{Config, EmailTransport, EnvVarWarningKind};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::email::mailgun::MailgunRegion;
@@ -25,6 +24,7 @@ use hearth::protocol;
 use hearth::protocol::http::{self, AppState};
 use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
 use hearth::protocol::web::{self, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Hearth — a purpose-built identity database.
@@ -395,10 +395,17 @@ async fn run_serve(
         }
     };
 
-    let identity_engine: Arc<dyn IdentityEngine> = Arc::new(EmbeddedIdentityEngine::new(
+    // Build the RBAC engine before the identity engine — identity depends on rbac.
+    let rbac_engine: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+    ));
+
+    let identity_engine: Arc<dyn IdentityEngine> = Arc::new(EmbeddedIdentityEngine::with_rbac(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
         identity_config,
+        Arc::clone(&rbac_engine),
     )?);
 
     // Base URL for email links and onboarding (computed once, reused).
@@ -434,19 +441,12 @@ async fn run_serve(
         }
     }
 
-    // Build the authz engine before reconciliation so the preset Roles &
-    // Permissions namespace can be installed on every newly-created realm.
-    let authz_engine: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
-        Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    ));
-
     // Reconcile YAML-declared realms with storage. Runs after setup-token
     // generation so reconciliation-created realms don't suppress the
     // setup URL on a fresh instance.
     match hearth::identity::reconcile::reconcile_realms(
         identity_engine.as_ref(),
-        authz_engine.as_ref(),
+        rbac_engine.as_ref(),
         &config,
     ) {
         Ok(report) => {
@@ -495,7 +495,7 @@ async fn run_serve(
 
     let onboarding_service = Arc::new(OnboardingService::new(
         Arc::clone(&identity_engine),
-        Arc::clone(&authz_engine),
+        Arc::clone(&rbac_engine),
         Arc::clone(&email_service),
         data_dir.clone(),
     ));
@@ -503,13 +503,13 @@ async fn run_serve(
     let app_state = if config.dev_mode {
         Arc::new(AppState::new_dev(
             Arc::clone(&identity_engine),
-            Arc::clone(&authz_engine),
+            Arc::clone(&rbac_engine),
             Arc::clone(&audit_engine),
         ))
     } else {
         Arc::new(AppState::new(
             Arc::clone(&identity_engine),
-            Arc::clone(&authz_engine),
+            Arc::clone(&rbac_engine),
             Arc::clone(&audit_engine),
         ))
     };
@@ -529,7 +529,7 @@ async fn run_serve(
 
     let mut web_state = WebState::new(
         Arc::clone(&identity_engine),
-        Arc::clone(&authz_engine),
+        Arc::clone(&rbac_engine),
         Arc::clone(&audit_engine),
         Arc::clone(&onboarding_service),
         web::CookieSecret::random(),
@@ -667,7 +667,7 @@ async fn run_serve(
             .map_err(|e| format!("invalid gRPC bind address: {e}"))?;
         let grpc_state = protocol::grpc::GrpcState::new(
             Arc::clone(&identity_engine),
-            Arc::clone(&authz_engine),
+            Arc::clone(&rbac_engine),
             Arc::clone(&audit_engine),
             Arc::clone(&app_state.admin_rate_limiter),
         );
@@ -702,7 +702,7 @@ async fn run_serve(
             cert_path,
             key_path,
             Arc::clone(&identity_engine),
-            Arc::clone(&authz_engine),
+            Arc::clone(&rbac_engine),
             reload_config_path,
             dev,
             Arc::clone(&reload_notify),
@@ -713,7 +713,7 @@ async fn run_serve(
         #[cfg(unix)]
         {
             let engine = Arc::clone(&identity_engine);
-            let authz = Arc::clone(&authz_engine);
+            let rbac = Arc::clone(&rbac_engine);
             let cfg_path = reload_config_path.clone();
             let is_dev = dev;
             let notify = Arc::clone(&reload_notify);
@@ -732,7 +732,7 @@ async fn run_serve(
                     }
                     run_config_reconciliation(
                         engine.as_ref(),
-                        authz.as_ref(),
+                        rbac.as_ref(),
                         cfg_path.as_deref(),
                         is_dev,
                     );
@@ -890,7 +890,7 @@ async fn run_serve_tls(
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
     identity_engine: Arc<dyn IdentityEngine>,
-    authz_engine: Arc<dyn AuthorizationEngine>,
+    rbac_engine: Arc<dyn RbacEngine>,
     reload_config_path: Option<PathBuf>,
     dev: bool,
     reload_notify: Arc<Notify>,
@@ -935,7 +935,7 @@ async fn run_serve_tls(
         let reloadable = Arc::new(reloadable);
         let reloadable_clone = Arc::clone(&reloadable);
         let engine = identity_engine;
-        let authz = authz_engine;
+        let rbac = rbac_engine;
         let cfg_path = reload_config_path;
         let is_dev = dev;
         tokio::spawn(async move {
@@ -957,7 +957,7 @@ async fn run_serve_tls(
                 // Reload configuration and reconcile
                 run_config_reconciliation(
                     engine.as_ref(),
-                    authz.as_ref(),
+                    rbac.as_ref(),
                     cfg_path.as_deref(),
                     is_dev,
                 );
@@ -1026,7 +1026,7 @@ fn load_config(
 /// crash the server — the previous config remains in effect.
 fn run_config_reconciliation(
     engine: &dyn IdentityEngine,
-    authz: &dyn AuthorizationEngine,
+    rbac: &dyn RbacEngine,
     config_path: Option<&std::path::Path>,
     dev: bool,
 ) {
@@ -1038,7 +1038,7 @@ fn run_config_reconciliation(
         }
     };
 
-    match hearth::identity::reconcile::reconcile_realms(engine, authz, &config) {
+    match hearth::identity::reconcile::reconcile_realms(engine, rbac, &config) {
         Ok(report) => {
             let app_created = report
                 .applications
@@ -1189,8 +1189,8 @@ fn run_migrate_keycloak(
         let temp_dir = tempfile::tempdir()?;
         let storage_config = StorageConfig::dev(temp_dir.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-        let (identity, authz) = build_engines(&storage, true)?;
-        let importer = KeycloakImporter::new(identity, authz);
+        let (identity, rbac) = build_engines(&storage, true)?;
+        let importer = KeycloakImporter::new(identity, rbac);
         let report =
             importer.import_realm(&export, requested_realm, &ImportOptions { dry_run: true })?;
         print_migration_report(&report);
@@ -1203,8 +1203,8 @@ fn run_migrate_keycloak(
     std::fs::create_dir_all(data_dir)?;
     let storage_config = StorageConfig::dev(data_dir.to_path_buf());
     let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-    let (identity, authz) = build_engines(&storage, false)?;
-    let importer = KeycloakImporter::new(identity, authz);
+    let (identity, rbac) = build_engines(&storage, false)?;
+    let importer = KeycloakImporter::new(identity, rbac);
 
     let report =
         importer.import_realm(&export, requested_realm, &ImportOptions { dry_run: false })?;
@@ -1241,8 +1241,8 @@ fn run_migrate_auth0(
         let temp_dir = tempfile::tempdir()?;
         let storage_config = StorageConfig::dev(temp_dir.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-        let (identity, authz) = build_engines(&storage, true)?;
-        let importer = Auth0Importer::new(identity, authz);
+        let (identity, rbac) = build_engines(&storage, true)?;
+        let importer = Auth0Importer::new(identity, rbac);
         let report = importer.import_bundle(
             &bundle,
             requested_realm,
@@ -1258,8 +1258,8 @@ fn run_migrate_auth0(
     std::fs::create_dir_all(data_dir)?;
     let storage_config = StorageConfig::dev(data_dir.to_path_buf());
     let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-    let (identity, authz) = build_engines(&storage, false)?;
-    let importer = Auth0Importer::new(identity, authz);
+    let (identity, rbac) = build_engines(&storage, false)?;
+    let importer = Auth0Importer::new(identity, rbac);
 
     let report = importer.import_bundle(
         &bundle,
@@ -1270,13 +1270,13 @@ fn run_migrate_auth0(
     Ok(())
 }
 
-/// Identity + authz pair returned by [`build_engines`].
+/// Identity + RBAC pair returned by [`build_engines`].
 type AdminEngines = (
     Arc<dyn hearth::identity::IdentityEngine>,
-    Arc<dyn hearth::authz::AuthorizationEngine>,
+    Arc<dyn hearth::rbac::RbacEngine>,
 );
 
-/// Builds the identity + authz engine pair used by one-shot admin
+/// Builds the identity + RBAC engine pair used by one-shot admin
 /// commands (migrations, etc.). Keeps the wiring in one place.
 fn build_engines(
     storage: &Arc<EmbeddedStorageEngine>,
@@ -1291,16 +1291,17 @@ fn build_engines(
     } else {
         IdentityConfig::default()
     };
-    let identity = Arc::new(EmbeddedIdentityEngine::new(
+    let rbac = Arc::new(EmbeddedRbacEngine::new(
+        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+    )) as Arc<dyn hearth::rbac::RbacEngine>;
+    let identity = Arc::new(EmbeddedIdentityEngine::with_rbac(
         Arc::clone(storage) as Arc<dyn StorageEngine>,
         clock,
         identity_config,
+        Arc::clone(&rbac),
     )?) as Arc<dyn hearth::identity::IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
-        Arc::clone(storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn hearth::authz::AuthorizationEngine>;
-    Ok((identity, authz))
+    Ok((identity, rbac))
 }
 
 /// Resolves the logo URL for the web UI.
@@ -1377,7 +1378,10 @@ fn print_migration_report(report: &hearth::identity::MigrationReport) {
         report.users_with_skipped_credentials
     );
     println!("  clients imported:      {}", report.clients_imported);
-    println!("  tuples written:        {}", report.tuples_written);
+    println!(
+        "  role assignments:      {}",
+        report.role_assignments_written
+    );
     if !report.warnings.is_empty() {
         println!("Warnings:");
         for w in &report.warnings {

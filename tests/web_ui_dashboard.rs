@@ -16,10 +16,6 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
-    SubjectRef, TupleWrite,
-};
 use hearth::core::Clock;
 use hearth::core::SystemClock;
 use hearth::core::{RealmId, SessionId};
@@ -31,6 +27,7 @@ use hearth::identity::{
 };
 use hearth::protocol::http as hearth_http;
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -58,7 +55,7 @@ const COOKIE_SECRET_BYTES: [u8; 32] = [42u8; 32];
 struct TestRig {
     app: axum::Router,
     identity: Arc<dyn IdentityEngine>,
-    authz: Arc<dyn AuthorizationEngine>,
+    authz: Arc<dyn RbacEngine>,
     audit: Arc<dyn hearth::audit::AuditEngine>,
     realm_id: RealmId,
     session_id: SessionId,
@@ -86,10 +83,10 @@ fn build_rig() -> TestRig {
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn RbacEngine>;
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
@@ -140,13 +137,22 @@ fn build_rig() -> TestRig {
         .expect("create session");
 
     // Grant the user the hearth#admin relation (same as the onboarding flow).
-    let admin_obj = ObjectRef::new("hearth", "admin").expect("valid object");
-    let admin_subj =
-        SubjectRef::direct("user", &user.id().as_uuid().to_string()).expect("valid subject");
-    let admin_tuple = RelationshipTuple::new(admin_obj, "admin", admin_subj).expect("valid tuple");
+    authz.seed_realm(realm.id()).expect("seed");
+    let _admin_role = authz
+        .get_role_by_name(realm.id(), "realm.admin")
+        .expect("lookup")
+        .expect("seed role");
     authz
-        .write_tuples(realm.id(), &[TupleWrite::Touch(admin_tuple)])
-        .expect("write admin tuple");
+        .assign_role(
+            realm.id(),
+            &hearth::rbac::AssignRoleRequest {
+                subject: hearth::rbac::Subject::User(user.id().clone()),
+                role_id: _admin_role.id.clone(),
+                scope: hearth::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign admin role");
 
     let onboarding = Arc::new(OnboardingService::new(
         Arc::clone(&identity),

@@ -9,10 +9,6 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
-    SubjectRef, TupleWrite,
-};
 use hearth::core::{Clock, RealmId, SessionId, SystemClock};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
@@ -22,6 +18,7 @@ use hearth::identity::{
     UpdateUserRequest, UserStatus,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -70,10 +67,10 @@ fn build_rig() -> Rig {
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn RbacEngine>;
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
@@ -123,12 +120,22 @@ fn build_rig() -> Rig {
         )
         .expect("create admin session");
 
-    let obj = ObjectRef::new("hearth", "admin").expect("obj");
-    let sub = SubjectRef::direct("user", &admin_user.id().as_uuid().to_string()).expect("sub");
-    let tuple = RelationshipTuple::new(obj, "admin", sub).expect("tuple");
+    authz.seed_realm(&admin_realm_id).expect("seed");
+    let _admin_role = authz
+        .get_role_by_name(&admin_realm_id, "realm.admin")
+        .expect("lookup")
+        .expect("seed role");
     authz
-        .write_tuples(&admin_realm_id, &[TupleWrite::Touch(tuple)])
-        .expect("write admin tuple");
+        .assign_role(
+            &admin_realm_id,
+            &hearth::rbac::AssignRoleRequest {
+                subject: hearth::rbac::Subject::User(admin_user.id().clone()),
+                role_id: _admin_role.id.clone(),
+                scope: hearth::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign admin role");
 
     // Member user lives in the Acme realm. We'll make them a member of the
     // org so the update-role / remove tests have a real membership record.

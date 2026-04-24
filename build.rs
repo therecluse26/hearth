@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protos = &[
         "proto/hearth/identity/v1/identity.proto",
         "proto/hearth/identity/v1/oauth.proto",
-        "proto/hearth/authz/v1/authz.proto",
+        "proto/hearth/rbac/v1/rbac.proto",
         "proto/hearth/events/v1/audit.proto",
     ];
 
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .out_dir(&generated)
         .build(&[
             ".hearth.identity.v1",
-            ".hearth.authz.v1",
+            ".hearth.rbac.v1",
             ".hearth.events.v1",
         ])?;
 

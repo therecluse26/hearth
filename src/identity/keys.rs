@@ -320,7 +320,8 @@ pub(crate) fn encode_oauth_code(code_hash: &str) -> Vec<u8> {
 /// Historically this realm held only Hearth-owned metadata (realm
 /// records, per-realm signing keys). It is now **also the home of all
 /// Hearth administrator users**: admins authenticate against this
-/// realm, and the `hearth#admin` Zanzibar tuple lives here. Operators
+/// realm, and RBAC role assignments (at the `rba:` key prefix) live
+/// here as well. Operators
 /// administer application realms via a `TargetRealm` parameter (see
 /// `src/protocol/web/auth.rs`) while their session always belongs to
 /// the system realm.

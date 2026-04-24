@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
 use hearth::core::SystemClock;
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
 use hearth::protocol::http::{self, AppState};
 use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, watch};
@@ -33,9 +33,9 @@ fn test_app_state(temp_dir: &Path) -> Arc<AppState> {
         identity_config,
     )
     .expect("identity engine");
-    let authz_engine = EmbeddedAuthzEngine::new(
+    let authz_engine = EmbeddedRbacEngine::new(
         Arc::clone(&engine) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
+        Arc::clone(&clock),
     );
     let audit_engine =
         EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);

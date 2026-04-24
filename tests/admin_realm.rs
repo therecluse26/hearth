@@ -241,8 +241,6 @@ realms:
 
 #[tokio::test]
 async fn complete_setup_targets_system_realm() {
-    use hearth::authz::{ObjectRef, SubjectRef};
-
     let temp = tempfile::tempdir().expect("tempdir");
     let data_dir = temp.path().to_path_buf();
     std::mem::forget(temp);
@@ -266,10 +264,10 @@ async fn complete_setup_targets_system_realm() {
         )
         .expect("identity"),
     ) as std::sync::Arc<dyn hearth::identity::IdentityEngine>;
-    let authz = std::sync::Arc::new(hearth::authz::EmbeddedAuthzEngine::new(
+    let authz = std::sync::Arc::new(hearth::rbac::EmbeddedRbacEngine::new(
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
-        hearth::authz::AuthzConfig::default(),
-    )) as std::sync::Arc<dyn hearth::authz::AuthorizationEngine>;
+        std::sync::Arc::clone(&clock),
+    )) as std::sync::Arc<dyn hearth::rbac::RbacEngine>;
     let email_service = std::sync::Arc::new(
         hearth::identity::email::EmailService::new(
             std::sync::Arc::new(hearth::identity::email::LoggingEmailSender::new()),
@@ -320,14 +318,17 @@ async fn complete_setup_targets_system_realm() {
         outcome.verification_url
     );
 
-    // The admin Zanzibar tuple is present in the system realm.
-    let obj = ObjectRef::new("hearth", "admin").expect("obj");
-    let sub =
-        SubjectRef::direct("user", &outcome.admin_user_id.as_uuid().to_string()).expect("sub");
-    let is_admin = authz
-        .check(&system_realm_id(), &obj, "admin", &sub, None)
-        .expect("check");
-    assert!(is_admin, "admin tuple must be written in the system realm");
+    // The admin user has the hearth.admin permission in the system realm.
+    let resolved = authz
+        .resolve_permissions(&outcome.admin_user_id, &system_realm_id(), None, None)
+        .expect("resolve");
+    assert!(
+        resolved
+            .permissions
+            .iter()
+            .any(|p| p.as_str() == "hearth.admin"),
+        "admin user must carry hearth.admin permission in the system realm"
+    );
 }
 
 // ===== Scenario: admin routes exist and resolve to system realm =====
@@ -360,10 +361,10 @@ async fn admin_login_route_renders_form() {
         )
         .expect("identity"),
     ) as std::sync::Arc<dyn hearth::identity::IdentityEngine>;
-    let authz = std::sync::Arc::new(hearth::authz::EmbeddedAuthzEngine::new(
+    let authz = std::sync::Arc::new(hearth::rbac::EmbeddedRbacEngine::new(
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
-        hearth::authz::AuthzConfig::default(),
-    )) as std::sync::Arc<dyn hearth::authz::AuthorizationEngine>;
+        std::sync::Arc::clone(&clock),
+    )) as std::sync::Arc<dyn hearth::rbac::RbacEngine>;
     let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
         std::sync::Arc::clone(&clock),
@@ -460,10 +461,10 @@ async fn admin_setup_verify_login_end_to_end() {
         )
         .expect("identity"),
     ) as std::sync::Arc<dyn hearth::identity::IdentityEngine>;
-    let authz = std::sync::Arc::new(hearth::authz::EmbeddedAuthzEngine::new(
+    let authz = std::sync::Arc::new(hearth::rbac::EmbeddedRbacEngine::new(
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
-        hearth::authz::AuthzConfig::default(),
-    )) as std::sync::Arc<dyn hearth::authz::AuthorizationEngine>;
+        std::sync::Arc::clone(&clock),
+    )) as std::sync::Arc<dyn hearth::rbac::RbacEngine>;
     let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
         std::sync::Arc::clone(&clock),
@@ -640,10 +641,10 @@ async fn admin_target_cookie_persists_across_requests() {
         )
         .expect("identity"),
     ) as std::sync::Arc<dyn hearth::identity::IdentityEngine>;
-    let authz = std::sync::Arc::new(hearth::authz::EmbeddedAuthzEngine::new(
+    let authz = std::sync::Arc::new(hearth::rbac::EmbeddedRbacEngine::new(
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
-        hearth::authz::AuthzConfig::default(),
-    )) as std::sync::Arc<dyn hearth::authz::AuthorizationEngine>;
+        std::sync::Arc::clone(&clock),
+    )) as std::sync::Arc<dyn hearth::rbac::RbacEngine>;
     let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
         std::sync::Arc::clone(&clock),

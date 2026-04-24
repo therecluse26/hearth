@@ -2,10 +2,8 @@ import type {
   AuthorizeParams,
   AuthorizeResponse,
   BootstrapResponse,
-  CapabilityBundle,
-  CheckRequestItem,
-  CheckResponse,
   JwksDocument,
+  MePermissionsResponse,
   RegisterClientParams,
   OAuthClient,
   TokenExchangeParams,
@@ -34,7 +32,7 @@ export interface HearthClientConfig {
  * TypeScript client for the Hearth identity API.
  *
  * Wraps the Hearth HTTP API for auth code flows, token management,
- * and JWKS retrieval.
+ * JWKS retrieval, and live RBAC claim resolution.
  */
 export class HearthClient {
   private readonly baseUrl: string;
@@ -101,61 +99,24 @@ export class HearthClient {
   }
 
   /**
-   * POST /v1/authz/check — batch permission check.
+   * GET /v1/me/permissions — fetch the freshly-resolved RBAC claim set
+   * for the bearer-token user.
    *
-   * The subject is always the bearer-token user; only `(object, relation)`
-   * pairs are supplied by the caller. Pass the zookie from a previous
-   * mutation via `options.zookie` to guarantee read-after-write consistency.
+   * Unlike `hasPermission()` on a `createHearth()` client (which reads
+   * the cached set from the JWT), this call queries the server and
+   * reflects any role/group assignments made since the token was issued.
    */
-  async check(
-    accessToken: string,
-    checks: CheckRequestItem[],
-    options: { zookie?: number } = {},
-  ): Promise<CheckResponse> {
-    const body: Record<string, unknown> = { checks };
-    if (options.zookie !== undefined) {
-      body.at_least_as_fresh_as = options.zookie;
-    }
-    const resp = await fetch(`${this.baseUrl}/v1/authz/check`, {
-      method: "POST",
+  async permissions(accessToken: string): Promise<MePermissionsResponse> {
+    const resp = await fetch(`${this.baseUrl}/v1/me/permissions`, {
       headers: {
-        "Content-Type": "application/json",
         "X-Realm-ID": this.realmId,
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify(body),
     });
     if (!resp.ok) {
       throw new HearthError(resp.status, await resp.json());
     }
-    return resp.json() as Promise<CheckResponse>;
-  }
-
-  /**
-   * GET /v1/me/capabilities — fetch the capability bundle for the named page.
-   *
-   * `page` selects a server-configured capability page; `params` resolve
-   * `{var}` placeholders in the page's object templates.
-   */
-  async capabilities(
-    accessToken: string,
-    page: string,
-    params: Record<string, string> = {},
-  ): Promise<CapabilityBundle> {
-    const query = new URLSearchParams({ page, ...params });
-    const resp = await fetch(
-      `${this.baseUrl}/v1/me/capabilities?${query.toString()}`,
-      {
-        headers: {
-          "X-Realm-ID": this.realmId,
-          Authorization: `Bearer ${accessToken}`,
-        },
-      },
-    );
-    if (!resp.ok) {
-      throw new HearthError(resp.status, await resp.json());
-    }
-    return resp.json() as Promise<CapabilityBundle>;
+    return resp.json() as Promise<MePermissionsResponse>;
   }
 
   /** GET /userinfo — retrieve user claims using an access token. */

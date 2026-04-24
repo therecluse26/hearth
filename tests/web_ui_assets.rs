@@ -12,7 +12,6 @@ use std::sync::Arc;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
 use hearth::core::SystemClock;
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
@@ -20,6 +19,7 @@ use hearth::identity::{
     CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
 };
 use hearth::protocol::web::{self, assert_app_css_sane, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig};
 use tower::ServiceExt;
 
@@ -57,10 +57,10 @@ fn minimal_web_state() -> WebState {
         )
         .expect("identity"),
     ) as Arc<dyn hearth::identity::IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn hearth::authz::AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn hearth::rbac::RbacEngine>;
     let audit = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
         Arc::clone(&clock),
@@ -142,8 +142,8 @@ async fn app_css_route_serves_theme_layer_with_var_references() {
 /// `app.css` loaded.
 #[tokio::test]
 async fn theme_css_route_always_emits_root_block() {
-    let state =
-        minimal_web_state().with_theme_css(hearth::protocol::web::themes::theme_css("ember").to_string());
+    let state = minimal_web_state()
+        .with_theme_css(hearth::protocol::web::themes::theme_css("ember").to_string());
     let app = web::router(state);
     let req = Request::builder()
         .uri("/ui/static/theme.css")
@@ -153,7 +153,10 @@ async fn theme_css_route_always_emits_root_block() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_str(resp).await;
 
-    assert!(body.contains(":root {"), "theme.css must include a :root block");
+    assert!(
+        body.contains(":root {"),
+        "theme.css must include a :root block"
+    );
     assert!(
         body.contains("--ht-surface-base"),
         "theme.css must define --ht-surface-base — customer overrides anchor here"

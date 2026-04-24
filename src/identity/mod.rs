@@ -124,9 +124,9 @@ pub trait IdentityEngine: Send + Sync {
     /// Creates a new user record in the reserved system realm.
     ///
     /// This is the only public entry point that writes into the system
-    /// realm. It does *not* grant the `hearth#admin` authz relation —
+    /// realm. It does *not* grant the `realm.admin` RBAC role —
     /// callers (onboarding, admin UI) must issue the corresponding
-    /// `write_tuples` call themselves so the two writes sit next to each
+    /// `assign_role` call themselves so the two writes sit next to each
     /// other at the call site rather than hidden inside the engine.
     fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError>;
 
@@ -779,8 +779,8 @@ pub trait IdentityEngine: Send + Sync {
     /// Deletes an organization and all associated data.
     ///
     /// Cascading deletion removes all memberships (forward + reverse indexes),
-    /// invitations (primary + token + email dedup + list indexes), Zanzibar
-    /// tuples, slug index, and the org record. Idempotent.
+    /// invitations (primary + token + email dedup + list indexes), RBAC
+    /// role assignments, slug index, and the org record. Idempotent.
     fn delete_organization(
         &self,
         realm_id: &RealmId,
@@ -799,7 +799,7 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// Creates bidirectional membership indexes (org→user and user→org).
     /// If an authorization engine is configured, writes the corresponding
-    /// Zanzibar tuples atomically.
+    /// RBAC role assignments atomically.
     fn add_member(
         &self,
         realm_id: &RealmId,
@@ -812,7 +812,7 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// Enforces last-owner protection: if the user is the sole Owner,
     /// returns `Err(LastOwner)`. Deletes both membership indexes and
-    /// any Zanzibar tuples.
+    /// any RBAC role assignments.
     fn remove_member(
         &self,
         realm_id: &RealmId,
@@ -823,7 +823,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Updates a member's role within an organization.
     ///
     /// Enforces last-owner protection when downgrading from Owner.
-    /// Updates both membership indexes and Zanzibar tuples atomically.
+    /// Updates both membership indexes and RBAC role assignments atomically.
     fn update_member_role(
         &self,
         realm_id: &RealmId,

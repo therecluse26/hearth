@@ -3,31 +3,32 @@ package hearth
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"strings"
 )
 
 // Client is a Go client for the Hearth identity API.
 type Client struct {
-	baseURL  string
+	baseURL string
 	realmID string
-	http     *http.Client
+	http    *http.Client
 }
 
 // NewClient creates a new Hearth client.
 func NewClient(baseURL, realmID string) *Client {
 	return &Client{
-		baseURL:  baseURL,
+		baseURL: baseURL,
 		realmID: realmID,
-		http:     &http.Client{},
+		http:    &http.Client{},
 	}
 }
 
 // Bootstrap calls POST /admin/bootstrap in dev mode.
-// It creates a realm, admin user, session, and admin tuple.
+// It creates a realm, admin user, session, and admin role assignment.
 func Bootstrap(ctx context.Context, baseURL string) (*BootstrapResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/admin/bootstrap", nil)
 	if err != nil {
@@ -84,57 +85,93 @@ func (c *Client) RefreshTokens(ctx context.Context, clientID, refreshToken strin
 	return &result, nil
 }
 
-// CheckOptions are optional parameters for Check.
-type CheckOptions struct {
-	// Zookie, if non-nil, is sent as at_least_as_fresh_as for
-	// read-after-write consistency.
-	Zookie *uint64
+// rbacClaims mirrors the RBAC-relevant subset of Hearth TokenClaims.
+// Only fields required by HasPermission/HasRole/InGroup/InOrg are
+// decoded; everything else is ignored.
+type rbacClaims struct {
+	Permissions []string `json:"permissions"`
+	Roles       []string `json:"roles"`
+	Groups      []string `json:"groups"`
+	OID         string   `json:"oid"`
 }
 
-// Check performs a batch permission check for the bearer-token user.
-// The subject is always derived server-side from the access token; callers
-// cannot check permissions on behalf of another user.
-func (c *Client) Check(ctx context.Context, accessToken string, checks []CheckRequestItem, opts *CheckOptions) (*CheckResponse, error) {
-	body := map[string]any{"checks": checks}
-	if opts != nil && opts.Zookie != nil {
-		body["at_least_as_fresh_as"] = *opts.Zookie
+// decodeClaims returns the parsed RBAC claim set from a JWT's middle
+// segment. The signature is NOT verified — the app trusts its own
+// token. Returns nil when the token is absent, malformed, or the
+// claim segment fails to decode / parse.
+func decodeClaims(token string) *rbacClaims {
+	if token == "" {
+		return nil
 	}
-	jsonBody, err := json.Marshal(body)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, err
+		// Some issuers produce padded base64url; try the padded variant.
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return nil
+		}
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/authz/check", bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, err
+	var claims rbacClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Realm-ID", c.realmID)
-	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
-
-	var result CheckResponse
-	if err := doRequest(c.http, httpReq, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return &claims
 }
 
-// Capabilities fetches a named capability bundle for the bearer-token user.
-// The params map resolves "{var}" placeholders in the server-configured
-// object templates for the page.
-func (c *Client) Capabilities(ctx context.Context, accessToken, page string, params map[string]string) (*CapabilityBundle, error) {
-	query := url.Values{}
-	query.Set("page", page)
-	for k, v := range params {
-		query.Set(k, v)
+func contains(haystack []string, needle string) bool {
+	for _, v := range haystack {
+		if v == needle {
+			return true
+		}
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/v1/me/capabilities?"+query.Encode(), nil)
+	return false
+}
+
+// HasPermission returns true iff the JWT's `permissions` claim contains
+// the given permission. Decoding is local — no network call. Returns
+// false for an empty or malformed token.
+func (c *Client) HasPermission(token, permission string) bool {
+	claims := decodeClaims(token)
+	return claims != nil && contains(claims.Permissions, permission)
+}
+
+// HasRole returns true iff the JWT's `roles` claim contains the given
+// role. Decoding is local.
+func (c *Client) HasRole(token, role string) bool {
+	claims := decodeClaims(token)
+	return claims != nil && contains(claims.Roles, role)
+}
+
+// InGroup returns true iff the JWT's `groups` claim contains the given
+// group slug. Decoding is local.
+func (c *Client) InGroup(token, groupSlug string) bool {
+	claims := decodeClaims(token)
+	return claims != nil && contains(claims.Groups, groupSlug)
+}
+
+// InOrg returns true iff the JWT's `oid` claim equals the given org
+// ID. Decoding is local.
+func (c *Client) InOrg(token, orgID string) bool {
+	claims := decodeClaims(token)
+	return claims != nil && claims.OID == orgID && orgID != ""
+}
+
+// Permissions fetches the freshly-resolved permission set via
+// GET /v1/me/permissions. Returns the claim set as the server resolves
+// it right now — not the possibly-stale set baked into the JWT.
+func (c *Client) Permissions(ctx context.Context, token string) (*MePermissionsResponse, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/v1/me/permissions", nil)
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("X-Realm-ID", c.realmID)
-	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 
-	var result CapabilityBundle
+	var result MePermissionsResponse
 	if err := doRequest(c.http, httpReq, &result); err != nil {
 		return nil, err
 	}
@@ -161,7 +198,7 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfoRes
 func (c *Client) Admin(accessToken string) *AdminClient {
 	return &AdminClient{
 		baseURL:     c.baseURL,
-		realmID:    c.realmID,
+		realmID:     c.realmID,
 		accessToken: accessToken,
 		http:        c.http,
 	}

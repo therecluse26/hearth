@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::authz::AuthorizationEngine;
 use crate::config::{
     ApplicationYamlConfig, AuthConfig, Config, FederationProviderYaml, FederationYamlConfig,
     OrganizationYamlConfig, RealmYamlConfig,
@@ -30,6 +29,7 @@ use crate::identity::{
     CreateOrganizationRequest, CreateRealmRequest, IdentityEngine, ImportClientRequest,
     OrganizationConfig, RealmConfig, RealmStatus, UpdateOrganizationRequest, UpdateRealmRequest,
 };
+use crate::rbac::RbacEngine;
 
 /// Report of what realm reconciliation did.
 #[derive(Debug, Default)]
@@ -99,7 +99,7 @@ pub enum OrgReconcileAction {
 /// caller should retry on next startup.
 pub fn reconcile_realms(
     engine: &dyn IdentityEngine,
-    authz: &dyn AuthorizationEngine,
+    rbac: &dyn RbacEngine,
     config: &Config,
 ) -> Result<ReconcileReport, IdentityError> {
     let mut report = ReconcileReport::default();
@@ -115,30 +115,29 @@ pub fn reconcile_realms(
                     name: "default".to_string(),
                     config: Some(realm_config),
                 })?;
-                install_preset_or_log(authz, realm.id(), "default");
+                seed_realm_or_log(rbac, realm.id(), "default");
                 report.created.push("default".to_string());
             }
             // If realms exist, skip reconciliation (backward compat)
         }
         Some(yaml_realms) => {
-            reconcile_declared_realms(engine, authz, yaml_realms, config, &mut report)?;
+            reconcile_declared_realms(engine, rbac, yaml_realms, config, &mut report)?;
         }
     }
 
     Ok(report)
 }
 
-/// Installs the Roles & Permissions preset namespace on a freshly created
-/// realm, logging (but not failing) if the install errors. The realm record
-/// is already durable at this point; a missing namespace is recoverable
-/// (the next visit to the Roles UI would install it), so we prefer a log
-/// over aborting reconciliation mid-run.
-fn install_preset_or_log(authz: &dyn AuthorizationEngine, realm_id: &RealmId, realm_name: &str) {
-    if let Err(e) = crate::authz::ensure_preset_namespace(authz, realm_id) {
+/// Seeds default roles, permissions, and scopes on a freshly created realm,
+/// logging (but not failing) if the seed errors. The realm record is already
+/// durable at this point; a missing seed is recoverable (seed_realm is
+/// idempotent), so we prefer a log over aborting reconciliation mid-run.
+fn seed_realm_or_log(rbac: &dyn RbacEngine, realm_id: &RealmId, realm_name: &str) {
+    if let Err(e) = rbac.seed_realm(realm_id) {
         tracing::warn!(
             realm = realm_name,
             error = %e,
-            "failed to install preset authz namespace on new realm"
+            "failed to seed RBAC defaults on new realm"
         );
     }
 }
@@ -146,7 +145,7 @@ fn install_preset_or_log(authz: &dyn AuthorizationEngine, realm_id: &RealmId, re
 /// Reconciles a declared `realms:` map.
 fn reconcile_declared_realms(
     engine: &dyn IdentityEngine,
-    authz: &dyn AuthorizationEngine,
+    rbac: &dyn RbacEngine,
     yaml_realms: &HashMap<String, RealmYamlConfig>,
     config: &Config,
     report: &mut ReconcileReport,
@@ -176,7 +175,7 @@ fn reconcile_declared_realms(
                     name: name.clone(),
                     config: Some(realm_config),
                 })?;
-                install_preset_or_log(authz, realm.id(), name);
+                seed_realm_or_log(rbac, realm.id(), name);
                 report.created.push(name.clone());
                 realm.id().clone()
             }

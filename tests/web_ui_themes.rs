@@ -17,7 +17,6 @@ use std::sync::Arc;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
 use hearth::core::RealmId;
 use hearth::core::SystemClock;
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
@@ -26,6 +25,7 @@ use hearth::identity::{
     CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -73,10 +73,10 @@ fn minimal_web_state() -> WebState {
         )
         .expect("identity"),
     ) as Arc<dyn hearth::identity::IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn hearth::authz::AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn hearth::rbac::RbacEngine>;
     let audit = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
         Arc::clone(&clock),

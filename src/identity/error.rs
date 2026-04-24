@@ -301,6 +301,23 @@ pub enum IdentityError {
         /// Description of the serialization failure.
         reason: String,
     },
+    /// An internal engine-layer failure that does not map to any more
+    /// specific variant. Used e.g. when RBAC resolution reports an
+    /// unexpected error during token issuance.
+    Internal {
+        /// Sanitized description of what went wrong.
+        reason: String,
+    },
+    /// Token issuance aborted because the resolved claim set exceeds a
+    /// configured size bound from `AUTHORIZATION.md § 2.6`.
+    TokenTooLarge {
+        /// Name of the specific limit that was exceeded.
+        limit: String,
+        /// Configured maximum for this limit.
+        limit_value: usize,
+        /// The size actually produced at resolve time.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for IdentityError {
@@ -426,6 +443,15 @@ impl fmt::Display for IdentityError {
             }
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
+            Self::Internal { reason } => write!(f, "internal error: {reason}"),
+            Self::TokenTooLarge {
+                limit,
+                limit_value,
+                actual,
+            } => write!(
+                f,
+                "resolved claim set exceeds size limit {limit} ({actual} > {limit_value})"
+            ),
         }
     }
 }
@@ -512,7 +538,9 @@ impl std::error::Error for IdentityError {
             | Self::SamlInvalidAuthnRequest { .. }
             | Self::SystemRealmProtected { .. }
             | Self::DuplicateScimExternalId
-            | Self::Serialization { .. } => None,
+            | Self::Serialization { .. }
+            | Self::Internal { .. }
+            | Self::TokenTooLarge { .. } => None,
         }
     }
 }

@@ -6,9 +6,9 @@
 use tonic::metadata::MetadataMap;
 use tonic::{Code, Status};
 
-use crate::authz::AuthzError;
 use crate::core::RealmId;
 use crate::identity::IdentityError;
+use crate::rbac::RbacError;
 
 /// Metadata key carrying the target realm for admin calls.
 pub const REALM_ID_META_KEY: &str = "x-realm-id";
@@ -96,14 +96,15 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::DeviceCodeExpired
         | IdentityError::DeviceCodeDenied
         | IdentityError::TokenRevoked => (Code::FailedPrecondition, err.to_string()),
-        IdentityError::RateLimited | IdentityError::MemberLimitReached => {
-            (Code::ResourceExhausted, err.to_string())
-        }
+        IdentityError::RateLimited
+        | IdentityError::MemberLimitReached
+        | IdentityError::TokenTooLarge { .. } => (Code::ResourceExhausted, err.to_string()),
         IdentityError::Storage(_)
         | IdentityError::Serialization { .. }
         | IdentityError::SigningError { .. }
         | IdentityError::FederationUpstreamError { .. }
-        | IdentityError::SamlMetadataFetch { .. } => {
+        | IdentityError::SamlMetadataFetch { .. }
+        | IdentityError::Internal { .. } => {
             tracing::error!(error = %err, "internal gRPC error");
             (Code::Internal, "internal error".to_string())
         }
@@ -111,20 +112,32 @@ pub fn identity_to_status(err: IdentityError) -> Status {
     Status::new(code, msg)
 }
 
-/// Maps an [`AuthzError`] to a [`tonic::Status`].
+/// Maps an [`RbacError`] to a [`tonic::Status`].
 #[must_use]
-pub fn authz_to_status(err: AuthzError) -> Status {
+pub fn rbac_to_status(err: RbacError) -> Status {
     match err {
-        AuthzError::InvalidTuple { reason } | AuthzError::InvalidReference { reason } => {
-            Status::new(Code::InvalidArgument, reason)
+        RbacError::RoleNotFound | RbacError::GroupNotFound | RbacError::AssignmentNotFound => {
+            Status::new(Code::NotFound, err.to_string())
         }
-        AuthzError::MaxDepthExceeded => Status::new(Code::ResourceExhausted, err.to_string()),
-        AuthzError::PreconditionFailed { reason } | AuthzError::InvalidNamespace { reason } => {
-            Status::new(Code::FailedPrecondition, reason)
+        RbacError::DuplicateRoleName | RbacError::DuplicateGroupSlug => {
+            Status::new(Code::AlreadyExists, err.to_string())
         }
-        AuthzError::Unauthorized { reason } => Status::new(Code::PermissionDenied, reason),
-        AuthzError::Storage(e) => {
-            tracing::error!(error = %e, "authz storage error");
+        RbacError::InvalidPermission { .. }
+        | RbacError::InvalidRoleName { .. }
+        | RbacError::InvalidGroupSlug { .. } => Status::new(Code::InvalidArgument, err.to_string()),
+        RbacError::CycleDetected { .. } => Status::new(Code::FailedPrecondition, err.to_string()),
+        RbacError::DepthExceeded { .. }
+        | RbacError::BreadthExceeded { .. }
+        | RbacError::TokenSizeExceeded { .. } => {
+            Status::new(Code::ResourceExhausted, err.to_string())
+        }
+        RbacError::ReservedNamespace { .. } => Status::new(Code::PermissionDenied, err.to_string()),
+        RbacError::Storage(e) => {
+            tracing::error!(error = %e, "rbac storage error");
+            Status::new(Code::Internal, "internal error")
+        }
+        RbacError::Serialization { .. } => {
+            tracing::error!(error = %err, "rbac serialization error");
             Status::new(Code::Internal, "internal error")
         }
     }

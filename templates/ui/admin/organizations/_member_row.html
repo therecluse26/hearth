@@ -26,9 +26,9 @@
   </td>
   <td class="px-3 py-2 text-right">
     <div class="flex items-center justify-end gap-3">
-      <a href="/ui/admin/authz/debug?object_type=organization&object_id={{ org.id().as_uuid() }}&relation=viewer&subject_type=user&subject_id={{ m.membership.user_id().as_uuid() }}"
+      <a href="/ui/admin/rbac/debug?user_id={{ m.membership.user_id().as_uuid() }}&org_id={{ org.id().as_uuid() }}"
          class="text-xs text-ht-content-muted hover:text-ht-content-secondary"
-         title="Open authz debugger pre-filled for this member">Check access</a>
+         title="Open permission resolver pre-filled for this member">Check access</a>
       <form hx-post="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/{{ m.membership.user_id().as_uuid() }}/remove"
             hx-target="closest tr"
             hx-swap="outerHTML"

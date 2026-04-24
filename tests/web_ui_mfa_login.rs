@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use hearth::authz::{AuthzConfig, EmbeddedAuthzEngine};
 use hearth::core::{Clock, RealmId, SystemClock, UserId};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
@@ -26,6 +25,7 @@ use hearth::identity::{
     EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, UpdateUserRequest, UserStatus,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -74,9 +74,9 @@ fn build_rig() -> TestRig {
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
+        Arc::clone(&clock),
     ));
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
@@ -120,13 +120,13 @@ fn build_rig() -> TestRig {
 
     let onboarding = Arc::new(OnboardingService::new(
         Arc::clone(&identity),
-        authz.clone() as Arc<dyn hearth::authz::AuthorizationEngine>,
+        authz.clone() as Arc<dyn hearth::rbac::RbacEngine>,
         null_email_service(),
         data_dir,
     ));
     let state = WebState::new(
         Arc::clone(&identity),
-        authz as Arc<dyn hearth::authz::AuthorizationEngine>,
+        authz as Arc<dyn hearth::rbac::RbacEngine>,
         audit as Arc<dyn hearth::audit::AuditEngine>,
         onboarding,
         CookieSecret::from_bytes(COOKIE_SECRET_BYTES),

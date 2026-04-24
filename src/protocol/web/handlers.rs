@@ -1457,21 +1457,20 @@ pub async fn dashboard(
     })
 }
 
-/// Returns `true` iff the signed-in user has the `hearth#admin`
-/// relation. Non-fatal on authz errors — the caller treats those as
-/// "not admin" so the UI degrades gracefully.
+/// Returns `true` iff the signed-in user has the `hearth.admin` permission.
+/// Non-fatal on RBAC errors — the caller treats those as "not admin" so
+/// the UI degrades gracefully.
 pub(crate) fn is_admin(state: &WebState, session: &super::auth::UiSession) -> bool {
-    // INVARIANT: "hearth"/"admin" and "user"/<uuid> are valid ObjectRef /
-    // SubjectRef components (ASCII + UUID respectively).
-    #[allow(clippy::unwrap_used)]
-    let object = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subject =
-        crate::authz::SubjectRef::direct("user", &session.user_id.as_uuid().to_string()).unwrap();
-    state
-        .authz
-        .check(&session.realm_id, &object, "admin", &subject, None)
-        .unwrap_or(false)
+    match state
+        .rbac
+        .resolve_permissions(&session.user_id, &session.realm_id, None, None)
+    {
+        Ok(resolved) => resolved
+            .permissions
+            .iter()
+            .any(|p| p.as_str() == "hearth.admin"),
+        Err(_) => false,
+    }
 }
 
 // ============================================================================

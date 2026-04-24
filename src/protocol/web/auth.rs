@@ -774,7 +774,7 @@ fn percent_decode(input: &str) -> String {
 }
 
 /// Like [`UiSession`] but additionally requires the caller has the
-/// `hearth#admin` relation in Zanzibar.
+/// `hearth.admin` permission claim.
 #[derive(Debug, Clone)]
 pub struct RequireAdmin(pub UiSession);
 
@@ -801,18 +801,15 @@ where
             ));
         }
 
-        // INVARIANT: "hearth"/"admin"/"user" are valid ObjectRef
-        // components (short ASCII strings).
-        #[allow(clippy::unwrap_used)]
-        let object = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
-        #[allow(clippy::unwrap_used)]
-        let subject =
-            crate::authz::SubjectRef::direct("user", &session.user_id.as_uuid().to_string())
-                .unwrap();
-
-        let is_admin = web_state
-            .authz
-            .check(&session.realm_id, &object, "admin", &subject, None)
+        // Resolve the user's current permissions against the RBAC engine
+        // (not the JWT claims) — session cookies don't carry claims, so
+        // we check freshly at every admin request.
+        let resolved = web_state
+            .rbac
+            .resolve_permissions(&session.user_id, &session.realm_id, None, None)
+            .ok();
+        let is_admin = resolved
+            .map(|r| r.permissions.iter().any(|p| p.as_str() == "hearth.admin"))
             .unwrap_or(false);
 
         if is_admin {

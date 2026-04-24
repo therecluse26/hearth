@@ -2,7 +2,7 @@
 //!
 //! These tests exercise the full pipeline end-to-end: JSON parse →
 //! `KeycloakImporter::import_realm` → verify migrated artifacts through
-//! the public `IdentityEngine` + `AuthorizationEngine` APIs.
+//! the public `IdentityEngine` + `RbacEngine` APIs.
 //!
 //! Fixtures live under `tests/fixtures/keycloak/`; credentials in the
 //! fixtures are real (we generated them with `pbkdf2_hmac<Sha256>`) so
@@ -11,12 +11,12 @@
 use std::sync::Arc;
 
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, SubjectRef};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::migration::{ImportOptions, KeycloakImporter};
 use hearth::identity::{
     CleartextPassword, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
 };
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 const REALM_FIXTURE: &str = include_str!("fixtures/keycloak/realm-export.json");
@@ -25,7 +25,7 @@ const REALM_FIXTURE: &str = include_str!("fixtures/keycloak/realm-export.json");
 /// because `KeycloakImporter::new` wants `Arc<dyn ...>`.
 fn build_engines() -> (
     Arc<dyn IdentityEngine>,
-    Arc<dyn AuthorizationEngine>,
+    Arc<dyn RbacEngine>,
     tempfile::TempDir,
 ) {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -33,12 +33,13 @@ fn build_engines() -> (
     let storage: Arc<dyn StorageEngine> =
         Arc::new(EmbeddedStorageEngine::open(config).expect("storage"));
 
-    let authz: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
+    let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+
+    let authz: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage),
-        AuthzConfig::default(),
+        Arc::clone(&clock),
     ));
 
-    let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
     let identity_config = IdentityConfig {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
@@ -82,7 +83,7 @@ async fn imports_minimal_realm_and_reports_correct_counts() {
     assert_eq!(report.users_with_skipped_credentials, 1);
     assert_eq!(report.clients_imported, 1);
     // alice: admin + member; bob: member → 3 tuples.
-    assert_eq!(report.tuples_written, 3);
+    assert_eq!(report.role_assignments_written, 3);
 
     // And at least one warning explains the skipped credential.
     assert!(
@@ -135,14 +136,14 @@ async fn migrated_pbkdf2_password_verifies_natively() {
     assert!(!wrong, "wrong password must not verify");
 }
 
-// ===== Scenario 3: Role → Zanzibar tuple mapping =====
+// ===== Scenario 3: Role → RBAC assignment mapping =====
 //
-// Keycloak realm roles become relations on `realm:<realm_id>`. A
-// `check()` for a user→role assignment must return true; an unassigned
-// user→role must return false.
+// Keycloak realm roles become RBAC role assignments scoped to the
+// imported realm. A `check()` for a user→role assignment must return
+// true; an unassigned user→role must return false.
 
 #[tokio::test]
-async fn realm_roles_become_zanzibar_tuples() {
+async fn realm_roles_become_rbac_assignments() {
     let (identity, authz, _temp) = build_engines();
     let importer = KeycloakImporter::new(Arc::clone(&identity), Arc::clone(&authz));
     let export = KeycloakImporter::parse(REALM_FIXTURE.as_bytes()).expect("parse fixture");
@@ -160,30 +161,39 @@ async fn realm_roles_become_zanzibar_tuples() {
         .expect("lookup bob")
         .expect("bob exists");
 
-    let realm_obj = ObjectRef::new("realm", &realm_id.as_uuid().to_string()).expect("object");
-    let alice_subj = SubjectRef::direct("user", &alice.id().as_uuid().to_string()).expect("subj");
-    let bob_subj = SubjectRef::direct("user", &bob.id().as_uuid().to_string()).expect("subj");
-
-    // alice is admin
-    let alice_admin = authz
-        .check(&realm_id, &realm_obj, "admin", &alice_subj, None)
-        .expect("check");
-    assert!(alice_admin, "alice should have admin role");
-
-    // bob is not admin
-    let bob_admin = authz
-        .check(&realm_id, &realm_obj, "admin", &bob_subj, None)
-        .expect("check");
-    assert!(!bob_admin, "bob should NOT have admin role");
-
-    // both are members
-    let alice_member = authz
-        .check(&realm_id, &realm_obj, "member", &alice_subj, None)
-        .expect("check");
-    let bob_member = authz
-        .check(&realm_id, &realm_obj, "member", &bob_subj, None)
-        .expect("check");
-    assert!(alice_member && bob_member, "both users should be members");
+    // Alice has admin, bob doesn't. Use list_user_assignments + role lookup.
+    let admin_role = authz
+        .get_role_by_name(&realm_id, "admin")
+        .expect("lookup")
+        .expect("admin role created by importer");
+    let member_role = authz
+        .get_role_by_name(&realm_id, "member")
+        .expect("lookup")
+        .expect("member role created by importer");
+    let alice_assignments = authz
+        .list_user_assignments(&realm_id, alice.id())
+        .expect("list alice");
+    let bob_assignments = authz
+        .list_user_assignments(&realm_id, bob.id())
+        .expect("list bob");
+    assert!(
+        alice_assignments.iter().any(|a| a.role_id == admin_role.id),
+        "alice should have admin role"
+    );
+    assert!(
+        !bob_assignments.iter().any(|a| a.role_id == admin_role.id),
+        "bob should NOT have admin role"
+    );
+    assert!(
+        alice_assignments
+            .iter()
+            .any(|a| a.role_id == member_role.id),
+        "alice should be a member"
+    );
+    assert!(
+        bob_assignments.iter().any(|a| a.role_id == member_role.id),
+        "bob should be a member"
+    );
 }
 
 // ===== Scenario 4: Skipped-credential user still imports =====

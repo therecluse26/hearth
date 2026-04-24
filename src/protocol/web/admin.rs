@@ -1055,7 +1055,7 @@ fn audit_user_event(
 /// Emits a `RoleAssigned` or `RoleRevoked` audit event for a realm-level
 /// role change.
 ///
-/// Logged-only on failure: role mutations are already durable in the authz
+/// Logged-only on failure: role mutations are already durable in the RBAC
 /// engine by the time this is called, so an audit failure must not overturn
 /// the operator's action. Downstream readers should treat missing audit
 /// entries as observability gaps, not authority gaps.
@@ -1567,22 +1567,22 @@ struct SessionListTemplate {
 }
 
 /// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
-/// Checks if a specific user has the `hearth#admin` role.
+/// Checks if a specific user has the `hearth.admin` permission.
 fn check_user_admin(
     state: &Arc<WebState>,
     realm_id: &RealmId,
     user_id: &crate::core::UserId,
 ) -> bool {
-    // INVARIANT: "hearth"/"admin" and "user"/<uuid> are valid ObjectRef /
-    // SubjectRef components (ASCII + UUID respectively).
-    #[allow(clippy::unwrap_used)]
-    let obj = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subj = crate::authz::SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
-    state
-        .authz
-        .check(realm_id, &obj, "admin", &subj, None)
-        .unwrap_or(false)
+    match state
+        .rbac
+        .resolve_permissions(user_id, realm_id, None, None)
+    {
+        Ok(resolved) => resolved
+            .permissions
+            .iter()
+            .any(|p| p.as_str() == "hearth.admin"),
+        Err(_) => false,
+    }
 }
 
 /// Resolves the list of organizations a user belongs to (for display on the user edit page).
@@ -1618,27 +1618,42 @@ fn resolve_user_org_memberships(
         .collect()
 }
 
-/// Grants or revokes the `hearth#admin` role for a user.
+/// Grants or revokes the `realm.admin` role for a user.
+///
+/// Grant: seeds defaults (idempotent) and calls `assign_role` with the
+/// seed `realm.admin` role.
+/// Revoke: enumerates the user's assignments and removes every
+/// `realm.admin` binding.
 fn set_user_admin(
     state: &Arc<WebState>,
     realm_id: &RealmId,
     user_id: &crate::core::UserId,
     grant: bool,
-) -> Result<(), crate::authz::AuthzError> {
-    use crate::authz::{RelationshipTuple, TupleWrite};
-    // INVARIANT: same as check_user_admin
-    #[allow(clippy::unwrap_used)]
-    let obj = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subj = crate::authz::SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
-    #[allow(clippy::unwrap_used)]
-    let tuple = RelationshipTuple::new(obj, "admin", subj).unwrap();
-    let op = if grant {
-        TupleWrite::Touch(tuple)
+) -> Result<(), crate::rbac::RbacError> {
+    state.rbac.seed_realm(realm_id)?;
+    let role = state
+        .rbac
+        .get_role_by_name(realm_id, "realm.admin")?
+        .ok_or(crate::rbac::RbacError::RoleNotFound)?;
+    if grant {
+        state.rbac.assign_role(
+            realm_id,
+            &crate::rbac::AssignRoleRequest {
+                subject: crate::rbac::Subject::User(user_id.clone()),
+                role_id: role.id.clone(),
+                scope: crate::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )?;
     } else {
-        TupleWrite::Delete(tuple)
-    };
-    state.authz.write_tuples(realm_id, &[op])?;
+        // Revoke every (user, role=realm.admin) assignment.
+        let assignments = state.rbac.list_user_assignments(realm_id, user_id)?;
+        for a in assignments {
+            if a.role_id == role.id {
+                state.rbac.unassign_role(realm_id, &a.id)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2837,9 +2852,8 @@ pub async fn admin_org_remove_member(
 
     let is_htmx = is_htmx_request(&headers);
 
-    // Capture the role before removal so we can issue the matching
-    // Zanzibar delete. If lookup fails, we still proceed with the
-    // legacy remove — mirroring is best-effort.
+    // Capture the role before removal so we can emit the matching
+    // audit event. If lookup fails, we still proceed with the remove.
     let prior_role = state
         .identity
         .get_membership(target.id(), &org_id, &user_id)
@@ -2988,8 +3002,8 @@ pub async fn admin_org_update_role(
 
     let new_role = parse_org_role(&form.role);
     let is_htmx = is_htmx_request(&headers);
-    // Capture the old role before update for the Zanzibar delete-old /
-    // touch-new pair. Mirror emits both halves as paired audit events.
+    // Capture the old role before update so we can emit paired
+    // role-removed / role-added audit events.
     let old_role = state
         .identity
         .get_membership(target.id(), &org_id, &user_id)
@@ -4236,46 +4250,52 @@ fn format_ts_admin(ts: crate::core::Timestamp) -> String {
 // Realm administrators (Roles & Permissions — Phase 3)
 // =========================================================================
 
-/// Resolves the list of users with the `hearth#admin` role on a realm.
+/// Resolves the list of users with the `realm.admin` role on a realm.
 ///
-/// Uses `authz.expand()` to enumerate direct subjects of the existing
-/// `hearth#admin` gate, then hydrates display fields via `identity.get_user`.
-/// Users whose records can no longer be loaded are silently omitted — the
-/// tuple is effectively orphaned and a stale display would confuse operators
-/// more than a missing row.
+/// Uses `rbac.list_role_members` on the seeded `realm.admin` role, then
+/// hydrates display fields via `identity.get_user`. Users whose records
+/// can no longer be loaded are silently omitted — the assignment is
+/// effectively orphaned and a stale display would confuse operators more
+/// than a missing row.
 fn resolve_realm_admins(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<RealmAdminView> {
-    #[allow(clippy::unwrap_used)]
-    let obj = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
-    let subjects = match state.authz.expand(realm_id, &obj, "admin", None) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "list realm admins: expand failed");
-            return Vec::new();
-        }
+    let Ok(Some(role)) = state.rbac.get_role_by_name(realm_id, "realm.admin") else {
+        return Vec::new();
     };
-
     let mut out = Vec::new();
-    for s in subjects {
-        let crate::authz::SubjectRef::Direct(direct) = s else {
-            continue;
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = match state
+            .rbac
+            .list_role_members(realm_id, &role.id, cursor.as_deref(), 100)
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "list realm admins: list_role_members failed");
+                return out;
+            }
         };
-        let Ok(uuid) = direct.object_id().parse::<uuid::Uuid>() else {
-            continue;
-        };
-        let uid = crate::core::UserId::new(uuid);
-        let Ok(Some(user)) = state.identity.get_user(realm_id, &uid) else {
-            continue;
-        };
-        let display_name = if user.display_name().is_empty() {
-            user.email().to_string()
-        } else {
-            user.display_name().to_string()
-        };
-        out.push(RealmAdminView {
-            user_id: uid.as_uuid().to_string(),
-            display_name,
-            email: user.email().to_string(),
-        });
+        for member in page.items {
+            let crate::rbac::RoleSubject::User(uid) = member else {
+                continue;
+            };
+            let Ok(Some(user)) = state.identity.get_user(realm_id, &uid) else {
+                continue;
+            };
+            let display_name = if user.display_name().is_empty() {
+                user.email().to_string()
+            } else {
+                user.display_name().to_string()
+            };
+            out.push(RealmAdminView {
+                user_id: uid.as_uuid().to_string(),
+                display_name,
+                email: user.email().to_string(),
+            });
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
     }
     out.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     out
@@ -4388,92 +4408,27 @@ pub async fn admin_realm_admin_revoke(
 }
 
 // =========================================================================
-// Check debugger (Roles & Permissions — Phase 4)
+// RBAC debugger: resolve effective permissions for a user
 // =========================================================================
 
-/// Pre-rendered view of a single BFS step for the debugger template.
-///
-/// The `kind` field is one of `"match" | "rewrite" | "scan" | "userset"`
-/// — used as a Tailwind class suffix for color coding. `text` is the
-/// human-readable one-liner. `depth` drives left-indentation so the
-/// traversal tree shape is visible.
-pub struct DebugStep {
-    pub kind: &'static str,
-    pub text: String,
-    pub depth: u32,
-}
-
-impl DebugStep {
-    fn from_check_step(step: &crate::authz::CheckStep, depth: u32) -> Self {
-        use crate::authz::CheckStep;
-        match step {
-            CheckStep::DirectMatch {
-                object,
-                relation,
-                subject,
-            } => Self {
-                kind: "match",
-                text: format!("direct match: {object}#{relation}@{subject}"),
-                depth,
-            },
-            CheckStep::RewriteUnion {
-                object,
-                relation,
-                included,
-            } => Self {
-                kind: "rewrite",
-                text: format!("rewrite: {object}#{relation} includes {object}#{included}"),
-                depth,
-            },
-            CheckStep::ScannedRelation {
-                object,
-                relation,
-                subject_count,
-            } => Self {
-                kind: "scan",
-                text: format!(
-                    "scan: {object}#{relation} ({subject_count} subject{})",
-                    if *subject_count == 1 { "" } else { "s" }
-                ),
-                depth,
-            },
-            CheckStep::FollowedUserset { object, relation } => Self {
-                kind: "userset",
-                text: format!("follow userset: {object}#{relation}"),
-                depth,
-            },
-        }
-    }
-}
-
-/// Display-layer copy of `CheckExplanation` with pre-rendered step strings.
-pub struct DebugExplanationView {
-    pub allowed: bool,
-    pub steps: Vec<DebugStep>,
-    pub max_depth_reached: u32,
-    /// `grpcurl ...` one-liner preformatted for the copy button. Safe to
-    /// dump into a `<textarea>` without further escaping.
-    pub grpc_snippet: String,
-}
-
 #[derive(Template)]
-#[template(path = "ui/admin/authz/debug.html")]
-struct AuthzDebugTemplate {
-    object_type: String,
-    object_id: String,
-    relation: String,
-    subject_type: String,
-    subject_id: String,
-    /// Object types declared in the realm's namespace, sorted. Drives the
-    /// object-type dropdown. Empty if no namespace is installed.
-    object_types: Vec<String>,
-    /// Relations declared on the currently-selected object type. Populated
-    /// server-side on initial render; the template also refreshes this
-    /// list via HTMX when the user changes the object-type dropdown.
-    relations: Vec<String>,
-    /// Realm UUID string, used by the subject user-picker HTMX endpoint.
+#[template(path = "ui/admin/rbac/debug.html")]
+struct RbacDebugTemplate {
+    /// UUID string of the user being resolved, if any.
+    user_id_input: String,
+    /// Optional org UUID input narrowing the scope.
+    org_id_input: String,
+    /// Optional OAuth scope string input narrowing permissions.
+    scope_input: String,
+    /// Resolved roles (by name), populated after a successful lookup.
+    roles: Vec<String>,
+    /// Resolved group slugs.
+    groups: Vec<String>,
+    /// Resolved permission strings.
+    permissions: Vec<String>,
+    /// Realm UUID used to run the resolution.
     realm_uuid: String,
-    result: Option<DebugExplanationView>,
+    /// Human-readable error message, if any.
     error: Option<String>,
     chrome: bool,
     active: &'static str,
@@ -4488,109 +4443,93 @@ struct AuthzDebugTemplate {
     realm_theme_css: Option<String>,
 }
 
-/// Query parameters for the authz debugger.
+/// Query parameters for the RBAC debugger.
 #[derive(Debug, Deserialize)]
-pub struct AuthzDebugQuery {
+pub struct RbacDebugQuery {
     #[serde(default)]
-    pub object_type: String,
+    pub user_id: String,
     #[serde(default)]
-    pub object_id: String,
+    pub org_id: String,
     #[serde(default)]
-    pub relation: String,
-    #[serde(default)]
-    pub subject_type: String,
-    #[serde(default)]
-    pub subject_id: String,
+    pub scope: String,
 }
 
-/// `GET /ui/admin/authz/debug`.
+/// `GET /ui/admin/rbac/debug`.
 ///
-/// Runs `check_explain` for the given (object, relation, subject) tuple
-/// in the current target realm and renders the result. Empty form → no
-/// check is run; invalid inputs → error message is shown alongside the
-/// (empty) form so the operator can correct them.
-pub async fn admin_authz_debug(
+/// Resolves the RBAC effective permissions for the given user (and
+/// optional org / scope) in the current target realm. Empty form → no
+/// resolution is run.
+pub async fn admin_rbac_debug(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    Query(q): Query<AuthzDebugQuery>,
+    Query(q): Query<RbacDebugQuery>,
 ) -> Response {
-    // Trim whitespace once; preserves the "fresh form" detection below.
-    let object_type = q.object_type.trim().to_string();
-    let object_id = q.object_id.trim().to_string();
-    let relation = q.relation.trim().to_string();
-    let subject_type = q.subject_type.trim().to_string();
-    let subject_id = q.subject_id.trim().to_string();
+    let user_id_input = q.user_id.trim().to_string();
+    let org_id_input = q.org_id.trim().to_string();
+    let scope_input = q.scope.trim().to_string();
 
-    // If no form fields populated, show the empty form.
-    let all_blank = object_type.is_empty()
-        && object_id.is_empty()
-        && relation.is_empty()
-        && subject_type.is_empty()
-        && subject_id.is_empty();
+    let mut roles: Vec<String> = Vec::new();
+    let mut groups: Vec<String> = Vec::new();
+    let mut permissions: Vec<String> = Vec::new();
+    let mut error: Option<String> = None;
 
-    let (result, error) = if all_blank {
-        (None, None)
-    } else {
-        match run_debug_check(
-            &state,
-            target.id(),
-            &object_type,
-            &object_id,
-            &relation,
-            &subject_type,
-            &subject_id,
-        ) {
-            Ok(explanation) => (
-                Some(build_explanation_view(
-                    &explanation,
-                    &object_type,
-                    &object_id,
-                    &relation,
-                    &subject_type,
-                    &subject_id,
-                )),
-                None,
-            ),
-            Err(msg) => (None, Some(msg)),
+    if !user_id_input.is_empty() {
+        let uuid = user_id_input
+            .strip_prefix("user_")
+            .unwrap_or(user_id_input.as_str())
+            .parse::<uuid::Uuid>();
+        match uuid {
+            Err(_) => error = Some("Invalid user UUID".to_string()),
+            Ok(u) => {
+                let user_id = crate::core::UserId::new(u);
+                let org_id = if org_id_input.is_empty() {
+                    None
+                } else {
+                    org_id_input
+                        .strip_prefix("org_")
+                        .unwrap_or(org_id_input.as_str())
+                        .parse::<uuid::Uuid>()
+                        .ok()
+                        .map(crate::core::OrganizationId::new)
+                };
+                let scope = if scope_input.is_empty() {
+                    None
+                } else {
+                    Some(scope_input.clone())
+                };
+                match state.rbac.resolve_permissions(
+                    &user_id,
+                    target.id(),
+                    org_id.as_ref(),
+                    scope.as_deref(),
+                ) {
+                    Ok(resolved) => {
+                        roles = resolved.roles;
+                        groups = resolved.groups;
+                        permissions = resolved
+                            .permissions
+                            .into_iter()
+                            .map(|p| p.into_string())
+                            .collect();
+                    }
+                    Err(e) => error = Some(format!("Resolution failed: {e}")),
+                }
+            }
         }
-    };
+    }
 
-    // Pull namespace once and derive the dropdown data. If the realm has
-    // no namespace (should not happen post-Phase-2), fall back to an
-    // empty list so the template degrades to plain text inputs.
-    let namespace = state.authz.get_namespace(target.id()).ok().flatten();
-    let object_types = namespace
-        .as_ref()
-        .map(|ns| {
-            let mut types: Vec<String> = ns.object_types.keys().cloned().collect();
-            types.sort();
-            types
-        })
-        .unwrap_or_default();
-    let relations = namespace
-        .as_ref()
-        .and_then(|ns| ns.object_types.get(&object_type))
-        .map(|cfg| {
-            let mut rels: Vec<String> = cfg.relations.keys().cloned().collect();
-            rels.sort();
-            rels
-        })
-        .unwrap_or_default();
-
-    render(&AuthzDebugTemplate {
-        object_type,
-        object_id,
-        relation,
-        subject_type,
-        subject_id,
-        object_types,
-        relations,
+    render(&RbacDebugTemplate {
+        user_id_input,
+        org_id_input,
+        scope_input,
+        roles,
+        groups,
+        permissions,
         realm_uuid: target.id().as_uuid().to_string(),
-        result,
         error,
         chrome: true,
-        active: "authz_debug",
+        active: "rbac_debug",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
         flash: None,
@@ -4601,162 +4540,6 @@ pub async fn admin_authz_debug(
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
     })
-}
-
-/// Transforms a `CheckExplanation` into the richer view used by the
-/// debugger template. Tracks depth by walking the step list and
-/// incrementing on `FollowedUserset`, so the template can indent nested
-/// traversal visibly.
-fn build_explanation_view(
-    explanation: &crate::authz::CheckExplanation,
-    object_type: &str,
-    object_id: &str,
-    relation: &str,
-    subject_type: &str,
-    subject_id: &str,
-) -> DebugExplanationView {
-    let mut depth: u32 = 0;
-    let mut steps: Vec<DebugStep> = Vec::with_capacity(explanation.steps.len());
-    for step in &explanation.steps {
-        // FollowedUserset itself opens a new nesting level: render the
-        // step at the current depth, then deepen for every step that
-        // follows until control returns (we don't receive an explicit
-        // pop signal, so depth is best-effort monotonic — still useful
-        // as a visual cue).
-        let step_view = DebugStep::from_check_step(step, depth);
-        if matches!(step, crate::authz::CheckStep::FollowedUserset { .. }) {
-            depth = depth.saturating_add(1);
-        }
-        steps.push(step_view);
-    }
-    DebugExplanationView {
-        allowed: explanation.allowed,
-        steps,
-        max_depth_reached: explanation.max_depth_reached,
-        grpc_snippet: build_grpc_snippet(
-            object_type,
-            object_id,
-            relation,
-            subject_type,
-            subject_id,
-        ),
-    }
-}
-
-/// Builds a `grpcurl` one-liner the operator can paste to reproduce a
-/// check against a live server. The JSON payload uses the proto field
-/// names from `hearth.authz.v1.CheckRequest`. Escaping is minimal (just
-/// single-quote safety) because all inputs are already validated by
-/// `check_explain` — so if they were unsafe we'd have errored earlier.
-fn build_grpc_snippet(
-    object_type: &str,
-    object_id: &str,
-    relation: &str,
-    subject_type: &str,
-    subject_id: &str,
-) -> String {
-    format!(
-        "grpcurl -plaintext -d '{{\"object\":{{\"type\":\"{object_type}\",\"id\":\"{object_id}\"}},\"relation\":\"{relation}\",\"subject\":{{\"type\":\"{subject_type}\",\"id\":\"{subject_id}\"}}}}' <host>:<port> hearth.authz.v1.AuthorizationService/Check"
-    )
-}
-
-/// Template for the relation-dropdown HTMX partial.
-#[derive(Template)]
-#[template(path = "ui/admin/authz/_debug_relations.html")]
-struct DebugRelationsTemplate {
-    relations: Vec<String>,
-}
-
-/// Query params for the relation-dropdown HTMX endpoint.
-#[derive(Debug, Deserialize)]
-pub struct DebugRelationsQuery {
-    #[serde(default)]
-    pub object_type: String,
-}
-
-/// `GET /ui/admin/authz/debug/relations` — HTMX fragment returning the
-/// `<option>` list of relations declared on the given object type in the
-/// active realm's namespace. Empty object type yields an empty option
-/// list so the dropdown collapses to a single placeholder.
-pub async fn admin_authz_debug_relations(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(_session): RequireAdmin,
-    target: TargetRealm,
-    Query(q): Query<DebugRelationsQuery>,
-) -> Response {
-    let relations = if q.object_type.trim().is_empty() {
-        Vec::new()
-    } else {
-        state
-            .authz
-            .get_namespace(target.id())
-            .ok()
-            .flatten()
-            .and_then(|ns| ns.object_types.get(q.object_type.trim()).cloned())
-            .map(|cfg| {
-                let mut rels: Vec<String> = cfg.relations.keys().cloned().collect();
-                rels.sort();
-                rels
-            })
-            .unwrap_or_default()
-    };
-    render(&DebugRelationsTemplate { relations })
-}
-
-/// Template for the subject user-picker HTMX partial in the debugger.
-#[derive(Template)]
-#[template(path = "ui/admin/authz/_debug_subject_rows.html")]
-struct DebugSubjectRowsTemplate {
-    users: Vec<crate::identity::User>,
-    query: String,
-}
-
-/// Query params for the subject picker.
-#[derive(Debug, Deserialize)]
-pub struct DebugSubjectQuery {
-    #[serde(default)]
-    pub q: String,
-}
-
-/// `GET /ui/admin/authz/debug/subject-picker` — HTMX search helper that
-/// returns clickable user rows. Each row carries `data-user-id` so the
-/// Alpine handler on the debugger page can copy the UUID into the
-/// subject-id input without a full page reload.
-pub async fn admin_authz_debug_subject_picker(
-    State(state): State<Arc<WebState>>,
-    RequireAdmin(_session): RequireAdmin,
-    target: TargetRealm,
-    Query(q): Query<DebugSubjectQuery>,
-) -> Response {
-    let query = q.q.trim().to_string();
-    let users = if query.len() >= 2 {
-        state
-            .identity
-            .search_users(target.id(), &query, 20)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    render(&DebugSubjectRowsTemplate { users, query })
-}
-
-fn run_debug_check(
-    state: &Arc<WebState>,
-    realm_id: &RealmId,
-    object_type: &str,
-    object_id: &str,
-    relation: &str,
-    subject_type: &str,
-    subject_id: &str,
-) -> Result<crate::authz::CheckExplanation, String> {
-    let object = crate::authz::ObjectRef::new(object_type, object_id)
-        .map_err(|e| format!("Invalid object: {e}"))?;
-    let subject = crate::authz::SubjectRef::direct(subject_type, subject_id)
-        .map_err(|e| format!("Invalid subject: {e}"))?;
-    state
-        .authz
-        .check_explain(realm_id, &object, relation, &subject)
-        .map_err(|e| format!("Check failed: {e}"))
 }
 
 // =========================================================================
@@ -4816,15 +4599,12 @@ pub async fn admin_realm_admin_picker(
 }
 
 // =========================================================================
-// Organization role mirroring — writes legacy OrganizationMembership
-// changes through to Zanzibar tuples so the preset namespace reflects
-// real membership state. Phase 6.
+// Organization role audit helpers — emit structured audit events for
+// membership changes on the identity-engine `OrganizationMembership`
+// record.
 // =========================================================================
 
-/// Maps the legacy `OrganizationRole` enum to the preset relation name
-/// on `organization:*`. These are 1:1 by design (see preset in
-/// `src/authz/presets.rs`) — any drift should be a compile-time match
-/// failure, hence the exhaustive match with no default arm.
+/// Maps `OrganizationRole` to its relation-name label for audit events.
 fn org_role_to_relation(role: OrganizationRole) -> &'static str {
     match role {
         OrganizationRole::Owner => "owner",
@@ -4833,36 +4613,11 @@ fn org_role_to_relation(role: OrganizationRole) -> &'static str {
     }
 }
 
-/// Writes `organization:{org_id}#{relation}@user:{uid}` or deletes it.
+/// Records an org-membership-added audit event.
 ///
-/// Returns `Ok(())` on success. Errors are returned so callers can log
-/// them — they must NOT propagate as user-visible failures because the
-/// legacy membership record is already durable by the time we mirror.
-fn write_org_role_tuple(
-    state: &Arc<WebState>,
-    realm_id: &RealmId,
-    org_id: &OrganizationId,
-    user_id: &crate::core::UserId,
-    relation: &str,
-    touch: bool,
-) -> Result<(), crate::authz::AuthzError> {
-    use crate::authz::{ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
-    #[allow(clippy::unwrap_used)]
-    let obj = ObjectRef::new("organization", &org_id.as_uuid().to_string()).unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subj = SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
-    #[allow(clippy::unwrap_used)]
-    let tuple = RelationshipTuple::new(obj, relation, subj).unwrap();
-    let op = if touch {
-        TupleWrite::Touch(tuple)
-    } else {
-        TupleWrite::Delete(tuple)
-    };
-    state.authz.write_tuples(realm_id, &[op])?;
-    Ok(())
-}
-
-/// Mirrors an "add member with role" event into Zanzibar + audit.
+/// Under the RBAC model, organization membership and role live on the
+/// identity-engine `OrganizationMembership` record. This helper emits
+/// the audit event for the membership change.
 fn mirror_org_member_added(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
@@ -4872,10 +4627,6 @@ fn mirror_org_member_added(
     role: OrganizationRole,
 ) {
     let relation = org_role_to_relation(role);
-    if let Err(e) = write_org_role_tuple(state, realm_id, org_id, user_id, relation, true) {
-        tracing::warn!(error = %e, "mirror add member to Zanzibar failed");
-        return;
-    }
     audit_role_event(
         state,
         session,
@@ -4888,9 +4639,7 @@ fn mirror_org_member_added(
     );
 }
 
-/// Mirrors a role change from `old` → `new` into Zanzibar + audit.
-/// Emits paired RoleRevoked + RoleAssigned events so the trail shows
-/// both halves of the change.
+/// Emits paired revoke/assign audit events for an org role change.
 fn mirror_org_role_changed(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
@@ -4905,38 +4654,29 @@ fn mirror_org_role_changed(
     }
     let old_rel = org_role_to_relation(old);
     let new_rel = org_role_to_relation(new);
-    if let Err(e) = write_org_role_tuple(state, realm_id, org_id, user_id, old_rel, false) {
-        tracing::warn!(error = %e, "mirror role-change delete failed");
-    } else {
-        audit_role_event(
-            state,
-            session,
-            realm_id,
-            user_id,
-            false,
-            "organization",
-            &org_id.as_uuid().to_string(),
-            old_rel,
-        );
-    }
-    if let Err(e) = write_org_role_tuple(state, realm_id, org_id, user_id, new_rel, true) {
-        tracing::warn!(error = %e, "mirror role-change touch failed");
-    } else {
-        audit_role_event(
-            state,
-            session,
-            realm_id,
-            user_id,
-            true,
-            "organization",
-            &org_id.as_uuid().to_string(),
-            new_rel,
-        );
-    }
+    audit_role_event(
+        state,
+        session,
+        realm_id,
+        user_id,
+        false,
+        "organization",
+        &org_id.as_uuid().to_string(),
+        old_rel,
+    );
+    audit_role_event(
+        state,
+        session,
+        realm_id,
+        user_id,
+        true,
+        "organization",
+        &org_id.as_uuid().to_string(),
+        new_rel,
+    );
 }
 
-/// Mirrors a member-removal into Zanzibar + audit. `role` is the role
-/// the user held immediately before removal (looked up by the caller).
+/// Emits a member-removed audit event.
 fn mirror_org_member_removed(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
@@ -4946,10 +4686,6 @@ fn mirror_org_member_removed(
     role: OrganizationRole,
 ) {
     let relation = org_role_to_relation(role);
-    if let Err(e) = write_org_role_tuple(state, realm_id, org_id, user_id, relation, false) {
-        tracing::warn!(error = %e, "mirror remove member from Zanzibar failed");
-        return;
-    }
     audit_role_event(
         state,
         session,
@@ -4962,76 +4698,73 @@ fn mirror_org_member_removed(
     );
 }
 
-/// Hydrates the per-user Access panel. Queries the reverse tuple index
-/// for every direct grant the user holds in this realm, groups the
-/// results by object type, and resolves human-readable labels +
-/// optional detail-page links where a detail page exists.
+/// Hydrates the per-user Access panel using RBAC assignments + organization
+/// memberships. Role assignments are grouped under the synthetic object
+/// type `"role"`, and organization memberships under `"organization"`.
 ///
-/// Failures at any step fall back to an empty panel rather than
-/// surfacing an error — operators should still be able to use the rest
-/// of the user detail page even if the authz engine is briefly
-/// unavailable.
+/// Failures at any step fall back to an empty panel rather than surfacing
+/// an error — operators should still be able to use the rest of the user
+/// detail page even if the RBAC engine is briefly unavailable.
 fn resolve_user_access_groups(
     state: &Arc<WebState>,
     realm_id: &RealmId,
     user_id: &crate::core::UserId,
 ) -> Vec<UserAccessGroup> {
     use std::collections::BTreeMap;
-    let Ok(subj) = crate::authz::SubjectRef::direct("user", &user_id.as_uuid().to_string()) else {
-        return Vec::new();
-    };
-    let grants = match state
-        .authz
-        .list_direct_relations_for_subject(realm_id, &subj)
-    {
-        Ok(g) => g,
-        Err(e) => {
-            tracing::warn!(error = %e, "user Access panel: reverse scan failed");
-            return Vec::new();
-        }
-    };
-
-    // Group by object type (deterministic order via BTreeMap).
     let mut groups: BTreeMap<String, Vec<UserAccessEntry>> = BTreeMap::new();
-    for (obj, relation) in grants {
-        let object_type = obj.object_type().to_string();
-        let object_id = obj.object_id().to_string();
-        let (label, detail_url) = match object_type.as_str() {
-            "organization" => {
-                // Best-effort name hydration; fall back to the raw id.
-                let (label, url) = object_id
-                    .parse::<uuid::Uuid>()
-                    .ok()
-                    .and_then(|u| {
-                        let oid = OrganizationId::new(u);
-                        state
-                            .identity
-                            .get_organization(realm_id, &oid)
-                            .ok()
-                            .flatten()
-                            .map(|o| {
-                                (
-                                    o.name().to_string(),
-                                    Some(format!("/ui/admin/organizations/{}", o.id().as_uuid())),
-                                )
-                            })
-                    })
-                    .unwrap_or_else(|| (object_id.clone(), None));
-                (label, url)
-            }
-            _ => (object_id.clone(), None),
-        };
-        groups
-            .entry(object_type)
-            .or_default()
-            .push(UserAccessEntry {
-                object_id,
-                label,
-                relation,
-                detail_url,
-            });
+
+    // Role assignments.
+    if let Ok(assignments) = state.rbac.list_user_assignments(realm_id, user_id) {
+        for a in assignments {
+            let role = match state.rbac.get_role(realm_id, &a.role_id) {
+                Ok(Some(r)) => r,
+                _ => continue,
+            };
+            let relation = match a.scope {
+                crate::rbac::Scope::Realm => "realm".to_string(),
+                crate::rbac::Scope::Org { ref org_id } => {
+                    format!("org:{}", org_id.as_uuid())
+                }
+            };
+            groups
+                .entry("role".to_string())
+                .or_default()
+                .push(UserAccessEntry {
+                    object_id: a.id.as_uuid().to_string(),
+                    label: role.name.clone(),
+                    relation,
+                    detail_url: None,
+                });
+        }
     }
-    // Sort entries inside each group for stable display.
+
+    // Organization memberships (direct).
+    if let Ok(page) = state
+        .identity
+        .list_user_organizations(realm_id, user_id, None, 100)
+    {
+        for m in page.items {
+            let org = state
+                .identity
+                .get_organization(realm_id, m.org_id())
+                .ok()
+                .flatten();
+            let label = org.as_ref().map_or_else(
+                || m.org_id().as_uuid().to_string(),
+                |o| o.name().to_string(),
+            );
+            groups
+                .entry("organization".to_string())
+                .or_default()
+                .push(UserAccessEntry {
+                    object_id: m.org_id().as_uuid().to_string(),
+                    label,
+                    relation: format!("{:?}", m.role()).to_lowercase(),
+                    detail_url: Some(format!("/ui/admin/organizations/{}", m.org_id().as_uuid())),
+                });
+        }
+    }
+
     for entries in groups.values_mut() {
         entries.sort_by(|a, b| a.label.cmp(&b.label).then(a.relation.cmp(&b.relation)));
     }

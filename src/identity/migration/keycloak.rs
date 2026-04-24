@@ -2,7 +2,7 @@
 //!
 //! Parses a Keycloak "realm export" JSON file and imports its realm,
 //! users, OAuth clients, and realm roles into Hearth via the
-//! `IdentityEngine` and `AuthzEngine` traits.
+//! `IdentityEngine` and `RbacEngine` traits.
 //!
 //! # Mapping
 //!
@@ -10,22 +10,22 @@
 //! |----------------------------------|---------------------------------------|
 //! | realm (`id`, `realm`)            | realm                                |
 //! | user (`id`, `email`, …)          | user (id preserved when a valid UUID) |
-//! | user → realmRoles                | authz tuple `realm:<tid>#<role>@user:<uid>` |
+//! | user → realmRoles                | RBAC `RoleAssignment` on `realm.admin`-style role |
 //! | client                           | `OAuthClient`                         |
 //! | password credential (pbkdf2-s256)| PHC string, verifies natively         |
 //!
 //! # Out of scope
 //!
-//! - Groups and composite roles
+//! - Groups and composite roles (only flat realm roles are preserved)
 //! - Client roles (only realm roles are mapped)
 //! - Federated identity providers
 //! - Required actions (email verification prompts, etc.)
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
 use crate::core::{ClientId, RealmId, UserId};
 use crate::identity::migration::credentials::{parse_keycloak_credential, KeycloakCredential};
 use crate::identity::migration::error::MigrationError;
@@ -33,6 +33,7 @@ use crate::identity::{
     CreateRealmRequest, IdentityEngine, ImportClientRequest, ImportUserRequest, MigrationReport,
     RawCredential, UserStatus,
 };
+use crate::rbac::{AssignRoleRequest, CreateRoleRequest, RbacEngine, RoleId, Scope, Subject};
 
 /// A minimal deserialization of the subset of a Keycloak realm export
 /// that this importer consumes. Unknown fields are silently ignored.
@@ -124,7 +125,7 @@ pub struct KeycloakRoles {
 /// A Keycloak role definition.
 #[derive(Debug, Deserialize)]
 pub struct KeycloakRole {
-    /// Role name — used verbatim as the Zanzibar relation name.
+    /// Role name — used verbatim as the RBAC role name.
     pub name: String,
     /// Optional human-readable description.
     #[serde(default)]
@@ -145,13 +146,13 @@ pub struct ImportOptions {
 /// once at startup and re-use it across invocations.
 pub struct KeycloakImporter {
     identity: Arc<dyn IdentityEngine>,
-    authz: Arc<dyn AuthorizationEngine>,
+    rbac: Arc<dyn RbacEngine>,
 }
 
 impl KeycloakImporter {
     /// Creates a new importer bound to the given engines.
-    pub fn new(identity: Arc<dyn IdentityEngine>, authz: Arc<dyn AuthorizationEngine>) -> Self {
-        Self { identity, authz }
+    pub fn new(identity: Arc<dyn IdentityEngine>, rbac: Arc<dyn RbacEngine>) -> Self {
+        Self { identity, rbac }
     }
 
     /// Parses a Keycloak realm export from JSON bytes.
@@ -193,7 +194,8 @@ impl KeycloakImporter {
             // disabled confidential client is simply skipped in the
             // live path.
             report.clients_imported = export.clients.iter().filter(|c| c.enabled).count();
-            report.tuples_written = export.users.iter().map(|u| u.realm_roles.len()).sum();
+            report.role_assignments_written =
+                export.users.iter().map(|u| u.realm_roles.len()).sum();
             report.warnings.push(format!(
                 "dry-run: no changes written to storage (realm='{}')",
                 export.realm
@@ -258,27 +260,67 @@ impl KeycloakImporter {
             }
         }
 
-        // 4. Emit role tuples and surface reconciliation warnings.
-        self.emit_role_tuples(&realm_id, export, &user_ids_by_keycloak_key, &mut report)?;
+        // 4. Emit role assignments and surface reconciliation warnings.
+        //
+        // NOTE: Keycloak composite roles, client roles, groups, and required
+        // actions are NOT imported. Only flat realm-role → user assignments
+        // are reconstructed as RBAC assignments against user subjects.
+        self.emit_role_assignments(&realm_id, export, &user_ids_by_keycloak_key, &mut report)?;
         warn_undeclared_roles(export, &mut report);
 
         Ok(report)
     }
 
-    /// Converts each user's `realmRoles` list into Zanzibar tuples of the
-    /// form `realm:<tid> <role> user:<uid>` and writes them in a single
-    /// batched `write_tuples` call. Per-tuple validation failures are
-    /// recorded as warnings rather than aborting the import.
-    fn emit_role_tuples(
+    /// Converts each user's `realmRoles` list into RBAC `RoleAssignment`
+    /// records. Roles are upserted (created if missing, referenced if
+    /// already present) with empty initial permission sets so operators
+    /// can customize after migration.
+    fn emit_role_assignments(
         &self,
         realm_id: &RealmId,
         export: &KeycloakRealmExport,
-        user_ids_by_keycloak_key: &std::collections::HashMap<String, UserId>,
+        user_ids_by_keycloak_key: &HashMap<String, UserId>,
         report: &mut MigrationReport,
     ) -> Result<(), MigrationError> {
-        let realm_object_id = realm_id.as_uuid().to_string();
-        let mut tuple_writes: Vec<TupleWrite> = Vec::new();
+        // First, ensure every declared realm-role exists in RBAC and cache
+        // its RoleId. Also include any role names that appear on users but
+        // weren't in `roles.realm` — those are surfaced as warnings by
+        // `warn_undeclared_roles`, but we still create them so the
+        // assignment isn't dropped silently.
+        let mut role_ids: HashMap<String, RoleId> = HashMap::new();
+        let mut role_names: std::collections::HashSet<String> =
+            export.roles.realm.iter().map(|r| r.name.clone()).collect();
+        for u in &export.users {
+            for r in &u.realm_roles {
+                role_names.insert(r.clone());
+            }
+        }
+        for name in role_names {
+            let role_id = match self.rbac.get_role_by_name(realm_id, &name)? {
+                Some(role) => role.id,
+                None => {
+                    let description = export
+                        .roles
+                        .realm
+                        .iter()
+                        .find(|r| r.name == name)
+                        .and_then(|r| r.description.clone());
+                    let created = self.rbac.create_role(
+                        realm_id,
+                        &CreateRoleRequest {
+                            name: name.clone(),
+                            description,
+                            permissions: Vec::new(),
+                            parent_roles: Vec::new(),
+                        },
+                    )?;
+                    created.id
+                }
+            };
+            role_ids.insert(name, role_id);
+        }
 
+        let mut written = 0usize;
         for (idx, ku) in export.users.iter().enumerate() {
             let key = ku.id.clone().unwrap_or_else(|| format!("__idx:{idx}"));
             let Some(user_id) = user_ids_by_keycloak_key.get(&key) else {
@@ -286,21 +328,31 @@ impl KeycloakImporter {
             };
 
             for role_name in &ku.realm_roles {
-                match build_role_tuple(&realm_object_id, role_name, user_id) {
-                    Ok(w) => tuple_writes.push(w),
+                let Some(role_id) = role_ids.get(role_name) else {
+                    report
+                        .warnings
+                        .push(format!("missing role '{role_name}' for user {user_id}"));
+                    continue;
+                };
+                match self.rbac.assign_role(
+                    realm_id,
+                    &AssignRoleRequest {
+                        subject: Subject::User(user_id.clone()),
+                        role_id: role_id.clone(),
+                        scope: Scope::Realm,
+                        assigned_by: None,
+                    },
+                ) {
+                    Ok(_) => written += 1,
                     Err(e) => {
-                        report
-                            .warnings
-                            .push(format!("skipped role tuple {role_name}@{user_id}: {e}"));
+                        report.warnings.push(format!(
+                            "failed to assign role '{role_name}' to user {user_id}: {e}"
+                        ));
                     }
                 }
             }
         }
-
-        if !tuple_writes.is_empty() {
-            self.authz.write_tuples(realm_id, &tuple_writes)?;
-            report.tuples_written = tuple_writes.len();
-        }
+        report.role_assignments_written = written;
         Ok(())
     }
 
@@ -447,18 +499,6 @@ fn warn_undeclared_roles(export: &KeycloakRealmExport, report: &mut MigrationRep
     }
 }
 
-/// Builds a `realm:<tid> <role> user:<uid>` tuple write.
-fn build_role_tuple(
-    realm_id: &str,
-    role_name: &str,
-    user_id: &UserId,
-) -> Result<TupleWrite, MigrationError> {
-    let object = ObjectRef::new("realm", realm_id)?;
-    let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string())?;
-    let tuple = RelationshipTuple::new(object, role_name, subject)?;
-    Ok(TupleWrite::Touch(tuple))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,17 +557,5 @@ mod tests {
         let export = KeycloakImporter::parse(json).expect("parse");
         assert_eq!(export.realm, "acme");
         assert!(export.users.is_empty());
-    }
-
-    #[test]
-    fn build_role_tuple_rejects_invalid_role() {
-        // A role name containing forbidden characters is rejected by
-        // the authz layer rather than silently persisted.
-        let res = build_role_tuple(
-            "00000000-0000-0000-0000-000000000001",
-            "", // empty relation is invalid
-            &UserId::generate(),
-        );
-        assert!(res.is_err());
     }
 }

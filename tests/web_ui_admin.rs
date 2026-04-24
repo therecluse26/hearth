@@ -10,10 +10,6 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
-    SubjectRef, TupleWrite,
-};
 use hearth::core::Clock;
 use hearth::core::SystemClock;
 use hearth::core::{RealmId, SessionId};
@@ -25,6 +21,7 @@ use hearth::identity::{
     UpdateUserRequest, UserStatus,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -49,7 +46,7 @@ struct TestRig {
     app: axum::Router,
     identity: Arc<dyn IdentityEngine>,
     #[allow(dead_code)]
-    authz: Arc<dyn AuthorizationEngine>,
+    authz: Arc<dyn RbacEngine>,
     realm_id: RealmId,
     #[allow(dead_code)]
     admin_user_id: hearth::core::UserId,
@@ -79,10 +76,10 @@ fn build_rig() -> TestRig {
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn RbacEngine>;
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
@@ -134,13 +131,26 @@ fn build_rig() -> TestRig {
         )
         .expect("create admin session");
 
-    // Write admin Zanzibar tuple in the system realm.
-    let obj = ObjectRef::new("hearth", "admin").expect("obj");
-    let sub = SubjectRef::direct("user", &admin_user.id().as_uuid().to_string()).expect("sub");
-    let tuple = RelationshipTuple::new(obj, "admin", sub).expect("tuple");
+    // Grant admin realm role: seed the system realm's defaults and assign
+    // the `realm.admin` role (which carries `hearth.admin`) to our admin user.
     authz
-        .write_tuples(&admin_realm_id, &[TupleWrite::Touch(tuple)])
-        .expect("write admin tuple");
+        .seed_realm(&admin_realm_id)
+        .expect("seed system realm");
+    let admin_role = authz
+        .get_role_by_name(&admin_realm_id, "realm.admin")
+        .expect("lookup role")
+        .expect("seed role present");
+    authz
+        .assign_role(
+            &admin_realm_id,
+            &hearth::rbac::AssignRoleRequest {
+                subject: hearth::rbac::Subject::User(admin_user.id().clone()),
+                role_id: admin_role.id.clone(),
+                scope: hearth::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign admin role");
 
     // Non-admin user.
     let non_admin_user = identity

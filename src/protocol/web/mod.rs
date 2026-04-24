@@ -42,11 +42,11 @@ use axum::Router;
 use sha2::{Digest, Sha256};
 
 use crate::audit::AuditEngine;
-use crate::authz::AuthorizationEngine;
 use crate::config::{Config, EnvVarWarning};
 use crate::core::RealmId;
 use crate::identity::onboarding::OnboardingService;
 use crate::identity::{EmailService, IdentityEngine};
+use crate::rbac::RbacEngine;
 
 pub mod account;
 pub mod account_consents;
@@ -78,9 +78,10 @@ pub struct WebState {
     /// Identity engine for session creation, password verification,
     /// and email-verification token consumption.
     pub identity: Arc<dyn IdentityEngine>,
-    /// Authorization engine — used by [`auth::RequireAdmin`] to check
-    /// the `hearth#admin` relation.
-    pub authz: Arc<dyn AuthorizationEngine>,
+    /// RBAC engine — used by [`auth::RequireAdmin`] to check that the
+    /// session carries the `hearth.admin` permission, and by admin UI
+    /// handlers for role/group management.
+    pub rbac: Arc<dyn RbacEngine>,
     /// Audit engine — used to record UI-originated mutations.
     pub audit: Arc<dyn AuditEngine>,
     /// First-run onboarding orchestration.
@@ -175,7 +176,7 @@ impl WebState {
     #[must_use]
     pub fn new(
         identity: Arc<dyn IdentityEngine>,
-        authz: Arc<dyn AuthorizationEngine>,
+        rbac: Arc<dyn RbacEngine>,
         audit: Arc<dyn AuditEngine>,
         onboarding: Arc<OnboardingService>,
         cookie_secret: CookieSecret,
@@ -183,7 +184,7 @@ impl WebState {
     ) -> Self {
         Self {
             identity,
-            authz,
+            rbac,
             audit,
             onboarding,
             email,
@@ -703,16 +704,8 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_realm_admin_revoke),
         )
         .route(
-            "/admin/authz/debug",
-            axum::routing::get(admin::admin_authz_debug),
-        )
-        .route(
-            "/admin/authz/debug/relations",
-            axum::routing::get(admin::admin_authz_debug_relations),
-        )
-        .route(
-            "/admin/authz/debug/subject-picker",
-            axum::routing::get(admin::admin_authz_debug_subject_picker),
+            "/admin/rbac/debug",
+            axum::routing::get(admin::admin_rbac_debug),
         )
         // --- Organizations ---
         .route(
@@ -933,7 +926,10 @@ pub fn assert_app_css_sane() -> Result<(), &'static str> {
              Run: cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify",
         );
     }
-    if !APP_CSS.windows(APP_CSS_SENTINEL.len()).any(|w| w == APP_CSS_SENTINEL) {
+    if !APP_CSS
+        .windows(APP_CSS_SENTINEL.len())
+        .any(|w| w == APP_CSS_SENTINEL)
+    {
         return Err(
             "compiled app.css is missing the Hearth theme layer (no `.bg-ht-surface-raised` rule). \
              Check `ui/tailwind.config.js` content globs and safelist, then rebuild.",

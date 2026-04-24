@@ -1005,8 +1005,8 @@ pub struct MigrationReport {
     pub users_with_skipped_credentials: usize,
     /// Number of OAuth clients written.
     pub clients_imported: usize,
-    /// Number of authorization tuples written.
-    pub tuples_written: usize,
+    /// Number of RBAC role assignments written.
+    pub role_assignments_written: usize,
     /// Non-fatal issues encountered during the import.
     pub warnings: Vec<String>,
 }
