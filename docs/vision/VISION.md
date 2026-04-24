@@ -346,8 +346,8 @@ These are design targets, not guarantees. They represent the performance that a 
 |-----------|-----------|-----------|----------------------|-------------------|
 | Token validation (JWT verify + session lookup) | < 50 μs | < 500 μs | < 5 ms | Redis GET: ~100 μs p99 |
 | Session lookup by ID | < 10 μs | < 100 μs | N/A (sessions always hot while active) | Redis GET: ~100 μs p99 |
-| Permission check (direct relationship) | < 20 μs | < 200 μs | < 5 ms | SpiceDB: ~1–5ms p99 |
-| Permission check (3-hop graph traversal) | < 100 μs | < 1 ms | < 10 ms | SpiceDB: ~5–20ms p99 |
+| Permission check (in-process claim lookup from verified JWT) | < 1 μs | < 5 μs | N/A (no I/O) | SpiceDB: ~1–5ms p99 |
+| Permission resolution at token-issue time (RBAC graph traversal) | < 100 μs | < 1 ms | < 10 ms | Run once per token, not per request |
 | User lookup by email/ID | < 50 μs | < 500 μs | < 5 ms | Postgres indexed lookup: ~1–5ms |
 | Token issuance (full OAuth2 flow) | < 1 ms | < 5 ms | < 10 ms | Keycloak: 5–50ms p50 |
 | User creation (with credential hashing) | < 50 ms | < 100 ms | N/A (write path) | Dominated by Argon2id cost |
@@ -358,7 +358,7 @@ These are design targets, not guarantees. They represent the performance that a 
 |----------|----------------------|------------------------|
 | Token validation (read-heavy) | 200,000+ | 3,000,000+ |
 | Mixed read/write (95/5 read/write) | 100,000+ | 1,500,000+ |
-| Permission checks | 150,000+ | 2,000,000+ |
+| Permission checks (JWT claim lookup) | 1,000,000+ | 15,000,000+ |
 | Session creation | 50,000+ | 500,000+ |
 
 ### 7.3 Capacity Targets (Single Node)

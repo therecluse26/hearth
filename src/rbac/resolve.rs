@@ -683,6 +683,67 @@ mod tests {
     }
 
     #[test]
+    fn group_depth_exceeds_limit_returns_error() {
+        // Build a chain alice ∈ g0 ∈ g1 ∈ ... ∈ g_{MAX_GROUP_DEPTH+2}. The
+        // BFS increments depth each hop; once it crosses MAX_GROUP_DEPTH
+        // the resolver must abort with a typed DepthExceeded rather than
+        // silently truncate, otherwise ambient-authority leaks could
+        // hide behind the cap.
+        let realm = RealmId::generate();
+        let alice = UserId::generate();
+
+        let groups: Vec<GroupId> = (0..=(MAX_GROUP_DEPTH + 2))
+            .map(|_| GroupId::generate())
+            .collect();
+
+        let mut fake = Fake::new();
+        for (i, g) in groups.iter().enumerate() {
+            fake.upsert_group_slug(g, &format!("g{i}"));
+        }
+        fake.add_parent(&GroupMember::User(alice.clone()), groups[0].clone());
+        for window in groups.windows(2) {
+            fake.add_parent(&GroupMember::Group(window[0].clone()), window[1].clone());
+        }
+
+        let result = resolve_permissions(&fake, &alice, &realm, None, None);
+        match result {
+            Err(RbacError::DepthExceeded {
+                kind: TraversalKind::GroupMembership,
+                limit,
+            }) => assert_eq!(limit, MAX_GROUP_DEPTH),
+            other => panic!("expected group DepthExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn group_breadth_exceeds_limit_returns_error() {
+        // Fan-out exceeding MAX_GROUP_BREADTH must return
+        // BreadthExceeded rather than quietly truncating.
+        //
+        // Shape: one user directly in MAX_GROUP_BREADTH+10 distinct groups.
+        // No chaining, so depth stays at 1 — only the breadth cap trips.
+        let realm = RealmId::generate();
+        let alice = UserId::generate();
+
+        let mut fake = Fake::new();
+        let total = MAX_GROUP_BREADTH + 10;
+        for i in 0..total {
+            let g = GroupId::generate();
+            fake.upsert_group_slug(&g, &format!("g{i}"));
+            fake.add_parent(&GroupMember::User(alice.clone()), g);
+        }
+
+        let result = resolve_permissions(&fake, &alice, &realm, None, None);
+        match result {
+            Err(RbacError::BreadthExceeded {
+                kind: TraversalKind::GroupMembership,
+                limit,
+            }) => assert_eq!(limit, MAX_GROUP_BREADTH),
+            other => panic!("expected group BreadthExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn group_cycle_does_not_loop_forever() {
         // A ∈ B, B ∈ A (cycle). BFS must terminate via visited set.
         let realm = RealmId::generate();
@@ -848,5 +909,102 @@ mod tests {
         let resolved = resolve_permissions(&fake, &alice, &realm, None, None).expect("resolve");
         assert!(resolved.permissions.is_empty());
         assert!(resolved.roles.is_empty());
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Permission strings drawn from a small vocabulary. We deliberately
+        // include duplicates in the generated Vec so the dedup invariant is
+        // exercised, and mix single-segment / dotted forms for realism.
+        fn perm_vocab() -> Vec<&'static str> {
+            vec![
+                "docs.view",
+                "docs.edit",
+                "docs.delete",
+                "org.billing.view",
+                "org.billing.admin",
+                "users.list",
+                "users.invite",
+                "a",
+                "z.a",
+                "m.n.o",
+            ]
+        }
+
+        proptest! {
+            /// Property: for any set of roles assigned directly to a user,
+            /// `resolved.permissions` is **sorted ascending** and contains
+            /// **no duplicates**, regardless of:
+            ///   - duplication across roles,
+            ///   - duplication within a single role,
+            ///   - order in which roles are listed on the user.
+            ///
+            /// This is the contract stated on `ResolvedPermissions` and the
+            /// one SDKs rely on for deterministic JWT claim ordering.
+            #[test]
+            fn resolved_permissions_are_sorted_and_deduped(
+                per_role in proptest::collection::vec(
+                    proptest::collection::vec(0usize..10, 0..6),
+                    1..5,
+                ),
+            ) {
+                let realm = RealmId::generate();
+                let alice = UserId::generate();
+                let vocab = perm_vocab();
+
+                let mut fake = Fake::new();
+                let mut asgns = Vec::new();
+                for idx_set in &per_role {
+                    // Duplicate each index once inside the role's perm list so
+                    // the within-role dedup path is exercised too.
+                    let perm_strs: Vec<&str> = idx_set
+                        .iter()
+                        .flat_map(|i| std::iter::repeat_n(vocab[*i], 2))
+                        .collect();
+                    let role = mk_role(&realm, "r", &perm_strs, vec![]);
+                    let rid = role.id.clone();
+                    fake.upsert_role(role);
+                    asgns.push(mk_asgn(
+                        &realm,
+                        Subject::User(alice.clone()),
+                        rid,
+                        Scope::Realm,
+                    ));
+                }
+                fake.user_asgn.insert(alice.clone(), asgns);
+
+                let resolved = resolve_permissions(&fake, &alice, &realm, None, None)
+                    .expect("resolve");
+
+                // Sorted ascending (by Permission's Ord — which delegates to
+                // the inner String's Ord).
+                let sorted: Vec<_> = {
+                    let mut v = resolved.permissions.clone();
+                    v.sort();
+                    v
+                };
+                prop_assert_eq!(&resolved.permissions, &sorted);
+
+                // Deduplicated.
+                let mut seen = std::collections::HashSet::new();
+                for p in &resolved.permissions {
+                    prop_assert!(
+                        seen.insert(p.as_str().to_string()),
+                        "duplicate permission in resolved set: {}", p.as_str()
+                    );
+                }
+
+                // Groups and roles share the same contract.
+                let mut roles_sorted = resolved.roles.clone();
+                roles_sorted.sort();
+                prop_assert_eq!(&resolved.roles, &roles_sorted);
+
+                let mut groups_sorted = resolved.groups.clone();
+                groups_sorted.sort();
+                prop_assert_eq!(&resolved.groups, &groups_sorted);
+            }
+        }
     }
 }

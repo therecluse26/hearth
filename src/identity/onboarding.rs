@@ -268,22 +268,32 @@ fn generate_setup_token() -> Result<String, OnboardingError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+/// Converts a `std::io::Error` into a sanitized `OnboardingError::Io`
+/// carrying only the error kind — never the filesystem path that was
+/// being accessed. `io::Error::Display` concatenates the OS message with
+/// the path when the error was produced by a path-taking API, so
+/// forwarding it verbatim would leak `data_dir` into logs surfaced
+/// through `tracing::warn!(error = %e, ...)`.
+fn sanitize_io(err: std::io::Error) -> OnboardingError {
+    OnboardingError::Io(err.kind().to_string())
+}
+
 fn read_setup_token_file(path: &Path) -> Result<String, OnboardingError> {
-    let bytes = std::fs::read(path).map_err(|e| OnboardingError::Io(e.to_string()))?;
+    let bytes = std::fs::read(path).map_err(sanitize_io)?;
     let s = String::from_utf8(bytes)
-        .map_err(|e| OnboardingError::Io(format!("setup token is not valid UTF-8: {e}")))?;
+        .map_err(|_| OnboardingError::Io("setup token is not valid UTF-8".to_string()))?;
     Ok(s.trim().to_string())
 }
 
 fn write_setup_token_file(path: &Path, token: &str) -> Result<(), OnboardingError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| OnboardingError::Io(e.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(sanitize_io)?;
     }
     // Write atomically via a temp file + rename so a crash mid-write
     // cannot leave a partial token that would fail constant-time compare.
     let tmp = path.with_extension("tmp");
     write_file_mode_0600(&tmp, token.as_bytes())?;
-    std::fs::rename(&tmp, path).map_err(|e| OnboardingError::Io(e.to_string()))?;
+    std::fs::rename(&tmp, path).map_err(sanitize_io)?;
     Ok(())
 }
 
@@ -297,11 +307,9 @@ fn write_file_mode_0600(path: &Path, bytes: &[u8]) -> Result<(), OnboardingError
         .write(true)
         .mode(0o600)
         .open(path)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.write_all(bytes)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.sync_all()
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
+        .map_err(sanitize_io)?;
+    file.write_all(bytes).map_err(sanitize_io)?;
+    file.sync_all().map_err(sanitize_io)?;
     Ok(())
 }
 
@@ -313,11 +321,9 @@ fn write_file_mode_0600(path: &Path, bytes: &[u8]) -> Result<(), OnboardingError
         .truncate(true)
         .write(true)
         .open(path)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.write_all(bytes)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.sync_all()
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
+        .map_err(sanitize_io)?;
+    file.write_all(bytes).map_err(sanitize_io)?;
+    file.sync_all().map_err(sanitize_io)?;
     Ok(())
 }
 
@@ -580,6 +586,44 @@ mod tests {
             let s = format!("{err}");
             assert!(!s.is_empty(), "empty display for {err:?}");
         }
+    }
+
+    #[test]
+    fn sanitize_io_emits_only_error_kind() {
+        // Defence in depth: some callers or platforms produce io::Errors
+        // whose Display includes the offending path. `sanitize_io` must
+        // collapse the Display to the kind string so a path fragment
+        // injected into the inner error never reaches log output.
+        let sentinel = "/var/lib/hearth-secret-path/.setup_token";
+        let wrapped = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("open '{sentinel}' failed"),
+        );
+        let sanitized = sanitize_io(wrapped);
+        let rendered = format!("{sanitized}");
+        assert!(
+            !rendered.contains(sentinel),
+            "sanitized error leaks path: {rendered}"
+        );
+        assert!(
+            !rendered.contains("hearth-secret-path"),
+            "sanitized error leaks path fragment: {rendered}"
+        );
+        // Kind-only rendering: "permission denied" (ErrorKind Display).
+        assert_eq!(rendered, "setup token I/O error: permission denied");
+    }
+
+    #[test]
+    fn read_missing_token_file_returns_sanitized_io_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join(".setup_token-absent");
+        let missing_str = missing.to_string_lossy().into_owned();
+        let err = read_setup_token_file(&missing).expect_err("missing file");
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains(&missing_str),
+            "read error leaks path: {rendered}"
+        );
     }
 
     #[test]

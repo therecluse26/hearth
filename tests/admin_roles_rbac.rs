@@ -192,6 +192,75 @@ async fn reserved_permission_rejected() {
 }
 
 #[tokio::test]
+async fn reserved_permission_rejected_on_nested_namespace() {
+    // Segment-boundary check: "hearth.admin.users" is still reserved
+    // because the prefix match is on the literal "hearth." segment.
+    let ctx = admin_ctx().await;
+    let (status, body) = send(
+        &ctx,
+        "POST",
+        "/admin/roles",
+        Some(json!({
+            "name": "sneakier",
+            "description": null,
+            "permissions": ["hearth.admin.users"],
+            "parent_roles": [],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "reserved_namespace");
+}
+
+#[tokio::test]
+async fn reserved_permission_rejected_on_update() {
+    // Operator creates an innocuous role, then attempts to escalate by
+    // PUTting a reserved permission into it. Must be rejected the same
+    // way create_role rejects it — otherwise update becomes a bypass.
+    let ctx = admin_ctx().await;
+    let (status, body) = send(
+        &ctx,
+        "POST",
+        "/admin/roles",
+        Some(json!({
+            "name": "initially_benign",
+            "description": null,
+            "permissions": ["docs.view"],
+            "parent_roles": [],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["id"].as_str().expect("id").to_string();
+
+    let (status, body) = send(
+        &ctx,
+        "PUT",
+        &format!("/admin/roles/{id}"),
+        Some(json!({
+            "name": null,
+            "description": null,
+            "permissions": ["hearth.admin"],
+            "parent_roles": null,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "reserved_namespace");
+
+    // Confirm the on-disk permission set was not mutated.
+    let (status, body) = send(&ctx, "GET", &format!("/admin/roles/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let perms: Vec<String> = body["permissions"]
+        .as_array()
+        .expect("perms array")
+        .iter()
+        .map(|v| v.as_str().expect("str").to_string())
+        .collect();
+    assert_eq!(perms, vec!["docs.view".to_string()]);
+}
+
+#[tokio::test]
 async fn cross_realm_isolation_returns_404() {
     let ctx = admin_ctx().await;
 
