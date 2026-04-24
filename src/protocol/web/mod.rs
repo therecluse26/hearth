@@ -37,7 +37,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::response::{Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Router;
 use sha2::{Digest, Sha256};
 
@@ -496,6 +496,14 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(handlers::admin_login_form).post(handlers::admin_login_submit),
         )
         .route(
+            "/admin/login/passkey-begin",
+            axum::routing::get(handlers::passkey_login_begin_admin),
+        )
+        .route(
+            "/admin/login/passkey-complete",
+            axum::routing::post(handlers::passkey_login_complete_admin),
+        )
+        .route(
             "/admin/verify-email",
             axum::routing::get(handlers::admin_verify_email),
         )
@@ -845,8 +853,23 @@ pub fn router(state: WebState) -> Router {
             "/ui/",
             axum::routing::get(|| async { Redirect::permanent("/ui") }),
         )
+        .route("/favicon.ico", axum::routing::get(serve_favicon))
+        .route("/favicon.svg", axum::routing::get(serve_favicon))
         .nest("/ui", ui_routes)
         .with_state(shared)
+}
+
+/// Serves the Hearth flame as `image/svg+xml`. Works for both `.ico` and
+/// `.svg` requests — every modern browser accepts SVG via `<link rel="icon">`
+/// and falls back gracefully when it receives an SVG at `.ico`. Keeps the
+/// binary slim by avoiding a separate rasterised `.ico`.
+async fn serve_favicon() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "image/svg+xml")
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
+        .body(Body::from(FAVICON_SVG))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +906,41 @@ fn is_not_modified(headers: &HeaderMap, etag: &str) -> bool {
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
 /// Tailwind-generated CSS for the admin UI.
 const APP_CSS: &[u8] = include_bytes!("assets/app.css");
+/// Favicon — SVG mark of the Hearth flame, inlined and served at `/favicon.ico`
+/// and `/ui/static/favicon.svg`.
+const FAVICON_SVG: &[u8] = include_bytes!("assets/favicon.svg");
+
+/// Sentinel substring that MUST appear in the compiled `app.css`. Presence
+/// proves the Tailwind build ran with the Hearth theme layer (the audit of
+/// 2026-04-23 discovered this silently dropping). Checked at server boot
+/// by [`assert_app_css_sane`]; re-verified in CI via `tests/web_ui_assets.rs`.
+const APP_CSS_SENTINEL: &[u8] = b".bg-ht-surface-raised";
+
+/// Verifies that the embedded `app.css` contains the Hearth theme layer.
+///
+/// Called from `main.rs` during server bootstrap. Intentionally cheap —
+/// a single substring scan over ~30 KB — and runs once per process so the
+/// hot path is unaffected. Returns an error describing the likely cause so
+/// the operator can spot it in the startup log.
+///
+/// # Errors
+/// Returns `Err` when the embedded CSS is too small to contain a real
+/// Tailwind build, or when it does not contain [`APP_CSS_SENTINEL`].
+pub fn assert_app_css_sane() -> Result<(), &'static str> {
+    if APP_CSS.len() < 4_096 {
+        return Err(
+            "compiled app.css is under 4 KiB — Tailwind build almost certainly failed. \
+             Run: cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify",
+        );
+    }
+    if !APP_CSS.windows(APP_CSS_SENTINEL.len()).any(|w| w == APP_CSS_SENTINEL) {
+        return Err(
+            "compiled app.css is missing the Hearth theme layer (no `.bg-ht-surface-raised` rule). \
+             Check `ui/tailwind.config.js` content globs and safelist, then rebuild.",
+        );
+    }
+    Ok(())
+}
 
 /// Content-derived `ETag` for the compiled CSS bundle.
 ///
@@ -1003,6 +1061,7 @@ async fn serve_static(
     // Other embedded assets are immutable for the life of this binary.
     let embedded: Option<(&[u8], &str)> = match file.as_str() {
         "htmx.min.js" => Some((HTMX_JS, "application/javascript; charset=utf-8")),
+        "favicon.svg" => Some((FAVICON_SVG, "image/svg+xml")),
         "img/hearth-wide-web.svg" => Some((HEARTH_WIDE_SVG, "image/svg+xml")),
         "img/hearth-icon.svg" => Some((HEARTH_ICON_SVG, "image/svg+xml")),
         _ => None,

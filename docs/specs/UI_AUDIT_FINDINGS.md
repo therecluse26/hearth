@@ -304,6 +304,46 @@ A user expects either a toast, an inline "Chain OK ✓" banner, or a visible dif
 **Not covered by this audit at all:**
 - Responsive layouts below `lg:` breakpoint.
 
+## Resolution status (2026-04-23)
+
+The following items were addressed in this pass:
+
+**P0 — all resolved:**
+- [x] **P0-1** — Tailwind pipeline fixed. `build.rs` now auto-compiles `ui/input.css` → `src/protocol/web/assets/app.css` when the CLI is present. `ui/tailwind.config.js` expanded content globs (`templates/**/*.html` + `src/protocol/web/**/*.rs`) and added a safelist covering `btn-ember`, `btn-danger`, `bg-ht-surface-*`, `text-ht-content-*`, divider alpha classes, accent ramps, semantic states, fonts, and shape tokens. Compiled `app.css` now contains `.bg-ht-surface-raised{background-color:var(--ht-surface-raised)}` and `.btn-ember`. `src/protocol/web/themes.rs` always emits a full `:root { ... }` block — ember included, unknown names fall back to ember. Boot-time canary `assert_app_css_sane()` in `src/protocol/web/mod.rs` is called from `run_serve()` and panics in debug builds if the theme layer is missing. `tests/web_ui_assets.rs` enforces the sentinels in CI.
+- [x] **P0-2** — Self-resolved by P0-1 (sidebar `bg-ht-surface-raised` + `border-r border-divider` now render).
+- [x] **P0-3** — Self-resolved by P0-1 (`fixed inset-0 bg-black/50` now compiled); existing markup in `templates/ui/admin/organizations/detail.html` is correct.
+- [x] **P0-4** — Favicon added at `src/protocol/web/assets/favicon.svg`, served at `/favicon.ico` and `/ui/static/favicon.svg`, linked from `templates/ui/_layout.html`. Admin passkey routes `/ui/admin/login/passkey-begin` and `/ui/admin/login/passkey-complete` now exist (new `passkey_login_begin_admin` / `passkey_login_complete_admin` handlers force the system realm). Logo `alt="{{ product_name }}"` was already dynamic — confirmed not a bug.
+
+**P1:**
+- [x] **P1-1** — Added `shrink-0 whitespace-nowrap` to applications badge.
+- [x] **P1-2** — Removed redundant "Configured in hearth.yaml" helper text from realm row action cell (the info banner at the top of the list page already conveys this).
+- [x] **P1-3** — Organization invite form lifted out of the `<details>` collapse; always visible now, with `autocomplete="email"` on the input.
+- [x] **P1-4** — Self-resolved by P0-1.
+- [x] **P1-5** — Added Users / Organizations / Applications / Sessions entries to the admin sidebar in `templates/ui/_layout.html`, mirroring the dashboard quick-links.
+- [ ] **P1-6** — Deferred. The existing `_workspace_tabs.html` now renders the realm breadcrumb + tabs legibly (post-P0-1), so the "you don't know what realm you're in" concern is mitigated. A proper "require `?realm=` or show picker" refactor remains in the backlog.
+- [x] **P1-7** — Self-resolved by P0-1 (status-badge opacity utilities like `bg-success/[0.12]` now compile).
+- [x] **P1-8** — `autocomplete="off"` per-field on user create / edit forms (email, first/last/display name). Password remains `autocomplete="new-password"`. Form-level `autocomplete="off"` removed so per-field hints govern.
+- [ ] **P1-9** — Deferred. The `/ui/admin/users/new` handler relies on `TargetRealm` for tenant creates and the same template is reused for admin creates. A dedicated `/ui/admin/admin-users/new` route + template is tracked for a follow-up.
+- [ ] **P1-10** — Deferred. Marked UNVERIFIED in the audit; needs a seeded dataset of 21+ users to confirm whether the cursor UI is actually missing.
+
+**P2:**
+- [x] **P2-1** — All `templates/ui/**/*.html` block titles migrated from `Hearth · <Page>` to `{{ product_name }} · <Page>`.
+- [x] **P2-2** — Already dynamic (`alt="{{ product_name }}"`).
+- [x] **P2-3** — Self-resolved by P0-1 (`border-divider-*` / `hover-bg-divider` now compile).
+- [ ] **P2-4** — Deferred. Breadcrumb cross-link decision needs coordination with P1-6.
+- [x] **P2-5** — Self-resolved by P0-1; inputs already share the same input class set.
+- [x] **P2-6** — `templates/ui/admin/users/detail.html` now suppresses the mono `object_id` row when it matches `label`, collapsing hearth-level `admin/admin/admin` triples to a single `admin` pill.
+- [ ] **P2-7** — Deferred (minor; requires per-tab breadcrumb context).
+- [ ] **P2-8** — Deferred (requires Alpine reset-confirm wiring).
+- [x] **P2-9** — Self-resolved by CSS rebuild (format already consistent in `_rows.html`).
+- [x] **P2-10** — Already has `colspan="6"` on sessions empty state; false positive.
+- [x] **P2-11** — Already uses `x-data="{ open: true }"` for all system-info sections.
+- [ ] **P2-12** — Deferred. CodeMirror/Prism is a larger MVP addition.
+- [x] **P2-13** — Dashboard stat cards converted from `<div>` to `<a>` linking to Users/Realms/Applications/Organizations list pages.
+- [ ] **P2-14** — Deferred.
+- [ ] **P2-15** — Deferred.
+- [x] **P2-16** — Already wired: `admin_audit_verify_integrity` renders `flash_message` at top of `audit/list.html` on both success and failure.
+
 ## Verification checklist for a follow-up agent
 
 After all P0 + P1 fixes are in, re-run this audit and confirm:

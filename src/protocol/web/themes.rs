@@ -5,27 +5,27 @@
 //! (`ht-surface-*`, `ht-content-*`, etc.) read these variables at runtime,
 //! so swapping the CSS block is sufficient to change the entire UI palette.
 //!
-//! The `"ember"` theme is the default — its values are already set in
-//! `:root` inside `input.css`, so it returns an empty string here.
+//! Every call returns a non-empty `:root { … }` block — even ember. That way
+//! `GET /ui/static/theme.css` always serves a complete palette independent of
+//! whatever order the base `app.css` loads in, and operators are never staring
+//! at an empty response body when debugging theming.
 
 /// All valid theme names accepted by `branding.theme` in `hearth.yaml`.
 pub const VALID_THEMES: &[&str] = &["ember", "ocean", "midnight", "forest", "cloud", "slate"];
 
 /// Returns the CSS override block for the given theme name.
 ///
-/// Returns an empty string for `"ember"` (default values are already in
-/// `:root`). Returns `""` for any unknown name — callers should validate
-/// against [`VALID_THEMES`] before calling this function.
+/// Always returns a non-empty `:root { … }` block. Unknown names fall back
+/// to the ember palette.
 #[must_use]
 pub fn theme_css(name: &str) -> &'static str {
     match name {
-        "ember" | "" => EMBER,
         "ocean" => OCEAN,
         "midnight" => MIDNIGHT,
         "forest" => FOREST,
         "cloud" => CLOUD,
         "slate" => SLATE,
-        _ => "",
+        _ => EMBER,
     }
 }
 
@@ -33,8 +33,32 @@ pub fn theme_css(name: &str) -> &'static str {
 // Theme constants
 // ---------------------------------------------------------------------------
 
-/// Ember (default dark theme) — values already set in :root, no override needed.
-const EMBER: &str = "";
+/// Ember (default dark theme). Must mirror the `:root` block in
+/// `ui/input.css` so that `theme.css` alone is sufficient to establish the
+/// full palette even if `app.css` hasn't loaded yet.
+const EMBER: &str = r":root {
+  --ht-surface-base:     #141418;
+  --ht-surface-raised:   #0e0e12;
+  --ht-surface-elevated: #1f1f27;
+  --ht-surface-input:    #1f1f27;
+  --ht-content-primary:   #f5f1e8;
+  --ht-content-secondary: #a8a39a;
+  --ht-content-muted:     #7a7a85;
+  --ht-content-brand:     #f5b544;
+  --ht-content-on-brand:  #0e0e12;
+  --ht-divider: #ffffff;
+  --ht-brand-from: #f5b544;
+  --ht-brand-via:  #e8743b;
+  --ht-brand-deep: #a8321f;
+  --ht-teal-bg:    #0f2825;
+  --ht-teal-fg:    #7ac4b8;
+  --ht-violet-bg:  #1d1a2e;
+  --ht-violet-fg:  #b0a5d4;
+  --ht-rose-bg:    #2a1920;
+  --ht-rose-fg:    #e5a3aa;
+  --ht-steel-bg:   #1a2332;
+  --ht-steel-fg:   #8fa8c9;
+}";
 
 /// Ocean — dark teal/cyan accent.
 const OCEAN: &str = r":root {
@@ -117,31 +141,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ember_returns_empty() {
-        assert_eq!(theme_css("ember"), "");
+    fn ember_returns_root_block() {
+        let css = theme_css("ember");
+        assert!(css.starts_with(":root {"));
+        assert!(css.contains("--ht-surface-base"));
     }
 
     #[test]
-    fn empty_string_returns_empty() {
-        assert_eq!(theme_css(""), "");
+    fn empty_string_falls_back_to_ember() {
+        assert_eq!(theme_css(""), theme_css("ember"));
     }
 
     #[test]
-    fn unknown_name_returns_empty() {
-        assert_eq!(theme_css("neon-banana"), "");
+    fn unknown_name_falls_back_to_ember() {
+        assert_eq!(theme_css("neon-banana"), theme_css("ember"));
     }
 
     #[test]
-    fn all_valid_themes_return_non_empty_except_ember() {
+    fn every_valid_theme_emits_root_block() {
         for &name in VALID_THEMES {
-            if name == "ember" {
-                assert_eq!(theme_css(name), "", "ember should return empty");
-            } else {
-                assert!(
-                    !theme_css(name).is_empty(),
-                    "theme '{name}' returned empty CSS"
-                );
-            }
+            let css = theme_css(name);
+            assert!(
+                css.contains(":root {") && css.contains("--ht-"),
+                "theme {name:?} did not emit a :root block with --ht- vars"
+            );
         }
     }
 

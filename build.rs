@@ -1,8 +1,11 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 const GENERATED_DIR: &str = "src/protocol/generated";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    compile_tailwind_if_available();
+
     let proto_dir = PathBuf::from("proto");
     let protos = &[
         "proto/hearth/identity/v1/identity.proto",
@@ -56,4 +59,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto/");
     println!("cargo:rerun-if-changed=build.rs");
     Ok(())
+}
+
+/// Compiles `ui/input.css` → `src/protocol/web/assets/app.css` when the
+/// Tailwind CLI shim is present. No-op on fresh clones without the CLI, so
+/// `cargo build` still works for anyone who just wants the server binary —
+/// the checked-in `app.css` is used as-is. Emits `rerun-if-changed` markers
+/// so an edit to `input.css`, the Tailwind config, or any template triggers
+/// a rebuild of the stylesheet on the next `cargo build`.
+fn compile_tailwind_if_available() {
+    // Always watch these paths — whether or not the CLI exists today, we want
+    // the next build to pick up changes if the CLI is added later.
+    println!("cargo:rerun-if-changed=ui/input.css");
+    println!("cargo:rerun-if-changed=ui/tailwind.config.js");
+    println!("cargo:rerun-if-changed=templates");
+
+    let cli = PathBuf::from("ui/tailwindcss");
+    if !cli.exists() {
+        println!(
+            "cargo:warning=ui/tailwindcss not found — skipping Tailwind build. \
+             Using checked-in src/protocol/web/assets/app.css."
+        );
+        return;
+    }
+
+    let output = Command::new(&cli)
+        .current_dir("ui")
+        .args([
+            "-i",
+            "input.css",
+            "-o",
+            "../src/protocol/web/assets/app.css",
+            "--minify",
+        ])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            println!("cargo:warning=Tailwind CSS rebuilt");
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            println!(
+                "cargo:warning=Tailwind build exited with {} — continuing with existing app.css. stderr: {}",
+                out.status, stderr
+            );
+        }
+        Err(e) => {
+            println!(
+                "cargo:warning=failed to invoke ui/tailwindcss ({e}) — continuing with existing app.css"
+            );
+        }
+    }
 }

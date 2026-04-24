@@ -1,6 +1,48 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ["../templates/ui/**/*.html"],
+  content: [
+    "../templates/**/*.html",
+    "../src/protocol/web/**/*.rs",
+  ],
+  // Safelist dynamic classes composed at runtime (HTMX responses, Rust-side
+  // classList builders, theme-picker preview). Static template classes are
+  // picked up by `content` globs above; anything listed here is guaranteed
+  // present in the compiled CSS regardless of template content.
+  safelist: [
+    "btn-ember",
+    "btn-danger",
+    // Alpha-pattern component classes from @layer components in input.css
+    "border-divider",
+    "border-divider-faint",
+    "border-divider-subtle",
+    "border-divider-strong",
+    "bg-divider",
+    "hover-bg-divider",
+    "ring-divider-subtle",
+    "hover-ring-divider",
+    "focus-ring-brand",
+    "bg-brand-subtle",
+    "bg-brand-muted",
+    "bg-elevated-half",
+    "border-brand-accent",
+    // Semantic surface/content tokens
+    { pattern: /^bg-ht-surface-(base|raised|elevated|input)$/ },
+    { pattern: /^text-ht-content-(primary|secondary|muted|brand|on-brand)$/ },
+    { pattern: /^border-ht-divider$/ },
+    // Brand gradient stops (used by btn-ember + ad-hoc gradients)
+    { pattern: /^(from|via|to)-ht-brand-(from|via|deep)$/ },
+    // Accent ramp bg/fg — used by status_badge macro at runtime
+    { pattern: /^bg-(teal|violet|rose|steel)-bg$/ },
+    { pattern: /^text-(teal|violet|rose|steel)-fg$/ },
+    // Semantic state colors — used inline in status cells
+    { pattern: /^(bg|text)-(success|warning|danger|info)(-fg)?$/ },
+    // Font families
+    "font-sans",
+    "font-display",
+    "font-mono",
+    // Shape tokens commonly composed in Rust/HTMX responses
+    { pattern: /^rounded(-sm|-lg|-xl|-full|-md)?$/ },
+  ],
   theme: {
     // ── Shape tokens (THEME.md § Shape) ──────────────────────────
     borderRadius: {

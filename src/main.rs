@@ -309,6 +309,20 @@ async fn run_serve(
         "Hearth identity server starting"
     );
 
+    // Canary: verify the embedded admin UI CSS contains the Hearth theme layer.
+    // Catches a silent regression where a Tailwind build sheds every `bg-ht-*`
+    // / `btn-ember` class and the admin UI renders as unstyled HTML.
+    match web::assert_app_css_sane() {
+        Ok(()) => {}
+        Err(reason) => {
+            error!(reason, "admin UI CSS bundle looks broken");
+            #[cfg(debug_assertions)]
+            {
+                return Err(reason.into());
+            }
+        }
+    }
+
     // Initialize storage engine
     let storage: Arc<EmbeddedStorageEngine> = if config.dev_mode {
         let temp_dir = tempfile::tempdir()?;

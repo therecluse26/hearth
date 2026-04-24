@@ -1,5 +1,5 @@
 {% extends "ui/_layout.html" %}
-{% block title %}Hearth · {{ user.display_name() }}{% endblock %}
+{% block title %}{{ product_name }} · {{ user.display_name() }}{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <div class="flex items-center gap-3">
@@ -112,7 +112,12 @@
               {% when None %}
                 <span class="text-sm text-ht-content-primary">{{ e.label }}</span>
             {% endmatch %}
-            <div class="text-xs text-ht-content-muted font-mono">{{ e.object_id }}</div>
+            {# Hide the object_id row when it's identical to the human label —
+               otherwise hearth-level grants (where label/object_id/relation all
+               collapse to "admin") render as three duplicate "admin" cells. #}
+            {% if e.object_id != e.label %}
+              <div class="text-xs text-ht-content-muted font-mono">{{ e.object_id }}</div>
+            {% endif %}
           </div>
           <span class="inline-flex shrink-0 items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">{{ e.relation }}</span>
         </li>

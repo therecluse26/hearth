@@ -915,6 +915,22 @@ pub async fn passkey_login_begin_scoped(
     passkey_login_begin_impl(state, headers, Some(realm_name))
 }
 
+/// `GET /ui/admin/login/passkey-begin` — admin variant. Forces the system
+/// realm so admin sign-ins don't leak into a tenant realm's credential
+/// store on multi-realm deployments.
+pub async fn passkey_login_begin_admin(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    let realm = match resolve_admin_realm(&state) {
+        PreAuthRealm::Ok { realm, .. } => realm,
+        PreAuthRealm::Handled(_) => {
+            return (StatusCode::BAD_REQUEST, "System realm unavailable").into_response();
+        }
+    };
+    passkey_login_begin_with_realm(state, headers, realm)
+}
+
 /// Starts a discoverable credential authentication ceremony. The
 /// challenge is created in the resolved realm; the store is realm-scoped
 /// but `user_id=None` (discoverable flow) skips per-realm user lookup.
@@ -923,6 +939,25 @@ fn passkey_login_begin_impl(
     state: Arc<WebState>,
     headers: HeaderMap,
     path_realm: Option<String>,
+) -> Response {
+    let realm = match resolve_pre_auth_realm(&state, path_realm, false) {
+        PreAuthRealm::Ok { realm, .. } => realm,
+        PreAuthRealm::Handled(_) => {
+            // JSON endpoint: picker HTML is not useful. Return 400.
+            return (StatusCode::BAD_REQUEST, "Realm not resolvable").into_response();
+        }
+    };
+    passkey_login_begin_with_realm(state, headers, realm)
+}
+
+/// Shared body of every passkey-begin handler once the target realm has
+/// been resolved. Split out so the admin variant can force the system
+/// realm without re-running the bare realm resolver.
+#[allow(clippy::needless_pass_by_value)]
+fn passkey_login_begin_with_realm(
+    state: Arc<WebState>,
+    headers: HeaderMap,
+    realm: Realm,
 ) -> Response {
     use base64::Engine as _;
 
@@ -938,14 +973,6 @@ fn passkey_login_begin_impl(
 
     let options = AuthenticationOptions {
         rp_id: rp_id.clone(),
-    };
-
-    let realm = match resolve_pre_auth_realm(&state, path_realm, false) {
-        PreAuthRealm::Ok { realm, .. } => realm,
-        PreAuthRealm::Handled(_) => {
-            // JSON endpoint: picker HTML is not useful. Return 400.
-            return (StatusCode::BAD_REQUEST, "Realm not resolvable").into_response();
-        }
     };
 
     let challenge = match state
@@ -1001,6 +1028,23 @@ pub async fn passkey_login_complete_scoped(
     axum::Json(body): axum::Json<PasskeyLoginCompleteBody>,
 ) -> Response {
     passkey_login_complete_impl(state, headers, body, Some(realm_name))
+}
+
+/// `POST /ui/admin/login/passkey-complete` — admin variant. Routes the
+/// assertion through the system realm rather than the default/sole
+/// tenant realm.
+pub async fn passkey_login_complete_admin(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<PasskeyLoginCompleteBody>,
+) -> Response {
+    let system_realm_name = match resolve_admin_realm(&state) {
+        PreAuthRealm::Ok { realm, .. } => realm.name().to_string(),
+        PreAuthRealm::Handled(_) => {
+            return (StatusCode::BAD_REQUEST, "System realm unavailable").into_response();
+        }
+    };
+    passkey_login_complete_impl(state, headers, body, Some(system_realm_name))
 }
 
 /// Completes the discoverable credential authentication ceremony.
