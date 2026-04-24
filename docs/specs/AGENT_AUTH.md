@@ -2,13 +2,14 @@
 
 ## Purpose
 
-This document specifies how Hearth authenticates, authorizes, and audits AI agents — autonomous software entities that act on behalf of users, invoke tools, and collaborate with other agents. It extends Hearth's existing OAuth 2.0, OIDC, and Zanzibar infrastructure with agent-specific primitives for delegation, scope attenuation, proof-of-possession, and human-in-the-loop approval.
+This document specifies how Hearth authenticates, authorizes, and audits AI agents — autonomous software entities that act on behalf of users, invoke tools, and collaborate with other agents. It extends Hearth's existing OAuth 2.0, OIDC, and claims-based RBAC authorization (see [AUTHORIZATION.md](./AUTHORIZATION.md)) with agent-specific primitives for delegation, scope attenuation, proof-of-possession, and human-in-the-loop approval.
 
 Terminology follows [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119): **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** carry their standard meaning. MUST-level rules block merge with no exceptions. SHOULD-level rules require a PR comment explaining the deviation.
 
 ### Related Documents
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — layer structure, hot path rules, security baseline, storage engine.
+- [AUTHORIZATION.md](./AUTHORIZATION.md) — normative spec for Hearth's RBAC model (roles, groups, permissions, JWT claims). Agent permissions extend this model.
 - [TESTING.md](./TESTING.md) — eight testing layers and verification strategy.
 - [VISION.md](../vision/VISION.md) — design rationale and competitive positioning.
 
@@ -18,7 +19,7 @@ Terminology follows [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119): **MUST**
 |------|---------|
 | **Agent** | An autonomous software entity with its own identity, registered in Hearth, that performs actions programmatically. Not a user. Not an OAuth client (though it may use OAuth flows). |
 | **Delegation** | A user or agent granting an agent permission to act on its behalf, with bounded scope and duration. |
-| **Tool** | A discrete capability an agent can invoke (e.g., `send_email`, `search_files`, `create_order`). Modeled as a Zanzibar object type. |
+| **Tool** | A discrete capability an agent can invoke (e.g., `send_email`, `search_files`, `create_order`). Identified by a name; permissions over it are expressed as RBAC permission strings (e.g. `tool.send_email.invoke`). |
 | **Delegation chain** | An ordered list of principals through which authority was delegated: `user:U → agent:A → agent:B`. Each hop attenuates scope. |
 | **Agent Card** | A JSON metadata document describing an agent's capabilities, authentication requirements, and endpoint URL. Served at a well-known path per the A2A protocol. |
 | **MCP** | Model Context Protocol — a standard for AI agents to connect to tool servers. |
@@ -59,7 +60,7 @@ An agent record **MUST** contain:
 - Every agent **MUST** belong to exactly one realm. All storage keys **MUST** be realm-prefixed per [ARCHITECTURE.md Section 7](./ARCHITECTURE.md#7-multi-tenancy).
 - An agent's `owner_id` **MUST** reference an existing user or organization within the same realm.
 - Agent status transitions **MUST** be: `Active → Suspended → Active` (reversible) and `Active|Suspended → Revoked` (terminal). Revoked agents **MUST NOT** authenticate or be re-activated.
-- Agent deletion **MUST** cascade: revoke all active tokens, remove all Zanzibar tuples where the agent is a subject, delete all credentials, and emit an audit event.
+- Agent deletion **MUST** cascade: revoke all active tokens, remove all RBAC role assignments where the agent is the subject, remove the agent from any groups, delete all credentials, and emit an audit event.
 
 ### 1.3 Agent Registration API
 
@@ -82,11 +83,11 @@ The protocol layer **MUST** expose CRUD endpoints for agents:
 
 ### 1.4 Capabilities
 
-Capabilities declare what an agent is designed to do. They are informational metadata (not enforcement) — enforcement is handled by Zanzibar tuples (see [Section 5](#5-tool-level-permissions--zanzibar-integration)).
+Capabilities declare what an agent is designed to do. They are informational metadata (not enforcement) — enforcement is handled by RBAC permission grants (see [Section 5](#5-tool-level-permissions)).
 
 - Capabilities **MUST** be expressed as URIs following the pattern: `urn:hearth:capability:{domain}:{action}` (e.g., `urn:hearth:capability:email:send`, `urn:hearth:capability:files:read`).
 - Capability URIs **SHOULD** align with the tool names registered in the realm's tool registry.
-- Agents **MAY** declare zero capabilities (unconstrained agents are governed entirely by Zanzibar tuples).
+- Agents **MAY** declare zero capabilities (unconstrained agents are governed entirely by their RBAC permission grants).
 
 ### 1.5 Agent Credentials
 
@@ -113,7 +114,7 @@ Hearth **SHOULD** serve an Agent Card for each registered agent, enabling discov
 
 - Agent Cards **MUST** be served at `/.well-known/agent.json?agent_id={agent_id}` for a specific agent, or at `/.well-known/agent.json` for the realm's primary agent.
 - The Agent Card **MUST** include: `name`, `description`, `url` (agent endpoint), `authentication` (supported schemes), `capabilities` (skill list).
-- Agent Cards **MUST NOT** expose internal implementation details, credential material, or Zanzibar tuple structures.
+- Agent Cards **MUST NOT** expose internal implementation details, credential material, or the agent's full permission set.
 - Agent Cards **SHOULD** include a `version` field for cache busting.
 
 ---
@@ -247,7 +248,7 @@ Hearth **MUST** implement the token exchange grant type (`urn:ietf:params:oauth:
 - The `actor_token` **MUST** be the agent's JWT assertion (proving the agent's identity).
 - The `subject_token_type` **MUST** be `urn:ietf:params:oauth:token-type:access_token`.
 - The `actor_token_type` **MUST** be `urn:ietf:params:oauth:token-type:jwt`.
-- The resulting token's scope **MUST** be the intersection of: the subject token's scope, the agent's permitted scopes (from Zanzibar), and the `scope` parameter in the exchange request.
+- The resulting token's scope **MUST** be the intersection of: the subject token's scope, the agent's permitted scopes (derived from its own RBAC permission claims), and the `scope` parameter in the exchange request.
 - The resulting token **MUST** carry the `act` claim documenting the delegation.
 - The resulting token's lifetime **MUST NOT** exceed the subject token's remaining lifetime.
 
@@ -339,39 +340,48 @@ Hearth **SHOULD** support AATs per draft-niyikiza-oauth-attenuating-agent-tokens
 
 ---
 
-## 5. Tool-Level Permissions & Zanzibar Integration
+## 5. Tool-Level Permissions
 
 ### 5.1 Overview
 
-Hearth's existing Zanzibar authorization engine (see [ARCHITECTURE.md Section 1.1](./ARCHITECTURE.md#11-the-six-modules)) **MUST** be extended to express agent-tool permissions as relationship tuples. This provides fine-grained, queryable, and auditable authorization at tool granularity.
+Tool invocation permissions are expressed as RBAC permission strings granted to an agent via role assignments. This reuses Hearth's existing RBAC engine (see [AUTHORIZATION.md](./AUTHORIZATION.md)) with no agent-specific authorization machinery: agents are treated as principals like users, receiving role assignments that grant permissions in the standard way.
 
-### 5.2 Object Types
+### 5.2 Permission Convention
 
-The following Zanzibar object types **MUST** be added:
+Tool permissions follow a naming convention in the realm's permission namespace:
 
-| Object Type | Namespace Pattern | Example |
-|-------------|-------------------|---------|
-| Agent | `agent:{agent_id}` | `agent:agt_a1b2c3` |
-| Tool | `tool:{tool_name}` | `tool:send_email` |
-| Tool group | `toolgroup:{name}` | `toolgroup:email_suite` |
+| Permission pattern | Semantics |
+|--------------------|-----------|
+| `tool.{name}.invoke` | Agent may invoke the tool without human approval. |
+| `tool.{name}.invoke_with_approval` | Agent may invoke the tool only with human approval (see [Section 9](#9-human-in-the-loop-authorization)). |
+| `tool.{name}.deny` | Agent is explicitly denied access. Takes precedence over other grants. |
 
-### 5.3 Relations
+Tool groups use the same pattern with a `toolgroup.{name}.*` prefix. A role that grants `toolgroup.email_suite.invoke` conceptually gives access to every tool in the group; tool-to-group membership is recorded as a realm-config mapping (in the tool registry), not as RBAC state, because this is a static deployment concern rather than a per-principal grant.
 
-| Relation | Subject → Object | Semantics |
-|----------|-------------------|-----------|
-| `invoke` | agent → tool | Agent may invoke the tool without human approval. |
-| `invoke_with_approval` | agent → tool | Agent may invoke the tool only with human approval (see [Section 9](#9-human-in-the-loop-authorization)). |
-| `deny` | agent → tool | Agent is explicitly denied access. Takes precedence over `invoke`. |
-| `member` | tool → toolgroup | Tool belongs to a tool group. |
-| `invoke` | agent → toolgroup | Agent may invoke all tools in the group. |
-| `delegate` | agent A → agent B | Agent A may delegate its permissions to agent B. |
+### 5.3 Assigning Permissions
+
+Agents receive tool permissions like any other principal: an admin creates a role that includes the relevant `tool.*` permissions, then assigns it to the agent (or to a group the agent belongs to). The permissions appear in the agent's resolved claim set at token issuance per `AUTHORIZATION.md § 3`.
+
+Example role:
+
+```yaml
+roles:
+  - name: email.editor
+    permissions:
+      - tool.send_email.invoke
+      - tool.search_emails.invoke
+      - tool.delete_email.invoke_with_approval
+```
+
+Assigning `email.editor` to an agent gives it direct send/search access and approval-gated delete access.
 
 **Rules:**
 
-- Permission checks for agent actions **MUST** use the existing `check()` API: `check(realm, tool:{name}, "invoke", agent:{id})`.
-- `deny` tuples **MUST** take precedence over `invoke` tuples. The evaluation order is: check deny first, then check invoke. If both exist, deny wins.
-- Tool group membership **MUST** be resolved transitively: `invoke(agent, toolgroup)` + `member(tool, toolgroup)` implies `invoke(agent, tool)`.
-- Argument-level constraints **MUST NOT** be encoded in Zanzibar tuples. Tuple metadata **MAY** carry constraint hints, but enforcement is handled by AAT validation (see [Section 4](#4-scope-attenuation)).
+- Agent permission checks **MUST** use the agent's access-token permissions claim, not a separate API call. Resolution runs at token issuance; no network round trip per tool invocation.
+- `tool.{name}.deny` in the agent's resolved claim set **MUST** cause tool invocation to fail, even if `tool.{name}.invoke` is also present. Evaluation order: check deny first; deny wins.
+- Tool group membership is a realm-config concept, not a per-principal grant. Tools can be added to or removed from a group via realm config without rewriting RBAC state.
+- Argument-level constraints **MUST NOT** be encoded in the permission string itself. Permission strings answer "may the agent invoke this tool at all"; argument-level enforcement is handled by AAT validation (see [Section 4](#4-scope-attenuation)).
+- The `delegate` concept (agent A delegating to agent B) is handled via token exchange per [Section 3.3](#33-token-exchange-rfc-8693); there is no `tool.*.delegate` permission. An agent's ability to delegate to another agent is determined by its own permission claims being a superset of what it attempts to delegate.
 
 ### 5.4 Scope Intersection at Delegation
 
@@ -380,13 +390,13 @@ When an agent requests a delegated token (via OBO or token exchange), the result
 ```
 effective_scope = intersection(
     user_granted_scopes,          -- what the user consented to
-    agent_zanzibar_permissions,   -- what the agent is allowed to do
+    agent_permitted_scopes,       -- what the agent is allowed to do, from its RBAC claims
     requested_scope               -- what the agent asked for
 )
 ```
 
 - If the intersection is empty, the token request **MUST** be rejected with `invalid_scope`.
-- The Zanzibar check **MUST** be performed at token issuance time, not at resource access time (fail-fast).
+- The permission check **MUST** be performed at token issuance time, not at resource access time (fail-fast).
 - Resource servers **SHOULD** additionally validate scopes at access time for defense-in-depth.
 
 ---
@@ -447,11 +457,11 @@ Tokens issued for agent operations **MAY** include intent-binding claims:
 
 ### 7.3 Rules
 
-- Intent-binding claims are **OPTIONAL** — they provide defense-in-depth beyond scope and Zanzibar enforcement.
+- Intent-binding claims are **OPTIONAL** — they provide defense-in-depth beyond scope and RBAC permission enforcement.
 - When `tool_binding` is present, the resource server **MUST** reject requests for tools not in the list, even if the scope would otherwise allow them.
 - When `agent_checksum` is present, runtime environments **SHOULD** verify the agent's code integrity matches the recorded checksum.
 - `agent_workflow_id` enables correlation of related token uses across audit logs.
-- Intent claims **MUST NOT** be used as the sole authorization mechanism — they supplement Zanzibar and scope checks, not replace them.
+- Intent claims **MUST NOT** be used as the sole authorization mechanism — they supplement permission and scope checks, not replace them.
 
 ---
 
@@ -516,14 +526,13 @@ Some agent actions are too sensitive for automatic authorization. Hearth **MUST*
 
 ### 9.2 Approval-Required Permissions
 
-The `invoke_with_approval` relation (see [Section 5.3](#53-relations)) triggers the human-in-the-loop flow:
+The `tool.{name}.invoke_with_approval` permission (see [Section 5.2](#52-permission-convention)) triggers the human-in-the-loop flow:
 
-1. Agent calls `check(realm, tool:X, "invoke", agent:A)` → returns `Denied` (no direct invoke permission).
-2. Agent calls `check(realm, tool:X, "invoke_with_approval", agent:A)` → returns `Allowed`.
-3. Agent creates an approval request.
-4. The designated approver(s) are notified.
-5. Approver grants or denies the request.
-6. If granted, a time-boxed capability token is issued.
+1. Agent's access token contains `tool.X.invoke_with_approval` but NOT `tool.X.invoke`.
+2. Agent attempts to invoke tool X. Runtime/SDK observes approval-required permission and creates an approval request instead of failing.
+3. The designated approver(s) are notified.
+4. Approver grants or denies the request.
+5. If granted, a time-boxed capability token is issued carrying `tool.X.invoke` for the approved invocation only.
 
 ### 9.3 Approval Requests
 
@@ -547,9 +556,9 @@ Realms **MUST** be able to configure approval policies per tool and per agent:
 
 | Policy | Behavior |
 |--------|----------|
-| `auto_approve` | Agent may invoke without human approval. Maps to `invoke` relation. |
-| `require_approval` | Agent must obtain human approval. Maps to `invoke_with_approval` relation. |
-| `deny` | Agent may never invoke, regardless of approval. Maps to `deny` relation. |
+| `auto_approve` | Agent may invoke without human approval. Expressed as `tool.{name}.invoke` permission in the agent's role. |
+| `require_approval` | Agent must obtain human approval. Expressed as `tool.{name}.invoke_with_approval` permission in the agent's role. |
+| `deny` | Agent may never invoke, regardless of approval. Expressed as `tool.{name}.deny` permission in the agent's role; takes precedence over `invoke`. |
 
 **Rules:**
 
@@ -557,7 +566,7 @@ Realms **MUST** be able to configure approval policies per tool and per agent:
 - Approved requests **MUST** issue a capability token with a configurable TTL (default: 5 minutes, max: 1 hour).
 - The capability token **MUST** be scoped to the specific tool and action that was approved.
 - Expired requests **MUST** be treated as denied. Agents **MUST** create a new request to retry.
-- Approvers **MUST** be identified by Zanzibar tuples: `check(realm, approval_request:R, "approve", user:U)`.
+- Approvers **MUST** be identified by RBAC permissions: an approver is any principal whose token claims include the permission `approval.{request_id}.approve` (or a broader role that grants it, e.g. `approval.tool.send_email.approve` for any approval request targeting that tool). Realm config declares which permissions govern which approval domains.
 
 ### 9.5 Notification
 
@@ -589,7 +598,7 @@ Hearth **SHOULD** emit and consume the following risk signals:
 
 ### 10.3 Signal Delivery
 
-- Risk signals **SHOULD** be delivered via Hearth's existing `watch()` infrastructure (see [ARCHITECTURE.md Section 1.1](./ARCHITECTURE.md#11-the-six-modules) — Authorization Engine).
+- Risk signals **SHOULD** be delivered via Hearth's audit event stream. Subscribers filter for signal events and act (revoke, suspend, notify).
 - External consumers **MAY** receive signals via the Shared Signals Framework (SSF) using Server-Sent Events or webhook push.
 - Signal delivery **MUST** be best-effort with at-least-once semantics. Consumers **MUST** handle duplicate signals idempotently.
 
@@ -753,8 +762,8 @@ Implementation **MUST** follow the dependency order below. Each phase builds on 
 
 | Step | Feature | Dependencies | Test Scenarios |
 |------|---------|-------------|----------------|
-| C.1 | Tool and tool group Zanzibar types | A.2 | Unit: tuple CRUD for agent-tool relations. |
-| C.2 | `invoke` / `invoke_with_approval` / `deny` evaluation | C.1 | Unit: precedence rules. Integration: permission checks. Property: deny always wins. |
+| C.1 | Tool permission conventions + tool registry | A.2 | Unit: `tool.*`/`toolgroup.*` permission grammar; tool-registry config loading. |
+| C.2 | `invoke` / `invoke_with_approval` / `deny` evaluation | C.1 | Unit: precedence rules (deny wins). Integration: claim inspection yields correct decision. Property: deny always wins. |
 | C.3 | Scope intersection at delegation | B.4, C.1 | Unit: intersection logic. Property: result is always subset. |
 | C.4 | Approval request lifecycle | C.2 | Unit: create, approve, deny, expire. Integration: full flow. |
 | C.5 | Approval webhook notifications | C.4 | Integration: webhook delivery. |
@@ -801,12 +810,12 @@ Implementation **MUST** follow the dependency order below. Each phase builds on 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Agent as distinct entity | Not an OAuth client | Agents need delegation chains, capability declarations, and per-agent policy that OAuth clients don't model. Collapsing them loses audit context and prevents proper lifecycle management. |
-| Tool permissions via Zanzibar | Not scope strings alone | Zanzibar provides queryable, auditable, graph-traversable permissions. Scope strings are flat and opaque. Tools map naturally to Zanzibar objects, agents to subjects. |
+| Tool permissions via RBAC claims | Not scope strings alone | RBAC permissions are queryable, auditable, and embedded in JWT claims. Scope strings are flat OAuth-level labels; permissions are the authoritative source. Tools map naturally to permission strings (`tool.{name}.invoke`), agents to principals. Layering scope on top of permissions lets OAuth clients downscope at token exchange time. |
 | DPoP over mTLS (default) | Ed25519 DPoP proofs | Aligns with Hearth's Ed25519 signing. DPoP works through proxies and load balancers where mTLS terminates. mTLS remains an option for infrastructure contexts. |
 | `act` claim for delegation | Per RFC 8693 Section 4.1 | Industry standard. Nested `act` claims naturally express chains of arbitrary depth without schema changes. |
 | AAT offline derivation | Not server-mediated attenuation | Each hop can narrow scope without round-tripping to Hearth. Critical for latency in multi-agent chains. Aligns with draft-niyikiza-oauth-attenuating-agent-tokens. |
-| Human-in-the-loop via Zanzibar | `invoke_with_approval` relation | Reuses existing permission infrastructure. No separate policy engine. Approval requirement is just another tuple, queryable and auditable like any other permission. |
-| CAEP via watch() | Not a separate event bus | Hearth already has watch() with broadcast + persistence. Risk signals are just another event type on existing infrastructure. |
+| Human-in-the-loop via RBAC permission | `tool.{name}.invoke_with_approval` | Reuses existing permission infrastructure. No separate policy engine. Approval requirement is just another permission string, auditable and revocable like any other grant. |
+| CAEP via audit stream | Not a separate event bus | Risk signals ride on Hearth's existing audit event stream. A dedicated push channel would duplicate the audit-materialization path. When a risk signal fires, subscribers consume it from the audit stream and act (revoke session, suspend agent, etc.). |
 | MCP servers as protected resources | Registered in Hearth config | Tokens need audience restriction. Registering MCP servers gives Hearth the URI vocabulary for `aud` claims and enables PRM discovery. |
 | Phased implementation | A → B → C → D | Each phase has clear dependencies. Foundation (identity + DPoP) must exist before delegation. Delegation must exist before tool permissions. Advanced features (AATs, CAEP) build on all prior phases. |
 | Agent Cards at well-known path | Per A2A protocol | Interoperability with the emerging A2A ecosystem. Minimal cost (JSON endpoint), high value (agent discovery). |

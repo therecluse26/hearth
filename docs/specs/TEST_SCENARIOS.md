@@ -249,37 +249,45 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 ---
 
-### Authorization Engine
+### Authorization (RBAC) Engine
+
+Covers `src/rbac/` — the claims-based RBAC engine. See [AUTHORIZATION.md](./AUTHORIZATION.md) for the normative model; this section enumerates verification coverage.
 
 #### Unit
 
-- [x] Direct relationship check: returns true when present, false when absent `P0` `fast`
-- [x] Transitive relationship check: correctly resolves 2-hop and 3-hop paths `P0` `fast`
-- [x] Cycle detection: relationship graph rejects or handles cycles correctly `P0` `fast`
-- [x] Write and delete relationship tuples; check reflects changes immediately `P0` `fast`
-- [x] Expand operation returns complete set of reachable subjects `P0` `fast`
+- [ ] Permission string grammar: valid strings accepted, invalid rejected (empty, uppercase, leading digit, delimiter chars, length > 128) `P0` `fast`
+- [ ] Role composition — transitive: `A → B → C` resolves all permissions from A, B, and C `P0` `fast`
+- [ ] Role composition — cycle rejected: `A → B → A` returns `CycleDetected` `P0` `fast`
+- [ ] Role composition — depth cap: 11-deep parent chain returns `DepthExceeded` `P0` `fast`
+- [ ] Group membership — transitive: user in nested groups resolves to all containing groups `P0` `fast`
+- [ ] Group membership — cycle rejected: `G1 ∈ G2 ∈ G1` returns `CycleDetected` `P0` `fast`
+- [ ] Group caps: depth > 10 or breadth > 1000 returns the corresponding error `P0` `fast`
 
 #### Integration
 
-- [x] Permission check via embedded public API (zero internal imports) `P0` `fast`
-- [x] Write relationship + check permission round-trip via public API `P0` `fast`
+- [ ] Create role → assign to user → resolve → permissions present `P0` `fast`
+- [ ] Create role chain A→B→C → resolve → all permissions present `P0` `fast`
+- [ ] Group-assigned role: add user to group, assign role to group, resolve → user gets role's permissions `P0` `fast`
+- [ ] Realm-scoped vs org-scoped assignment: token without `oid` excludes org-scoped permissions `P0` `fast`
+- [ ] Scope request narrows permissions: `scope=docs` intersects resolved set with `docs.*` mapping `P0` `fast`
 
 #### Property
 
-- [x] Random relationship graphs produce correct reachability results (`proptest`) `P0` `extended`
-- [x] Cycle detection holds for arbitrary graph topologies `P0` `extended`
-- [x] Random add/delete sequences maintain graph invariants (acyclicity, referential integrity) `P0` `extended`
+- [ ] Random role DAGs (no cycles) produce correct reachability results (`proptest`) `P0` `extended`
+- [ ] Random group graphs (no cycles) produce correct transitive membership (`proptest`) `P0` `extended`
+- [ ] Random assign / unassign sequences maintain invariants (no orphaned permissions, no duplicate assignments) `P0` `extended`
 
 #### Adversarial
 
-- [x] Malformed permission tuples (invalid object/relation/subject) rejected safely `P0` `fast`
-- [x] Cross-realm permission leak prevented: namespace traversal returns no results `P0` `fast`
-- [x] Maximum graph traversal depth enforced to prevent DoS via deep chains `P0` `fast`
+- [ ] Invalid permission strings rejected at role creation (ungrammatical, reserved namespace abuse) `P0` `fast`
+- [ ] Cross-realm permission leak prevented: resolving in realm B ignores realm A roles and groups `P0` `fast`
+- [ ] Reserved namespace (`hearth.*`) refuses operator-defined role permissions `P0` `fast`
+- [ ] Token-size cap exceeded: issuance refused with structured error naming the violating bound `P0` `fast`
 
 #### Benchmark
 
-- [x] Direct permission check: p50 < 20 μs, p99 < 200 μs (regression: +20%) `P0` `standard`
-- [x] 3-hop graph traversal: p50 < 100 μs, p99 < 1 ms (regression: +20%) `P0` `standard`
+- [ ] `resolve_permissions` (off the hot path, at token issue): p50 < 100 μs, p99 < 1 ms for a typical user (5 roles, 10 groups) `P0` `standard`
+- [ ] JWT claim lookup (`hasPermission` on a decoded token): p99 < 1 μs (hashset `contains`) `P0` `standard`
 
 ---
 
@@ -384,7 +392,7 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 - [x] Developer on-ramp: start server → create realm → create app → complete OIDC login `P0` `fast`
 - [x] User lifecycle: register → authenticate → receive session → validate token `P0` `fast`
-- [x] Auth + authz: authenticate → write permission → check permission → authorized action succeeds `P0` `fast`
+- [x] Auth + authz: authenticate → assign role → issue token → verify permission claim grants action `P0` `fast`
 - [x] Cascading invalidation: delete user → sessions invalidated → token validation fails `P0` `fast`
 
 ---
@@ -414,7 +422,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Magic Link / Passwordless | 4/4 | 2/2 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
 | TOTP / MFA | 5/5 | 3/3 | 1/1 | -- | -- | 2/2 | -- | -- | **11/11** |
 | Multi-Tenancy | 5/5 | 3/3 | 3/3 | -- | 2/2 | 3/3 | -- | -- | **16/16** |
-| Zanzibar Authorization (Full) | 5/5 | 3/3 | 2/2 | -- | 2/2 | 2/2 | -- | 2/2 | **16/16** |
+| RBAC Authorization (Full) | 5/5 | 3/3 | 2/2 | -- | -- | 2/2 | -- | 2/2 | **14/14** |
 | Admin API | 3/3 | 4/4 | -- | -- | -- | 3/3 | -- | -- | **10/10** |
 | Audit Logging | 4/4 | 3/3 | 2/2 | -- | 2/2 | 1/1 | -- | -- | **12/12** |
 | TLS Termination | 3/3 | 3/3 | -- | -- | -- | 2/2 | -- | -- | **8/8** |
@@ -423,7 +431,9 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Proto & API Contract | 5/5 | -- | -- | -- | -- | -- | -- | -- | **5/5** |
 | Phase 1 E2E Flows | -- | 4/4 | -- | -- | -- | -- | -- | -- | **4/4** |
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 3/3 | -- | 2/2 | **5/5** |
-| **Column Total** | **40/44** | **34/36** | **10/10** | **1/1** | **6/6** | **22/24** | **8/8** | **6/6** | **135/135** |
+| **Column Total** | **40/44** | **34/36** | **10/10** | **1/1** | **4/4** | **22/24** | **8/8** | **6/6** | **133/133** |
+
+> **Note:** Counts reflect the post-RBAC-migration plan. Simulation scenarios related to the removed Zanzibar watch/cache surfaces (`cache_stampede`, `watch_partition`) are dropped; RBAC resolution is synchronous with no equivalent simulation surface. Consider re-adding one concurrent-role-assignment property test during implementation.
 
 ---
 
@@ -553,7 +563,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 - [x] Realm-scoped user creation: users bound to realm; cross-realm lookup returns not-found `P0` `fast`
 - [x] Per-realm signing keys: each realm gets independent key pair for token signing `P0` `fast`
 - [x] Realm configuration update: changes to session TTL, password policy apply only to target realm `P0` `fast`
-- [x] Cascading realm deletion: removing realm purges all users, sessions, credentials, and relationships `P0` `fast`
+- [x] Cascading realm deletion: removing realm purges all users, sessions, credentials, groups, roles, and role assignments `P0` `fast`
 
 #### Integration
 
@@ -580,41 +590,38 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 
 ---
 
-### Zanzibar Authorization (Full)
+### RBAC Authorization (Full)
+
+Phase 1 extends the Phase 0 RBAC engine with group nesting, role composition, org-scoped assignments, scope → permission mapping, and declarative YAML-based role/permission config. See [AUTHORIZATION.md](./AUTHORIZATION.md) for the normative model.
 
 #### Unit
 
-- [x] Watch API: registering a watch returns real-time tuple change events `P0` `fast`
-- [x] Consistency tokens (zookies): read-after-write returns fresh data when zookie is passed `P0` `fast`
-- [x] Permission caching: repeated check() for same tuple served from cache; invalidated on write `P0` `fast`
-- [x] Namespace configuration: define object types and relations via schema DSL `P0` `fast`
-- [x] Conditional tuple writes: write succeeds only when precondition (touch/no-touch) is met `P0` `fast`
+- [ ] Group nesting: user in `G1 ∈ G2 ∈ G3` resolves to membership in all three `P0` `fast`
+- [ ] Role composition: role with multiple parents unions all ancestor permissions; deduplicates `P0` `fast`
+- [ ] Org-scoped assignment: `scope=Org(oid)` applies only when token carries matching `oid` `P0` `fast`
+- [ ] Scope → permission mapping: realm config defines `scope=docs` → `docs.*`; token request narrows claim set accordingly `P0` `fast`
+- [ ] Declarative YAML reconciliation: realm config with roles/groups/scopes creates or updates storage idempotently on startup `P0` `fast`
 
 #### Integration
 
-- [x] Watch API end-to-end: subscribe → write tuple → receive event → verify event contents `P0` `fast`
-- [x] Schema migration: update namespace config → verify existing tuples re-evaluated correctly `P0` `fast`
-- [x] Zanzibar integration with identity: user deletion cascades to relationship tuple cleanup `P0` `fast`
+- [ ] First-user bootstrap: first user created in a fresh realm receives `realm.admin`; subsequent users get no default assignment `P0` `fast`
+- [ ] `GET /v1/me/permissions` returns live-resolved permission set matching the most recent JWT for the same user `P0` `fast`
+- [ ] User deletion cascades RBAC state: all role assignments and group memberships for the deleted user are purged `P0` `fast`
 
 #### Property
 
-- [x] Random tuple writes with concurrent watch subscriptions: all subscribers see all events (`proptest`) `P0` `extended`
-- [x] Cache invalidation correctness: no stale permission results after tuple mutation (`proptest`) `P0` `extended`
-
-#### Simulation
-
-- [x] Watch API under network partition: reconnected watchers receive missed events or full resync (`madsim`) `P0` `full`
-- [x] Cache stampede simulation: thundering herd on cache miss produces correct results without excessive load (`madsim`) `P1` `full`
+- [ ] Random role-DAG + group-graph combinations produce correct resolved permission sets (`proptest`) `P0` `extended`
+- [ ] Random assign / unassign / add-member / remove-member sequences preserve realm isolation and invariants (`proptest`) `P0` `extended`
 
 #### Adversarial
 
-- [x] Watch subscription without authorization rejected; no information leak via watch events `P0` `fast`
-- [x] Malformed namespace schema rejected with descriptive error; existing config unchanged `P0` `fast`
+- [ ] Reserved-namespace enforcement: operator-created role with `hearth.*` permission rejected at API `P0` `fast`
+- [ ] Size-cap attack: assign enough roles/groups to exceed token size; issuance fails with named limit, no oversize token escapes `P0` `fast`
 
 #### Benchmark
 
-- [x] Cached permission check: p50 < 5 μs, p99 < 50 μs (regression: +20%) `P0` `standard`
-- [x] Watch event delivery latency: p50 < 1 ms, p99 < 10 ms from tuple write to subscriber receipt `P0` `standard`
+- [ ] `resolve_permissions` (off hot path, at token issue): p50 < 100 μs, p99 < 1 ms for a typical user (5 roles, 10 groups, 30 permissions) `P0` `standard`
+- [ ] JWT claim lookup (`hasPermission` on a decoded token, hot path-adjacent): p99 < 1 μs `P0` `standard`
 
 ---
 
@@ -800,8 +807,8 @@ All benchmark thresholds from VISION.md §7.1. Regression threshold for all oper
 |-----------|-----|-----|-------------------|
 | Client credentials token issuance | < 500 μs | < 2 ms | — |
 | Token introspection | < 50 μs | < 500 μs | — |
-| Cached permission check | < 5 μs | < 50 μs | 500K+ ops/sec/core |
-| Watch event delivery | < 1 ms | < 10 ms | — |
+| Permission resolution at token issue | < 100 μs | < 1 ms | — |
+| JWT claim lookup (`hasPermission`) | — | < 1 μs | 10M+ ops/sec/core |
 | Admin user listing (10K users) | < 5 ms | < 50 ms | — |
 | Audit log query (100K entries) | < 10 ms | < 100 ms | — |
 
@@ -811,7 +818,7 @@ All benchmark thresholds from VISION.md §7.1. Regression threshold for all oper
 |--------|--------|
 | Total managed users | 100M+ |
 | Active sessions | 10M+ |
-| Relationship tuples | 1B+ |
+| Role assignments | 100M+ |
 | Memory (1M hot users) | < 500 MB |
 | Memory (10M hot users) | < 8 GB |
 | Binary size | < 50 MB |
@@ -827,7 +834,7 @@ All categories from TESTING.md §6, mapped to Phase 0 and Phase 1 modules where 
 |----------|-----------------|------------------|
 | Timing attacks | Credential Storage, Cross-Cutting Concerns | Admin API (enumeration timing) |
 | Token forgery | JWT / Tokens (`alg=none`, key confusion, claim tampering) | OAuth 2.0 (rotation theft detection) |
-| Privilege escalation | Authorization Engine (malformed tuples, namespace traversal, depth limits) | Admin API (non-admin access), Multi-Tenancy (realm ID spoofing) |
+| Privilege escalation | RBAC Engine (reserved namespace, role-composition cycles, cap enforcement) | Admin API (non-admin access), Multi-Tenancy (realm ID spoofing) |
 | Replay attacks | Session Management (replayed tokens), OIDC (code reuse) | WebAuthn (sign counter replay), TOTP (code reuse), OAuth 2.0 (refresh reuse) |
 | Input injection | User CRUD (null bytes, unicode), Cross-Cutting (size limits) | Phase 1 Cross-Cutting (size limits) |
 | Credential stuffing | Credential Storage (rate limiting) | TOTP (brute-force lockout), Magic Link (rate limiting) |

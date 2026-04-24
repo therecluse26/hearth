@@ -12,6 +12,7 @@ Changes to this document require the same review rigor as breaking API changes.
 
 - [VISION.md](../vision/VISION.md) — design rationale, performance targets, competitive positioning, and roadmap. The "why" and "what."
 - [TESTING.md](./TESTING.md) — verification strategy, eight testing layers, tooling, and CI tiers. The "how we prove it works."
+- [AUTHORIZATION.md](./AUTHORIZATION.md) — normative spec for Hearth's authorization model (roles, groups, permissions, JWT claims). Referenced from § 1.1, § 4.2, § 5, § 7.
 - This document — structural rules, constraints, and architectural decisions. The "how code must be written."
 
 ---
@@ -27,7 +28,7 @@ Hearth is organized into five architectural layers plus a shared core module:
 | **Core** | `src/core/` | Shared types (`UserId`, `RealmId`, `SessionId`, `Timestamp`), error traits, the `Clock` trait, and other foundational types used by every layer. Contains only types and traits — no logic, no state, no I/O. |
 | **Protocol** | `src/protocol/` | Wire format translation: HTTP REST, gRPC, OIDC, OAuth 2.0, SAML, SCIM, WebAuthn. Thin adapters that translate wire requests into Identity Engine calls and serialize responses. Stateless. |
 | **Identity Engine** | `src/identity/` | Domain logic: users, credentials, sessions, realms, tokens, audit. Orchestrates authentication flows. Enforces the opinionated decisions about supported flows. |
-| **Authorization Engine** | `src/authz/` | Zanzibar-style relationship tuples: `check()`, `expand()`, `write_tuples()`, `watch()`. Graph traversal. Permission evaluation. |
+| **Authorization Engine** | `src/rbac/` | Claims-based RBAC: roles, groups, permissions, role assignments. Resolves a user's effective permissions at token-issue time for embedding in JWT claims. See [AUTHORIZATION.md](./AUTHORIZATION.md) for the normative model. |
 | **Cluster** | `src/cluster/` | Raft consensus via `openraft`, log replication, leader election, membership changes, snapshots. Wraps the storage engine — in clustered mode, writes go through Raft before reaching storage. Skipped entirely in single-node mode. |
 | **Storage Engine** | `src/storage/` | WAL, memtable, SSTs, hot/cold tiered storage, indexes, encryption at rest. The leaf layer. Pure data persistence with no knowledge of identity, auth, or authorization concepts. |
 
@@ -43,7 +44,7 @@ Dependencies flow strictly downward. The dependency graph is:
     └──────┬──────┘
            │
     ┌──────┴──────┐      ┌──────────┐
-    │  identity/   │─────→│  authz/  │  (lateral: identity may call authz)
+    │  identity/   │─────→│  rbac/   │  (lateral: identity calls rbac during token issuance)
     └──────┬──────┘      └────┬─────┘
            │                  │
            └────────┬─────────┘
@@ -60,8 +61,8 @@ Dependencies flow strictly downward. The dependency graph is:
 **Rules:**
 
 - Every layer MAY depend on `core/`.
-- Dependencies MUST flow downward. No layer MAY import from a layer above it. `storage/` MUST NOT import from `cluster/`, `authz/`, `identity/`, or `protocol/`. `authz/` MUST NOT import from `identity/` or `protocol/`.
-- **One lateral exception**: `identity/` MAY call into `authz/` (permission checks during authentication flows). `authz/` MUST NOT call into `identity/`.
+- Dependencies MUST flow downward. No layer MAY import from a layer above it. `storage/` MUST NOT import from `cluster/`, `rbac/`, `identity/`, or `protocol/`. `rbac/` MUST NOT import from `identity/` or `protocol/`.
+- **One lateral exception**: `identity/` MAY call into `rbac/` to resolve a user's effective permissions during token issuance. `rbac/` MUST NOT call into `identity/`.
 - Lateral dependencies within the same layer are permitted but SHOULD be minimized.
 - `src/main.rs` is the binary entry point. It wires layers together and starts the server. It MAY import from any layer.
 
@@ -70,7 +71,7 @@ Dependencies flow strictly downward. The dependency graph is:
 - Layers communicate through **trait interfaces** defined in each layer's `mod.rs`. Internal implementation details MUST NOT leak upward.
 - Each layer MUST define its public interface as traits and types in its `mod.rs`. Internal types MUST be `pub(crate)` or private.
 - The storage engine MUST NOT expose WAL, memtable, or SST types to upper layers. It exposes a storage trait with get/put/delete/scan operations.
-- The authz engine MUST NOT expose graph internals. It exposes `check()`, `expand()`, `write_tuples()`, `watch()`.
+- The RBAC engine MUST NOT expose storage internals or resolution graph state. It exposes role/group/assignment CRUD, `resolve_permissions()`, and `seed_realm()`. See [AUTHORIZATION.md § 6](./AUTHORIZATION.md) for the full trait.
 
 ---
 
@@ -98,10 +99,11 @@ The hot path is any code reachable from these operations **when data is in the h
 
 - `validate_token()` — session lookup (not signature re-verification; see [Section 10.1](#101-token-validation))
 - `lookup_session()` — session by ID
-- `check_permission()` — direct relationship tuple lookup (1-hop)
 - `lookup_user()` — by indexed field (email, ID)
 
-**Everything else is off the hot path**: user creation, credential hashing, token issuance, WAL writes, cold-tier promotion, audit materialization, multi-hop graph traversal, SAML/SCIM handling, admin API operations.
+Authorization decisions are NOT on the hot path. Permissions are resolved at token-issue time by the RBAC engine (off the hot path) and embedded in the JWT. Client-side permission checks read from the decoded token with no server round trip; server-side checks read from verified claims in-process.
+
+**Everything else is off the hot path**: user creation, credential hashing, token issuance, RBAC permission resolution, WAL writes, cold-tier promotion, audit materialization, SAML/SCIM handling, admin API operations.
 
 ### 3.2 Hard Rules
 
@@ -117,7 +119,7 @@ Hot path code MUST obey all of the following:
 
 - Cold-tier promotion (disk I/O to load evicted records) is NOT hot path. It MAY allocate, perform I/O, and acquire locks.
 - Write path code (WAL append, memtable insert) is NOT hot path and has different constraints (see [Section 6.1](#61-write-path-invariants)).
-- Multi-hop graph traversal (3+ hops) is NOT hot path. It has a performance budget enforced by benchmarks, not by allocation rules.
+- RBAC resolution (role/group/assignment traversal during `resolve_permissions`) is NOT hot path — it runs at token issuance. Its performance budget is enforced by benchmarks, not by allocation rules.
 - Cold path reads MUST NOT degrade hot path performance. Cold-tier promotion MUST NOT lock or invalidate hot-tier data structures.
 
 ### 3.4 Benchmark Enforcement
@@ -150,16 +152,18 @@ All API contracts MUST be defined in `.proto` files. Protobuf is the single sour
 - The HTTP framework MUST be `tower`-compatible to share middleware with the gRPC stack (`tonic`). The specific framework choice is an implementation decision.
 - The **Identity Engine MUST NOT depend on any wire format or serialization framework.** Protocol adapters are thin translation layers that call into the Identity Engine's trait interface. This decoupling ensures new wire formats can be added without restructuring the core.
 
-### 4.2.1 SPA-facing Authz HTTP Surface
+### 4.2.1 Authorization HTTP & gRPC Surface
 
-Full reference: [`AUTHZ_HTTP.md`](AUTHZ_HTTP.md) — endpoint specs, error matrices, SDK usage, capability-page config.
+Full reference: [`AUTHORIZATION.md`](./AUTHORIZATION.md) — normative model, JWT claim schema, HTTP & gRPC endpoints, SDK contract.
 
-The Zanzibar authorization engine exposes a gRPC admin surface (`AuthorizationService`, see `proto/hearth/authz/v1/authz.proto`) for service-to-service integrations. Browser-based SPAs — which cannot speak native gRPC without a heavy gateway — use a small HTTP surface instead:
+Summary of the surface this document is responsible for:
 
-- **`POST /v1/authz/check`** — batch permission check for the bearer-token user. The request carries `checks: [{ object, relation }, ...]` and an optional `at_least_as_fresh_as` zookie. The subject is ALWAYS derived from the token's `sub` claim; callers cannot check permissions on behalf of another user. Response: `{ results: [{ allowed }], token }`. Hard batch cap: 64 entries. Subject-free by design — per-user authz checks only, admin-style "check on behalf of X" lives on the gRPC surface where admin relation enforcement applies.
-- **`GET /v1/me/capabilities?page=<key>&<var>=<val>`** — named capability bundle. The server owns the `(object, relation)` list per page key via `AppState::capability_pages`; templates like `"org:{org_id}"` resolve from query params. Response: `{ capabilities: { "object#relation": bool }, token }`. Returns 404 on unknown page keys, 400 on unresolved template variables. Designed so that one round-trip per page replaces N per-element `Check` calls.
+- **JWT claims** carry `roles`, `groups`, `permissions`, and (when org-scoped) `oid`. Clients read these synchronously for authorization decisions. See [AUTHORIZATION.md § 5](./AUTHORIZATION.md).
+- **`GET /v1/me/permissions`** — live-introspection escape hatch for backends that want to re-resolve permissions during long-running operations without trusting a possibly-stale JWT. See [AUTHORIZATION.md § 8.1](./AUTHORIZATION.md).
+- **Admin endpoints** under `/admin/roles`, `/admin/groups`, `/admin/users/{id}/roles`, `/admin/groups/{id}/members`, `/admin/groups/{id}/roles` — full CRUD and introspection. Gated by the `hearth.admin` permission. See [AUTHORIZATION.md § 8.2](./AUTHORIZATION.md).
+- **gRPC `RbacAdminService`** — mirror of the admin HTTP surface for service-to-service callers. No service-to-service `Check` RPC; callers decode the JWT locally.
 
-The zookie (`ConsistencyToken`) returned from these endpoints is monotonic and SHOULD be threaded through subsequent reads via `at_least_as_fresh_as`; the TS SDK `AuthzCache` automates this. Because the Rust `AuthorizationEngine::check` trait does not expose a "current version" accessor, the HTTP response currently echoes the input zookie (or `0`). Clients only rely on monotonicity, not latest-known-version semantics.
+There is no public "check permission now" endpoint. Permission resolution happens at token-issue time; consumers read the resulting claims. This is the same pattern every mainstream JWT-based identity system uses (Auth0, Clerk, Keycloak, Okta).
 
 ### 4.3 API Versioning
 
@@ -177,7 +181,7 @@ The zookie (`ConsistencyToken`) returned from these endpoints is monotonic and S
 
 ### 5.1 Error Types
 
-- Each layer MUST define its own error enum (`StorageError`, `IdentityError`, `AuthzError`, `ProtocolError`, `ClusterError`).
+- Each layer MUST define its own error enum (`StorageError`, `IdentityError`, `RbacError`, `ProtocolError`, `ClusterError`).
 - All error enums MUST be `#[non_exhaustive]`.
 - All error enums MUST implement `std::error::Error` and `Display`.
 - Errors MUST NOT cross layer boundaries as concrete types. Upper layers convert lower-layer errors into their own types via `From` implementations, using categorized conversion: `LayerError::Internal { source: Box<dyn Error> }`. Upper layers see "internal failure" and can walk the error chain via `source()`, but do not match on lower-layer error variants.
@@ -338,7 +342,7 @@ Each layer validates what it is responsible for. **Each layer MUST validate its 
 - Every `unsafe` block MUST have a `// SAFETY:` comment explaining why the operation is sound.
 - `unsafe` MUST NOT appear in the protocol or identity layers. It is permitted only in:
   - Storage engine (memory-mapped I/O, pointer arithmetic for data structures) — only if crate abstractions prove insufficient via profiling
-  - Performance-critical data structures in `authz/` (graph adjacency structures, if needed)
+  - Performance-critical data structures in the RBAC engine (if profiling shows crate abstractions are insufficient; this is unlikely given RBAC runs off the hot path)
 - All `unsafe` code MUST be covered by Miri tests where feasible, and by address sanitizer runs in CI.
 - New `unsafe` blocks require explicit reviewer approval.
 
@@ -482,7 +486,7 @@ src/storage/
 
 ### 14.3 Distributed Tracing
 
-- OpenTelemetry-compatible distributed tracing SHOULD be supported for requests spanning protocol → identity → authz → storage.
+- OpenTelemetry-compatible distributed tracing SHOULD be supported for requests spanning protocol → identity → rbac → storage.
 - Trace spans MUST NOT be created on the hot read path unless tracing is explicitly enabled by the operator.
 
 ---
@@ -571,7 +575,7 @@ hearth/
 │   ├── buf.yaml
 │   ├── hearth/
 │   │   ├── identity/v1/        # User, session, realm contracts
-│   │   ├── authz/v1/           # Permission check, tuple contracts
+│   │   ├── rbac/v1/            # Role, group, assignment, permission contracts
 │   │   ├── admin/v1/           # Admin API contracts
 │   │   └── events/v1/          # Event schemas
 │   └── third_party/
@@ -581,7 +585,7 @@ hearth/
 │   ├── core/                   # Shared types, traits, error foundations
 │   ├── protocol/               # Wire format adapters (REST, gRPC, OIDC, SAML, SCIM)
 │   ├── identity/               # Domain logic (users, credentials, sessions, realms)
-│   ├── authz/                  # Zanzibar authorization engine
+│   ├── rbac/                   # Claims-based RBAC engine (see AUTHORIZATION.md)
 │   ├── cluster/                # Raft consensus (openraft)
 │   └── storage/                # WAL, memtable, SSTs, tiered storage
 ├── tests/                      # Black box integration tests
@@ -623,7 +627,7 @@ Key architectural decisions codified in this document, with rationale:
 | Language | Rust | Memory safety for credentials, no GC for sub-ms latency, mature async ecosystem |
 | Async runtime | Tokio, async all layers | Uniform API, cluster layer needs async for Raft network I/O |
 | Storage | Custom embedded engine | Purpose-built for identity access patterns, no external dependencies |
-| Authorization model | Zanzibar relationship tuples | One model covering RBAC → ReBAC → conditional, co-located with identity data |
+| Authorization model | Claims-based RBAC (roles, groups, permissions embedded in JWT) | Matches industry convention (Auth0/Clerk/Keycloak/Okta). Synchronous client checks with zero network cost. Resource-specific authz lives in the application layer; teams needing graph-shaped ACLs pair Hearth with a dedicated authz service (SpiceDB, OpenFGA). |
 | Token validation (hot path) | Session lookup, not signature re-verification | Sub-microsecond vs 5-50μs, instant revocation, smaller key exposure surface |
 | Signing algorithm | Ed25519 (asymmetric only) | No HS256 eliminates token forgery from compromised verification keys |
 | Password hashing | Argon2id, OWASP parameters | Security over latency — hashing is off the hot path |

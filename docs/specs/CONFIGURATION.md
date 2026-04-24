@@ -444,6 +444,67 @@ realms:
         name: "Beta Testers"
 ```
 
+### `realms.<name>.rbac`
+
+Declarative role, permission, group, and scope setup for the realm's RBAC model. See [`AUTHORIZATION.md`](./AUTHORIZATION.md) for the semantic model.
+
+**Reconciliation:** entities declared here are created or updated at startup. Entities NOT declared here are untouched — mixing YAML-declared and admin-API-created state is allowed, but once an entity is in YAML the admin API refuses to mutate it (single source of truth per entity).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `permissions` | array of strings | `[]` | Permission strings to register. Must match `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. Reserved namespace `hearth.*` is rejected. |
+| `roles` | map of role | `{}` | Roles keyed by name. |
+| `roles.<name>.permissions` | array of strings | `[]` | Permissions this role grants. Must all be declared in the realm's permission set (or a seed permission). |
+| `roles.<name>.parents` | array of strings | `[]` | Parent role names. Resolution unions parent permissions (composition depth capped at 10, cycle-detected). |
+| `roles.<name>.description` | string | — | Optional description for admin UI display. |
+| `groups` | map of group | `{}` | Groups keyed by slug. |
+| `groups.<slug>.name` | string | *required* | Human-readable name. |
+| `groups.<slug>.description` | string | — | Optional description. |
+| `scopes` | map of scope | `{}` | OAuth 2.0 scope value → permission filter. When a token request specifies `scope=<name>`, the resolved permission set is intersected with the scope's permissions. |
+| `scopes.<name>` | array of strings | *required* | Permissions (or dotted prefix + wildcard like `docs.*`) that this scope allows. |
+
+**Example:**
+
+```yaml
+realms:
+  prod:
+    rbac:
+      permissions:
+        - docs.view
+        - docs.edit
+        - docs.delete
+        - billing.view
+        - billing.write
+
+      roles:
+        docs.viewer:
+          permissions: [docs.view]
+          description: "Read-only access to docs"
+        docs.editor:
+          permissions: [docs.view, docs.edit]
+          parents: [docs.viewer]
+        docs.admin:
+          permissions: [docs.delete]
+          parents: [docs.editor]
+          description: "Full docs administration"
+        billing.admin:
+          permissions: [billing.view, billing.write]
+
+      groups:
+        engineering:
+          name: "Engineering"
+          description: "All engineers"
+        leads:
+          name: "Engineering Leads"
+
+      scopes:
+        docs:   [docs.*]
+        billing: [billing.*]
+        admin:  [docs.admin, billing.write]
+```
+
+The first user created in a realm is automatically assigned the seed `realm.admin` role (not configurable). All other role assignments happen at runtime via the admin API.
+
 ---
 
 ## Complete Example

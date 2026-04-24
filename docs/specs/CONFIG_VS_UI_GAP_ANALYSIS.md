@@ -120,15 +120,18 @@ Legend: **YES** = implemented, **NO** = not implemented, **N/A** = not applicabl
 | Integrity verify | `audit.verify_integrity` | ~~NO~~ **YES** (`admin_audit_verify_integrity` button) | N/A | ~~Add to system info page~~ Done (B8) |
 | Retention policy | NOT YET | NO | NO | Future: **YAML** |
 
-### 1.9 Zanzibar (Authorization)
+### 1.9 RBAC (Authorization)
+
+See [AUTHORIZATION.md](./AUTHORIZATION.md) for the full model.
 
 | Capability | Backend Method | Admin UI | YAML Config | Recommendation |
 |---|---|---|---|---|
-| Tuple CRUD | `write_tuples`, `delete_tuples`, `read_tuples` | NO | N/A | Operational — API is correct surface |
-| Permission check | `check` | NO | N/A | API-only — correct |
-| Expand | `expand` | NO | N/A | API-only — correct |
-| Watch | `watch` | NO | N/A | API-only — correct |
-| Namespace schemas | Per-realm JSON via `set_namespace_config` | NO | NO | Future: **YAML** |
+| Role CRUD | `create_role`, `update_role`, `delete_role`, `list_roles` | Admin role management page (follow-up) | **YES** (`realms.<name>.rbac.roles`) | YAML for declarative setup; UI for runtime ops |
+| Group CRUD | `create_group`, `update_group`, `delete_group`, `list_groups` | Admin group management page (follow-up) | **YES** (`realms.<name>.rbac.groups`) | Same pattern as roles |
+| Role assignment | `assign_role`, `unassign_role` | Partial (org member roles) | NO | Runtime-only — YAML is too static for assignments |
+| Permission introspection | `GET /v1/me/permissions`, `GET /admin/users/{id}/effective-permissions` | Resolver page (see ROLES_UI_REDESIGN) | N/A | API + debug UI |
+| Scope → permission mapping | Realm config | NO | **YES** (`realms.<name>.rbac.scopes`) | Declarative only |
+| Permission registry | Realm config | NO | **YES** (`realms.<name>.rbac.permissions`) | Declarative only; seed + YAML |
 
 ### 1.10 Migration
 
@@ -290,23 +293,28 @@ realms:
 - `src/config/types.rs` — new `OrganizationYamlConfig` struct; add `organizations: Option<HashMap<String, OrganizationYamlConfig>>` to `RealmYamlConfig`
 - `src/identity/reconcile.rs` — new `reconcile_organizations()` function
 
-### Priority 5: Zanzibar Namespace Schemas (Future)
+### Priority 5: RBAC Declarative Config
+
+See [CONFIGURATION.md § `realms.<name>.rbac`](./CONFIGURATION.md) for the full shape. Declaratively specifies permissions, roles (with composition via `parents`), groups, and scope → permission mappings for the realm.
 
 ```yaml
 realms:
   customer-portal:
-    authz:
-      namespaces:
-        document:
-          relations:
-            owner: {}
-            editor:
-              union: [this, owner]
-            viewer:
-              union: [this, editor]
+    rbac:
+      permissions:
+        - docs.view
+        - docs.edit
+      roles:
+        docs.viewer:
+          permissions: [docs.view]
+        docs.editor:
+          permissions: [docs.view, docs.edit]
+          parents: [docs.viewer]
+      scopes:
+        docs: [docs.*]
 ```
 
-Lower priority — authz namespace config is an advanced feature. The backend already supports per-realm namespace JSON via `set_namespace_config`. YAML would be a convenience layer.
+Reconciles at startup: entities declared in YAML are created/updated; YAML-declared entities are not mutable via admin API (single source of truth). Role assignments stay runtime-only — YAML is for policy shape, not per-user state.
 
 ---
 
@@ -397,7 +405,7 @@ These are runtime/transactional data — cannot be declared statically:
 | **Audit logs** | Append-only event stream |
 | **Organization memberships** | Runtime user-org bindings |
 | **Organization invitations** | Created/accepted/revoked at runtime |
-| **Zanzibar tuples** | Runtime permission assignments |
+| **Role assignments** | Runtime assignments binding a user or group to a role within a realm or org scope |
 
 ---
 
@@ -448,7 +456,7 @@ These are runtime/transactional data — cannot be declared statically:
 
 - [x] Cross-referenced all 81 `IdentityEngine` trait methods against UI handlers and config types
 - [x] Cross-referenced all 3 `AuditEngine` trait methods (append, query, verify_integrity)
-- [x] Cross-referenced all 6 `AuthorizationEngine` trait methods (check, expand, write_tuples, set/get_namespace, watch)
+- [x] Cross-referenced all `RbacEngine` trait methods (role CRUD, group CRUD, assignments, `resolve_permissions`, `seed_realm`) — see AUTHORIZATION.md § 6
 - [x] Audited all 50+ registered routes in `src/protocol/web/mod.rs`
 - [x] ~~Verified `UpdateClientRequest` fields: only `client_name` and `redirect_uris` (no `grant_types`)~~ Now includes `grant_types` (C1)
 - [x] Verified `RealmConfig` fields: `session_ttl_micros`, `password_memory_cost`, `password_time_cost`, `email_branding`, `web_theme_css`

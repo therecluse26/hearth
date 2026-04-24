@@ -1,6 +1,6 @@
 # Hearth — Development Rules
 
-Hearth is a purpose-built identity database: a single-binary Rust server for authentication, authorization (Zanzibar-style), and session management with a custom embedded storage engine. It targets sub-millisecond p99 latency on the hot path.
+Hearth is a purpose-built identity database: a single-binary Rust server for authentication, claims-based RBAC authorization, and session management with a custom embedded storage engine. It targets sub-millisecond p99 latency on the hot path.
 
 ## Ground Rules (Claude: ALWAYS follow)
 
@@ -17,6 +17,7 @@ immediately, and once the indexing completes, run the previously failed tool aga
 Read these before writing any code. They are the canonical source of truth:
 
 - `docs/specs/ARCHITECTURE.md` — structural rules (MUST/SHOULD per RFC 2119). Violations of MUST-level rules block merge.
+- `docs/specs/AUTHORIZATION.md` — normative spec for the authorization model (roles, groups, permissions, JWT claims, SDK contract). Read before any change that touches `src/rbac/`, token issuance, or SDK authz surfaces.
 - `docs/specs/TESTING.md` — eight testing layers, TDD workflow, tooling, CI tiers.
 - `docs/specs/TEST_SCENARIOS.md` — granular checkbox-tracked test scenario checklist by module and layer.
 - `docs/specs/IMPLEMENTATION_ORDER.md` — **mandatory build sequence for Phase 0.** Steps MUST be completed in order (1→18). Do not skip ahead or work out of sequence.
@@ -45,13 +46,13 @@ Six modules with strict downward dependency flow:
 | Core | `src/core/` | Shared types and traits only. No logic, no state, no I/O. |
 | Protocol | `src/protocol/` | Wire adapters (REST, gRPC, OIDC, SAML, SCIM). Stateless, thin. |
 | Identity Engine | `src/identity/` | Domain logic. Users, credentials, sessions, realms, tokens. |
-| Authorization Engine | `src/authz/` | Zanzibar relationship tuples. `check()`, `expand()`, `write_tuples()`, `watch()`. |
+| RBAC Engine | `src/rbac/` | Claims-based RBAC: roles, groups, permissions, assignments. Resolves effective permissions for JWT claims. See `docs/specs/AUTHORIZATION.md`. |
 | Cluster | `src/cluster/` | Raft consensus via `openraft`. Invisible in single-node mode. |
 | Storage Engine | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |
 
 **Dependency rules:**
 - Dependencies MUST flow downward. No layer imports from above.
-- One lateral exception: `identity/` may call `authz/`. Never the reverse.
+- One lateral exception: `identity/` may call `rbac/` during token issuance to resolve effective permissions. Never the reverse.
 - Every layer MAY depend on `core/`.
 - `src/main.rs` wires layers together; it may import from any layer.
 
@@ -64,7 +65,7 @@ Six modules with strict downward dependency flow:
 
 ### Hot Path Rules
 
-Hot path = `validate_token()`, `lookup_session()`, `check_permission()` (1-hop), `lookup_user()` when data is in hot tier.
+Hot path = `validate_token()`, `lookup_session()`, `lookup_user()` when data is in hot tier. Authorization decisions are NOT on the hot path: permissions are resolved at token-issue time by the RBAC engine and embedded as JWT claims. Client- and server-side checks read from the verified token in-process.
 
 Hot path code MUST obey ALL of:
 1. **Zero heap allocations** — no `Box::new`, `Vec::new`, `String::from`, `format!()`, `to_string()`.
@@ -150,7 +151,7 @@ CI runs four tiers: Fast (every commit), Standard (merge), Extended (nightly), F
 
 ### Error Handling
 
-- Each layer defines its own error enum (`StorageError`, `IdentityError`, etc.).
+- Each layer defines its own error enum (`StorageError`, `IdentityError`, `RbacError`, etc.).
 - All error enums: `#[non_exhaustive]`, implement `std::error::Error` + `Display`.
 - Errors MUST NOT cross layer boundaries as concrete types — convert via `From`.
 - Error messages MUST NOT contain sensitive data (passwords, tokens, keys, PII).

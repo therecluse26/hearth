@@ -14,13 +14,13 @@ This document is the canonical reference for Hearth's testing strategy. It defin
 
 Unit tests live alongside production code in `#[cfg(test)]` modules. They test internal invariants, algorithms, and data structures. They are written *before* the implementation following red-green-refactor.
 
-**Scope**: Storage engine internals (WAL append, memtable operations, compaction logic), crypto helpers (key derivation, constant-time comparisons), data serialization (identity records, permission tuples), permission graph traversal algorithms.
+**Scope**: Storage engine internals (WAL append, memtable operations, compaction logic), crypto helpers (key derivation, constant-time comparisons), data serialization (identity records, RBAC role/group/assignment records), RBAC resolution (group BFS, role composition DAG, cycle detection, cap enforcement).
 
 **Example locations**:
 ```
-src/storage/wal.rs       → #[cfg(test)] mod tests { ... }
+src/storage/wal.rs         → #[cfg(test)] mod tests { ... }
 src/identity/credential.rs → #[cfg(test)] mod tests { ... }
-src/authz/graph.rs       → #[cfg(test)] mod tests { ... }
+src/rbac/resolve.rs        → #[cfg(test)] mod tests { ... }
 ```
 
 **Convention**: Every public function in an internal module has at least one unit test. Every bug fix adds a regression test before the fix.
@@ -38,7 +38,7 @@ Two modes are supported from day one:
 
 The same test logic runs against both modes via shared async test functions, ensuring the public contract is identical regardless of deployment mode.
 
-**Scope**: Auth flows end-to-end (OAuth2 authorization code, client credentials, device flow), session lifecycle (create, validate, refresh, revoke, expire), permission checks (direct relationships, transitive graph traversal, denial), user CRUD (create, read, update, delete, list, search), token issuance and validation (JWT signing, verification, claims, expiration).
+**Scope**: Auth flows end-to-end (OAuth2 authorization code, client credentials, device flow), session lifecycle (create, validate, refresh, revoke, expire), authorization (role assignment, token claim population, `hasPermission` semantics, realm/org scoping), user CRUD (create, read, update, delete, list, search), token issuance and validation (JWT signing, verification, claims, expiration).
 
 **Key constraint**: Zero imports from `hearth::internal::*` or any non-public module. Tests use only the public API defined in `src/lib.rs`.
 
@@ -48,7 +48,7 @@ Property tests generate random inputs and assert that invariants hold universall
 
 **Scope**:
 - **Storage engine**: Random sequences of writes, reads, and deletes maintain data integrity. WAL replay after any prefix of operations produces a consistent state.
-- **Authorization**: Random relationship graphs produce correct reachability results. Cycle detection holds for arbitrary graph topologies.
+- **Authorization**: Random role DAGs and group-membership graphs (cycle-free) produce correct resolved permission sets. Cycle detection rejects arbitrary cyclic topologies.
 - **Credential handling**: Arbitrary byte inputs to parsing functions never panic. Round-trip serialization is identity: `deserialize(serialize(x)) == x`.
 
 **Configuration**: Property tests default to 256 cases in development and 10,000+ cases in CI extended runs. Regressions are persisted in `proptest-regressions/` files alongside the test source.
@@ -118,7 +118,7 @@ A dedicated test module that actively tries to break security properties. These 
 |----------|-------------|
 | Timing attacks | Constant-time password comparison (statistical timing analysis) |
 | Token forgery | Modified JWTs, expired tokens, wrong signing keys, alg=none, key confusion |
-| Privilege escalation | Malformed permission tuples, relationship cycles, namespace traversal |
+| Privilege escalation | Reserved-namespace abuse, role-composition cycles, group-membership cycles, cap-bypass attempts, oversized JWT claims |
 | Replay attacks | Reused authorization codes, replayed session tokens, nonce reuse |
 | Input injection | Null bytes in usernames, unicode normalization attacks, oversized inputs, header injection |
 | Credential stuffing | Rate limiting under sustained credential guessing attempts |
@@ -288,7 +288,7 @@ hearth/
 │   │   ├── wal.rs              # + inline #[cfg(test)] unit tests
 │   │   └── ...
 │   ├── identity/
-│   ├── authz/
+│   ├── rbac/
 │   └── protocol/
 ├── tests/                      # Black box integration tests
 │   ├── common/

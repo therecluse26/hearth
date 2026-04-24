@@ -2,7 +2,7 @@
 
 **Date audited:** 2026-04-23
 **Auditor:** Playwright-driven crawl of `http://localhost:8420/ui/admin/*` against the running `feature/saml` branch build, seed account `seed@example.com`.
-**Scope:** Every reachable admin route (login, dashboard, users, admin-users, organizations, applications, realms, sessions, audit, authz debug, settings, settings/editor, account, plus representative detail/new/edit pages and the organization delete modal).
+**Scope:** Every reachable admin route (login, dashboard, users, admin-users, organizations, applications, realms, sessions, audit, permissions resolver, settings, settings/editor, account, plus representative detail/new/edit pages and the organization delete modal).
 **Method:** Snapshot + screenshot per page; `window.getComputedStyle` probes; fetched compiled CSS directly.
 
 All findings below are reproducible from a fresh `cargo run` + the seed account. Screenshots captured in the Playwright session are referenced by filename (e.g. `05-sidebar-open.png`).

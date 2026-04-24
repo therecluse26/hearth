@@ -4,7 +4,7 @@
 
 Hearth has completed Phase 0 (18 steps, 148 scenarios), Phase 1 (13 steps, 135 scenarios), Phase 1.5 (production email), and Phase 2 (organizations). The system totals **941 Rust tests + 27 simulation + 6 SDK tests** across 8 testing layers.
 
-**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection) with a **browser-facing consent screen** (per-scope checkboxes, trusted-client bypass, self-service + admin consent management, `prompt=none|consent` semantics), OIDC (discovery, UserInfo, dynamic client registration, conformance), SAML 2.0 (SP + IdP sides, signed assertions, SLO wiring), **SCIM 2.0 provisioning** (Users + Groups CRUD + PATCH + filter + discovery endpoints, externalId idempotency, admin-scoped Bearer auth), Zanzibar authorization (check, expand, write, watch, namespace config, conditional writes), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, gRPC management API, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
+**What works today:** Password authentication, TOTP/MFA, WebAuthn/Passkeys, magic links, public self-registration (per-realm policy: disabled/open/domain-restricted/invite-only, with email verification and IP+email rate limiting), password reset / account recovery, self-service session management (list own sessions, revoke one, revoke all other devices), explicit realm routing in the web UI (`/ui/realms/<name>/...` path segments, optional `server.default_realm` for bare URLs, no cross-realm walk), OAuth 2.0 (authorization code, client credentials, device authorization, refresh rotation, revocation, introspection) with a **browser-facing consent screen** (per-scope checkboxes, trusted-client bypass, self-service + admin consent management, `prompt=none|consent` semantics), OIDC (discovery, UserInfo, dynamic client registration, conformance), SAML 2.0 (SP + IdP sides, signed assertions, SLO wiring), **SCIM 2.0 provisioning** (Users + Groups CRUD + PATCH + filter + discovery endpoints, externalId idempotency, admin-scoped Bearer auth), claims-based RBAC authorization (roles, groups, permissions, JWT claim embedding, scope narrowing — see [`../specs/AUTHORIZATION.md`](../specs/AUTHORIZATION.md)), multi-tenancy (realm isolation, per-realm signing keys, cascading deletes), organizations (membership, invitations), audit logging (SHA-256 hash chain, tamper detection), TLS termination (1.3, hot-reload, mTLS), admin API + web console, gRPC management API, Keycloak migration, TypeScript + Go SDKs, and 5 email transports (SMTP, SendGrid, Postmark, Mailgun, Log).
 
 This document inventories **features not yet implemented** that would block or hinder production adoption, compared against the commitments in `docs/vision/VISION.md`. Each gap cites the relevant Vision section for traceability.
 
@@ -174,24 +174,24 @@ Implemented feature-complete. Hearth now exposes a tonic-based gRPC server along
   - `hearth.identity.v1.IdentityAdminService` — Users, realms, organizations CRUD.
   - `hearth.identity.v1.ApplicationAdminService` — OAuth client CRUD.
   - `hearth.identity.v1.OAuthService` — Authorize, TokenExchange, Revoke, Introspect, DeviceAuthorize, ClientCredentials, RegisterClient (RFC 6749 + RFC 8628 + RFC 7009 + RFC 7662 + RFC 7591 over gRPC).
-  - `hearth.authz.v1.AuthorizationService` — Check, Expand, WriteTuples, **Watch (server-streaming)** with `start_after` replay and tokio broadcast fan-out.
+  - `hearth.rbac.v1.RbacAdminService` — Role CRUD, group CRUD, role assignment CRUD, effective-permissions introspection. See [`../specs/AUTHORIZATION.md`](../specs/AUTHORIZATION.md) § 8.4.
   - `hearth.events.v1.AuditService` — ListEvents, VerifyIntegrity (runs the SHA-256 chain verifier).
 - **Plus:** `grpc.health.v1.Health` via `tonic-health` and `grpc.reflection.v1.ServerReflection` via `tonic-reflection` so grpcurl / Postman can enumerate services at runtime.
-- **Admin auth:** Same rules as REST — `authorization: Bearer <token>` + `x-realm-id: <uuid>` metadata → `identity.validate_token()` + `authz.check(hearth#admin@user:uuid)` → [`AdminRateLimiter`](../../src/protocol/admin_auth.rs) (100 req/min per admin user, **shared** with the REST surface so a caller cannot evade limits by switching protocols).
+- **Admin auth:** Same rules as REST — `authorization: Bearer <token>` + `x-realm-id: <uuid>` metadata → `identity.validate_token()` + check for the `hearth.admin` permission claim → [`AdminRateLimiter`](../../src/protocol/admin_auth.rs) (100 req/min per admin user, **shared** with the REST surface so a caller cannot evade limits by switching protocols).
 - **OAuth auth:** Client credentials travel in the request body per RFC 6749 §2.3 (no admin interceptor), consistent with REST `/token` shape.
-- **Error mapping:** Centralized [`identity_to_status`](../../src/protocol/grpc/convert.rs) and `authz_to_status` tables map domain errors to `tonic::Code` (`NotFound`, `AlreadyExists`, `Unauthenticated`, `PermissionDenied`, `InvalidArgument`, `FailedPrecondition`, `ResourceExhausted`, `Internal`).
+- **Error mapping:** Centralized [`identity_to_status`](../../src/protocol/grpc/convert.rs) and `rbac_to_status` tables map domain errors to `tonic::Code` (`NotFound`, `AlreadyExists`, `Unauthenticated`, `PermissionDenied`, `InvalidArgument`, `FailedPrecondition`, `ResourceExhausted`, `Internal`).
 - **Cross-realm isolation:** Admin of realm A requesting B's resources gets `NOT_FOUND` (not `PERMISSION_DENIED`) — same enumeration-resistance posture as REST.
 - **Transport:** Spawned off the main HTTP listener in `src/main.rs`. New config fields `server.grpc_port` (optional — when unset gRPC is disabled) and `server.grpc_bind_address` (defaults to `server.bind_address`). Graceful shutdown is wired through the same ctrl+c channel so both listeners stop together. Max decoding message size clamped to 1 MiB (matches REST `BODY_LIMIT_DEFAULT`).
 
 **Key files:**
-- Proto: `proto/hearth/identity/v1/identity.proto`, `oauth.proto`; `proto/hearth/authz/v1/authz.proto`; `proto/hearth/events/v1/audit.proto` (all gained `service` stanzas).
+- Proto: `proto/hearth/identity/v1/identity.proto`, `oauth.proto`; `proto/hearth/rbac/v1/rbac.proto`; `proto/hearth/events/v1/audit.proto` (all gained `service` stanzas).
 - Build: `build.rs` switched from `prost_build` to `tonic_build` (wraps prost + emits server traits and client stubs). File descriptor set is reused by pbjson (HTTP JSON codec) and tonic-reflection.
-- gRPC module: `src/protocol/grpc/{mod,server,auth,identity,oauth,authz,audit,convert}.rs`.
+- gRPC module: `src/protocol/grpc/{mod,server,auth,identity,oauth,rbac_admin,audit,convert}.rs`.
 - Shared rate limiter: `src/protocol/admin_auth.rs` (extracted from `http.rs`).
 - Config: `src/config/types.rs::ServerConfig` gained `grpc_port` + `grpc_bind_address`.
-- Harness: `tests/common/mod.rs` exposes `identity_arc`, `authz_arc`, `audit_arc` for rigs that need `Arc<dyn Trait>`.
-- Tests: `tests/grpc_admin.rs` (13 integration tests — health, reflection, unauthenticated/forbidden/rate-limit, user+app+authz+audit+OAuth round-trips, Watch streaming, cross-realm isolation).
-- Runnable example: `examples/grpc-admin-flow/` — one-command Node walkthrough (`./run.sh`) that boots Hearth, bootstraps an admin, and drives the full surface end-to-end (admin CRUD, live Watch stream, Check, audit, health, reflection).
+- Harness: `tests/common/mod.rs` exposes `identity_arc`, `rbac_arc`, `audit_arc` for rigs that need `Arc<dyn Trait>`.
+- Tests: `tests/grpc_admin.rs` (integration tests — health, reflection, unauthenticated/forbidden/rate-limit, user+app+rbac+audit+OAuth round-trips, cross-realm isolation).
+- Runnable example: `examples/grpc-admin-flow/` — one-command Node walkthrough (`./run.sh`) that boots Hearth, bootstraps an admin, and drives the full surface end-to-end (admin CRUD, role/group/assignment CRUD, effective-permissions introspection, audit, health, reflection).
 
 **Remaining enhancements (not blocking):**
 - mTLS on the gRPC listener (today plaintext over h2c; operators bring their own TLS terminator via service mesh / Envoy). The existing `ReloadableTlsConfig` in `src/protocol/tls.rs` can be reused when the need for direct TLS arises.
@@ -262,7 +262,7 @@ grpc_health_probe -addr=localhost:<port>
   - Prometheus metrics endpoint (`/metrics`) with counters, gauges, and histograms:
     - `hearth_auth_total{method,realm,status}` — authentication attempts.
     - `hearth_token_issued_total{grant_type,realm}` — tokens issued.
-    - `hearth_authz_check_total{result,realm}` — authorization checks.
+    - `hearth_rbac_resolve_total{result,realm}` — permission resolutions at token-issue time.
     - `hearth_session_active{realm}` — gauge of active sessions.
     - `hearth_request_duration_seconds{endpoint,method}` — request latency histograms.
     - `hearth_storage_wal_bytes`, `hearth_storage_memtable_entries`, `hearth_storage_sst_count`.
@@ -310,7 +310,7 @@ grpc_health_probe -addr=localhost:<port>
   - Key rotation without re-encrypting all data (envelope encryption pattern).
   - Optional HSM/KMS integration for master key storage (Vision §A Open Question #6).
   - `hearth rotate-keys` CLI subcommand.
-- **Why It Matters:** The Vision explicitly commits to this feature. Compliance-sensitive deployments (healthcare, finance, government) require encryption at rest. Password hashes alone don't satisfy this — user profiles, session data, audit logs, and relationship tuples are all stored in cleartext on disk.
+- **Why It Matters:** The Vision explicitly commits to this feature. Compliance-sensitive deployments (healthcare, finance, government) require encryption at rest. Password hashes alone don't satisfy this — user profiles, session data, audit logs, and RBAC state are all stored in cleartext on disk.
 - **Priority Rationale:** P2 for general use (hashed credentials are the primary defense). P1 for compliance-regulated environments.
 
 ### 15. CI/CD Pipelines
@@ -353,26 +353,23 @@ grpc_health_probe -addr=localhost:<port>
 
 ## P3 — Post-Release Enhancements
 
-### 18. Authorization Schema Language
+### 18. Policy-as-Code Integration (optional)
 
-- **Vision ref:** §A Open Question #1: "How closely should Hearth follow SpiceDB's schema language vs. designing a bespoke DSL?"
-- **Current State:** Namespace config is stored as raw JSON per realm. Relationship tuples are written via API with no schema validation beyond optional namespace config.
-- **What's Missing:**
-  - Schema definition language for permission models (types, relations, permissions).
-  - Schema validation: reject tuples that don't match the schema.
-  - IDE support: syntax highlighting, autocompletion for schema files.
-  - Schema versioning and migration tooling.
-- **Priority Rationale:** P3 — functional without it, but DX and correctness would benefit significantly.
+- **Vision ref:** §A Open Question #1.
+- **Current State:** Hearth issues JWT claims carrying the user's resolved roles, groups, and permissions. Applications with policy-as-code needs (Cedar, OPA/Rego, Polar) consume those claims as inputs to their own policy engine.
+- **What's Missing (optional, community-driven):**
+  - Canonical integration example showing a Hearth-authenticated request feeding Cedar or OPA for resource-specific decisions.
+  - Helper utilities in SDKs for extracting claims in formats commonly expected by policy engines.
+- **Priority Rationale:** P3 — not required for any Hearth user; included because policy-as-code layers cleanly on top of the claim-based RBAC surface.
 
-### 19. Expression Language for Conditions (CEL)
+### 19. Dedicated Authorization-Service Integration (optional)
 
-- **Vision ref:** §A Open Question #2: "CEL is the obvious candidate."
-- **Current State:** Conditional relationships (caveats) exist in the authorization engine, but no expression evaluator is integrated. Conditions are limited to what's hard-coded.
-- **What's Missing:**
-  - CEL (Common Expression Language) or equivalent evaluator.
-  - Integration with caveat evaluation at permission check time.
-  - Expression validation at write time (reject invalid expressions).
-- **Priority Rationale:** P3 — current caveat system is functional for basic conditions.
+- **Vision ref:** §A Open Question #2.
+- **Current State:** Teams that need graph-structured authorization (delegated sharing, Google-Drive-shaped ACLs) pair Hearth with a dedicated Zanzibar-family service (SpiceDB, OpenFGA, Cerbos). Hearth's JWT claims provide the identity context these services need.
+- **What's Missing (optional):**
+  - Canonical integration example wiring a Hearth-authenticated request through to a SpiceDB / OpenFGA permission check.
+  - SDK helper for threading the JWT `sub` / `tid` into Zanzibar API calls idiomatically.
+- **Priority Rationale:** P3 — narrow audience; the integration pattern is standard across identity vendors.
 
 ### 20. Additional SDKs
 
@@ -532,11 +529,11 @@ Addresses two admin-setup bugs on multi-realm deployments: verification links hi
 - Singleton system realm auto-seeded at engine construction (`seed_system_realm_if_absent` in `src/identity/engine.rs`).
 - Invisible on public surfaces: `list_realms()` filters it, `get_realm_by_name("system")` returns `None`, YAML `realms.system` rejected at parse time (`src/config/mod.rs` `validate_realm_names`).
 - Structural guardrails via new `IdentityError::SystemRealmProtected { operation }`: `create_realm` rejects name `"system"`; `update_realm` rejects nil UUID + renaming-to-`system`; `delete_realm`, `register_user`, `register_client`, `create_organization` all reject the nil UUID.
-- `onboarding::complete_setup` always targets system realm. Admin user + Zanzibar `hearth#admin` tuple both land there. Verification URL is `/ui/admin/verify-email?token=...`.
+- `onboarding::complete_setup` always targets system realm. Admin user + `realm.admin` role assignment both land there. Verification URL is `/ui/admin/verify-email?token=...`.
 
 **Admin pre-auth surface:**
 - New routes `/ui/admin/login` (GET+POST) and `/ui/admin/verify-email`; admin session cookies carry the nil UUID.
-- `RequireAdmin` asserts `session.realm_id == system_realm_id()` — a tenant session can never pass an admin gate, even if it somehow carried an admin tuple locally.
+- `RequireAdmin` asserts `session.realm_id == system_realm_id()` — a tenant session can never pass an admin gate, even if it somehow carried the `hearth.admin` permission locally.
 
 **Admin UI target-realm refactor:**
 - New `TargetRealm` extractor in `src/protocol/web/auth.rs`: resolution order is `?realm=<name>` query → `hearth_ui_admin_target` cookie → first non-system realm. Rejects `?realm=system`.
@@ -559,7 +556,7 @@ Addresses two admin-setup bugs on multi-realm deployments: verification links hi
 **Remaining enhancements (not blocking):**
 - Visual realm switcher dropdown in admin chrome. Today operators switch via `/ui/admin/realms` (one-click "Administer this realm" button per row) or by typing `?realm=<name>` in the URL.
 - Admin-side auxiliary flows: `/ui/admin/forgot-password`, `/ui/admin/reset-password`, `/ui/admin/login/passkey-*`, `/ui/admin/mfa-challenge`. Admins reset passwords via the identity engine's CLI or directly via storage today.
-- `RequireAdmin` extractor could additionally scope the `hearth#admin` tuple to the system realm explicitly (currently it checks in `session.realm_id` which is always system after the refactor — equivalent but worth making explicit for clarity).
+- `RequireAdmin` extractor could additionally assert the `hearth.admin` permission is scoped to the system realm explicitly (currently it relies on `session.realm_id` which is always system after the refactor — equivalent but worth making explicit for clarity).
 - Migration CLI for existing deployments (`hearth admin migrate-to-system-realm`). Pre-1.0; wipe data dir for now.
 
 ---

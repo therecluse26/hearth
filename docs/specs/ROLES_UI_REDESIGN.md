@@ -1,17 +1,14 @@
 # Roles & Permissions UI Redesign
 
 **Status:** proposed, not implemented
-**Target branch:** feature/saml (or a follow-up branch off `main`)
+**Target branch:** landed on `main` after the RBAC migration (see [`MIGRATE_TO_RBAC.md`](./MIGRATE_TO_RBAC.md))
 **Primary files:** `src/protocol/web/admin.rs`, `templates/ui/admin/organizations/*`, `templates/ui/admin/realms/detail.html`
 
 ## Context
 
-Phases 1–6 of the Roles & Permissions work (see `/home/brad/.claude/plans/cool-now-relating-to-mossy-map.md`) shipped:
+Hearth's authorization model is claims-based RBAC (see [`AUTHORIZATION.md`](./AUTHORIZATION.md)). Organization membership changes translate directly to `RbacEngine::assign_role` / `unassign_role` calls — there is a single write per role change, no tuple mirror, and a single audit event per mutation.
 
-1. The Zanzibar engine primitives (relation unions, preset namespace, `check_explain`, reverse lookup).
-2. An opt-in realm admin surface, Zanzibar mirroring for org memberships, a user Access panel, and an authz debugger.
-
-What landed works end-to-end — tests are green, every role change writes both the legacy `OrganizationMembership` record and a matching Zanzibar tuple, audit events are paired, and the debugger can trace any check — but **the product UX for managing organization members is still bad**. This spec is the punch-list for a proper redesign and an explicit list of the bugs behind the current pain.
+The admin UI for organization membership works end-to-end (role changes apply, audit events emit, a permission resolver page can answer "why does Bob have this permission?"), but **the product UX for managing organization members is still bad**. This spec is the punch-list for a proper redesign and an explicit list of the bugs behind the current pain.
 
 The immediate trigger was a production bug: a bulk-add submission with exactly one checkbox ticked returned
 
@@ -48,14 +45,14 @@ The modal has one role dropdown in the footer that applies to every checked user
 
 ### P5. No "did my change take effect?" loop
 
-When an operator changes a role, the Zanzibar mirror writes the matching tuple and emits paired `RoleRevoked` + `RoleAssigned` audit events. None of that is visible in the Members UI. If an operator is debugging "why can Bob still view this doc?" they have to:
+When an operator changes a role, the RBAC engine writes a single assignment and emits a single audit event. None of that is visible in the Members UI. If an operator is debugging "why can Bob still view this doc?" they have to:
 
 1. Open the Members tab and eyeball Bob's role.
-2. Open the authz debugger in a different tab.
-3. Type the organization UUID + relation + user UUID by hand.
-4. Compare traces.
+2. Open the permission resolver page in a different tab.
+3. Type the user UUID and (optionally) an org context by hand.
+4. Compare the resolved permission set against expectations.
 
-The debugger exists; the Members page should link into it with the fields pre-filled.
+The resolver exists; the Members page should link into it with the fields pre-filled.
 
 ### P6. Invite-by-email and member-list coexist as co-equal forms
 
@@ -84,7 +81,7 @@ At the top of the Members section, inline (no modal):
 - One search input with `hx-trigger="input changed delay:200ms"` → hits `GET /ui/admin/organizations/{id}/members/picker?q=…` (existing endpoint) rendering the existing `_member_picker_rows.html` partial **inline** (not in a modal).
 - Each row in the results has its own form: user_id hidden, role select, Add button. Clicking Add commits that one user. No batch state, no disabled buttons, no Alpine.
 - Result: the common case (add one person) is two clicks; the rare case (add five) is five clicks — not worse than the modal, and no JS state to get wrong.
-- The bulk modal + `admin_org_bulk_add_members` handler can be **deleted** once this ships. The `_member_modal.html` + `_member_picker_rows.html` templates stay — the rows partial just gets a different wrapper.
+- The bulk modal + `admin_org_bulk_add_members` handler can be **deleted** once this ships. The `_member_picker_rows.html` template stays — it just gets a different wrapper.
 
 ### Row-level role change applies on select (fixes P2)
 
@@ -102,7 +99,8 @@ Each member row replaces the Update button with an `hx-post`-driven dropdown:
 ```
 
 - Handler (`admin_org_update_role`) returns **a refreshed row fragment** instead of a full-page redirect, so HTMX can swap it in place.
-- Add a brief success toast via the existing toast system (`_layout.html` defines `x-data="{ toasts: [] }"`). `admin_org_update_role` already fires audit events; we add an HTMX response header `HX-Trigger: {"toast": {"message": "Role updated", "kind": "success"}}` so the template's existing Alpine handler shows the toast.
+- The handler internally calls `RbacEngine::unassign_role` for the previous org role and `assign_role` for the new one, in a single audit-bounded operation. One `RoleChanged` audit event records the transition.
+- Add a brief success toast via the existing toast system (`_layout.html` defines `x-data="{ toasts: [] }"`). The handler returns an HTMX response header `HX-Trigger: {"toast": {"message": "Role updated", "kind": "success"}}` so the template's existing Alpine handler shows the toast.
 - Optimistic rollback: if the server returns an error the swap includes the old role selected; the toast kind flips to `error`.
 
 ### Two-click confirm for Remove (fixes P3)
@@ -122,21 +120,18 @@ No modal, no JS library. Alpine state on each row:
 
 Matches the existing pattern used on `templates/ui/admin/users/detail.html` for "Disable MFA." No new UI primitive required.
 
-### "Check access" link per row (fixes P5)
+### "Resolve permissions" link per row (fixes P5)
 
-Add a small `<a>` at the end of each member row pointing at:
+Add a small `<a>` at the end of each member row pointing at the admin permission resolver, which wraps `GET /admin/users/{id}/effective-permissions`:
 
 ```
-/ui/admin/authz/debug?object_type=organization
-                    &object_id={{ org.id().as_uuid() }}
-                    &relation=viewer
-                    &subject_type=user
-                    &subject_id={{ m.user_id.as_uuid() }}
+/ui/admin/permissions/resolve?user_id={{ m.user_id.as_uuid() }}
+                              &org_id={{ org.id().as_uuid() }}
 ```
 
-The debugger handler (`admin_authz_debug`) already accepts those query params and auto-runs the check. Zero new backend work — just a link.
+The resolver page renders the effective permission set along with the chain of assignments that produced each permission (user-direct vs. group-inherited, role parent chain if any). Zero new backend work if `/admin/users/{id}/effective-permissions` is already exposed — just a link and a thin template.
 
-Similarly, the realm Admins section gets a Check access link next to each admin using `object_type=hearth&object_id=admin&relation=admin`.
+Similarly, the realm Admins section gets a Resolve permissions link next to each admin for a realm-scoped resolution (no `org_id` param).
 
 ### Invite-by-email demoted (fixes P6)
 
@@ -165,37 +160,39 @@ The ideal end state: no `Vec<String>` form field in the codebase is allowed to u
 
 | File | Change |
 |---|---|
-| `templates/ui/admin/organizations/detail.html` | Rewrite Members section: new inline add-member, role-dropdown-on-change, confirm-remove, Check access links, invite demoted to `<details>`. |
+| `templates/ui/admin/organizations/detail.html` | Rewrite Members section: new inline add-member, role-dropdown-on-change, confirm-remove, Resolve permissions links, invite demoted to `<details>`. |
 | `templates/ui/admin/organizations/_member_row.html` | **NEW** — extracted single-row partial. Returned by `admin_org_update_role` for in-place swap. |
 | `templates/ui/admin/organizations/_member_modal.html` | **DELETE** after new flow lands. |
-| `src/protocol/web/admin.rs` | `admin_org_update_role` returns row partial + `HX-Trigger` header. `admin_org_member_picker` renders rows inline (drops `is_rows_only` branching). `admin_org_bulk_add_members` deleted. Helper `render_member_row` extracted. `deserialize_string_list` moved out. |
-| `src/protocol/web/mod.rs` | Remove `/organizations/{id}/members/bulk` route. |
+| `templates/ui/admin/permissions/resolve.html` | **NEW** — permission resolver page showing effective permissions + assignment chain for a user. |
+| `src/protocol/web/admin.rs` | `admin_org_update_role` returns row partial + `HX-Trigger` header; internally calls `RbacEngine::unassign_role` + `assign_role`. `admin_org_member_picker` renders rows inline (drops `is_rows_only` branching). `admin_org_bulk_add_members` deleted. Helper `render_member_row` extracted. `deserialize_string_list` moved out. New `admin_permissions_resolve` handler wraps `/admin/users/{id}/effective-permissions`. |
+| `src/protocol/web/mod.rs` | Remove `/organizations/{id}/members/bulk` route. Add `/admin/permissions/resolve` route. |
 | `src/protocol/web/forms.rs` | **NEW** (optional) — reusable multi-value form helpers. |
-| `templates/ui/admin/realms/detail.html` | Add Check access link per admin row. |
-| `tests/admin_roles.rs` | Extend tests for in-place row swap + toast trigger header. |
+| `templates/ui/admin/realms/detail.html` | Add Resolve permissions link per admin row. |
+| `tests/admin_roles.rs` | Extend tests for in-place row swap + toast trigger header + resolver page rendering. |
 
 ## Non-goals / out of scope
 
 - Redesigning the **invite accept** flow (`/ui/invitations/accept?token=…`). It's fine as-is.
-- Changing the Zanzibar mirror semantics (still fires `RoleAssigned` + `RoleRevoked` per role change).
-- The realm admin picker (shipped in Phase 6c, keep it — the inline add flow is isomorphic anyway).
-- Refactoring `OrganizationMembership` away. The mirror stays.
-- Schema editor UI — still deferred until a customer asks.
+- Changing the RBAC engine semantics (still a single `assign_role` write per role change + single audit event).
+- The realm admin picker (shipped earlier, keep it — the inline add flow is isomorphic anyway).
+- Refactoring `OrganizationMembership` away. The org-membership surface still exists as sugar over `Scope::Org` role assignments; UI doesn't need to change.
+- Schema editor UI for realm-level roles and permissions — still deferred until a customer asks. When it lands, it's a separate admin surface under `/admin/roles` + `/admin/groups`, not part of the Members flow.
 
 ## Verification
 
-1. `cargo nextest run --workspace` — all existing tests (1,375+) remain green, plus new tests:
+1. `cargo nextest run --workspace` — all existing tests remain green, plus new tests:
    - Row-partial swap: POSTing to `/members/{uid}/role` returns HTML containing the new role selected.
    - HTMX toast header: response includes `HX-Trigger` with the right JSON shape.
-   - Inline add: submitting `user_id=<uuid>&role=Member` via the per-row Add form creates a membership and writes a matching tuple.
+   - Inline add: submitting `user_id=<uuid>&role=Member` via the per-row Add form creates an org-scoped role assignment.
    - Remove confirm: a bare GET/POST without the confirm flow does nothing surprising (the form itself gates it in markup, so this is really a template snapshot test if anything).
-2. `cargo fmt --check && cargo clippy --all-targets -- -D warnings` — clean (modulo the pre-existing SCIM lints).
+   - Resolver page: GET `/ui/admin/permissions/resolve?user_id=...&org_id=...` renders the effective permission set for a user with known assignments.
+2. `cargo fmt --check && cargo clippy --all-targets -- -D warnings` — clean.
 3. Tailwind rebuild after template changes: `cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify`.
 4. Manual smoke (`cargo run -- serve --dev`):
    - Create an org, add one user via inline form → single click works, toast appears.
-   - Change the user's role from Member → Admin via the dropdown → no Update button, toast appears, audit log shows `RoleRevoked(member) + RoleAssigned(admin)`.
+   - Change the user's role from Member → Admin via the dropdown → no Update button, toast appears, audit log shows `RoleChanged(member → admin)`.
    - Click Remove → button flips to "Confirm remove" → click again → member gone, toast appears.
-   - Click Check access → debugger opens pre-filled and auto-runs the check.
+   - Click Resolve permissions → resolver page opens showing the user's effective permissions with the assignment chain that produced each.
    - Expand "Invite someone who isn't in this realm yet" → existing invite form works.
 5. Regression: verify the single-checkbox bulk-add path is simply gone; the handler and template should no longer exist.
 
@@ -205,6 +202,7 @@ The ideal end state: no `Vec<String>` form field in the codebase is allowed to u
 - **Dropdown-on-change and accidental changes.** An operator scrolling past a row with focus on its dropdown + arrow keys could silently demote someone. Two mitigations: (a) only fire `hx-trigger="change"` when the value actually differs from the server-rendered selected value (HTMX has `[value changed]` trigger modifier); (b) add an Alpine-level "unsaved" indicator if we keep the explicit commit. Prefer (a).
 - **Deleting `admin_org_bulk_add_members`.** If external docs, scripts, or examples reference `POST /members/bulk`, those break. Grep `examples/`, `docs/`, and the README before removing. Leave a deprecation shim for one release if external usage exists.
 - **Who tests the toast system?** The `_layout.html` toast infrastructure exists but may not have integration tests. If not, add one using the existing playwright/e2e scaffolding, or punt it and rely on manual smoke.
+- **Resolver template depth.** Showing the "why does Bob have this permission" chain requires rendering user-direct vs. group-inherited assignments plus role-composition parents. For common cases (1-2 roles, flat) this is trivial; for deeply-nested (10 groups, 10-parent role chains) the template can get unwieldy. Start simple — just flat lists per category — and iterate if operators ask for more.
 
 ## Appendix: the fixed deserializer (for reference)
 
