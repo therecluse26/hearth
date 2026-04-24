@@ -255,7 +255,7 @@ pub struct ClaimMapping {
 
     // --- Release gates (all AND-combined; all must pass for the claim to emit) ---
     pub first_party_only: bool,                    // emit only when client.trust_level == FirstParty
-    pub required_scopes: Option<Vec<String>>,      // if Some, client must request ≥1 of these scopes
+    pub required_scopes: Option<Vec<String>>,      // if Some, the final GRANTED scope set must include ≥1 of these (post-resolution, not raw request)
     pub allowed_clients: Option<Vec<String>>,      // if Some, client.id must be in this list
 }
 
@@ -330,7 +330,7 @@ Mapper claim names are validated at config load against a three-tier policy:
 - **Short form:** `^[a-z][a-z0-9_]*$`, ≤64 chars. Used for simple custom claims (`department`, `employee_id`).
 - **HTTPS-namespaced form:** `^https://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$` — collision-free namespacing for custom claims, e.g., `https://acme.com/department`. ≤256 chars. Matches Auth0/Okta convention. HTTP is rejected (security: namespace should be an owned HTTPS origin). URN-form (`urn:example:…`) is not supported in this phase — admins who need it can request it via a future spec; until then, use an HTTPS URL under a domain they control.
 
-**Evaluation order:** mappings evaluated in YAML-declaration order; later mapping overrides earlier at same claim name. Tier 1 claims are written last by core issuance code as defense-in-depth — any mapping that slipped past Tier 1 validation would be clobbered.
+**Evaluation order:** see "Evaluation and merge model (layered with fallback)" below for the authoritative rule. Tier 1 claims are additionally written last by core issuance code as defense-in-depth — any mapping that slipped past Tier 1 validation would be clobbered regardless of how mapper evaluation resolved.
 
 ### Claim release gates
 
@@ -494,8 +494,8 @@ All templates under `templates/ui/admin/rbac/` + `templates/ui/admin/realms/clai
 - **Application edit/detail** — read-only view of `trust_level` and `declared_scopes`. Effective permission union shown as a helper; scope picker is read-only (YAML-authored). The UI includes a "Copy YAML snippet" affordance for admins who want to extend the client in YAML.
 - **Realm detail** — new "Claims" sub-page at `/ui/admin/realms/:id/claims`:
   - Read-only view of the realm's merged claim profile (defaults + YAML overrides)
-  - Live "Example token" rendered against an admin-chosen sample user
-  - Mapper list shown with source, target claim, access/id flags
+  - Live "Example token" rendered against an admin-chosen sample user (with client trust-level and granted-scope inputs so admins can preview gate behavior for first-party vs third-party clients)
+  - Mapper list showing source, target claim, include-in access-token / ID-token / UserInfo flags, and release gates (`first_party_only`, `required_scopes`, `allowed_clients`)
 
 ### New account-settings surface (end-user self-service)
 
@@ -560,14 +560,14 @@ These call `DELETE /v1/me/applications/{clientId}` for self-service revocation.
 
 Mapping to Hearth's eight layers (per `docs/specs/TESTING.md`):
 
-1. **Unit** — type round-trips, naming grammar validator (boundary cases: single-word, mixed separators, whitespace, URL-reserved chars, hyphens, mixed case), tier enforcement (Tier 1 rejection, Tier 2 override, Tier 3 format), resolution math (union, atomic grant, empty cases, scope-match for realm/org), merge semantics for claim profile defaults.
-2. **Integration** — storage CRUD for user extras, cascade behavior, user extras flowing through `resolve_effective`, scope filtering at each grant type (password, auth code, client credentials, refresh, device), YAML-reload swap via `ArcSwap`.
-3. **Property** — `resolve_effective` idempotence, scope-match determinism, mapper output determinism, digest stability under permutation.
-4. **Fuzz** — YAML deserialization, permission/scope name parser, claim profile JSON.
-5. **Adversarial** — privilege escalation attempts (requesting undeclared scope, consenting to permission user lacks, Tier 1 claim override via mapper), scope-deletion-with-active-refresh-tokens, reserved-claim-name collision, name collision across namespaces.
-6. **Simulation** — admin rewrites YAML while tokens are being issued (ArcSwap invalidation), scope definition deleted while refresh in flight, dangling-reference orphan skip.
-7. **Conformance** — OAuth 2.0 RFC 6749 scope semantics (scope narrower on grant than request, refresh scope ⊆ original), OIDC Core scope claim shape, standard OIDC scope handling.
-8. **Benchmarks** — `issue_tokens` with 40-permission user (target: same as baseline), `validate_token` (must be byte-identical perf since hot path is unchanged), registry lookup cached via `ArcSwap`.
+1. **Unit** — type round-trips, naming grammar validator (boundary cases: single-word, mixed separators, whitespace, URL-reserved chars, hyphens, mixed case), tier enforcement (Tier 1 rejection, Tier 2 override, Tier 3 short-form and HTTPS-namespaced), resolution math (union, atomic full-satisfiability grant, empty cases, scope-match for realm/org), merge/layered-fallback semantics for claim profile (YAML-override gate failure falls back to default; default also failing → claim omitted), release-gate matrix (each of `first_party_only` / `required_scopes` / `allowed_clients` individually and AND-combined, across access-token / ID-token / UserInfo outputs), `required_scopes` evaluated against granted-not-requested.
+2. **Integration** — storage CRUD for user extras, cascade behavior, user extras flowing through `resolve_effective`, scope filtering at each grant type (password, auth code, client credentials, refresh, device), YAML-reload swap via `ArcSwap`, org-keyed consent lookup with and without `consent_spans_orgs` fallback, org-context switch forces re-consent by default.
+3. **Property** — `resolve_effective` idempotence, scope-match determinism, mapper output determinism, digest stability under permutation, layered-fallback determinism under mapping reordering.
+4. **Fuzz** — YAML deserialization, permission/scope name parser, claim profile JSON, HTTPS-namespaced claim name parser.
+5. **Adversarial** — privilege escalation attempts (requesting undeclared scope, consenting to permission user lacks, Tier 1 claim override via mapper), scope-deletion-with-active-refresh-tokens, reserved-claim-name collision, name collision across namespaces, **raw-request scope leak** (gate a sensitive claim on `required_scopes: [admin:bundle]`, have the client request it but lack permissions — verify the claim does NOT emit), **cross-org consent reuse** (consent in org A must not authorize in org B without `consent_spans_orgs`), third-party client receiving `roles`/`groups` via default profile (must NOT emit).
+6. **Simulation** — admin rewrites YAML while tokens are being issued (ArcSwap invalidation), scope definition deleted while refresh in flight, dangling-reference orphan skip, claim profile toggled to tighten gates mid-flight (in-flight tokens unaffected, next issuance honors tightening).
+7. **Conformance** — OAuth 2.0 RFC 6749 scope semantics (scope narrower on grant than request, refresh scope ⊆ original), OIDC Core scope claim shape, standard OIDC scope handling, UserInfo endpoint claim shape matches ID token shape under mapper overrides.
+8. **Benchmarks** — `issue_tokens` with 40-permission user (target: same as baseline), `validate_token` (must be byte-identical perf since hot path is unchanged), registry lookup cached via `ArcSwap`, layered-fallback evaluation cost (target: <1µs per claim for realistic mapping counts).
 
 ## Critical Files
 
@@ -579,7 +579,7 @@ Mapping to Hearth's eight layers (per `docs/specs/TESTING.md`):
 - `src/identity/claims_config.rs` — **new** — `ClaimSource`, `ClaimMapping`, `DEFAULT_CLAIM_PROFILE`, merge logic.
 - `src/identity/engine.rs:2267-2309` — `issue_tokens_with_context`, digest re-check on refresh.
 - `src/identity/tokens.rs:70-130` — `TokenClaims` with `flatten custom` + optional fields.
-- `src/identity/types.rs` — `User.attributes`, `OauthClient.trust_level` + `declared_scopes`.
+- `src/identity/types.rs` — `User.attributes`, `OauthClient.trust_level` + `declared_scopes` + `consent_spans_orgs`.
 - `src/protocol/web/admin.rs` — read-only handlers for permissions/roles/scopes, CRUD for user extras, groups, consent revocation.
 - `src/protocol/web/account.rs` — **new** — user-facing account-settings handlers (connected applications).
 - `templates/ui/admin/rbac/**` — read-only templates for YAML-managed entities; CRUD templates for groups and user extras.
@@ -669,8 +669,8 @@ Unchanged from original spec.
 
 | trust_level | Consent required | No-scope token shape | Scope request behavior |
 |---|---|---|---|
-| FirstParty | No | Full effective permissions | Narrows to scope ∩ effective; validates scope ∈ declared_scopes |
-| ThirdParty | Yes (first time per scope set, digest-validated afterwards) | Rejected with `invalid_scope` | Narrows to scope ∩ effective; validates scope ∈ declared_scopes; consent ceremony if not cached |
+| FirstParty | No | Full effective permissions | Atomic full-satisfiability grant (see Resolution rule): `grantable = { s : scope_perms(s) ⊆ effective OR s OIDC-standard }`; `token.permissions = effective ∩ ∪ scope_perms(s) for s ∈ grantable`; validates requested ⊆ `declared_scopes`; `invalid_scope` if `grantable` empty |
+| ThirdParty | Yes (first time per scope set, digest-validated afterwards) | Rejected with `invalid_scope` | Same atomic full-satisfiability grant as FirstParty; consent ceremony runs if no cached consent matches; `invalid_scope` if `grantable` empty |
 
 ### Consent invalidation — digest-based, lazy
 
@@ -739,7 +739,7 @@ Scope:
 - Debug page enhancement: new "Token preview" tab
 - Audit events: none new (YAML reload is not an audit-worthy runtime event)
 
-Depends on Phase 1 (mappers can reference registered permissions via `RoleSubset` and `EffectivePermissions` sources). Ends in a state where realm admins can shape token output declaratively.
+Depends on Phase 1 (mappers can reference registered permissions via `RoleSubset` and `EffectivePermissions` sources). The release-gate framework (`first_party_only`, `required_scopes`, `allowed_clients`) and layered-fallback evaluation model land in this phase too, even though `required_scopes` only becomes meaningful once Phase 3 produces granted scope sets. Ends in a state where realm admins can shape token output declaratively with safe-by-default exposure for any future third-party clients.
 
 ### Phase 3 — OAuth scopes + client trust_level + consent
 
@@ -759,4 +759,4 @@ Scope:
 - Audit events: `ClientConsentGranted/Revoked`, `ConsentRequiredOnRefresh`
 - Proto: no new CRUD RPCs for scopes (YAML-only); consent-revocation RPC
 
-Depends on Phase 1 (scopes reference registered permissions) and Phase 2 (claim-profile toggles interact with scope filtering). Ends in a state where Hearth can serve as a full OAuth authorization server with consent-based third-party integrations and end-user consent management.
+Depends on Phase 1 (scopes reference registered permissions) and Phase 2 (the claim-profile mapper model supplies the `required_scopes` release gate that Phase 3's scope-resolution output feeds into). Ends in a state where Hearth can serve as a full OAuth authorization server with consent-based third-party integrations and end-user consent management.
