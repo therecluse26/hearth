@@ -63,6 +63,10 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::ScimGroupDeleted => pb::AuditAction::ScimGroupDeleted,
         domain::AuditAction::RoleAssigned => pb::AuditAction::RoleAssigned,
         domain::AuditAction::RoleRevoked => pb::AuditAction::RoleRevoked,
+        // OrphanedReferenceSkipped has no proto variant yet (gap #7 — proto
+        // RPC work is deferred). Serialize as Unspecified so existing gRPC
+        // clients see it as an unknown action rather than crashing.
+        domain::AuditAction::OrphanedReferenceSkipped => pb::AuditAction::Unspecified,
     }
 }
 
@@ -166,6 +170,7 @@ mod tests {
             domain::AuditAction::ScimGroupDeleted,
             domain::AuditAction::RoleAssigned,
             domain::AuditAction::RoleRevoked,
+            domain::AuditAction::OrphanedReferenceSkipped,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

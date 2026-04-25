@@ -121,6 +121,16 @@ pub enum AuditAction {
     ScimGroupUpdated,
     /// A group was deleted via SCIM.
     ScimGroupDeleted,
+    /// A dangling role-ID or registry reference was silently skipped
+    /// during permission resolution.
+    ///
+    /// Emitted at most once per `(realm, reference)` per hour so operators
+    /// are notified of YAML-storage drift without flooding the audit log.
+    /// The `resource_id` field carries the opaque reference (e.g. a
+    /// `role_<uuid>` string) that could not be resolved; `metadata` may
+    /// carry `ref_kind` for disambiguation. See `AUTHZ_EXPANSION.md`
+    /// §"Dangling references".
+    OrphanedReferenceSkipped,
 }
 
 impl AuditAction {
@@ -176,6 +186,7 @@ impl AuditAction {
             Self::ScimGroupDeleted => "scim_group_deleted",
             Self::RoleAssigned => "role_assigned",
             Self::RoleRevoked => "role_revoked",
+            Self::OrphanedReferenceSkipped => "orphaned_reference_skipped",
         }
     }
 }
@@ -234,6 +245,7 @@ impl std::str::FromStr for AuditAction {
             "scim_group_deleted" => Ok(Self::ScimGroupDeleted),
             "role_assigned" => Ok(Self::RoleAssigned),
             "role_revoked" => Ok(Self::RoleRevoked),
+            "orphaned_reference_skipped" => Ok(Self::OrphanedReferenceSkipped),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

@@ -9,7 +9,9 @@
 //! the traversal decoupled from the concrete engine makes property
 //! testing (e.g. "cycles are rejected") self-contained.
 
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::core::{OrganizationId, RealmId, UserId};
 
@@ -27,6 +29,42 @@ pub(crate) const MAX_GROUP_DEPTH: usize = 10;
 pub(crate) const MAX_GROUP_BREADTH: usize = 1000;
 /// Maximum depth for role-composition DFS.
 pub(crate) const MAX_ROLE_DEPTH: usize = 10;
+
+/// Rate window for `OrphanedReferenceSkipped` events: at most one emit per
+/// `(realm, reference)` per hour.
+const ORPHAN_EMIT_WINDOW: Duration = Duration::from_secs(3600);
+
+/// Per-process rate-limiter for orphaned-reference tracing events.
+///
+/// Key: `(realm_id_bytes, ref_id_string)`.  Value: the `Instant` at which
+/// the last event was emitted for that key.  Entries are never evicted
+/// (a live process has a bounded number of unique realm × role-id pairs),
+/// but the map stays small in practice — only stale references accumulate.
+static ORPHAN_RATE_LIMITER: OnceLock<Mutex<HashMap<(RealmId, String), Instant>>> = OnceLock::new();
+
+fn orphan_limiter() -> &'static Mutex<HashMap<(RealmId, String), Instant>> {
+    ORPHAN_RATE_LIMITER.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Returns `true` if an `OrphanedReferenceSkipped` event for `(realm_id,
+/// ref_id)` should be emitted right now; `false` if the rate window has not
+/// elapsed since the last emit.
+///
+/// Side-effect: records the current instant if returning `true`.
+pub(crate) fn should_emit_orphan(realm_id: &RealmId, ref_id: &str) -> bool {
+    let key = (realm_id.clone(), ref_id.to_string());
+    let now = Instant::now();
+    let mut limiter = orphan_limiter()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match limiter.get(&key) {
+        Some(&last) if now.duration_since(last) < ORPHAN_EMIT_WINDOW => false,
+        _ => {
+            limiter.insert(key, now);
+            true
+        }
+    }
+}
 
 /// Data-access surface the resolver needs.
 ///
@@ -255,6 +293,19 @@ fn expand_role<R: Resolver + ?Sized>(
         // target has since been deleted. Write-time checks normally prevent
         // this; we tolerate at resolve time so a stale DAG doesn't fail the
         // whole token issuance.
+        //
+        // Emit a rate-limited structured warning so operators can detect
+        // YAML-storage drift without log spam. See AUTHZ_EXPANSION.md
+        // §"Dangling references".
+        let ref_id = role_id.to_string();
+        if should_emit_orphan(realm_id, &ref_id) {
+            tracing::warn!(
+                realm_id = %realm_id,
+                role_id = %ref_id,
+                action = "orphaned_reference_skipped",
+                "dangling role reference skipped during permission resolution"
+            );
+        }
         return Ok(());
     };
 
@@ -1044,5 +1095,85 @@ mod tests {
                 prop_assert_eq!(&resolved.groups, &groups_sorted);
             }
         }
+    }
+
+    // ===== OrphanedReferenceSkipped rate limiter =====
+
+    /// Unique realm IDs for rate-limiter tests so parallel test runs never
+    /// share a key with other tests (the limiter is process-global).
+    fn fresh_realm() -> RealmId {
+        RealmId::generate()
+    }
+
+    #[test]
+    fn orphan_first_call_emits() {
+        let realm = fresh_realm();
+        assert!(
+            should_emit_orphan(&realm, "role_aabbccdd-0000-0000-0000-000000000001"),
+            "first call for a new key must emit"
+        );
+    }
+
+    #[test]
+    fn orphan_second_immediate_call_is_rate_limited() {
+        let realm = fresh_realm();
+        let ref_id = "role_aabbccdd-0000-0000-0000-000000000002";
+        assert!(should_emit_orphan(&realm, ref_id), "first call must emit");
+        assert!(
+            !should_emit_orphan(&realm, ref_id),
+            "second immediate call must be rate-limited"
+        );
+    }
+
+    #[test]
+    fn orphan_different_realm_is_independent() {
+        let realm_a = fresh_realm();
+        let realm_b = fresh_realm();
+        let ref_id = "role_aabbccdd-0000-0000-0000-000000000003";
+        // Emit on realm_a; realm_b must still be independent.
+        let _ = should_emit_orphan(&realm_a, ref_id);
+        assert!(
+            should_emit_orphan(&realm_b, ref_id),
+            "different realm must not be rate-limited by realm_a's emit"
+        );
+    }
+
+    #[test]
+    fn orphan_different_ref_is_independent() {
+        let realm = fresh_realm();
+        let ref_a = "role_aabbccdd-0000-0000-0000-000000000004";
+        let ref_b = "role_aabbccdd-0000-0000-0000-000000000005";
+        // Emit ref_a; ref_b in the same realm must still be independent.
+        let _ = should_emit_orphan(&realm, ref_a);
+        assert!(
+            should_emit_orphan(&realm, ref_b),
+            "different ref_id in same realm must not be rate-limited"
+        );
+    }
+
+    #[test]
+    fn resolve_with_dangling_role_emits_orphan_event_and_succeeds() {
+        // Verify that a dangling role ID in the assignment list does not
+        // abort permission resolution — the user just gets no permissions
+        // from that assignment.
+        let realm = RealmId::generate();
+        let alice = UserId::generate();
+        let dangling = RoleId::generate();
+
+        let mut fake = Fake::new();
+        fake.user_asgn.insert(
+            alice.clone(),
+            vec![mk_asgn(
+                &realm,
+                Subject::User(alice.clone()),
+                dangling,
+                Scope::Realm,
+            )],
+        );
+
+        let resolved =
+            resolve_permissions(&fake, &alice, &realm, None, None).expect("must not error");
+        assert!(resolved.permissions.is_empty());
+        assert!(resolved.roles.is_empty());
     }
 }
