@@ -15,7 +15,14 @@ Hearth's claims-based RBAC works end-to-end, but the administrative and develope
 
 The goal of this work is to turn authz from a code-and-config construct into a discoverable, governed, first-class admin surface — without sacrificing Hearth's performance (zero-alloc hot path), security (declarative mappers only, no scripting), or operational simplicity (one conceptual rule, no knobs with ambiguous semantics).
 
-**Authoring model.** Permissions, roles, scope bundles, and token claim profiles are authored in `hearth.yaml` only. This matches Hearth's existing YAML-first pattern for realms, OAuth clients, and email configuration. The admin UI provides read-only browsing and discovery for YAML-defined entities, plus CRUD for runtime data (user role assignments, user extras, OAuth consents).
+**Authoring model.** Permissions, roles, scope bundles, claim profiles, and protected-resource registrations are authored in `hearth.yaml` only. This matches Hearth's existing YAML-first pattern for realms and email configuration. The admin UI provides read-only browsing and discovery for YAML-defined entities, plus CRUD for runtime data (user role assignments, user extras, OAuth consents, group memberships).
+
+**Two-track OAuth client model.** Clients are NOT exclusively YAML-defined. Hearth supports two coexisting tracks:
+
+- **Managed clients** — authored in `hearth.yaml` under `realms.<id>.oauth_clients`. Long-lived, configured by operators. Their `slug` is admin-supplied and stable across renames; the persisted record retains a UUID `ClientId` for runtime references.
+- **Runtime-registered clients** — created via RFC 7591 Dynamic Client Registration at `POST /register` (per [AGENT_AUTH.md](./AGENT_AUTH.md) §2.7). Used by agents auto-registering against a Hearth instance and by ephemeral integrations. Storage-backed (`oauth:client:{realm}:{client_id}`); their `slug` is auto-generated from the client name plus a uniqueness suffix. NOT subject to YAML reload; modified via RFC 7592 `PUT /register/{client_id}`.
+
+Both tracks produce records of the same `OauthClient` shape. Mappers' `allowed_clients` gates accept slugs from either track. The slug↔`ClientId` index is materialized for both YAML clients (at registry load) and DCR clients (at registration time / on storage scan). Realm policy (configured separately) governs whether DCR is enabled, what trust level DCR-created clients receive (typically `ThirdParty`), and whether admins can promote a DCR client to a managed client by editing it into YAML.
 
 ## Architectural Model
 
@@ -30,6 +37,8 @@ Five concepts, each answering exactly one question:
 | **Claim profile** | `hearth.yaml` per realm (`realms.<id>.claims`) | What does a token from this realm look like? |
 
 ### Naming convention (syntactic classification)
+
+**This is a Hearth-specific convention, not industry standard.** RFC 6749 §3.3 treats scope values as opaque tokens; OIDC Core allows arbitrary custom scope strings; Auth0/Keycloak/Ory accept any non-whitespace string. Hearth chooses syntactic classification to make name collisions impossible by construction and to allow constant-time parser dispatch — the trade-off is that integrators familiar with bare-word custom scopes (`read_user`, `manage_billing`) must learn Hearth's grammar. Realms that want the conventional opaque-string model can express any scope as a bundle (`:`-separated) trivially; the constraint is only on the bare-word namespace.
 
 Permissions, scope bundles, and OIDC standard scopes occupy three disjoint namespaces distinguished by their separator. Classification is syntactic — a parser can identify what kind of string it has in constant time without consulting any registry.
 
@@ -58,15 +67,24 @@ effective =
     r.permissions ∪ ∪(transitive_permissions(p) for p in r.parents)
     (cycle-detected, depth-bounded per AUTHORIZATION.md §2.6)
 
-# 2. Scope grant (atomic, full-satisfiability).
+# 2. Scope grant (atomic, full-satisfiability; trust-level-aware partial-grant policy).
 if requested_scopes non-empty:
+    ungrantable_non_oidc = { s ∈ requested_scopes
+                              : NOT (s is OIDC-standard)
+                             AND NOT (scope_perms(s) ⊆ effective) }
+
+    if client.trust_level == ThirdParty AND ungrantable_non_oidc is non-empty:
+        error(invalid_scope)                                  # ← fail-closed for third-party
+
     grantable = { s ∈ requested_scopes
                     : s is OIDC-standard
-                   OR scope_perms(s) ⊆ effective }          # ← full-subset, not any-overlap
-    if grantable is empty: error(invalid_scope)
+                   OR scope_perms(s) ⊆ effective }            # full-subset
+    if grantable is empty: error(invalid_scope)               # both trust levels
 
     effective_for_token = effective ∩ ∪ scope_perms(s) for s in grantable
     token.scope         = grantable (space-delimited, RFC 6749)
+    # FirstParty may carry token.scope strictly smaller than requested_scopes (silent partial grant).
+    # ThirdParty cannot — the early-exit above ensures grantable ⊇ non-oidc(requested_scopes).
 
 else:
     if client.trust_level == ThirdParty: error(invalid_scope)
@@ -82,9 +100,13 @@ token.<custom>    = output of each claim mapper in the realm profile (Tier 2 / T
 
 **Scope resolution for each requested string `s`:**
 1. If `s` contains `:` → scope bundle; look up in YAML registry, `scope_perms(s) = bundle.permissions`.
-2. If `s` contains `.` → permission; treat as synthetic single-permission scope, `scope_perms(s) = [s]`. A single permission is trivially fully-satisfied iff the user has it.
+2. If `s` contains `.` → permission; treat as synthetic single-permission scope, `scope_perms(s) = [s]`. A single permission is trivially fully-satisfied iff the user has it. **ThirdParty clients MUST NOT declare raw permission scopes** (config-load rejects); they exist only for first-party convenience. Third-party clients use bundles, which carry curated `display_name`/`description` for the consent screen instead of leaking internal RBAC vocabulary.
 3. If `s` is a bare word → must be an OIDC standard scope; apply its claim-shape / refresh-token effect; contributes no permissions to the grant check (always grantable at scope level if the client declared it).
 4. Otherwise or if not in `client.declared_scopes` → `invalid_scope`.
+
+**Partial-grant policy.**
+- **FirstParty clients:** silent partial grant is allowed — `grantable` may be a strict subset of `requested_scopes` and the token issues with whatever was satisfiable. RFC 6749 §3.3 explicitly permits this and first-party clients are typically authored alongside the realm config, so the partial-grant signal can be surfaced via the response's `scope` parameter without confusion.
+- **ThirdParty clients:** **fail-closed** — if any non-OIDC requested scope is ungrantable, the entire request fails with `invalid_scope`. This avoids the "authorized but not really" UX trap where a third-party app silently receives a narrower set than it asked for. OIDC standard scopes are exempt from the fail-closed rule (they have well-defined fallback semantics per OIDC Core).
 
 **Full-satisfiability rationale.** A bundle `read:docs = [docs.read, docs.list, docs.share]` is grantable only if the user has **all three** permissions. Partial-satisfaction would cause the `scope` claim to say "read:docs granted" while `permissions` carries only a subset — an API gateway reading `scope` would see full bundle approval when the user has only 1 of 3 capabilities. Full-satisfiability preserves the invariant that `scope` and `permissions` never disagree. Bundles should be defined as coherent capability sets that roles naturally align with; misalignment surfaces as the bundle simply not being granted (user falls back to direct permission scopes).
 
@@ -117,62 +139,88 @@ token.<custom>    = output of each claim mapper in the realm profile (Tier 2 / T
 
 ### YAML schema additions
 
+All authz YAML lives **under each realm**. Cross-realm bleed is impossible by construction — different realms own independent permission, role, scope-bundle, claim-profile, and OAuth-client vocabularies. This matches the existing per-realm scoping in [`AUTHORIZATION.md`](./AUTHORIZATION.md) §2.1.
+
 ```yaml
 # hearth.yaml
 
-permissions:
-  - name: docs.read
-    display_name: Read documents
-    description: View documents and their metadata.
-    category: Documents
-  - name: docs.write
-    display_name: Edit documents
-    category: Documents
-  - name: billing.read
-    display_name: View billing
-    category: Billing
-  - name: system.admin
-    display_name: System administrator
-    category: System
-
-roles:
-  - name: viewer
-    scope_kind: realm
-    permissions: [docs.read]
-  - name: editor
-    scope_kind: realm              # realm | organization | any
-    description: Create and edit documents
-    permissions: [docs.write]
-    parents: [viewer]              # inherits docs.read transitively
-  - name: org_owner
-    scope_kind: organization
-    permissions: [org.members.write, org.settings.write, org.billing.read]
-  - name: auditor
-    scope_kind: any
-    permissions: [audit.read]
-
-scopes:                             # OPTIONAL — only define when you want consent bundling
-  - name: read:docs
-    permissions: [docs.read, docs.list, docs.share]
-    display_name: Read your documents
-    description: View documents you own or have been shared with you.
-
-oauth_clients:
-  - id: first-party-app
-    trust_level: first_party
-    declared_scopes: [docs.read, docs.write, profile, email, openid]    # permissions + OIDC directly
-  - id: third-party-partner
-    trust_level: third_party
-    declared_scopes: [read:docs, offline_access, openid]                # bundle + OIDC
-
 realms:
   production:
-    claims:                         # OPTIONAL — omit for default shape
+    permissions:
+      - name: docs.read
+        display_name: Read documents
+        description: View documents and their metadata.
+        category: Documents
+      - name: docs.write
+        display_name: Edit documents
+        category: Documents
+      - name: billing.read
+        display_name: View billing
+        category: Billing
+      - name: system.admin
+        display_name: System administrator
+        category: System
+
+    roles:
+      - name: viewer
+        scope_kind: realm
+        permissions: [docs.read]
+      - name: editor
+        scope_kind: realm              # realm | organization | any
+        description: Create and edit documents
+        permissions: [docs.write]
+        parents: [viewer]              # inherits docs.read transitively
+      - name: org_owner
+        scope_kind: organization
+        permissions: [org.members.write, org.settings.write, org.billing.read]
+      - name: auditor
+        scope_kind: any
+        permissions: [audit.read]
+
+    scopes:                            # OPTIONAL — realm-level consent bundles
+      - name: read:docs
+        permissions: [docs.read, docs.list, docs.share]
+        display_name: Read your documents
+        description: View documents you own or have been shared with you.
+
+    # Protected resources (per AGENT_AUTH.md §2.5) own their own scope namespaces.
+    # MCP tool servers and other RFC 8707 protected resources register here; their
+    # scopes are NOT realm-global — they apply only when a token is being issued
+    # with `aud` set to this resource's URI. A realm-level scope and a resource-level
+    # scope MAY share a name; they are distinct because they are looked up under
+    # different audiences.
+    protected_resources:
+      - resource_uri: "https://mcp.acme.com"
+        display_name: "Acme MCP tool server"
+        scopes:
+          - name: mcp:tools:invoke
+            permissions: [mcp.tools.invoke]    # realm-level permissions backing the resource scope
+            display_name: "Invoke tools on Acme MCP"
+            description: "Allows the agent to execute tools on the Acme MCP server."
+          - name: mcp:resources:read
+            permissions: [mcp.resources.read]
+            display_name: "Read MCP resources"
+
+    oauth_clients:
+      - slug: first-party-app          # YAML reference (human-readable). Persisted record retains UUID ClientId.
+        trust_level: first_party
+        declared_scopes: [docs.read, docs.write, profile, email, openid]    # permissions + OIDC directly
+      - slug: third-party-partner
+        trust_level: third_party
+        declared_scopes: [read:docs, offline_access, openid]                # bundle + OIDC (third-party MUST use bundles, not raw permissions)
+
+    claims:                            # OPTIONAL — omit for default shape
       mappings:
         - { claim: groups,     source: omit }                           # drop native groups
         - { claim: roles,      source: role_subset, prefix: "realm." }  # override roles shape
         - { claim: department, source: user_attribute, attribute: dept }
+
+  staging:
+    permissions: [...]                 # entirely independent vocabulary
+    roles: [...]
 ```
+
+**Client references in YAML.** OAuth clients are persisted by UUID `ClientId` per the existing identity model. To make YAML readable and `allowed_clients` mapper gates ergonomic, every `oauth_clients` entry MUST include a `slug` (unique within the realm). The registry materializes a slug↔ClientId index at load time. `allowed_clients` mapper gates accept slugs; the engine resolves them to ClientIds before evaluation. This adds a one-line schema change to the existing `OauthClient` record (`slug: String`).
 
 ### New types
 
@@ -229,6 +277,43 @@ pub struct UserPermissionGrant {
     pub granted_by: Option<UserId>,
 }
 
+/// Existing organization membership row (`src/identity/types.rs`) gains an
+/// `additional_roles` field. The canonical tier remains `OrganizationRole`
+/// (Member|Admin|Owner) for shipped-API compatibility; `additional_roles` is
+/// the layered RBAC extension introduced by this spec.
+pub struct OrganizationMembership {
+    pub organization_id: OrganizationId,
+    pub user_id: UserId,
+    pub role: OrganizationRole,                  // existing — canonical tier (maps to seeded RBAC role)
+    pub additional_roles: Vec<RoleName>,         // NEW — extra org-scoped RBAC roles layered on
+    pub joined_at: Timestamp,
+    // ... other existing fields ...
+}
+
+// Additional-role constraints (validated at API call time, not config load):
+//   - each name in additional_roles must resolve to a Role in the realm registry
+//   - each resolved Role must have scope_kind ∈ {Organization, Any}
+//   - additional_roles cannot include the names of the seeded canonical bridge roles
+//     (org_member / org_admin / org_owner); the canonical tier owns those exclusively
+//   - duplicates are rejected at the API surface
+//   - cap: ≤ 32 additional_roles per membership (operational guardrail; bumpable)
+//
+// Storage: additional_roles travels inline with the membership record — no new
+// storage key. Existing org-membership read/write paths in src/identity/engine.rs
+// (memory: orgm:user:{uid}:org:{oid} + reverse index) carry the new field.
+
+/// API surface additions (in the Rbac trait):
+//   - add_additional_role(org_id, user_id, role_name) -> Result<(), RbacError>
+//   - remove_additional_role(org_id, user_id, role_name) -> Result<(), RbacError>
+//   - list_additional_roles(org_id, user_id) -> Vec<RoleName>
+//
+// gRPC additions in proto/hearth/rbac/v1/rbac.proto: AddOrgMemberRole,
+// RemoveOrgMemberRole, ListOrgMemberAdditionalRoles RPCs.
+
+// Audit events (new):
+//   - OrgMemberAdditionalRoleAdded   { actor, org_id, user_id, role_name }
+//   - OrgMemberAdditionalRoleRemoved { actor, org_id, user_id, role_name }
+
 // src/identity/types.rs — add attributes map to User
 
 pub struct User {
@@ -255,8 +340,8 @@ pub struct ClaimMapping {
 
     // --- Release gates (all AND-combined; all must pass for the claim to emit) ---
     pub first_party_only: bool,                    // emit only when client.trust_level == FirstParty
-    pub required_scopes: Option<Vec<String>>,      // if Some, client must request ≥1 of these scopes
-    pub allowed_clients: Option<Vec<String>>,      // if Some, client.id must be in this list
+    pub required_scopes: Option<Vec<String>>,      // if Some, the final GRANTED scope set must include ≥1 of these (post-resolution, not raw request)
+    pub allowed_clients: Option<Vec<String>>,      // if Some, client.slug must be in this list (resolved to ClientId at registry-load time via the slug↔ClientId index; comparison at evaluation time uses ClientId)
 }
 
 #[serde(tag = "source", rename_all = "snake_case")]
@@ -304,8 +389,45 @@ pub const DEFAULT_CLAIM_PROFILE: &[ClaimMapping] = &[
     ClaimMapping {
         claim: "permissions", source: EffectivePermissions,
         access: true, id: false, userinfo: false,
-        first_party_only: false, required_scopes: None, allowed_clients: None,
+        // first_party_only mirrors the prohibition on raw-permission scopes for ThirdParty clients
+        // declared in §"Scope resolution". Internal RBAC vocabulary should not leak to third-party
+        // clients via either the scope channel OR the permissions claim by default. Admins who
+        // need third-party clients to receive the permissions claim override this mapping in YAML
+        // with first_party_only: false (and should pair with allowed_clients or required_scopes).
+        first_party_only: true, required_scopes: None, allowed_clients: None,
     },
+
+    // OIDC profile / contact claims — default scope-gated emission from canonical user state.
+    // These don't conflict with Tier 1 verification claims (email_verified / phone_number_verified),
+    // which are emitted by core issuance, not by mapper.
+    ClaimMapping {
+        claim: "email", source: UserAttribute { attribute: "email" /* canonical user email */ },
+        access: false, id: true, userinfo: true,
+        first_party_only: false, required_scopes: Some(vec!["email"]), allowed_clients: None,
+    },
+    ClaimMapping {
+        claim: "name", source: UserAttribute { attribute: "display_name" },
+        access: false, id: true, userinfo: true,
+        first_party_only: false, required_scopes: Some(vec!["profile"]), allowed_clients: None,
+    },
+    ClaimMapping {
+        claim: "given_name", source: UserAttribute { attribute: "first_name" },
+        access: false, id: true, userinfo: true,
+        first_party_only: false, required_scopes: Some(vec!["profile"]), allowed_clients: None,
+    },
+    ClaimMapping {
+        claim: "family_name", source: UserAttribute { attribute: "last_name" },
+        access: false, id: true, userinfo: true,
+        first_party_only: false, required_scopes: Some(vec!["profile"]), allowed_clients: None,
+    },
+    // ... `preferred_username`, `locale`, `zoneinfo`, `picture`, etc. follow the same shape under the `profile` scope ...
+    // ... `phone_number` under `phone` scope; `address` under `address` scope ...
+    //
+    // Note: `email` and `phone_number` here use `UserAttribute` against canonical fields rather than
+    // the user.attributes map. This is a synthetic source — the `UserAttribute` mapper variant in
+    // ClaimSource accepts both canonical fields and the user.attributes map; canonical fields take
+    // precedence when names collide. Implementers should expose this via a small enum
+    // discriminating canonical-source from attribute-map-source if it improves clarity.
 ];
 ```
 
@@ -315,22 +437,28 @@ Realms that define `claims.mappings:` in YAML append their list after the built-
 
 Mapper claim names are validated at config load against a three-tier policy:
 
-**Tier 1 — Forbidden (config-load rejects):** JWT / OIDC integrity, authorization-critical, and tenant-routing claims that mappers MUST NOT touch.
-- JWT: `iss`, `aud`, `exp`, `nbf`, `iat`, `jti`
-- Identity: `sub`, `tid`
-- Authorization: `permissions`, `scope`, `sid`
-- Tenant routing: `oid` — downstream apps use `oid` to partition data per organization; overriding it would create cross-tenant data-boundary bugs.
-- OIDC flow: `nonce`, `auth_time`, `acr`, `amr`
+**Tier 1 — Forbidden (config-load rejects):** JWT / OIDC integrity, authorization-critical, tenant-routing, delegation-attestation, and verification-attestation claims that mappers MUST NOT touch.
+- **JWT registered (RFC 7519):** `iss`, `aud`, `exp`, `nbf`, `iat`, `jti`
+- **Identity:** `sub`, `tid`
+- **Authorization:** `permissions`, `scope`, `sid`
+- **Tenant routing:** `oid` — downstream apps use `oid` to partition data per organization.
+- **OIDC flow:** `nonce`, `auth_time`, `acr`, `amr`, `azp` (authorized party — RFC OIDC Core §2)
+- **OIDC token-binding hashes:** `at_hash`, `c_hash`, `s_hash` — set by the issuer to bind ID tokens to access tokens / authorization codes / state; mapper-writable would let admins forge bindings.
+- **OAuth client identity:** `client_id` — the requesting client's identifier; mapping would let one client impersonate another in audit/inspection.
+- **Proof-of-possession (RFC 7800):** `cnf` — confirmation method binding the token to a key; mapper-writable would let admins fabricate sender-constrained tokens.
+- **Delegation attestation (RFC 8693, [AGENT_AUTH.md](./AGENT_AUTH.md) §3):** `act`, `actor` — the actor claim documents delegation chains for agent-on-behalf-of-user tokens. Resource servers rely on `act` for accountability and authorization. Mapper-writable would let admins fabricate delegation history. Always sourced from the actual delegation flow.
+- **Verification attestation:** `email_verified`, `phone_number_verified` — these claims attest something the auth server has verified about the user; allowing realms to remap them to constants or arbitrary attributes would let admins fabricate verification status, which has real downstream consequences (email-confirmed UIs, password-reset eligibility, MFA fallback). Always sourced from canonical user state.
 
-**Tier 2 — Overridable (mapper wins):** Informational and OIDC profile claims. Mapper output replaces default native emission. See "SDK helper caveat" above — overriding `roles` / `groups` means SDK helpers operate on the overridden shape.
+**Tier 2 — Overridable with semantic constraints (mapper wins):** Informational and OIDC profile claims. Mapper output replaces default native emission. The validator enforces type/format constraints to keep OIDC conformance intact (e.g., a mapper writing to `email` must produce a string matching email-address format; `locale` must match BCP 47; `zoneinfo` must match IANA tz names). Constraint violations are config-load errors. See "SDK helper caveat" above — overriding `roles` / `groups` means SDK helpers operate on the overridden shape.
 - Hearth informational: `roles`, `groups`
-- OIDC profile: `email`, `email_verified`, `name`, `given_name`, `family_name`, `preferred_username`, `locale`, `zoneinfo`
+- OIDC profile: `email`, `name`, `given_name`, `family_name`, `preferred_username`, `nickname`, `picture`, `website`, `gender`, `birthdate`, `locale`, `zoneinfo`, `updated_at`
+- OIDC contact: `phone_number`, `address`
 
 **Tier 3 — Custom:** Names that are neither Tier 1 nor Tier 2. Two forms permitted:
 - **Short form:** `^[a-z][a-z0-9_]*$`, ≤64 chars. Used for simple custom claims (`department`, `employee_id`).
 - **HTTPS-namespaced form:** `^https://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$` — collision-free namespacing for custom claims, e.g., `https://acme.com/department`. ≤256 chars. Matches Auth0/Okta convention. HTTP is rejected (security: namespace should be an owned HTTPS origin). URN-form (`urn:example:…`) is not supported in this phase — admins who need it can request it via a future spec; until then, use an HTTPS URL under a domain they control.
 
-**Evaluation order:** mappings evaluated in YAML-declaration order; later mapping overrides earlier at same claim name. Tier 1 claims are written last by core issuance code as defense-in-depth — any mapping that slipped past Tier 1 validation would be clobbered.
+**Evaluation order:** see "Evaluation and merge model (layered with fallback)" below for the authoritative rule. Tier 1 claims are additionally written last by core issuance code as defense-in-depth — any mapping that slipped past Tier 1 validation would be clobbered regardless of how mapper evaluation resolved.
 
 ### Claim release gates
 
@@ -338,18 +466,20 @@ Each mapping carries three optional release gates that AND-combine — **all** m
 
 - **`first_party_only: bool`** — if `true`, only emit when the client's `trust_level == FirstParty`. Third-party clients never receive this claim regardless of scope request.
 - **`required_scopes: Option<Vec<String>>`** — if `Some(list)`, the final **granted** scope set for this token (post-resolution — see note below) must include at least one scope from the list. Matches OIDC profile-claim-per-scope semantics and Keycloak's scope-attached mappers.
-- **`allowed_clients: Option<Vec<String>>`** — if `Some(list)`, `client.id` must appear in the list. Hard allowlist for sensitive claims.
+- **`allowed_clients: Option<Vec<String>>`** — if `Some(list)`, the requesting client's slug must appear in the list. The registry materializes a slug↔`ClientId` index at YAML load; gate evaluation compares the resolved `ClientId`. Slugs are realm-unique. Hard allowlist for sensitive claims.
 
 **`required_scopes` evaluates against granted scopes, not requested scopes.** After `/authorize` or `/token` scope resolution produces the final `token.scope` set (the `grantable` set from the Resolution rule above), release gates are evaluated against that set. A claim gated on `required_scopes: [admin:bundle]` does NOT emit if the client requested `admin:bundle` but the user couldn't fully satisfy it and the scope was dropped. This closes a real information-leak vector that request-time gating would have exposed.
 
-### Evaluation and merge model (layered with fallback)
+### Evaluation and merge model (layered with fallback, per-target)
 
-Claim mappings evaluate per-claim-name with gate-aware fallback — NOT simple last-wins replacement. For each target claim name `C`:
+Claim mappings evaluate per-(claim-name, token-target) tuple with gate-aware fallback — NOT per claim name. This matters because a YAML override might win for ID-token output but not for access-token output, in which case the access-token output should fall back to the default rather than being suppressed. For each target claim name `C` and each token target `T ∈ {access_token, id_token, userinfo}`:
 
-1. Collect all mappings that target `C`, in declaration order: defaults first (from `DEFAULT_CLAIM_PROFILE`), then realm YAML mappings.
+1. Collect all mappings that target `C` AND have `include_in_<T>: true`, in declaration order: defaults first (from `DEFAULT_CLAIM_PROFILE`), then realm YAML mappings.
 2. Walk the collected list in reverse order (most-recently-declared first).
-3. The first mapping whose release gates **all** pass for the current `(client, granted_scopes)` context wins — its source is evaluated and written to claim `C` for the current token / ID-token / UserInfo output (subject to the three `include_in_*` flags).
-4. If no mapping's gates pass, claim `C` is omitted entirely.
+3. The first mapping whose release gates **all** pass for the current `(client, granted_scopes)` context wins — its source is evaluated and written to claim `C` in token-target `T`.
+4. If no mapping's gates pass for this `(C, T)` pair, claim `C` is omitted from `T` (but may still appear in other targets via different winning mappings).
+
+**Why per-target.** Consider a YAML override that filters `roles` for a customer-portal client and disables `include_in_userinfo`. Under per-claim-name evaluation, the override wins for `roles` and suppresses it from UserInfo entirely — but the operator's intent was usually "filter for the access token, leave UserInfo alone." Per-(claim, target) evaluation treats UserInfo's `roles` independently, allowing the default profile to fill in if the override doesn't include UserInfo. This is also the granularity at which the consent digest tracks disclosure surface, so evaluation and digest computation use the same model.
 
 This gives admins the "per-client variant with fallback to default" pattern that plain last-wins replacement can't express. The example below shows the intended behavior:
 
@@ -364,7 +494,7 @@ claims:
         allowed_clients: [customer-portal] }                 # customer-portal gets filtered roles
 ```
 
-Under the layered model, the third entry means: for `client.id == "customer-portal"`, the `roles` claim uses `RoleSubset { prefix: "customer." }`; for every other first-party client, the `allowed_clients` gate fails and evaluation falls back to the `DEFAULT_CLAIM_PROFILE` entry for `roles` (`first_party_only: true`, `RolesFromAssignments`), which still emits because the requesting client is first-party. Third-party clients fail both mappings' gates and receive no `roles` claim. No first-party client ends up with `roles` unintentionally suppressed.
+Under the layered model, the third entry means: for the client whose `slug` resolves to the same `ClientId` as the YAML entry `slug: customer-portal`, the `roles` claim uses `RoleSubset { prefix: "customer." }`; for every other first-party client, the `allowed_clients` gate fails and evaluation falls back to the `DEFAULT_CLAIM_PROFILE` entry for `roles` (`first_party_only: true`, `RolesFromAssignments`), which still emits because the requesting client is first-party. Third-party clients fail both mappings' gates and receive no `roles` claim. No first-party client ends up with `roles` unintentionally suppressed.
 
 **Safe defaults for Tier 3 custom claims.** When a custom mapper (Tier 3 claim name) is declared in YAML without specifying release gates, the validator injects `first_party_only: true` as the default. Admins who want to release custom claims to third-party clients must set `first_party_only: false` explicitly (and should gate with `required_scopes` or `allowed_clients`). Over-disclosure is opt-in, not default.
 
@@ -376,7 +506,9 @@ Admins who explicitly override `roles` or `groups` in YAML control their own gat
 
 ```rust
 pub struct OauthClient {
-    // ... existing fields ...
+    pub id: ClientId,                        // existing — UUID, persisted, stable across renames
+    pub slug: String,                        // NEW — realm-unique human-readable handle used by YAML refs and `allowed_clients` gates
+    // ... other existing fields ...
     pub trust_level: ClientTrustLevel,
     pub declared_scopes: Vec<String>,        // permission names, bundle names, or OIDC standard scopes
     pub consent_spans_orgs: bool,            // opt-in: realm-level consent row covers all org contexts
@@ -385,15 +517,17 @@ pub struct OauthClient {
 pub enum ClientTrustLevel { FirstParty, ThirdParty }
 ```
 
+`slug` is unique per realm; the registry maintains an `Arc<HashMap<(RealmId, String), ClientId>>` for slug→ClientId resolution at YAML load and gate evaluation. ThirdParty clients additionally validate at config load that `declared_scopes` contains no permission-form (`.`-separated) strings — third-party scope declarations must be bundle names or OIDC standards only.
+
 `consent_spans_orgs` is a client capability flag, **not** a scope. Default: `false` (strict per-org consent). When `true`, a realm-level consent row (`org_key = "_realm"`) authorizes the client in any of the user's org contexts. Intended for first-party dashboards or utilities that legitimately operate across all of a user's organizations. Realms may constrain which clients are allowed to set this via admin-policy tooling.
 
 ### Storage keys
 
 YAML-authored entities do **not** get storage keys — they live in the in-memory registry. Only runtime data gets storage keys:
 
-- `rba:user_perm:{realm}:{user}:{perm}` — user extras (primary)
-- `rba:user_perm:by_perm:{realm}:{perm}:{user}` — reverse index (who has this extra)
-- `oauth:consent:{realm}:{user}:{client}:{org_key}` — stored consent + scope digest, keyed by organization context (`org_key` = org id or `"_realm"` for realm-level consent; see Consent Storage section)
+- `rba:user_perm:{realm}:{user}:{scope_key}:{perm}` — user extras (primary). `scope_key` = `_realm` for realm-scoped grants, or `org_id` for org-scoped grants. The same permission CAN be granted realm-wide AND in N specific orgs without overwriting; each scope-distinct grant is its own row.
+- `rba:user_perm:by_perm:{realm}:{perm}:{scope_key}:{user}` — reverse index (who has this extra at this scope)
+- `oauth:consent:{realm}:{user}:{client}:{org_key}:{resource_key}` — stored consent + scope digest, keyed by organization context AND RFC 8707 resource indicator. `org_key` = org id or `"_realm"`; `resource_key` = 16-byte hex of `sha256(resource_uri)` or `"_default"` for tokens bound to Hearth itself. Per-resource keying composes with the MCP / protected-resource model in [AGENT_AUTH.md](./AGENT_AUTH.md). See Consent Storage section.
 
 ## Registry and Reload
 
@@ -423,10 +557,11 @@ Runtime storage (user extras, role assignments, stored consents, active refresh 
 Hearth organizations are B2B customer boundaries within a realm. Different orgs represent different customers' data. A consent granted while Alice is acting in Acme Corp should **not** implicitly authorize the same client to access her data in Globex Inc. Consent is therefore keyed on the organization context in which it was granted.
 
 ```
-oauth:consent:{realm}:{user}:{client}:{org_key} → {
-  scopes: Vec<String>,           // as requested by the client at consent time
-  scope_digest: [u8; 32],        // sha256(sort(unique(resolved_permissions)))
+oauth:consent:{realm}:{user}:{client}:{org_key}:{resource_key} → {
+  scopes: Vec<String>,                  // as requested by the client at consent time
+  scope_digest: [u8; 32],               // see Invalidation section
   context_oid: Option<OrganizationId>,  // the org the user was in at consent time
+  resource: Option<Uri>,                // RFC 8707 resource indicator at consent time, or None for default audience
   granted_at: Timestamp,
   granted_by: UserId,
 }
@@ -434,22 +569,49 @@ oauth:consent:{realm}:{user}:{client}:{org_key} → {
 where org_key =
   "_realm"         if context_oid = None    (consent granted at realm level)
   org_id.to_string() if context_oid = Some(id)
+
+where resource_key =
+  "_default"       if resource = None       (token bound to Hearth itself, default audience per AGENT_AUTH §2.4)
+  sha256(resource_uri)[..16] hex            (16-byte hex of the canonical resource URI; truncation OK because realm/client scope already isolates)
 ```
 
-**Consent lookup rule at `/authorize` and `/token refresh_token`:**
-1. Look up consent at `(realm, user, client, org_key)` where `org_key` derives from the current token context's `oid`.
-2. If the user is in an org context (`oid = Some(X)`) and no matching row exists, fall back to the realm-level consent row (`org_key = "_realm"`) **only if** the client's YAML declares `consent_spans_orgs: true` (see OAuth client additions). Default behavior is strict per-org.
-3. On miss, trigger the consent ceremony (first-party: skip consent but still materialize a row; third-party: interactive consent).
+**Why resource is part of the key.** Per [AGENT_AUTH.md](./AGENT_AUTH.md) §2.4, MCP and other protected-resource clients pass an RFC 8707 `resource` parameter at `/authorize` and `/token`, producing access tokens with `aud` set to that resource URI. Each protected resource is a distinct security boundary — consent to call MCP tool server A is not consent to call MCP tool server B, even from the same client. Keying consent on `resource_key` keeps the boundary intact. Clients that don't pass a `resource` parameter use `_default`, which corresponds to Hearth itself as audience.
+
+**FirstParty clients bypass consent storage entirely.** No consent row is materialized, no digest is computed, no digest validation runs at `/authorize` or `/token refresh_token`. Refresh tokens for FirstParty clients re-resolve effective permissions live against the registry without comparing to a stored digest — drift in the YAML registry is reflected immediately on next refresh (matching the "first-party apps share the realm config lifecycle" trust model). Refresh failure for a FirstParty token never returns `consent_required`; if the user lost a permission, the token still issues with the narrower set (per the "User loses a permission" row in the Refresh-token-drift table below).
+
+**Consent lookup rule at `/authorize` and `/token refresh_token` for ThirdParty clients:**
+1. Look up consent at `(realm, user, client, org_key, resource_key)` where both keys derive from the current request context (`oid` and RFC 8707 `resource` parameter).
+2. If the user is in an org context (`oid = Some(X)`) and no matching row exists at that `org_key`, fall back to the realm-level consent row (`org_key = "_realm"`) **only if** the client's YAML declares `consent_spans_orgs: true`. Default behavior is strict per-org.
+3. `resource_key` does NOT have a fallback: each protected resource is its own consent boundary. If `resource_key` doesn't match, trigger consent ceremony for the new resource.
+4. On miss, trigger the consent ceremony (interactive).
 
 **Rationale:** Keeping consent strict-per-org preserves the org-as-data-boundary invariant. A client that legitimately spans orgs (e.g., a user-wide dashboard) opts in via `consent_spans_orgs` on its YAML definition, which the admin surface must explicitly allow per realm policy. Without opt-in, Alice must re-consent when switching orgs — the safer default for B2B tenants. This is a client capability flag, not a scope — it does not appear in `declared_scopes` and does not participate in scope resolution.
 
 ### Invalidation (digest-based, lazy)
 
-At grant time, Hearth computes `scope_digest = sha256(sort(unique(resolved_permissions(scopes))))` — resolving each scope string to its permission set via the classification rules above. OIDC standard scopes contribute a fixed sentinel so changes to OIDC handling invalidate correctly.
+Consent is about **disclosure surface**, not just authorization. Two artifacts can change without the requested-scope strings changing: bundle permission contents (covered by the permission set) AND the set of claims that will actually be released to this client given the realm's mappers + release gates. Both must contribute to the digest.
 
-On every subsequent `/authorize` or `/token refresh_token`, Hearth re-resolves and re-hashes live against the current registry. Mismatch → treat as no consent → trigger re-consent ceremony (or `invalid_grant error_description=consent_required` on refresh). Match → consent stands.
+At grant time, Hearth computes:
 
-This is the SSH `known_hosts` pattern applied to OAuth consent: trust was granted to a specific artifact, not a name. Self-healing, precise, no eager sweep at YAML reload.
+```
+scope_digest = sha256(
+    sort(unique(resolved_permissions(scopes))),     // authorization surface
+    "||",
+    sort(effective_emitted_claim_targets(client, scopes))  // disclosure surface, per token target
+)
+```
+
+`effective_emitted_claim_targets(client, scopes)` is the set of `(claim_name, token_target)` tuples — where `token_target ∈ {access_token, id_token, userinfo}` — that the realm's claim profile would emit to *this client* given its `trust_level` and *these granted scopes*, evaluated under the layered gate-aware model. Each (claim, target) pair is a distinct disclosure surface element: a claim that moves from ID-token-only to access-token-and-userinfo widens the disclosure surface even if the claim name set is unchanged, and the digest catches it.
+
+Example representation: `{("email", "id_token"), ("email", "userinfo"), ("roles", "access_token"), ("department", "id_token")}` serialized as sorted `claim@target` strings before hashing.
+
+The digest covers claim *names and targets*, not their values or the mapper internals — what the user consented to is "this client will receive these claims via these surfaces." OIDC standard scopes contribute fixed sentinels so OIDC-handling changes invalidate correctly.
+
+On every subsequent `/authorize` or `/token refresh_token`, Hearth re-resolves both surfaces live against the current registry and re-hashes. Mismatch → treat as no consent → trigger re-consent ceremony (or `invalid_grant error_description=consent_required` on refresh). Match → consent stands.
+
+**Why claim-name set, not values?** Values change every token (timestamps, dynamic attrs); we'd thrash. Names are the stable disclosure-surface contract: "this app will receive your `email`, `department`, and `roles`." Adding a new mapper that emits `salary` to this client changes the name set; the digest catches it; user re-consents. Removing a mapper also invalidates — safer than silently shrinking what the user thought they agreed to.
+
+This is the SSH `known_hosts` pattern extended to disclosure: trust was granted to a specific authorization-and-disclosure artifact, not just a permission name. Self-healing, precise, no eager sweep at YAML reload.
 
 ### Refresh token behavior under drift
 
@@ -490,12 +652,24 @@ All templates under `templates/ui/admin/rbac/` + `templates/ui/admin/realms/clai
   - Attributes: key/value editor for `User.attributes` (CRUD — runtime data)
   - "Preview claims" button → debug page prefilled
   - Connected applications list with Revoke button per row (admin-side revocation)
-- **Org member row (`organizations/_member_row.html`)** — replace hardcoded Member/Admin/Owner dropdown with a role typeahead filtered to `scope_kind ∈ {Organization, Any}`. Seed the three hardcoded names as `scope_kind: organization` defaults in a `hearth-defaults.yaml` merged under user config, so existing org memberships keep working.
+- **Org member row (`organizations/_member_row.html`)** — replace hardcoded Member/Admin/Owner dropdown with a role typeahead filtered to `scope_kind ∈ {Organization, Any}`. See "Reconciliation with `OrganizationRole`" below for how the existing enum maps into the new model.
+
+### Reconciliation with `OrganizationRole`
+
+The current identity layer has a first-class `OrganizationRole { Member, Admin, Owner }` enum (`src/identity/types.rs:704`) attached to organization memberships. This spec does NOT delete that enum — doing so would invalidate every existing org membership row in shipped Hearth. Instead, the enum becomes the **canonical membership-tier shortcut** and maps deterministically to seeded RBAC roles:
+
+- A `hearth-defaults.yaml` ships three `scope_kind: organization` RBAC roles named `org_member`, `org_admin`, `org_owner` with empty permission lists by default. Realms can extend these in their own YAML by adding permissions to the same names.
+- An organization membership row continues to carry an `OrganizationRole` enum value as its primary tier marker. At token-issue time, the enum value is mapped 1:1 to the seeded RBAC role of the corresponding name, and the role's permissions flow into the resolution rule like any other org-scoped role assignment.
+- The admin UI's org-member row presents the typeahead with the three seeded names pre-listed (so the membership UX is unchanged for the common case), but admins can also assign additional org-scoped RBAC roles to a member alongside the canonical tier.
+- `OrganizationRole` enum values are NOT renameable (they're shipped Rust types); the seeded RBAC role names matching them are NOT renameable in `hearth-defaults.yaml` (they're the bridge); but realm YAML can add MORE org-scoped roles freely.
+- API surface: existing membership APIs keep their `OrganizationRole` parameter; new APIs accepting arbitrary RBAC role names operate on the same membership row's `additional_roles: Vec<RoleName>` field.
+
+This keeps shipped contracts intact while letting admins extend org authz with full RBAC. Phase 1 implements the bridge; the enum stays in place indefinitely as a stable shortcut.
 - **Application edit/detail** — read-only view of `trust_level` and `declared_scopes`. Effective permission union shown as a helper; scope picker is read-only (YAML-authored). The UI includes a "Copy YAML snippet" affordance for admins who want to extend the client in YAML.
 - **Realm detail** — new "Claims" sub-page at `/ui/admin/realms/:id/claims`:
   - Read-only view of the realm's merged claim profile (defaults + YAML overrides)
-  - Live "Example token" rendered against an admin-chosen sample user
-  - Mapper list shown with source, target claim, access/id flags
+  - Live "Example token" rendered against an admin-chosen sample user (with client trust-level and granted-scope inputs so admins can preview gate behavior for first-party vs third-party clients)
+  - Mapper list showing source, target claim, include-in access-token / ID-token / UserInfo flags, and release gates (`first_party_only`, `required_scopes`, `allowed_clients`)
 
 ### New account-settings surface (end-user self-service)
 
@@ -560,14 +734,14 @@ These call `DELETE /v1/me/applications/{clientId}` for self-service revocation.
 
 Mapping to Hearth's eight layers (per `docs/specs/TESTING.md`):
 
-1. **Unit** — type round-trips, naming grammar validator (boundary cases: single-word, mixed separators, whitespace, URL-reserved chars, hyphens, mixed case), tier enforcement (Tier 1 rejection, Tier 2 override, Tier 3 format), resolution math (union, atomic grant, empty cases, scope-match for realm/org), merge semantics for claim profile defaults.
-2. **Integration** — storage CRUD for user extras, cascade behavior, user extras flowing through `resolve_effective`, scope filtering at each grant type (password, auth code, client credentials, refresh, device), YAML-reload swap via `ArcSwap`.
-3. **Property** — `resolve_effective` idempotence, scope-match determinism, mapper output determinism, digest stability under permutation.
-4. **Fuzz** — YAML deserialization, permission/scope name parser, claim profile JSON.
-5. **Adversarial** — privilege escalation attempts (requesting undeclared scope, consenting to permission user lacks, Tier 1 claim override via mapper), scope-deletion-with-active-refresh-tokens, reserved-claim-name collision, name collision across namespaces.
-6. **Simulation** — admin rewrites YAML while tokens are being issued (ArcSwap invalidation), scope definition deleted while refresh in flight, dangling-reference orphan skip.
-7. **Conformance** — OAuth 2.0 RFC 6749 scope semantics (scope narrower on grant than request, refresh scope ⊆ original), OIDC Core scope claim shape, standard OIDC scope handling.
-8. **Benchmarks** — `issue_tokens` with 40-permission user (target: same as baseline), `validate_token` (must be byte-identical perf since hot path is unchanged), registry lookup cached via `ArcSwap`.
+1. **Unit** — type round-trips, naming grammar validator (boundary cases: single-word, mixed separators, whitespace, URL-reserved chars, hyphens, mixed case), tier enforcement (Tier 1 rejection, Tier 2 override, Tier 3 short-form and HTTPS-namespaced), resolution math (union, atomic full-satisfiability grant, empty cases, scope-match for realm/org), merge/layered-fallback semantics for claim profile (YAML-override gate failure falls back to default; default also failing → claim omitted), release-gate matrix (each of `first_party_only` / `required_scopes` / `allowed_clients` individually and AND-combined, across access-token / ID-token / UserInfo outputs), `required_scopes` evaluated against granted-not-requested.
+2. **Integration** — storage CRUD for user extras, cascade behavior, user extras flowing through `resolve_effective`, scope filtering at each grant type (password, auth code, client credentials, refresh, device), YAML-reload swap via `ArcSwap`, org-keyed consent lookup with and without `consent_spans_orgs` fallback, org-context switch forces re-consent by default.
+3. **Property** — `resolve_effective` idempotence, scope-match determinism, mapper output determinism, digest stability under permutation, layered-fallback determinism under mapping reordering.
+4. **Fuzz** — YAML deserialization, permission/scope name parser, claim profile JSON, HTTPS-namespaced claim name parser.
+5. **Adversarial** — privilege escalation attempts (requesting undeclared scope, consenting to permission user lacks, Tier 1 claim override via mapper), scope-deletion-with-active-refresh-tokens, reserved-claim-name collision, name collision across namespaces, **raw-request scope leak** (gate a sensitive claim on `required_scopes: [admin:bundle]`, have the client request it but lack permissions — verify the claim does NOT emit), **cross-org consent reuse** (consent in org A must not authorize in org B without `consent_spans_orgs`), third-party client receiving `roles`/`groups` via default profile (must NOT emit).
+6. **Simulation** — admin rewrites YAML while tokens are being issued (ArcSwap invalidation), scope definition deleted while refresh in flight, dangling-reference orphan skip, claim profile toggled to tighten gates mid-flight (in-flight tokens unaffected, next issuance honors tightening).
+7. **Conformance** — OAuth 2.0 RFC 6749 scope semantics (scope narrower on grant than request, refresh scope ⊆ original), OIDC Core scope claim shape, standard OIDC scope handling, UserInfo endpoint claim shape matches ID token shape under mapper overrides.
+8. **Benchmarks** — `issue_tokens` with 40-permission user (target: same as baseline), `validate_token` (must be byte-identical perf since hot path is unchanged), registry lookup cached via `ArcSwap`, layered-fallback evaluation cost (target: <1µs per claim for realistic mapping counts).
 
 ## Critical Files
 
@@ -579,7 +753,7 @@ Mapping to Hearth's eight layers (per `docs/specs/TESTING.md`):
 - `src/identity/claims_config.rs` — **new** — `ClaimSource`, `ClaimMapping`, `DEFAULT_CLAIM_PROFILE`, merge logic.
 - `src/identity/engine.rs:2267-2309` — `issue_tokens_with_context`, digest re-check on refresh.
 - `src/identity/tokens.rs:70-130` — `TokenClaims` with `flatten custom` + optional fields.
-- `src/identity/types.rs` — `User.attributes`, `OauthClient.trust_level` + `declared_scopes`.
+- `src/identity/types.rs` — `User.attributes`, `OauthClient.trust_level` + `declared_scopes` + `consent_spans_orgs`.
 - `src/protocol/web/admin.rs` — read-only handlers for permissions/roles/scopes, CRUD for user extras, groups, consent revocation.
 - `src/protocol/web/account.rs` — **new** — user-facing account-settings handlers (connected applications).
 - `templates/ui/admin/rbac/**` — read-only templates for YAML-managed entities; CRUD templates for groups and user extras.
@@ -655,7 +829,7 @@ Three-tier classification enforced at config load: Tier 1 (forbidden — JWT/aut
 
 `Role` gains `scope_kind: RoleScopeKind { Realm, Organization, Any }`. Assignment-time validation refuses realm-kind roles at org scope and vice versa. `Any` accepts either. Admin UI typeahead filters by scope kind.
 
-**Rationale:** Prevents semantic drift between "realm-level admin role" and "org-level member role." Matches how Hearth's existing org Member/Admin/Owner hardcoded tiers behave, now formalized. Seeds those three names as `scope_kind: organization` defaults for upgrade compatibility.
+**Rationale:** Prevents semantic drift between "realm-level admin role" and "org-level member role." The existing `OrganizationRole { Member, Admin, Owner }` enum stays as the canonical membership-tier shortcut and maps to seeded `org_member` / `org_admin` / `org_owner` RBAC roles in `hearth-defaults.yaml`. Existing memberships continue to work without migration; admins can layer additional org-scoped RBAC roles on top via the new `additional_roles` field. See "Reconciliation with `OrganizationRole`" in the Admin UI section for the full bridge.
 
 ### User attributes
 
@@ -669,18 +843,18 @@ Unchanged from original spec.
 
 | trust_level | Consent required | No-scope token shape | Scope request behavior |
 |---|---|---|---|
-| FirstParty | No | Full effective permissions | Narrows to scope ∩ effective; validates scope ∈ declared_scopes |
-| ThirdParty | Yes (first time per scope set, digest-validated afterwards) | Rejected with `invalid_scope` | Narrows to scope ∩ effective; validates scope ∈ declared_scopes; consent ceremony if not cached |
+| FirstParty | No | Full effective permissions | Atomic full-satisfiability grant per Resolution rule. **Silent partial grant permitted** — `token.scope` may be a strict subset of `requested_scopes` (RFC 6749 §3.3). Validates requested ⊆ `declared_scopes`; `invalid_scope` if `grantable` empty. |
+| ThirdParty | Yes (first time per scope set, digest-validated afterwards) | Rejected with `invalid_scope` | Atomic full-satisfiability grant per Resolution rule. **Fail-closed:** if any non-OIDC requested scope is ungrantable, the entire request fails with `invalid_scope` (no partial grant). OIDC standard scopes exempt. Consent ceremony runs if no cached consent matches. |
 
-### Consent invalidation — digest-based, lazy
+### Consent invalidation — digest-based, lazy, disclosure-aware
 
-Consent rows store `scope_digest = sha256(sort(unique(resolved_permissions)))`. On every `/authorize` or `/token refresh_token`, re-resolve and re-hash live; mismatch triggers re-consent. No eager sweep on YAML reload.
+Consent rows store `scope_digest` computed over BOTH the authorization surface (resolved permissions for the consented scopes) AND the disclosure surface (the set of `(claim_name, token_target)` pairs the realm's claim profile would emit to this client given its trust level and granted scopes). See "Invalidation" subsection of Consent Storage for the exact formula. On every `/authorize` or `/token refresh_token`, re-resolve both surfaces and re-hash live; mismatch triggers re-consent. No eager sweep on YAML reload.
 
-**Rationale:** SSH `known_hosts` pattern — trust was granted to a specific artifact, not a name. Self-healing, precise, no operational friction on YAML edits.
+**Rationale:** SSH `known_hosts` pattern extended to disclosure — trust was granted to a specific (authorization, disclosure) artifact, not just a permission name. Self-healing, precise, no operational friction on YAML edits. Adding a new mapper that emits to this client invalidates consent automatically; moving a claim from ID-token-only to access-token-and-userinfo also invalidates.
 
 ### User extras storage — first-class relation
 
-Dedicated `rba:user_perm:{realm}:{user}:{perm}` storage, separate trait methods (`grant_user_permission`, `revoke_user_permission`, `list_user_permissions`), distinct UI affordance. Reuses existing `Scope { Realm | Org(id) }` enum. Matched against token context with the same rule as role assignments.
+Dedicated `rba:user_perm:{realm}:{user}:{scope_key}:{perm}` storage where `scope_key` is `_realm` for realm-scoped grants or the org id for org-scoped grants. Reverse index `rba:user_perm:by_perm:{realm}:{perm}:{scope_key}:{user}`. Separate trait methods (`grant_user_permission`, `revoke_user_permission`, `list_user_permissions`), distinct UI affordance. Reuses existing `Scope { Realm | Org(id) }` enum. Matched against token context with the same rule as role assignments. The same permission CAN be granted realm-wide AND in N specific orgs simultaneously without overwriting; each scope-distinct grant is its own row.
 
 ### User extras scope matching
 
@@ -739,7 +913,7 @@ Scope:
 - Debug page enhancement: new "Token preview" tab
 - Audit events: none new (YAML reload is not an audit-worthy runtime event)
 
-Depends on Phase 1 (mappers can reference registered permissions via `RoleSubset` and `EffectivePermissions` sources). Ends in a state where realm admins can shape token output declaratively.
+Depends on Phase 1 (mappers can reference registered permissions via `RoleSubset` and `EffectivePermissions` sources). The release-gate framework (`first_party_only`, `required_scopes`, `allowed_clients`) and layered-fallback evaluation model land in this phase too, even though `required_scopes` only becomes meaningful once Phase 3 produces granted scope sets. Ends in a state where realm admins can shape token output declaratively with safe-by-default exposure for any future third-party clients.
 
 ### Phase 3 — OAuth scopes + client trust_level + consent
 
@@ -759,4 +933,4 @@ Scope:
 - Audit events: `ClientConsentGranted/Revoked`, `ConsentRequiredOnRefresh`
 - Proto: no new CRUD RPCs for scopes (YAML-only); consent-revocation RPC
 
-Depends on Phase 1 (scopes reference registered permissions) and Phase 2 (claim-profile toggles interact with scope filtering). Ends in a state where Hearth can serve as a full OAuth authorization server with consent-based third-party integrations and end-user consent management.
+Depends on Phase 1 (scopes reference registered permissions) and Phase 2 (the claim-profile mapper model supplies the `required_scopes` release gate that Phase 3's scope-resolution output feeds into). Ends in a state where Hearth can serve as a full OAuth authorization server with consent-based third-party integrations and end-user consent management.
