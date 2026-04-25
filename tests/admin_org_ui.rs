@@ -109,6 +109,7 @@ fn build_rig() -> Rig {
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate admin");

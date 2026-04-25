@@ -62,6 +62,7 @@ async fn setup_oidc_env() -> (
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -91,6 +92,7 @@ fn authorize_and_exchange(
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce,
+                resource: None,
             },
         )
         .expect("authorize");

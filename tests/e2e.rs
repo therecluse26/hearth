@@ -62,6 +62,7 @@ async fn developer_onramp_realm_app_oidc_login() {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -95,6 +96,7 @@ async fn developer_onramp_realm_app_oidc_login() {
                 code_challenge: Some(code_challenge),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize");
@@ -277,6 +279,7 @@ async fn auth_plus_rbac_permission_grant_and_check() {
                 description: None,
                 permissions: vec![doc_perm.clone()],
                 parent_roles: Vec::new(),
+                ..Default::default()
             },
         )
         .expect("create role");

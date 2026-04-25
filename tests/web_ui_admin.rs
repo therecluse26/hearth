@@ -120,6 +120,7 @@ fn build_rig() -> TestRig {
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate admin");
@@ -178,6 +179,7 @@ fn build_rig() -> TestRig {
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate non-admin");
@@ -797,6 +799,7 @@ async fn admin_app_detail_renders() {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register_client");

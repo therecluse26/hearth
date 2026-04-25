@@ -1058,6 +1058,7 @@ mod tests {
                     description: Some("read docs".to_string()),
                     permissions: vec![perm("docs.view")],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("create");
@@ -1085,6 +1086,7 @@ mod tests {
                     description: None,
                     permissions: vec![],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("first");
@@ -1095,6 +1097,7 @@ mod tests {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![],
+                ..Default::default()
             },
         );
         match result {
@@ -1105,19 +1108,22 @@ mod tests {
 
     #[test]
     fn reserved_namespace_rejected_for_operator_role() {
+        // Per AUTHZ_EXPANSION.md the global namespace is `system.*` —
+        // operator-created roles may not include it directly.
         let (engine, realm) = mk_engine();
         let result = engine.create_role(
             &realm,
             &CreateRoleRequest {
                 name: "evil".to_string(),
                 description: None,
-                permissions: vec![perm("hearth.admin")],
+                permissions: vec![perm("system.admin")],
                 parent_roles: vec![],
+                ..Default::default()
             },
         );
         match result {
             Err(RbacError::ReservedNamespace { permission }) => {
-                assert_eq!(permission, "hearth.admin");
+                assert_eq!(permission, "system.admin");
             }
             other => panic!("expected ReservedNamespace, got {other:?}"),
         }
@@ -1224,6 +1230,7 @@ mod tests {
                     description: None,
                     permissions: vec![],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("a");
@@ -1235,6 +1242,7 @@ mod tests {
                     description: None,
                     permissions: vec![],
                     parent_roles: vec![a.id.clone()],
+                    ..Default::default()
                 },
             )
             .expect("b with parent a");
@@ -1267,6 +1275,7 @@ mod tests {
                     description: None,
                     permissions: vec![perm("docs.view")],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("r");
@@ -1303,6 +1312,7 @@ mod tests {
                     description: None,
                     permissions: vec![perm("docs.view"), perm("docs.edit")],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("r1");
@@ -1344,6 +1354,7 @@ mod tests {
                     description: None,
                     permissions: vec![perm("a.only")],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("r");
@@ -1429,6 +1440,7 @@ mod tests {
                     description: None,
                     permissions: vec![],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("r");
@@ -1463,6 +1475,7 @@ mod tests {
                     description: None,
                     permissions: vec![],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("r");
@@ -1500,6 +1513,7 @@ mod tests {
                     description: None,
                     permissions: vec![],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("r");

@@ -120,6 +120,7 @@ fn seed_realm(identity: &EmbeddedIdentityEngine, authz: &EmbeddedRbacEngine) -> 
                     description: None,
                     permissions: Vec::new(),
                     parent_roles: Vec::new(),
+                    ..Default::default()
                 },
             )
             .expect("create role");

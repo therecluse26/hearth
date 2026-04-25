@@ -2,7 +2,7 @@
 //!
 //! * Browser-facing `GET /ui/oauth/authorize` entry point
 //! * `GET|POST /ui/oauth/consent` interstitial
-//! * Self-service consent listing at `/ui/account/consents`
+//! * Self-service consent listing at `/ui/account/applications`
 //! * Admin consent visibility under `/ui/admin/users/{id}/consents`
 //! * REST/JSON `/oauth/consents` and `/admin/users/{id}/consents`
 //! * RFC 6749 §4.1.2.1 error redirect compliance
@@ -119,6 +119,7 @@ fn build_rig() -> Rig {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: Some("https://app.example.com/logo.png".to_string()),
+                ..Default::default()
             },
         )
         .expect("register untrusted");
@@ -133,6 +134,10 @@ fn build_rig() -> Rig {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: false,
                 client_logo_url: None,
+                // Per AUTHZ_EXPANSION.md the consent gate is driven by
+                // `trust_level`. FirstParty bypasses the consent ceremony.
+                trust_level: hearth::identity::oidc::ClientTrustLevel::FirstParty,
+                ..Default::default()
             },
         )
         .expect("register trusted");
@@ -201,6 +206,7 @@ fn seed_active_user(
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate");
@@ -1082,7 +1088,7 @@ async fn list_consents_returns_only_current_user_consents() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/account/consents")
+                .uri("/ui/account/applications")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .expect("req"),
@@ -1125,7 +1131,7 @@ async fn self_revoke_consent_removes_record_and_reprompts_next_authorize() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/account/consents/{client_id_s}/revoke"))
+                .uri(format!("/ui/account/applications/{client_id_s}/revoke"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1136,7 +1142,7 @@ async fn self_revoke_consent_removes_record_and_reprompts_next_authorize() {
     assert!(resp.status().is_redirection());
     assert_eq!(
         location_header(&resp).as_deref(),
-        Some("/ui/account/consents")
+        Some("/ui/account/applications")
     );
 
     // Next authorize now re-prompts.
@@ -1176,7 +1182,7 @@ async fn self_revoke_consent_emits_audit_with_via_self() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/account/consents/{client_id_s}/revoke"))
+                .uri(format!("/ui/account/applications/{client_id_s}/revoke"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1213,7 +1219,7 @@ async fn self_revoke_nonexistent_consent_returns_404() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/account/consents/{client_id_s}/revoke"))
+                .uri(format!("/ui/account/applications/{client_id_s}/revoke"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1251,7 +1257,7 @@ async fn self_revoke_all_consents() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ui/account/consents/revoke-all")
+                .uri("/ui/account/applications/revoke-all")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1333,6 +1339,7 @@ fn build_admin_rig() -> AdminRig {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -1372,6 +1379,7 @@ fn build_admin_rig() -> AdminRig {
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate");
@@ -1572,6 +1580,7 @@ async fn toggling_require_consent_via_update_client_reinstates_prompt() {
                 grant_types: None,
                 require_consent: Some(true),
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("update");

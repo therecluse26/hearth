@@ -135,6 +135,7 @@ async fn assignment_crud_happy_path() {
                     description: None,
                     permissions: vec![Permission::new("docs.view").expect("valid")],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("role");
@@ -200,6 +201,7 @@ async fn invalid_org_id_returns_400() {
                     description: None,
                     permissions: vec![],
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("role");

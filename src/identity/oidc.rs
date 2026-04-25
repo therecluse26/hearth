@@ -101,7 +101,12 @@ impl Default for RegisterClientRequest {
             require_consent: true,
             client_logo_url: None,
             slug: None,
-            trust_level: ClientTrustLevel::FirstParty,
+            // Per AUTHZ_EXPANSION.md: DCR-registered clients default to
+            // ThirdParty trust. Managed (YAML) clients should set trust_level
+            // explicitly. Choosing ThirdParty here preserves the existing
+            // "consent always required" behavior for any caller that doesn't
+            // override the field.
+            trust_level: ClientTrustLevel::ThirdParty,
             declared_scopes: Vec::new(),
             consent_spans_orgs: false,
         }

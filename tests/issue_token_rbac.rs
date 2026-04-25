@@ -63,6 +63,7 @@ async fn populates_roles_groups_permissions() {
                 description: None,
                 permissions: perms(&["docs.view", "docs.edit"]),
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("role");

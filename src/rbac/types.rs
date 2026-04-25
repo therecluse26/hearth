@@ -199,6 +199,12 @@ pub enum RoleScopeKind {
     Any,
 }
 
+impl Default for RoleScopeKind {
+    fn default() -> Self {
+        Self::Realm
+    }
+}
+
 /// A named set of permissions with optional parent-role composition edges.
 ///
 /// Effective permissions are the union of `permissions` and the transitive
@@ -366,7 +372,7 @@ pub struct UserPermissionGrant {
 // ---------------------------------------------------------------------------
 
 /// Input for `create_role`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateRoleRequest {
     /// Role name, unique per realm.
     pub name: String,
@@ -506,9 +512,17 @@ mod tests {
 
     // ===== Permission grammar (§ 2.5) =====
 
+    // Per AUTHZ_EXPANSION.md the permission grammar is
+    // `^[A-Za-z0-9_\-]+(\.[A-Za-z0-9_\-]+)+$` — at least one dot required,
+    // case-insensitive, leading digits / underscores / hyphens permitted.
+    // Single-word names are reserved for IETF OIDC scopes.
+
     #[test]
-    fn permission_accepts_single_segment() {
-        assert!(Permission::new("docs").is_ok());
+    fn permission_rejects_single_segment() {
+        assert!(
+            Permission::new("docs").is_err(),
+            "single-segment names belong to the OIDC scope namespace"
+        );
     }
 
     #[test]
@@ -530,21 +544,31 @@ mod tests {
     }
 
     #[test]
-    fn permission_rejects_uppercase() {
-        assert!(Permission::new("Docs.edit").is_err());
-        assert!(Permission::new("docs.Edit").is_err());
+    fn permission_accepts_mixed_case() {
+        // Per AUTHZ_EXPANSION.md the grammar is case-insensitive.
+        assert!(Permission::new("Docs.edit").is_ok());
+        assert!(Permission::new("docs.Edit").is_ok());
     }
 
     #[test]
-    fn permission_rejects_leading_digit() {
-        assert!(Permission::new("1docs").is_err());
-        assert!(Permission::new("docs.1bad").is_err());
+    fn permission_accepts_leading_digit() {
+        // Grammar permits any ASCII alnum/underscore/hyphen at any position.
+        assert!(Permission::new("1docs.x").is_ok());
+        assert!(Permission::new("docs.1bad").is_ok());
     }
 
     #[test]
-    fn permission_rejects_leading_underscore() {
-        assert!(Permission::new("_docs").is_err());
-        assert!(Permission::new("docs._bad").is_err());
+    fn permission_accepts_leading_underscore() {
+        // Same grammar relaxation as above.
+        assert!(Permission::new("_docs.x").is_ok());
+        assert!(Permission::new("docs._bad").is_ok());
+    }
+
+    #[test]
+    fn permission_accepts_hyphen() {
+        // Hyphens are explicitly part of the AUTHZ_EXPANSION grammar.
+        assert!(Permission::new("docs-edit.read").is_ok());
+        assert!(Permission::new("docs.edit-self").is_ok());
     }
 
     #[test]
@@ -571,20 +595,22 @@ mod tests {
 
     #[test]
     fn permission_accepts_exactly_max_length() {
-        // 128 chars total, all lowercase letters.
-        let ok = "a".repeat(MAX_PERMISSION_LENGTH);
+        // 128 chars total. Must contain a `.` per the AUTHZ_EXPANSION grammar.
+        // Use 63 'a's, a single '.', then 64 'b's = 128 chars.
+        let ok = format!("{}.{}", "a".repeat(63), "b".repeat(64));
         assert_eq!(ok.len(), MAX_PERMISSION_LENGTH);
         assert!(Permission::new(ok).is_ok());
     }
 
     #[test]
-    fn permission_is_reserved_detects_hearth_prefix() {
-        let p = Permission::new("hearth.admin").expect("valid");
+    fn permission_is_reserved_detects_system_prefix() {
+        // Per AUTHZ_EXPANSION.md the global namespace prefix is `system.*`.
+        let p = Permission::new("system.admin").expect("valid");
         assert!(p.is_reserved());
         let q = Permission::new("docs.edit").expect("valid");
         assert!(!q.is_reserved());
-        // Segment-boundary: `hearthadmin` must NOT be reserved.
-        let r = Permission::new("hearthadmin").expect("valid");
+        // Segment-boundary: `systemadmin.x` must NOT be reserved.
+        let r = Permission::new("systemadmin.x").expect("valid");
         assert!(!r.is_reserved());
     }
 

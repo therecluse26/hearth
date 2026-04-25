@@ -179,6 +179,7 @@ fn seed_active_user(
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate user");

@@ -52,6 +52,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -74,6 +75,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize");
@@ -342,6 +344,7 @@ async fn oidc_pkce_s256_flow() {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -371,6 +374,7 @@ async fn oidc_pkce_s256_flow() {
                 code_challenge: Some(code_challenge),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize with PKCE");
@@ -405,6 +409,7 @@ async fn oidc_pkce_s256_flow() {
                 code_challenge: Some(URL_SAFE_NO_PAD.encode(digest.as_ref())),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize with PKCE again");
@@ -439,6 +444,7 @@ async fn oidc_pkce_s256_flow() {
                 code_challenge: Some(URL_SAFE_NO_PAD.encode(digest.as_ref())),
                 code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize with PKCE third time");
@@ -649,6 +655,7 @@ async fn conformance_token_endpoint_rfc6749() {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -670,6 +677,7 @@ async fn conformance_token_endpoint_rfc6749() {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize");
@@ -778,6 +786,7 @@ async fn conformance_token_endpoint_rfc6749() {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize again");

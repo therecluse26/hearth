@@ -129,6 +129,7 @@ async fn register_client_rejects_system_realm() {
             grant_types: vec!["authorization_code".to_string()],
             require_consent: true,
             client_logo_url: None,
+            ..Default::default()
         },
     );
     assert!(

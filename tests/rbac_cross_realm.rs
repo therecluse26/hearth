@@ -23,6 +23,7 @@ async fn assignment_in_realm_a_not_visible_in_realm_b() {
                 description: None,
                 permissions: vec![Permission::new("docs.view").expect("valid")],
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("create");
@@ -73,6 +74,7 @@ async fn role_lookup_by_id_does_not_cross_realms() {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("create");

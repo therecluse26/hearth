@@ -597,6 +597,7 @@ mod tests {
             description: None,
             permissions: vec![],
             parent_roles: vec![id.clone()],
+            scope_kind: crate::rbac::RoleScopeKind::Realm,
             created_at: Timestamp::from_micros(1),
             updated_at: Timestamp::from_micros(1),
         };
@@ -676,6 +677,7 @@ mod tests {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![parent.clone()],
+                scope_kind: crate::rbac::RoleScopeKind::Realm,
                 created_at: Timestamp::from_micros(1),
                 updated_at: Timestamp::from_micros(1),
             });
@@ -689,6 +691,7 @@ mod tests {
             description: None,
             permissions: vec![],
             parent_roles: vec![],
+            scope_kind: crate::rbac::RoleScopeKind::Realm,
             created_at: Timestamp::from_micros(1),
             updated_at: Timestamp::from_micros(1),
         });
@@ -951,6 +954,9 @@ mod tests {
         // include duplicates in the generated Vec so the dedup invariant is
         // exercised, and mix single-segment / dotted forms for realism.
         fn perm_vocab() -> Vec<&'static str> {
+            // All entries must satisfy the AUTHZ_EXPANSION grammar
+            // (≥ 1 dot, no `:`). Single-segment names belong to the
+            // OIDC scope namespace and are rejected by Permission::new.
             vec![
                 "docs.view",
                 "docs.edit",
@@ -959,7 +965,7 @@ mod tests {
                 "org.billing.admin",
                 "users.list",
                 "users.invite",
-                "a",
+                "a.b",
                 "z.a",
                 "m.n.o",
             ]

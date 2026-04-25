@@ -182,7 +182,7 @@ async fn reserved_permission_rejected() {
         Some(json!({
             "name": "sneaky",
             "description": null,
-            "permissions": ["hearth.admin"],
+            "permissions": ["system.admin"],
             "parent_roles": [],
         })),
     )
@@ -193,8 +193,8 @@ async fn reserved_permission_rejected() {
 
 #[tokio::test]
 async fn reserved_permission_rejected_on_nested_namespace() {
-    // Segment-boundary check: "hearth.admin.users" is still reserved
-    // because the prefix match is on the literal "hearth." segment.
+    // Segment-boundary check: "system.admin.users" is still reserved
+    // because the prefix match is on the literal "system." segment.
     let ctx = admin_ctx().await;
     let (status, body) = send(
         &ctx,
@@ -203,7 +203,7 @@ async fn reserved_permission_rejected_on_nested_namespace() {
         Some(json!({
             "name": "sneakier",
             "description": null,
-            "permissions": ["hearth.admin.users"],
+            "permissions": ["system.admin.users"],
             "parent_roles": [],
         })),
     )
@@ -240,7 +240,7 @@ async fn reserved_permission_rejected_on_update() {
         Some(json!({
             "name": null,
             "description": null,
-            "permissions": ["hearth.admin"],
+            "permissions": ["system.admin"],
             "parent_roles": null,
         })),
     )
@@ -277,6 +277,7 @@ async fn cross_realm_isolation_returns_404() {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("create foreign");

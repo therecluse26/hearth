@@ -34,6 +34,7 @@ async fn role_composition_transitive() {
                 description: None,
                 permissions: perms(&["a.x"]),
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("create a");
@@ -46,6 +47,7 @@ async fn role_composition_transitive() {
                 description: None,
                 permissions: perms(&["b.x"]),
                 parent_roles: vec![a.id.clone()],
+                ..Default::default()
             },
         )
         .expect("create b");
@@ -58,6 +60,7 @@ async fn role_composition_transitive() {
                 description: None,
                 permissions: perms(&["c.x"]),
                 parent_roles: vec![b.id.clone()],
+                ..Default::default()
             },
         )
         .expect("create c");
@@ -102,6 +105,7 @@ async fn role_cycle_rejected() {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("create a");
@@ -114,6 +118,7 @@ async fn role_cycle_rejected() {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![a.id.clone()],
+                ..Default::default()
             },
         )
         .expect("create b");
@@ -127,6 +132,7 @@ async fn role_cycle_rejected() {
             description: None,
             permissions: None,
             parent_roles: Some(vec![b.id]),
+            ..Default::default()
         },
     );
     match result {
@@ -156,6 +162,7 @@ async fn role_depth_cap() {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("create r0")
@@ -170,6 +177,7 @@ async fn role_depth_cap() {
                 description: None,
                 permissions: vec![],
                 parent_roles: vec![last_id.clone()],
+                ..Default::default()
             },
         );
         match res {
@@ -250,6 +258,7 @@ async fn group_nesting_transitive() {
                 description: None,
                 permissions: perms(&["top.view"]),
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("role");
@@ -365,6 +374,7 @@ async fn scope_filtering_org_requires_matching_oid() {
                 description: None,
                 permissions: perms(&["docs.view"]),
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("role");

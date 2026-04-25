@@ -62,6 +62,7 @@ async fn returns_live_set_reflecting_post_issuance_changes() {
                 description: None,
                 permissions: vec![Permission::new("docs.view").expect("valid")],
                 parent_roles: vec![],
+                ..Default::default()
             },
         )
         .expect("role");

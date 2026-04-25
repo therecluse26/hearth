@@ -8500,6 +8500,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client")
@@ -8527,6 +8528,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize should succeed");
@@ -8559,6 +8561,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8616,6 +8619,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8670,6 +8674,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8742,6 +8747,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8797,6 +8803,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         );
         assert!(
@@ -8827,6 +8834,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         );
         assert!(
@@ -9017,6 +9025,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: Some("unique-nonce-abc".to_string()),
+                resource: None,
             },
         );
         assert!(result.is_ok(), "first use of nonce should succeed");
@@ -9034,6 +9043,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: Some("unique-nonce-abc".to_string()),
+                resource: None,
             },
         );
         assert!(
@@ -9054,6 +9064,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: Some("different-nonce-xyz".to_string()),
+                resource: None,
             },
         );
         assert!(result.is_ok(), "different nonce should succeed");
@@ -9081,6 +9092,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: Some("same-nonce".to_string()),
+                    resource: None,
                 },
             );
             assert!(
@@ -9577,6 +9589,7 @@ mod tests {
                     grant_types: vec!["client_credentials".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register confidential client")
@@ -9664,6 +9677,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register public client");
@@ -9703,6 +9717,7 @@ mod tests {
                     grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9750,6 +9765,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9768,6 +9784,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -9873,6 +9890,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9890,6 +9908,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -10050,6 +10069,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -10067,6 +10087,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -10138,6 +10159,7 @@ mod tests {
                     grant_types: vec!["client_credentials".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -10206,6 +10228,7 @@ mod tests {
                     grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -10272,6 +10295,7 @@ mod tests {
                         grant_types: vec!["authorization_code".to_string()],
                         require_consent: true,
                         client_logo_url: None,
+                                            ..Default::default()
                     },
                 ).expect("register client");
 
@@ -10297,6 +10321,7 @@ mod tests {
                         code_challenge: None,
                         code_challenge_method: None,
                         nonce: None,
+                                            resource: None,
                     }).expect("authorize");
 
                     let tokens = engine.exchange_authorization_code(&realm_id, &TokenExchangeRequest {
@@ -10392,6 +10417,7 @@ mod tests {
                         grant_types: vec!["authorization_code".to_string()],
                         require_consent: true,
                         client_logo_url: None,
+                                            ..Default::default()
                     },
                 ).expect("register client");
 
@@ -10405,6 +10431,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                                    resource: None,
                 }).expect("authorize");
 
                 let tokens = engine.exchange_authorization_code(&realm_id, &TokenExchangeRequest {
@@ -10781,6 +10808,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -10906,6 +10934,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register 2");

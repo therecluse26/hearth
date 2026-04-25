@@ -53,6 +53,7 @@ fn concurrent_assign_unassign_converge_to_consistent_set() {
                     description: None,
                     permissions: perms(&[&format!("p.r{i}")]),
                     parent_roles: vec![],
+                    ..Default::default()
                 },
             )
             .expect("create role");
