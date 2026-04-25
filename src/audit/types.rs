@@ -131,6 +131,15 @@ pub enum AuditAction {
     /// carry `ref_kind` for disambiguation. See `AUTHZ_EXPANSION.md`
     /// §"Dangling references".
     OrphanedReferenceSkipped,
+    /// A direct permission was granted to a user outside any role.
+    ///
+    /// Metadata may carry `scope_type` (`"realm"` or `"org"`) and
+    /// `permission`. See `AUTHZ_EXPANSION.md` gap #6.
+    UserPermissionGranted,
+    /// A direct permission previously granted to a user was revoked.
+    ///
+    /// Metadata may carry `scope_type` and `permission`.
+    UserPermissionRevoked,
 }
 
 impl AuditAction {
@@ -187,6 +196,8 @@ impl AuditAction {
             Self::RoleAssigned => "role_assigned",
             Self::RoleRevoked => "role_revoked",
             Self::OrphanedReferenceSkipped => "orphaned_reference_skipped",
+            Self::UserPermissionGranted => "user_permission_granted",
+            Self::UserPermissionRevoked => "user_permission_revoked",
         }
     }
 }
@@ -246,6 +257,8 @@ impl std::str::FromStr for AuditAction {
             "role_assigned" => Ok(Self::RoleAssigned),
             "role_revoked" => Ok(Self::RoleRevoked),
             "orphaned_reference_skipped" => Ok(Self::OrphanedReferenceSkipped),
+            "user_permission_granted" => Ok(Self::UserPermissionGranted),
+            "user_permission_revoked" => Ok(Self::UserPermissionRevoked),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

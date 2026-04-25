@@ -440,6 +440,17 @@ impl RbacEngine for EmbeddedRbacEngine {
         let bytes = Self::ser(grant)?;
         self.storage
             .put_batch(realm_id, &[(primary, bytes), (reverse, Vec::new())])?;
+        tracing::info!(
+            realm_id = %realm_id,
+            user_id = %grant.user_id,
+            permission = grant.permission.as_str(),
+            scope_type = match &grant.scope {
+                Scope::Realm => "realm",
+                Scope::Org { .. } => "org",
+            },
+            action = "user_permission_granted",
+            "user permission granted"
+        );
         Ok(grant.clone())
     }
 
@@ -455,6 +466,17 @@ impl RbacEngine for EmbeddedRbacEngine {
             keys::encode_user_permission_by_perm(realm_id, permission.as_str(), scope, user_id);
         self.storage.delete(realm_id, &primary)?;
         self.storage.delete(realm_id, &reverse)?;
+        tracing::info!(
+            realm_id = %realm_id,
+            user_id = %user_id,
+            permission = permission.as_str(),
+            scope_type = match scope {
+                Scope::Realm => "realm",
+                Scope::Org { .. } => "org",
+            },
+            action = "user_permission_revoked",
+            "user permission revoked"
+        );
         Ok(())
     }
 
