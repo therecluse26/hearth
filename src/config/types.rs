@@ -7,7 +7,12 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::identity::claims_config::ClaimMapping;
 use crate::identity::email::EmailBranding;
+use crate::identity::ClientTrustLevel;
+use crate::rbac::{
+    Permission, PermissionDefinition, ProtectedResource, Role, RoleId, RoleScopeKind, ScopeBundle,
+};
 
 /// Server network configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -738,6 +743,70 @@ pub struct ApplicationYamlConfig {
     /// URL to a logo displayed on the consent screen. Optional.
     #[serde(default)]
     pub client_logo_url: Option<String>,
+    /// Stable slug used by YAML references and mapper gates.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Authz trust posture for this client.
+    #[serde(default)]
+    pub trust_level: Option<ClientTrustLevel>,
+    /// Scopes this client may request.
+    #[serde(default)]
+    pub declared_scopes: Option<Vec<String>>,
+    /// Whether a realm-level consent row covers all org contexts.
+    #[serde(default)]
+    pub consent_spans_orgs: Option<bool>,
+}
+
+/// YAML permission definition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionYamlConfig {
+    pub name: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
+/// YAML role definition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoleYamlConfig {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub parents: Vec<String>,
+    #[serde(default)]
+    pub scope_kind: Option<String>,
+}
+
+/// YAML scope-bundle definition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScopeBundleYamlConfig {
+    pub name: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+/// YAML protected-resource registration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProtectedResourceYamlConfig {
+    pub resource_uri: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub scopes: Vec<ScopeBundleYamlConfig>,
+}
+
+/// YAML claim-profile wrapper.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ClaimsYamlConfig {
+    #[serde(default)]
+    pub mappings: Vec<ClaimMapping>,
 }
 
 /// Per-realm email branding overrides in YAML.
@@ -788,6 +857,24 @@ pub struct RealmYamlConfig {
     /// Reconciled at startup; runtime SPs not represented here are removed.
     #[serde(default)]
     pub saml_service_providers: Option<std::collections::HashMap<String, SamlServiceProviderYaml>>,
+    /// YAML-authored permission registry.
+    #[serde(default)]
+    pub permissions: Option<Vec<PermissionYamlConfig>>,
+    /// YAML-authored RBAC roles.
+    #[serde(default)]
+    pub roles: Option<Vec<RoleYamlConfig>>,
+    /// Optional realm-level scope bundles.
+    #[serde(default)]
+    pub scopes: Option<Vec<ScopeBundleYamlConfig>>,
+    /// Optional protected-resource registrations with resource-local scopes.
+    #[serde(default)]
+    pub protected_resources: Option<Vec<ProtectedResourceYamlConfig>>,
+    /// Optional claim-profile overrides.
+    #[serde(default)]
+    pub claims: Option<ClaimsYamlConfig>,
+    /// Alias for `applications` matching AUTHZ_EXPANSION terminology.
+    #[serde(default)]
+    pub oauth_clients: Option<std::collections::HashMap<String, ApplicationYamlConfig>>,
 }
 
 /// YAML for a single SAML SP registration (Hearth as IdP issues to this SP).
@@ -1021,6 +1108,102 @@ impl RealmYamlConfig {
             .and_then(|a| a.registration.as_ref())
             .map(RegistrationPolicyYaml::to_domain);
 
+        let permissions = self
+            .permissions
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|permission| {
+                Permission::new(permission.name)
+                    .ok()
+                    .map(|name| PermissionDefinition {
+                        name,
+                        display_name: permission.display_name,
+                        description: permission.description,
+                        category: permission.category,
+                    })
+            })
+            .collect();
+
+        let scopes = self
+            .scopes
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|bundle| ScopeBundle {
+                name: bundle.name,
+                display_name: bundle.display_name,
+                description: bundle.description,
+                permissions: bundle
+                    .permissions
+                    .into_iter()
+                    .filter_map(|permission| Permission::new(permission).ok())
+                    .collect(),
+            })
+            .collect();
+
+        let roles = self
+            .roles
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|role| {
+                let scope_kind = match role.scope_kind.as_deref() {
+                    Some("organization") => RoleScopeKind::Organization,
+                    Some("any") => RoleScopeKind::Any,
+                    _ => RoleScopeKind::Realm,
+                };
+                Role {
+                    id: RoleId::generate(),
+                    realm_id: crate::core::RealmId::generate(),
+                    name: role.name,
+                    description: role.description,
+                    permissions: role
+                        .permissions
+                        .into_iter()
+                        .filter_map(|permission| Permission::new(permission).ok())
+                        .collect(),
+                    parent_roles: Vec::new(),
+                    scope_kind,
+                    created_at: crate::core::Timestamp::from_micros(0),
+                    updated_at: crate::core::Timestamp::from_micros(0),
+                }
+            })
+            .collect();
+
+        let protected_resources = self
+            .protected_resources
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|resource| ProtectedResource {
+                resource_uri: resource.resource_uri,
+                display_name: resource.display_name,
+                scopes: resource
+                    .scopes
+                    .into_iter()
+                    .map(|bundle| ScopeBundle {
+                        name: bundle.name,
+                        display_name: bundle.display_name,
+                        description: bundle.description,
+                        permissions: bundle
+                            .permissions
+                            .into_iter()
+                            .filter_map(|permission| Permission::new(permission).ok())
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let claim_profile =
+            self.claims
+                .clone()
+                .map(|claims| crate::identity::claims_config::ClaimProfile {
+                    mappings: claims.mappings,
+                    updated_at: None,
+                });
+
         crate::identity::RealmConfig {
             session_ttl_micros,
             password_memory_cost,
@@ -1046,6 +1229,11 @@ impl RealmYamlConfig {
                 .as_ref()
                 .and_then(|f| f.link_existing_accounts)
                 .map(LinkModeYaml::to_domain),
+            permissions,
+            roles,
+            scopes,
+            protected_resources,
+            claim_profile,
         }
     }
 }

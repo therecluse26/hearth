@@ -434,6 +434,10 @@ impl Auth0Importer {
             redirect_uris: ac.callbacks.clone(),
             client_secret,
             grant_types,
+            slug: None,
+            trust_level: crate::identity::ClientTrustLevel::FirstParty,
+            declared_scopes: Vec::new(),
+            consent_spans_orgs: false,
         };
         self.identity.import_client(realm_id, &request)?;
         Ok(())
@@ -516,6 +520,7 @@ impl Auth0Importer {
                             description: role.description.clone(),
                             permissions: Vec::new(),
                             parent_roles: Vec::new(),
+                            scope_kind: crate::rbac::RoleScopeKind::Realm,
                         },
                     )?;
                     created.id

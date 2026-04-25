@@ -561,11 +561,23 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(account_consents::consents_index),
         )
         .route(
+            "/account/applications",
+            axum::routing::get(account_consents::consents_index),
+        )
+        .route(
             "/account/consents/revoke-all",
             axum::routing::post(account_consents::revoke_all_consents),
         )
         .route(
+            "/account/applications/revoke-all",
+            axum::routing::post(account_consents::revoke_all_consents),
+        )
+        .route(
             "/account/consents/{client_id}/revoke",
+            axum::routing::post(account_consents::revoke_consent),
+        )
+        .route(
+            "/account/applications/{client_id}/revoke",
             axum::routing::post(account_consents::revoke_consent),
         )
         // --- Self-service federation management ---
@@ -675,7 +687,15 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(admin::admin_user_consents_list),
         )
         .route(
+            "/admin/users/{id}/applications",
+            axum::routing::get(admin::admin_user_consents_list),
+        )
+        .route(
             "/admin/users/{id}/consents/{client_id}/revoke",
+            axum::routing::post(admin::admin_user_consent_revoke),
+        )
+        .route(
+            "/admin/users/{id}/applications/{client_id}/revoke",
             axum::routing::post(admin::admin_user_consent_revoke),
         )
         // --- Realms (read-only; managed via hearth.yaml) ---

@@ -4,6 +4,7 @@
 //! Depends on `storage` (for persistence) and `core` (for shared types).
 //! May call `authz` (lateral dependency). Never the reverse.
 
+pub mod claims_config;
 pub(crate) mod credentials;
 pub mod email;
 mod engine;
@@ -32,7 +33,7 @@ pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
 pub use oidc::{
     AuthorizationRequest, AuthorizationResponse, ClientCredentialsRequest,
-    ClientCredentialsResponse, CodeChallengeMethod, DeviceAuthorizationRequest,
+    ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod, DeviceAuthorizationRequest,
     DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
     TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest, UserInfoResponse,

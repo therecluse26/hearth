@@ -6,7 +6,7 @@
 
 use crate::core::{RealmId, UserId};
 
-use super::types::{AssignmentId, GroupId, GroupMember, RoleId};
+use super::types::{AssignmentId, GroupId, GroupMember, RoleId, Scope};
 
 pub(crate) const ROLE_PREFIX: &str = "rba:role:";
 pub(crate) const ROLE_NAME_PREFIX: &str = "rba:role:name:";
@@ -20,6 +20,8 @@ pub(crate) const GM_GROUP_PREFIX: &str = "rba:gm:group:";
 pub(crate) const GM_MEMBER_PREFIX: &str = "rba:gm:member:";
 pub(crate) const PERM_PREFIX: &str = "rba:perm:";
 pub(crate) const SCOPE_PREFIX: &str = "rba:scope:";
+pub(crate) const USER_PERM_PREFIX: &str = "rba:user_perm:";
+pub(crate) const USER_PERM_BY_PERM_PREFIX: &str = "rba:user_perm:by_perm:";
 
 // ---------------------------------------------------------------------------
 // Roles
@@ -170,6 +172,69 @@ pub(crate) fn encode_scope(realm_id: &RealmId, scope_name: &str) -> Vec<u8> {
 #[allow(dead_code)]
 pub(crate) fn scope_scan_prefix(realm_id: &RealmId) -> Vec<u8> {
     format!("{SCOPE_PREFIX}{}:", realm_id.as_uuid()).into_bytes()
+}
+
+fn scope_key(scope: &Scope) -> String {
+    match scope {
+        Scope::Realm => "_realm".to_string(),
+        Scope::Org { org_id } => org_id.as_uuid().to_string(),
+    }
+}
+
+/// `rba:user_perm:{realm}:{user}:{scope_key}:{perm}`
+pub(crate) fn encode_user_permission(
+    realm_id: &RealmId,
+    user_id: &UserId,
+    scope: &Scope,
+    permission: &str,
+) -> Vec<u8> {
+    format!(
+        "{USER_PERM_PREFIX}{}:{}:{}:{permission}",
+        realm_id.as_uuid(),
+        user_id.as_uuid(),
+        scope_key(scope)
+    )
+    .into_bytes()
+}
+
+/// `rba:user_perm:by_perm:{realm}:{perm}:{scope_key}:{user}`
+pub(crate) fn encode_user_permission_by_perm(
+    realm_id: &RealmId,
+    permission: &str,
+    scope: &Scope,
+    user_id: &UserId,
+) -> Vec<u8> {
+    format!(
+        "{USER_PERM_BY_PERM_PREFIX}{}:{permission}:{}:{}",
+        realm_id.as_uuid(),
+        scope_key(scope),
+        user_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Scan prefix for all extra permissions granted to a user in a realm.
+pub(crate) fn user_permission_scan_prefix(realm_id: &RealmId, user_id: &UserId) -> Vec<u8> {
+    format!(
+        "{USER_PERM_PREFIX}{}:{}:",
+        realm_id.as_uuid(),
+        user_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Scan prefix for users holding an extra permission at a given scope.
+pub(crate) fn user_permission_by_perm_scan_prefix(
+    realm_id: &RealmId,
+    permission: &str,
+    scope: &Scope,
+) -> Vec<u8> {
+    format!(
+        "{USER_PERM_BY_PERM_PREFIX}{}:{permission}:{}:",
+        realm_id.as_uuid(),
+        scope_key(scope)
+    )
+    .into_bytes()
 }
 
 // ---------------------------------------------------------------------------

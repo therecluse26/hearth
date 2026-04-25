@@ -17,9 +17,8 @@ use crate::core::{OrganizationId, RealmId, Timestamp, UserId};
 /// Maximum length of a permission string, per AUTHORIZATION.md § 2.5.
 pub const MAX_PERMISSION_LENGTH: usize = 128;
 
-/// Reserved permission namespace prefix. Only granted by seed roles; operator
-/// roles MUST NOT include permissions starting with `"hearth."`.
-pub const RESERVED_PREFIX: &str = "hearth.";
+/// Reserved global permission namespace prefix.
+pub const RESERVED_PREFIX: &str = "system.";
 
 // ---------------------------------------------------------------------------
 // ID newtypes
@@ -79,7 +78,8 @@ define_rbac_id!(
 
 /// A validated permission string, per AUTHORIZATION.md § 2.5.
 ///
-/// Grammar: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`, max 128 chars.
+/// Grammar:
+/// `^[A-Za-z0-9_\\-]+(\\.[A-Za-z0-9_\\-]+)+$`, max 128 chars.
 ///
 /// The dotted notation is a readability convention, not a prefix-matching
 /// semantic — `docs.edit` does NOT grant `docs.edit.comments`.
@@ -116,8 +116,8 @@ impl Permission {
     ///
     /// Rules (AUTHORIZATION.md § 2.5):
     /// - non-empty, max 128 chars
-    /// - dot-delimited segments
-    /// - each segment begins with `[a-z]`, continues `[a-z0-9_]*`
+    /// - dot-delimited segments, at least two
+    /// - each segment is non-empty and contains only ASCII alnum, `_`, `-`
     pub fn validate(s: &str) -> Result<(), String> {
         if s.is_empty() {
             return Err("permission must not be empty".to_string());
@@ -127,24 +127,24 @@ impl Permission {
                 "permission exceeds maximum length of {MAX_PERMISSION_LENGTH} chars"
             ));
         }
+        if s.contains(':') {
+            return Err("permission must not contain ':'".to_string());
+        }
+        let segments: Vec<&str> = s.split('.').collect();
+        if segments.len() < 2 {
+            return Err("permission must contain at least one '.' separator".to_string());
+        }
         if s.starts_with('.') || s.ends_with('.') {
             return Err("permission must not start or end with '.'".to_string());
         }
-        for (i, segment) in s.split('.').enumerate() {
+        for (i, segment) in segments.into_iter().enumerate() {
             if segment.is_empty() {
                 return Err(format!("permission has empty segment at index {i}"));
             }
-            let mut chars = segment.chars();
-            let first = chars.next().unwrap_or(' ');
-            if !first.is_ascii_lowercase() {
-                return Err(format!(
-                    "segment {i} must start with a lowercase ASCII letter (got '{first}')"
-                ));
-            }
-            for c in chars {
-                if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            for c in segment.chars() {
+                if !(c.is_ascii_alphanumeric() || c == '_' || c == '-') {
                     return Err(format!(
-                        "segment {i} contains invalid character '{c}' (allowed: a-z, 0-9, _)"
+                        "segment {i} contains invalid character '{c}' (allowed: A-Z, a-z, 0-9, _, -)"
                     ));
                 }
             }
@@ -162,6 +162,42 @@ impl fmt::Display for Permission {
 // ---------------------------------------------------------------------------
 // Core entity types
 // ---------------------------------------------------------------------------
+
+/// YAML-defined permission metadata loaded into the registry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionDefinition {
+    pub name: Permission,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+}
+
+/// Optional coarse-grained consent bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeBundle {
+    pub name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub permissions: Vec<Permission>,
+}
+
+/// Registration for a specific RFC 8707 protected resource.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectedResource {
+    pub resource_uri: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub scopes: Vec<ScopeBundle>,
+}
+
+/// Valid assignment boundary for a role definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleScopeKind {
+    Realm,
+    Organization,
+    Any,
+}
 
 /// A named set of permissions with optional parent-role composition edges.
 ///
@@ -181,10 +217,17 @@ pub struct Role {
     pub permissions: Vec<Permission>,
     /// Parent role IDs. Composition is transitive; cycles rejected at write time.
     pub parent_roles: Vec<RoleId>,
+    /// Where this role may be assigned.
+    #[serde(default = "default_role_scope_kind")]
+    pub scope_kind: RoleScopeKind,
     /// Creation timestamp (UTC microseconds).
     pub created_at: Timestamp,
     /// Last-update timestamp (UTC microseconds).
     pub updated_at: Timestamp,
+}
+
+const fn default_role_scope_kind() -> RoleScopeKind {
+    RoleScopeKind::Realm
 }
 
 /// A named collection of users and/or other groups. Membership resolves
@@ -302,6 +345,20 @@ pub struct ResolvedPermissions {
     pub groups: Vec<String>,
     /// De-duplicated, sorted effective permissions after scope narrowing.
     pub permissions: Vec<Permission>,
+    /// Requested scopes that were actually granted for this token.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub granted_scopes: Vec<String>,
+}
+
+/// Runtime direct permission grant for a user.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserPermissionGrant {
+    pub realm_id: RealmId,
+    pub user_id: UserId,
+    pub permission: Permission,
+    pub scope: Scope,
+    pub granted_at: Timestamp,
+    pub granted_by: Option<UserId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +376,9 @@ pub struct CreateRoleRequest {
     pub permissions: Vec<Permission>,
     /// Parent role IDs for composition.
     pub parent_roles: Vec<RoleId>,
+    /// Where this role may be assigned.
+    #[serde(default = "default_role_scope_kind")]
+    pub scope_kind: RoleScopeKind,
 }
 
 /// Input for `update_role`. Fields left `None` are unchanged.
@@ -333,6 +393,8 @@ pub struct UpdateRoleRequest {
     pub permissions: Option<Vec<Permission>>,
     /// New parent-role list; replaces entirely when `Some`.
     pub parent_roles: Option<Vec<RoleId>>,
+    /// New assignment boundary; replaces when `Some`.
+    pub scope_kind: Option<RoleScopeKind>,
 }
 
 /// Input for `create_group`.

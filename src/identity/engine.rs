@@ -3,7 +3,7 @@
 //! Implements `IdentityEngine` using the `StorageEngine` trait for persistence
 //! and `Clock` trait for deterministic timestamps.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -11,6 +11,9 @@ use base64::Engine as _;
 use ring::rand::SecureRandom;
 
 use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::identity::claims_config::{
+    resolve_claims_for_target, ClaimEvaluationContext, ClaimTarget,
+};
 use crate::identity::credentials::{self, CleartextPassword, CredentialConfig, StoredCredential};
 use crate::identity::error::IdentityError;
 use crate::identity::keys;
@@ -74,6 +77,7 @@ use crate::identity::webauthn::{
     WebAuthnChallengeStore, WebAuthnCredentialInfo,
 };
 use crate::identity::IdentityEngine;
+use crate::rbac::registry::{classify_scope_string, ScopeKind};
 use crate::storage::StorageEngine;
 
 /// Configuration for credential rate limiting.
@@ -243,6 +247,111 @@ impl std::fmt::Debug for EmbeddedIdentityEngine {
 }
 
 impl EmbeddedIdentityEngine {
+    fn claim_profile_overrides(
+        &self,
+        realm_id: &RealmId,
+    ) -> Vec<crate::identity::claims_config::ClaimMapping> {
+        self.get_realm(realm_id)
+            .ok()
+            .flatten()
+            .and_then(|realm| realm.config().claim_profile.clone())
+            .map(|profile| profile.mappings)
+            .unwrap_or_default()
+    }
+
+    fn claim_vector(value: Option<&serde_json::Value>) -> Vec<String> {
+        match value {
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_claim_profile(
+        &self,
+        realm_id: &RealmId,
+        user: &User,
+        client: &OAuthClient,
+        resolved: &crate::rbac::ResolvedPermissions,
+        granted_scopes: &BTreeSet<String>,
+        oid: Option<&str>,
+        target: ClaimTarget,
+    ) -> (
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        BTreeMap<String, serde_json::Value>,
+    ) {
+        let permissions: Vec<String> = resolved
+            .permissions
+            .iter()
+            .map(|permission| permission.as_str().to_string())
+            .collect();
+        let overrides = self.claim_profile_overrides(realm_id);
+        let ctx = ClaimEvaluationContext {
+            user,
+            client,
+            roles: &resolved.roles,
+            groups: &resolved.groups,
+            permissions: &permissions,
+            granted_scopes,
+            oid,
+        };
+        let mut claims = resolve_claims_for_target(target, &overrides, &ctx);
+        let roles = Self::claim_vector(claims.get("roles"));
+        let groups = Self::claim_vector(claims.get("groups"));
+        let permissions = Self::claim_vector(claims.get("permissions"));
+        claims.remove("roles");
+        claims.remove("groups");
+        claims.remove("permissions");
+        (roles, groups, permissions, claims)
+    }
+
+    fn validate_client_scope_request(
+        &self,
+        client: &OAuthClient,
+        raw_scope: &str,
+    ) -> Result<(), IdentityError> {
+        let requested: Vec<&str> = raw_scope
+            .split_whitespace()
+            .filter(|scope| !scope.is_empty())
+            .collect();
+        if client.trust_level() == crate::identity::ClientTrustLevel::ThirdParty
+            && requested.is_empty()
+        {
+            return Err(IdentityError::InvalidInput {
+                reason: "invalid_scope: third-party clients must request at least one scope"
+                    .to_string(),
+            });
+        }
+        if client.declared_scopes().is_empty() {
+            return Ok(());
+        }
+        for scope in requested {
+            if !client
+                .declared_scopes()
+                .iter()
+                .any(|declared| declared == scope)
+            {
+                return Err(IdentityError::InvalidInput {
+                    reason: format!("invalid_scope: client did not declare scope '{scope}'"),
+                });
+            }
+            if client.trust_level() == crate::identity::ClientTrustLevel::ThirdParty
+                && classify_scope_string(scope) == Some(ScopeKind::Permission)
+            {
+                return Err(IdentityError::InvalidInput {
+                    reason: format!(
+                        "invalid_scope: third-party clients cannot request raw permission scope '{scope}'"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Creates a new identity engine, constructing a fresh
     /// [`crate::rbac::EmbeddedRbacEngine`] sharing the same storage and
     /// clock. Convenience for tests and benches that don't need to hold
@@ -927,6 +1036,7 @@ impl EmbeddedIdentityEngine {
             roles: claims.roles.clone(),
             groups: claims.groups.clone(),
             permissions: claims.permissions.clone(),
+            custom: claims.custom.clone(),
         };
         let new_refresh_claims = TokenClaims {
             sub: user_id.to_string(),
@@ -945,6 +1055,7 @@ impl EmbeddedIdentityEngine {
             roles: claims.roles.clone(),
             groups: claims.groups.clone(),
             permissions: claims.permissions.clone(),
+            custom: claims.custom.clone(),
         };
 
         let new_access = signing_key.issue_token(&new_access_claims)?;
@@ -1751,6 +1862,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             user.set_status(new_status);
         }
 
+        // 4a. Replace attributes map if requested.
+        if let Some(attributes) = &request.attributes {
+            user.set_attributes(attributes.clone());
+        }
+
         // 5. Update timestamp
         user.set_updated_at(self.clock.now());
 
@@ -2295,6 +2411,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .iter()
             .map(|p| p.as_str().to_string())
             .collect();
+        let fake_client =
+            OAuthClient::new(ClientId::generate(), "session".to_string(), Vec::new(), now);
+        let granted_scopes = BTreeSet::new();
+        let (roles, groups, permissions, custom) = self.apply_claim_profile(
+            realm_id,
+            &user.expect("checked above"),
+            &fake_client,
+            &resolved,
+            &granted_scopes,
+            None,
+            ClaimTarget::AccessToken,
+        );
         self.signing_key.issue_token_pair(&IssueTokenRequest {
             sub: &user_id.to_string(),
             sid: &session_id.to_string(),
@@ -2302,9 +2430,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             oid: None,
             now,
             config: &self.config.token,
-            roles: &resolved.roles,
-            groups: &resolved.groups,
-            permissions: &perm_strs,
+            roles: &roles,
+            groups: &groups,
+            permissions: if permissions.is_empty() {
+                &perm_strs
+            } else {
+                &permissions
+            },
+            custom,
         })
     }
 
@@ -2477,9 +2610,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             c
         };
 
-        // Apply consent policy fields from the request.
-        client.set_require_consent(request.require_consent);
+        // Consent is trust-level-driven under the expanded authz model.
+        client.set_require_consent(
+            request.trust_level == crate::identity::ClientTrustLevel::ThirdParty,
+        );
         client.set_client_logo_url(request.client_logo_url.clone());
+        client.set_slug(
+            request
+                .slug
+                .clone()
+                .unwrap_or_else(|| client.client_name().to_lowercase().replace(' ', "-")),
+        );
+        client.set_trust_level(request.trust_level);
+        client.set_declared_scopes(request.declared_scopes.clone());
+        client.set_consent_spans_orgs(request.consent_spans_orgs);
 
         // Serialize and persist
         let client_bytes =
@@ -2541,6 +2685,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         if !client.redirect_uris().contains(&request.redirect_uri) {
             return Err(IdentityError::InvalidRedirectUri);
         }
+
+        self.validate_client_scope_request(&client, &request.scope)?;
 
         // 5. Validate PKCE code_challenge_method if present
         if let Some(ref method) = request.code_challenge_method {
@@ -2677,6 +2823,47 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let session =
             self.create_session(realm_id, &stored_code.user_id, &SessionContext::default())?;
 
+        let user = self
+            .get_user(realm_id, &stored_code.user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+        let client = self
+            .get_client(realm_id, &request.client_id)?
+            .ok_or(IdentityError::ClientNotFound)?;
+        let scope_value = stored_code.scope.trim().to_string();
+        let scope_for_resolver =
+            if scope_value.is_empty() || scope_value.split_whitespace().count() != 1 {
+                None
+            } else {
+                Some(scope_value.as_str())
+            };
+        let resolved = self
+            .rbac
+            .resolve_permissions(&stored_code.user_id, realm_id, None, scope_for_resolver)
+            .map_err(|e| IdentityError::Internal {
+                reason: format!("rbac resolve failed: {e}"),
+            })?;
+        let granted_scopes: BTreeSet<String> =
+            scope_value.split_whitespace().map(str::to_string).collect();
+        let (access_roles, access_groups, access_permissions, access_custom) = self
+            .apply_claim_profile(
+                realm_id,
+                &user,
+                &client,
+                &resolved,
+                &granted_scopes,
+                None,
+                ClaimTarget::AccessToken,
+            );
+        let (id_roles, id_groups, id_permissions, id_custom) = self.apply_claim_profile(
+            realm_id,
+            &user,
+            &client,
+            &resolved,
+            &granted_scopes,
+            None,
+            ClaimTarget::IdToken,
+        );
+
         // 10. Create grant family for refresh token rotation
         let family_id = uuid::Uuid::new_v4().to_string();
 
@@ -2696,11 +2883,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
-            scope: None,
+            scope: (!scope_value.is_empty()).then(|| scope_value.clone()),
             nonce: None,
-            roles: Vec::new(),
-            groups: Vec::new(),
-            permissions: Vec::new(),
+            roles: access_roles,
+            groups: access_groups,
+            permissions: access_permissions,
+            custom: access_custom,
         };
         let refresh_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
@@ -2714,11 +2902,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             token_type: "refresh".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
-            scope: None,
+            scope: (!scope_value.is_empty()).then(|| scope_value.clone()),
             nonce: None,
-            roles: Vec::new(),
-            groups: Vec::new(),
-            permissions: Vec::new(),
+            roles: access_claims.roles.clone(),
+            groups: access_claims.groups.clone(),
+            permissions: access_claims.permissions.clone(),
+            custom: access_claims.custom.clone(),
         };
 
         let access_token =
@@ -2767,11 +2956,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             token_type: "id_token".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
-            scope: None,
+            scope: (!scope_value.is_empty()).then(|| scope_value.clone()),
             nonce: stored_code.nonce.clone(),
-            roles: Vec::new(),
-            groups: Vec::new(),
-            permissions: Vec::new(),
+            roles: id_roles,
+            groups: id_groups,
+            permissions: id_permissions,
+            custom: id_custom,
         };
         let id_token =
             signing_key
@@ -2871,6 +3061,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::InvalidClientSecret);
         }
 
+        self.validate_client_scope_request(&client, request.scope.as_deref().unwrap_or(""))?;
+
         // 4. Issue access token (no session, no refresh token per RFC 6749 §4.4.3)
         let now = self.clock.now();
         let iat = now.as_micros() / 1_000_000;
@@ -2894,6 +3086,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             roles: Vec::new(),
             groups: Vec::new(),
             permissions: Vec::new(),
+            custom: std::collections::BTreeMap::new(),
         };
 
         let access_token =
@@ -2920,11 +3113,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // 1. Verify client exists
         let client_key = keys::encode_oauth_client(&request.client_id);
-        let _ = self
+        let client_bytes = self
             .storage
             .get(realm_id, &client_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidClient)?;
+        let client: OAuthClient =
+            serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        self.validate_client_scope_request(&client, request.scope.as_deref().unwrap_or(""))?;
 
         // 2. Generate device code (32 random bytes → base64url)
         let rng = ring::rand::SystemRandom::new();
@@ -3120,6 +3319,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     roles: Vec::new(),
                     groups: Vec::new(),
                     permissions: Vec::new(),
+                    custom: std::collections::BTreeMap::new(),
                 };
                 let signing_key = self.get_or_load_realm_signing_key(realm_id)?;
                 let id_token = signing_key.issue_token(&id_token_claims).map_err(|e| {
@@ -4257,34 +4457,57 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .get_user(realm_id, &user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
-        // 5. Build response based on scopes
-        let scopes: Vec<&str> = claims
+        let scope_set: BTreeSet<String> = claims
             .scope
             .as_deref()
             .unwrap_or("openid")
             .split_whitespace()
+            .map(str::to_string)
             .collect();
-
-        let has_email_scope = scopes.contains(&"email");
-        let has_profile_scope = scopes.contains(&"profile");
+        let client = claims
+            .aud
+            .strip_prefix("client_")
+            .and_then(|uuid| uuid::Uuid::parse_str(uuid).ok())
+            .and_then(|uuid| {
+                self.get_client(realm_id, &ClientId::new(uuid))
+                    .ok()
+                    .flatten()
+            });
+        let empty_client = OAuthClient::new(
+            ClientId::generate(),
+            "userinfo".to_string(),
+            Vec::new(),
+            self.clock.now(),
+        );
+        let resolved = self
+            .rbac
+            .resolve_permissions(&user_id, realm_id, None, None)
+            .map_err(|e| IdentityError::Internal {
+                reason: format!("rbac resolve failed: {e}"),
+            })?;
+        let (_roles, _groups, _permissions, custom) = self.apply_claim_profile(
+            realm_id,
+            &user,
+            client.as_ref().unwrap_or(&empty_client),
+            &resolved,
+            &scope_set,
+            claims.oid.as_deref(),
+            ClaimTarget::UserInfo,
+        );
 
         Ok(crate::identity::oidc::UserInfoResponse {
             sub: claims.sub,
-            email: if has_email_scope {
-                Some(user.email().to_string())
-            } else {
-                None
-            },
-            email_verified: if has_email_scope {
-                Some(true) // Hearth-created users have verified emails
-            } else {
-                None
-            },
-            name: if has_profile_scope {
-                Some(user.display_name().to_string())
-            } else {
-                None
-            },
+            email: custom
+                .get("email")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            email_verified: scope_set.contains("email").then_some(true),
+            name: custom
+                .get("name")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            custom: custom
+                .into_iter()
+                .filter(|(key, _)| key != "email" && key != "name")
+                .collect(),
         })
     }
 
@@ -4560,6 +4783,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
         if let Some(logo) = &request.client_logo_url {
             client.set_client_logo_url(logo.clone());
+        }
+        if let Some(slug) = &request.slug {
+            client.set_slug(slug.clone());
+        }
+        if let Some(trust_level) = request.trust_level {
+            client.set_trust_level(trust_level);
+            client
+                .set_require_consent(trust_level == crate::identity::ClientTrustLevel::ThirdParty);
+        }
+        if let Some(declared_scopes) = &request.declared_scopes {
+            client.set_declared_scopes(declared_scopes.clone());
+        }
+        if let Some(consent_spans_orgs) = request.consent_spans_orgs {
+            client.set_consent_spans_orgs(consent_spans_orgs);
         }
 
         let updated_bytes =
@@ -4895,6 +5132,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             redirect_uri: redirect_uri.to_string(),
             scope: scope.to_string(),
             state: state.to_string(),
+            resource: None,
             response_type: "code".to_string(),
             user_id: user_id.clone(),
             code_challenge,
@@ -5184,7 +5422,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             request.grant_types.clone()
         };
 
-        let client = if let Some(ref secret) = request.client_secret {
+        let mut client = if let Some(ref secret) = request.client_secret {
             let secret_hash =
                 credentials::hash_raw_secret(secret.as_bytes(), &self.config.credential)?;
             OAuthClient::new_confidential(
@@ -5201,6 +5439,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             c.set_grant_types(grant_types);
             c
         };
+        client.set_slug(
+            request
+                .slug
+                .clone()
+                .unwrap_or_else(|| client.client_name().to_lowercase().replace(' ', "-")),
+        );
+        client.set_trust_level(request.trust_level);
+        client.set_require_consent(
+            request.trust_level == crate::identity::ClientTrustLevel::ThirdParty,
+        );
+        client.set_declared_scopes(request.declared_scopes.clone());
+        client.set_consent_spans_orgs(request.consent_spans_orgs);
 
         let client_bytes =
             serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {

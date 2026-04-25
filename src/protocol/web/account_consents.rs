@@ -1,4 +1,4 @@
-//! Self-service OAuth consent management (`/ui/account/consents`).
+//! Self-service OAuth consent management (`/ui/account/applications`).
 //!
 //! This surface mirrors the session management module shape: listing,
 //! per-item revoke, and "revoke all". Every action requires a valid
@@ -8,9 +8,9 @@
 //!
 //! # Routes
 //!
-//! * `GET  /ui/account/consents` — list the signed-in user's consents.
-//! * `POST /ui/account/consents/{client_id}/revoke` — revoke one.
-//! * `POST /ui/account/consents/revoke-all` — revoke every consent.
+//! * `GET  /ui/account/applications` — list the signed-in user's consents.
+//! * `POST /ui/account/applications/{client_id}/revoke` — revoke one.
+//! * `POST /ui/account/applications/revoke-all` — revoke every consent.
 
 use std::sync::Arc;
 
@@ -89,7 +89,7 @@ impl ConsentsIndexTemplate {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `GET /ui/account/consents` — lists every OAuth client the signed-in
+/// `GET /ui/account/applications` — lists every OAuth client the signed-in
 /// user has granted consent to, with per-row revoke actions.
 pub async fn consents_index(State(state): State<Arc<WebState>>, session: UiSession) -> Response {
     let rows = load_consents(&state, &session);
@@ -113,7 +113,7 @@ pub struct CsrfOnlyForm {
     pub csrf: String,
 }
 
-/// `POST /ui/account/consents/{client_id}/revoke`.
+/// `POST /ui/account/applications/{client_id}/revoke`.
 ///
 /// Revokes the signed-in user's consent for a single OAuth client and
 /// redirects back to the index. Unknown client id returns 404.
@@ -142,7 +142,7 @@ pub async fn revoke_consent(
                 &client_id,
                 false,
             );
-            Redirect::to("/ui/account/consents").into_response()
+            Redirect::to("/ui/account/applications").into_response()
         }
         Err(IdentityError::ConsentNotFound) => handlers_common::not_found("Consent not found"),
         Err(e) => {
@@ -152,7 +152,7 @@ pub async fn revoke_consent(
     }
 }
 
-/// `POST /ui/account/consents/revoke-all`.
+/// `POST /ui/account/applications/revoke-all`.
 ///
 /// Revokes every consent the signed-in user has granted in the current
 /// realm. Each individual record revoked emits a `ConsentRevoked` event
@@ -191,7 +191,7 @@ pub async fn revoke_all_consents(
             );
         }
     }
-    Redirect::to("/ui/account/consents").into_response()
+    Redirect::to("/ui/account/applications").into_response()
 }
 
 // ---------------------------------------------------------------------------

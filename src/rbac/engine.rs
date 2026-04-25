@@ -19,13 +19,11 @@ use super::error::RbacError;
 use super::keys;
 use super::resolve::{self, Resolver};
 use super::seed::{self, StoredScope};
-#[cfg(test)]
-use super::types::Scope;
 use super::types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
     GroupId, GroupMember, GroupMembership, Page, Permission, ResolvedPermissions, Role,
-    RoleAssignment, RoleId, RoleSubject, Subject, TraversalKind, UpdateGroupRequest,
-    UpdateRoleRequest,
+    RoleAssignment, RoleId, RoleSubject, Scope, Subject, TraversalKind, UpdateGroupRequest,
+    UpdateRoleRequest, UserPermissionGrant,
 };
 use super::RbacEngine;
 
@@ -316,6 +314,20 @@ impl EmbeddedRbacEngine {
         }
         Ok(out)
     }
+
+    fn load_user_permissions(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<UserPermissionGrant>, RbacError> {
+        let prefix = keys::user_permission_scan_prefix(realm_id, user_id);
+        let end = keys::prefix_end(&prefix);
+        let mut out = Vec::new();
+        for entry in self.storage.scan(realm_id, &prefix, &end)? {
+            out.push(Self::de::<UserPermissionGrant>(&entry.value)?);
+        }
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +395,14 @@ impl Resolver for EmbeddedRbacEngine {
             }
         }
     }
+
+    fn user_permissions(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<UserPermissionGrant>, RbacError> {
+        self.load_user_permissions(realm_id, user_id)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +418,52 @@ impl RbacEngine for EmbeddedRbacEngine {
         requested_scope: Option<&str>,
     ) -> Result<ResolvedPermissions, RbacError> {
         resolve::resolve_permissions(self, user_id, realm_id, org_id, requested_scope)
+    }
+
+    fn grant_user_permission(
+        &self,
+        realm_id: &RealmId,
+        grant: &UserPermissionGrant,
+    ) -> Result<UserPermissionGrant, RbacError> {
+        let primary = keys::encode_user_permission(
+            realm_id,
+            &grant.user_id,
+            &grant.scope,
+            grant.permission.as_str(),
+        );
+        let reverse = keys::encode_user_permission_by_perm(
+            realm_id,
+            grant.permission.as_str(),
+            &grant.scope,
+            &grant.user_id,
+        );
+        let bytes = Self::ser(grant)?;
+        self.storage
+            .put_batch(realm_id, &[(primary, bytes), (reverse, Vec::new())])?;
+        Ok(grant.clone())
+    }
+
+    fn revoke_user_permission(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        permission: &Permission,
+        scope: &Scope,
+    ) -> Result<(), RbacError> {
+        let primary = keys::encode_user_permission(realm_id, user_id, scope, permission.as_str());
+        let reverse =
+            keys::encode_user_permission_by_perm(realm_id, permission.as_str(), scope, user_id);
+        self.storage.delete(realm_id, &primary)?;
+        self.storage.delete(realm_id, &reverse)?;
+        Ok(())
+    }
+
+    fn list_user_permissions(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<UserPermissionGrant>, RbacError> {
+        self.load_user_permissions(realm_id, user_id)
     }
 
     // ---------- Roles ----------
@@ -425,6 +491,7 @@ impl RbacEngine for EmbeddedRbacEngine {
             description: req.description.clone(),
             permissions: req.permissions.clone(),
             parent_roles: req.parent_roles.clone(),
+            scope_kind: req.scope_kind,
             created_at: now,
             updated_at: now,
         };
@@ -500,6 +567,10 @@ impl RbacEngine for EmbeddedRbacEngine {
             }
             self.check_role_parents_no_cycle(realm_id, role_id, parents)?;
             role.parent_roles.clone_from(parents);
+        }
+
+        if let Some(scope_kind) = req.scope_kind {
+            role.scope_kind = scope_kind;
         }
 
         role.updated_at = self.clock.now();

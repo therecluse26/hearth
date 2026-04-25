@@ -44,6 +44,10 @@ impl From<pb::RegisterClientRequest> for domain::RegisterClientRequest {
             },
             require_consent: true,
             client_logo_url: None,
+            slug: None,
+            trust_level: domain::ClientTrustLevel::FirstParty,
+            declared_scopes: Vec::new(),
+            consent_spans_orgs: false,
         }
     }
 }
@@ -66,6 +70,10 @@ impl From<pb::UpdateClientRequest> for domain::UpdateClientRequest {
             },
             require_consent: None,
             client_logo_url: None,
+            slug: None,
+            trust_level: None,
+            declared_scopes: None,
+            consent_spans_orgs: None,
         }
     }
 }
@@ -93,6 +101,7 @@ pub(crate) fn proto_authorize_to_domain(
         redirect_uri: r.redirect_uri,
         scope: r.scope,
         state: r.state,
+        resource: None,
         response_type: r.response_type,
         user_id: UserId::new(
             uuid::Uuid::parse_str(&r.user_id).map_err(|_| "invalid user_id UUID".to_string())?,

@@ -17,7 +17,7 @@ use crate::storage::StorageEngine;
 
 use super::error::RbacError;
 use super::keys;
-use super::types::{Permission, Role, RoleId};
+use super::types::{Permission, Role, RoleId, RoleScopeKind};
 
 /// Seed permission identifiers (§ 9.1).
 pub(crate) const SEED_PERMISSIONS: &[&str] = &[
@@ -211,6 +211,11 @@ fn seed_roles(
             description: Some(format!("Seed role: {}", spec.name)),
             permissions,
             parent_roles,
+            scope_kind: if spec.name.starts_with("org.") {
+                RoleScopeKind::Organization
+            } else {
+                RoleScopeKind::Realm
+            },
             created_at: now,
             updated_at: now,
         };

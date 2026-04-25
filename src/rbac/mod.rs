@@ -17,6 +17,7 @@
 mod engine;
 pub mod error;
 pub(crate) mod keys;
+pub mod registry;
 mod resolve;
 mod seed;
 mod types;
@@ -25,9 +26,10 @@ pub use engine::EmbeddedRbacEngine;
 pub use error::RbacError;
 pub use types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
-    GroupId, GroupMember, GroupMembership, Page, Permission, ResolvedPermissions, Role,
-    RoleAssignment, RoleId, RoleSubject, Scope, Subject, TraversalKind, UpdateGroupRequest,
-    UpdateRoleRequest,
+    GroupId, GroupMember, GroupMembership, Page, Permission, PermissionDefinition,
+    ProtectedResource, ResolvedPermissions, Role, RoleAssignment, RoleId, RoleScopeKind,
+    RoleSubject, Scope, ScopeBundle, Subject, TraversalKind, UpdateGroupRequest, UpdateRoleRequest,
+    UserPermissionGrant,
 };
 
 use crate::core::{OrganizationId, RealmId, UserId};
@@ -52,6 +54,29 @@ pub trait RbacEngine: Send + Sync {
         org_id: Option<&OrganizationId>,
         requested_scope: Option<&str>,
     ) -> Result<ResolvedPermissions, RbacError>;
+
+    /// Grants a direct permission to a user outside any role.
+    fn grant_user_permission(
+        &self,
+        realm_id: &RealmId,
+        grant: &UserPermissionGrant,
+    ) -> Result<UserPermissionGrant, RbacError>;
+
+    /// Revokes a direct permission from a user.
+    fn revoke_user_permission(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        permission: &Permission,
+        scope: &Scope,
+    ) -> Result<(), RbacError>;
+
+    /// Lists direct permission grants for a user.
+    fn list_user_permissions(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<UserPermissionGrant>, RbacError>;
 
     // ------- Roles -------
 

@@ -11,6 +11,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{ClientId, RealmId, Timestamp};
 
+/// Client trust posture used by authz and consent evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientTrustLevel {
+    FirstParty,
+    ThirdParty,
+}
+
+impl Default for ClientTrustLevel {
+    fn default() -> Self {
+        Self::FirstParty
+    }
+}
+
 /// Configuration for OIDC / OAuth 2.0 operations.
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
@@ -67,6 +81,14 @@ pub struct RegisterClientRequest {
     pub require_consent: bool,
     /// Optional URL to a client logo displayed on the consent screen.
     pub client_logo_url: Option<String>,
+    /// Stable slug for managed clients; runtime registrations may omit it.
+    pub slug: Option<String>,
+    /// Authz trust posture for this client.
+    pub trust_level: ClientTrustLevel,
+    /// Scopes this client is allowed to request.
+    pub declared_scopes: Vec<String>,
+    /// Whether a realm-scoped consent can cover all org contexts.
+    pub consent_spans_orgs: bool,
 }
 
 impl Default for RegisterClientRequest {
@@ -78,6 +100,10 @@ impl Default for RegisterClientRequest {
             grant_types: Vec::new(),
             require_consent: true,
             client_logo_url: None,
+            slug: None,
+            trust_level: ClientTrustLevel::FirstParty,
+            declared_scopes: Vec::new(),
+            consent_spans_orgs: false,
         }
     }
 }
@@ -89,6 +115,9 @@ pub struct OAuthClient {
     client_id: ClientId,
     /// Human-readable client name.
     client_name: String,
+    /// Stable human-readable slug used by YAML refs and mapper gates.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    slug: String,
     /// Allowed redirect URIs.
     redirect_uris: Vec<String>,
     /// When the client was registered.
@@ -111,6 +140,15 @@ pub struct OAuthClient {
     /// Optional URL to a client logo displayed on the consent screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_logo_url: Option<String>,
+    /// Authz trust posture.
+    #[serde(default)]
+    trust_level: ClientTrustLevel,
+    /// Scopes this client may request.
+    #[serde(default)]
+    declared_scopes: Vec<String>,
+    /// Whether a realm-level consent covers all org contexts.
+    #[serde(default)]
+    consent_spans_orgs: bool,
 }
 
 fn default_require_consent() -> bool {
@@ -128,12 +166,16 @@ impl OAuthClient {
         Self {
             client_id,
             client_name,
+            slug: String::new(),
             redirect_uris,
             created_at,
             client_secret_hash: None,
             grant_types: vec!["authorization_code".to_string()],
             require_consent: true,
             client_logo_url: None,
+            trust_level: ClientTrustLevel::FirstParty,
+            declared_scopes: Vec::new(),
+            consent_spans_orgs: false,
         }
     }
 
@@ -149,12 +191,16 @@ impl OAuthClient {
         Self {
             client_id,
             client_name,
+            slug: String::new(),
             redirect_uris,
             created_at,
             client_secret_hash: Some(client_secret_hash),
             grant_types,
             require_consent: true,
             client_logo_url: None,
+            trust_level: ClientTrustLevel::FirstParty,
+            declared_scopes: Vec::new(),
+            consent_spans_orgs: false,
         }
     }
 
@@ -166,6 +212,11 @@ impl OAuthClient {
     /// Returns the client's human-readable name.
     pub fn client_name(&self) -> &str {
         &self.client_name
+    }
+
+    /// Returns the stable client slug.
+    pub fn slug(&self) -> &str {
+        &self.slug
     }
 
     /// Returns the client's registered redirect URIs.
@@ -229,9 +280,44 @@ impl OAuthClient {
         self.client_logo_url.as_deref()
     }
 
+    /// Returns the client trust level.
+    pub fn trust_level(&self) -> ClientTrustLevel {
+        self.trust_level
+    }
+
+    /// Returns the declared scopes.
+    pub fn declared_scopes(&self) -> &[String] {
+        &self.declared_scopes
+    }
+
+    /// Returns whether consent spans org contexts.
+    pub fn consent_spans_orgs(&self) -> bool {
+        self.consent_spans_orgs
+    }
+
     /// Sets the client logo URL. `None` clears it. Used during admin updates.
     pub(crate) fn set_client_logo_url(&mut self, url: Option<String>) {
         self.client_logo_url = url;
+    }
+
+    /// Sets the stable slug.
+    pub(crate) fn set_slug(&mut self, slug: String) {
+        self.slug = slug;
+    }
+
+    /// Sets the trust level.
+    pub(crate) fn set_trust_level(&mut self, trust_level: ClientTrustLevel) {
+        self.trust_level = trust_level;
+    }
+
+    /// Sets the declared scope allowlist.
+    pub(crate) fn set_declared_scopes(&mut self, declared_scopes: Vec<String>) {
+        self.declared_scopes = declared_scopes;
+    }
+
+    /// Sets whether consent spans org contexts.
+    pub(crate) fn set_consent_spans_orgs(&mut self, value: bool) {
+        self.consent_spans_orgs = value;
     }
 }
 
@@ -251,6 +337,14 @@ pub struct UpdateClientRequest {
     /// Logo URL for the consent screen. Passing `Some(None)` clears it;
     /// `None` leaves it untouched.
     pub client_logo_url: Option<Option<String>>,
+    /// Updated stable slug.
+    pub slug: Option<String>,
+    /// Updated trust posture.
+    pub trust_level: Option<ClientTrustLevel>,
+    /// Updated declared scope allowlist.
+    pub declared_scopes: Option<Vec<String>>,
+    /// Updated org-spanning consent behavior.
+    pub consent_spans_orgs: Option<bool>,
 }
 
 /// The PKCE code challenge method.
@@ -274,6 +368,8 @@ pub struct AuthorizationRequest {
     pub scope: String,
     /// Opaque state value for CSRF protection (MUST be non-empty).
     pub state: String,
+    /// Optional RFC 8707 resource indicator.
+    pub resource: Option<String>,
     /// Response type (must be "code" for authorization code flow).
     pub response_type: String,
     /// The authenticated user granting authorization.
@@ -712,6 +808,9 @@ pub struct UserInfoResponse {
     /// User's display name. Present when scope includes `profile`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Additional declaratively-shaped claims.
+    #[serde(default, flatten)]
+    pub custom: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[cfg(test)]

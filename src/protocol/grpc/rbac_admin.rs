@@ -15,7 +15,7 @@ use tonic::{Code, Request, Response, Status};
 use crate::core::{OrganizationId, RealmId, UserId};
 use crate::rbac::{
     AssignRoleRequest, CreateGroupRequest, CreateRoleRequest, GroupId, GroupMember, Permission,
-    RbacEngine, RoleId, Scope, Subject, UpdateGroupRequest, UpdateRoleRequest,
+    RoleId, Scope, Subject, UpdateGroupRequest, UpdateRoleRequest,
 };
 
 use super::auth::authenticate_admin;
@@ -252,6 +252,7 @@ impl RbacAdminService for RbacAdminSvc {
                     description,
                     permissions,
                     parent_roles,
+                    scope_kind: crate::rbac::RoleScopeKind::Realm,
                 },
             )
             .map_err(rbac_to_status)?;
@@ -310,6 +311,7 @@ impl RbacAdminService for RbacAdminSvc {
                     description,
                     permissions,
                     parent_roles,
+                    scope_kind: None,
                 },
             )
             .map_err(rbac_to_status)?;

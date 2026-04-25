@@ -871,6 +871,7 @@ pub async fn admin_user_edit_submit(
         first_name: Some(form.first_name.clone()),
         last_name: Some(form.last_name.clone()),
         status,
+        attributes: None,
     };
 
     match state.identity.update_user(target.id(), &uid, &req) {
@@ -4102,7 +4103,7 @@ struct AdminUserConsentsTemplate {
     realm_theme_css: Option<String>,
 }
 
-/// `GET /ui/admin/users/{id}/consents` — lists every OAuth consent the
+/// `GET /ui/admin/users/{id}/applications` — lists every OAuth consent the
 /// target user has granted in the admin's target realm.
 pub async fn admin_user_consents_list(
     State(state): State<Arc<WebState>>,
@@ -4161,7 +4162,7 @@ pub async fn admin_user_consents_list(
     render(&tmpl)
 }
 
-/// `POST /ui/admin/users/{id}/consents/{client_id}/revoke` — admin
+/// `POST /ui/admin/users/{id}/applications/{client_id}/revoke` — admin
 /// revoke-on-behalf. Emits a `ConsentRevoked` audit with
 /// `metadata.via = "admin"` so operators can distinguish from self-revokes.
 pub async fn admin_user_consent_revoke(
@@ -4200,7 +4201,11 @@ pub async fn admin_user_consent_revoke(
                     "client_id": client_id.as_uuid().to_string(),
                 })),
             });
-            Redirect::to(&format!("/ui/admin/users/{}/consents", user_id.as_uuid())).into_response()
+            Redirect::to(&format!(
+                "/ui/admin/users/{}/applications",
+                user_id.as_uuid()
+            ))
+            .into_response()
         }
         Err(IdentityError::ConsentNotFound) => {
             super::handlers_common::not_found("Consent not found")

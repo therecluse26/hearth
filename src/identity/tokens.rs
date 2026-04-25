@@ -12,6 +12,7 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{self, Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use zeroize::Zeroize;
 
 use crate::core::Timestamp;
@@ -127,6 +128,9 @@ pub struct TokenClaims {
     /// this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<String>,
+    /// Declaratively-mapped custom claims emitted at the top level.
+    #[serde(default, flatten)]
+    pub custom: BTreeMap<String, serde_json::Value>,
 }
 
 /// A pair of access and refresh tokens.
@@ -346,6 +350,7 @@ impl SigningKey {
             roles: request.roles.to_vec(),
             groups: request.groups.to_vec(),
             permissions: request.permissions.to_vec(),
+            custom: request.custom.clone(),
         };
 
         let refresh_claims = TokenClaims {
@@ -365,6 +370,7 @@ impl SigningKey {
             roles: Vec::new(),
             groups: Vec::new(),
             permissions: Vec::new(),
+            custom: BTreeMap::new(),
         };
 
         let access_token = self.issue_token(&access_claims)?;
@@ -401,6 +407,8 @@ pub struct IssueTokenRequest<'a> {
     /// Resolved flat permission set. Empty Vec is legal. Caller is
     /// responsible for enforcing size caps per `AUTHORIZATION.md § 2.6`.
     pub permissions: &'a [String],
+    /// Additional top-level custom claims.
+    pub custom: BTreeMap<String, serde_json::Value>,
 }
 
 /// Validates a JWT's signature and returns the decoded claims.
@@ -682,6 +690,7 @@ mod tests {
             roles: Vec::new(),
             groups: Vec::new(),
             permissions: Vec::new(),
+            custom: BTreeMap::new(),
         }
     }
 
@@ -824,6 +833,7 @@ mod tests {
                 roles: &[],
                 groups: &[],
                 permissions: &[],
+                custom: BTreeMap::new(),
             })
             .expect("issue pair");
 
@@ -859,6 +869,7 @@ mod tests {
                 roles: &[],
                 groups: &[],
                 permissions: &[],
+                custom: BTreeMap::new(),
             })
             .expect("reissue pair");
 

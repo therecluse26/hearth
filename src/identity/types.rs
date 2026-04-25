@@ -1,11 +1,14 @@
 //! Identity domain types: users, realms, requests, and status.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
+use crate::identity::claims_config::ClaimProfile;
 use crate::identity::credentials::CleartextPassword;
 use crate::identity::email::EmailBranding;
 use crate::identity::federation::LinkMode;
+use crate::rbac::{PermissionDefinition, ProtectedResource, Role, ScopeBundle};
 
 /// A cursor-based page of results.
 ///
@@ -63,6 +66,8 @@ pub struct User {
     display_name: String,
     first_name: String,
     last_name: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    attributes: BTreeMap<String, String>,
     status: UserStatus,
     created_at: Timestamp,
     updated_at: Timestamp,
@@ -86,6 +91,7 @@ impl User {
             display_name,
             first_name,
             last_name,
+            attributes: BTreeMap::new(),
             status,
             created_at,
             updated_at,
@@ -122,6 +128,11 @@ impl User {
         self.status
     }
 
+    /// Returns the user's custom attribute map.
+    pub fn attributes(&self) -> &BTreeMap<String, String> {
+        &self.attributes
+    }
+
     /// Returns when the user was created (UTC microseconds).
     pub fn created_at(&self) -> Timestamp {
         self.created_at
@@ -150,6 +161,11 @@ impl User {
     /// Updates the last name. Used internally during user updates.
     pub(crate) fn set_last_name(&mut self, last_name: String) {
         self.last_name = last_name;
+    }
+
+    /// Replaces the attributes map.
+    pub(crate) fn set_attributes(&mut self, attributes: BTreeMap<String, String>) {
+        self.attributes = attributes;
     }
 
     /// Updates the status. Used internally during user updates.
@@ -356,6 +372,8 @@ pub struct UpdateUserRequest {
     pub last_name: Option<String>,
     /// New account status.
     pub status: Option<UserStatus>,
+    /// Replace the custom attribute map.
+    pub attributes: Option<BTreeMap<String, String>>,
 }
 
 // ===== Realm types =====
@@ -419,7 +437,7 @@ pub struct PasswordPolicy {
 /// Per-realm configuration overrides.
 ///
 /// Fields are optional — when `None`, the engine-level default is used.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RealmConfig {
     /// Session time-to-live in microseconds. Overrides engine default.
     pub session_ttl_micros: Option<i64>,
@@ -460,6 +478,21 @@ pub struct RealmConfig {
     /// means [`LinkMode::Confirm`] — the Keycloak-equivalent safety
     /// default that requires local re-authentication before linking.
     pub federation_link_mode: Option<LinkMode>,
+    /// YAML-authored permission registry for this realm.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<PermissionDefinition>,
+    /// YAML-authored RBAC roles for this realm.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<Role>,
+    /// YAML-authored roles visible in the admin/authz surfaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<ScopeBundle>,
+    /// YAML-authored protected resources and their local scope namespaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected_resources: Vec<ProtectedResource>,
+    /// YAML-authored claim profile overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_profile: Option<ClaimProfile>,
 }
 
 /// A realm record.
@@ -467,7 +500,7 @@ pub struct RealmConfig {
 /// Each realm is an isolated namespace for users, sessions, credentials,
 /// tokens, and authorization tuples. Fields are private; access via
 /// accessor methods.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Realm {
     id: RealmId,
     name: String,
@@ -719,6 +752,8 @@ pub struct OrganizationMembership {
     org_id: OrganizationId,
     user_id: UserId,
     role: OrganizationRole,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    additional_roles: Vec<String>,
     joined_at: Timestamp,
     invited_by: Option<UserId>,
 }
@@ -736,6 +771,7 @@ impl OrganizationMembership {
             org_id,
             user_id,
             role,
+            additional_roles: Vec::new(),
             joined_at,
             invited_by,
         }
@@ -756,6 +792,12 @@ impl OrganizationMembership {
         self.role
     }
 
+    /// Additional organization-scoped RBAC roles layered on top of the
+    /// canonical membership tier.
+    pub fn additional_roles(&self) -> &[String] {
+        &self.additional_roles
+    }
+
     /// Returns when the user joined the organization (UTC microseconds).
     pub fn joined_at(&self) -> Timestamp {
         self.joined_at
@@ -769,6 +811,11 @@ impl OrganizationMembership {
     /// Updates the role. Used internally during role changes.
     pub(crate) fn set_role(&mut self, role: OrganizationRole) {
         self.role = role;
+    }
+
+    /// Replaces the additional role set.
+    pub(crate) fn set_additional_roles(&mut self, roles: Vec<String>) {
+        self.additional_roles = roles;
     }
 }
 
@@ -987,6 +1034,14 @@ pub struct ImportClientRequest {
     pub client_secret: Option<String>,
     /// Allowed OAuth 2.0 grant types (defaults to `authorization_code`).
     pub grant_types: Vec<String>,
+    /// Stable client slug.
+    pub slug: Option<String>,
+    /// Client trust posture.
+    pub trust_level: crate::identity::ClientTrustLevel,
+    /// Declared scope allowlist.
+    pub declared_scopes: Vec<String>,
+    /// Whether a realm-level consent spans org contexts.
+    pub consent_spans_orgs: bool,
 }
 
 /// Summary returned by a successful migration.
@@ -1025,8 +1080,17 @@ pub struct ConsentRecord {
     pub user_id: UserId,
     /// The OAuth client the consent applies to.
     pub client_id: ClientId,
+    /// Organization context captured at grant time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_oid: Option<OrganizationId>,
+    /// Resource indicator captured at grant time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
     /// Canonicalized (sorted + deduplicated) scopes the user has approved.
     pub granted_scopes: Vec<String>,
+    /// Digest of the authorization + disclosure surface.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_digest: Vec<u8>,
     /// When consent was first recorded.
     pub granted_at: Timestamp,
     /// When the scope set was last updated.
@@ -1039,7 +1103,10 @@ impl ConsentRecord {
         Self {
             user_id,
             client_id,
+            context_oid: None,
+            resource: None,
             granted_scopes: canonicalize_scopes(scopes),
+            scope_digest: Vec::new(),
             granted_at: now,
             updated_at: now,
         }

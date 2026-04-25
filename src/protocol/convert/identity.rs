@@ -66,6 +66,7 @@ impl From<pb::UpdateUserRequest> for domain::UpdateUserRequest {
             first_name: r.first_name,
             last_name: r.last_name,
             status: r.status.and_then(proto_user_status_to_domain),
+            attributes: None,
         }
     }
 }

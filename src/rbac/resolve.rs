@@ -18,7 +18,7 @@ use super::error::RbacError;
 use super::types::Subject;
 use super::types::{
     CycleKind, GroupId, GroupMember, Permission, ResolvedPermissions, Role, RoleAssignment, RoleId,
-    Scope, TraversalKind,
+    Scope, TraversalKind, UserPermissionGrant,
 };
 
 /// Maximum depth for transitive group membership BFS.
@@ -75,6 +75,13 @@ pub(crate) trait Resolver {
         realm_id: &RealmId,
         scope_name: &str,
     ) -> Result<Option<Vec<Permission>>, RbacError>;
+
+    /// Direct extra permissions granted to a user.
+    fn user_permissions(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<UserPermissionGrant>, RbacError>;
 }
 
 /// Core algorithm: resolve `(user, realm, org?, scope?)` → `ResolvedPermissions`.
@@ -120,6 +127,12 @@ pub(crate) fn resolve_permissions<R: Resolver + ?Sized>(
     }
 
     // ----- Step 4: scope narrowing -----
+    for extra in resolver.user_permissions(realm_id, user_id)? {
+        if extra_applies(&extra, org_id) {
+            perms.insert(extra.permission);
+        }
+    }
+
     let permissions: Vec<Permission> = if let Some(scope_str) = requested_scope {
         narrow_by_scope(resolver, realm_id, scope_str, perms)?
     } else {
@@ -138,7 +151,15 @@ pub(crate) fn resolve_permissions<R: Resolver + ?Sized>(
         roles: role_names.into_iter().collect(),
         groups: group_slugs.into_iter().collect(),
         permissions,
+        granted_scopes: Vec::new(),
     })
+}
+
+fn extra_applies(extra: &UserPermissionGrant, org_id: Option<&OrganizationId>) -> bool {
+    match &extra.scope {
+        Scope::Realm => true,
+        Scope::Org { org_id: oid } => org_id.is_some_and(|requested| requested == oid),
+    }
 }
 
 /// Returns true if a role assignment applies given the optional org context.
@@ -324,6 +345,7 @@ mod tests {
         roles: HashMap<RoleId, Role>,
         group_slugs: HashMap<GroupId, String>,
         scopes: HashMap<String, Option<Vec<Permission>>>,
+        user_perms: HashMap<UserId, Vec<UserPermissionGrant>>,
     }
 
     impl Fake {
@@ -335,6 +357,7 @@ mod tests {
                 roles: HashMap::new(),
                 group_slugs: HashMap::new(),
                 scopes: HashMap::new(),
+                user_perms: HashMap::new(),
             }
         }
 
@@ -418,6 +441,14 @@ mod tests {
                 .cloned()
                 .unwrap_or(Some(Vec::new())))
         }
+
+        fn user_permissions(
+            &self,
+            _r: &RealmId,
+            user_id: &UserId,
+        ) -> Result<Vec<UserPermissionGrant>, RbacError> {
+            Ok(self.user_perms.get(user_id).cloned().unwrap_or_default())
+        }
     }
 
     fn mk_role(realm: &RealmId, name: &str, perms: &[&str], parents: Vec<RoleId>) -> Role {
@@ -431,6 +462,7 @@ mod tests {
                 .map(|p| Permission::new(*p).expect("valid perm in test"))
                 .collect(),
             parent_roles: parents,
+            scope_kind: crate::rbac::RoleScopeKind::Realm,
             created_at: Timestamp::from_micros(1),
             updated_at: Timestamp::from_micros(1),
         }

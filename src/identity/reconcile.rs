@@ -202,8 +202,12 @@ fn reconcile_declared_realms(
             }
         };
 
-        // Reconcile applications declared under this realm
-        if let Some(apps) = &yaml_cfg.applications {
+        // Reconcile managed OAuth clients declared under this realm.
+        if let Some(apps) = yaml_cfg
+            .oauth_clients
+            .as_ref()
+            .or(yaml_cfg.applications.as_ref())
+        {
             reconcile_applications(engine, &realm_id, name, apps, report)?;
         }
 
@@ -346,6 +350,10 @@ pub(crate) fn reconcile_applications(
                             } else {
                                 None
                             },
+                            slug: app_cfg.slug.clone(),
+                            trust_level: app_cfg.trust_level,
+                            declared_scopes: app_cfg.declared_scopes.clone(),
+                            consent_spans_orgs: app_cfg.consent_spans_orgs,
                         },
                     )?;
                     info!(
@@ -376,6 +384,12 @@ pub(crate) fn reconcile_applications(
                         redirect_uris,
                         client_secret: secret,
                         grant_types,
+                        slug: app_cfg.slug.clone(),
+                        trust_level: app_cfg
+                            .trust_level
+                            .unwrap_or(crate::identity::ClientTrustLevel::FirstParty),
+                        declared_scopes: app_cfg.declared_scopes.clone().unwrap_or_default(),
+                        consent_spans_orgs: app_cfg.consent_spans_orgs.unwrap_or(false),
                     },
                 )?;
                 // Apply consent-policy fields: the import path doesn't
@@ -391,6 +405,10 @@ pub(crate) fn reconcile_applications(
                             grant_types: None,
                             require_consent: Some(cfg_require_consent),
                             client_logo_url: Some(cfg_logo.clone()),
+                            slug: app_cfg.slug.clone(),
+                            trust_level: app_cfg.trust_level,
+                            declared_scopes: app_cfg.declared_scopes.clone(),
+                            consent_spans_orgs: app_cfg.consent_spans_orgs,
                         },
                     )?;
                 }

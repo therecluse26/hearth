@@ -2510,6 +2510,7 @@ async fn admin_create_role(
             description: body.description,
             permissions,
             parent_roles,
+            scope_kind: crate::rbac::RoleScopeKind::Realm,
         },
     ) {
         Ok(role) => (StatusCode::CREATED, Json(role)).into_response(),
@@ -2581,6 +2582,7 @@ async fn admin_update_role(
             description: body.description,
             permissions,
             parent_roles,
+            scope_kind: None,
         },
     ) {
         Ok(role) => (StatusCode::OK, Json(role)).into_response(),
