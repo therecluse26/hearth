@@ -471,12 +471,21 @@ Declarative role, permission, group, and scope setup for the realm's RBAC model.
 | `scopes[].display_name` | string | *required* | Shown on consent screens. |
 | `scopes[].description` | string | — | Shown on consent screens. |
 | `scopes[].permissions` | array of strings | *required* | Permission names this bundle expands to. All must be declared in the realm's `permissions` list. |
-| `claims` | object | *(defaults)* | OPTIONAL override of the realm's token claim profile. Absent → default profile emits `roles`, `groups`, `permissions`, `oid` with their standard shapes. |
-| `claims.mappings` | array of mapping | `[]` | Ordered list of claim mappings merged over defaults by claim name (last-wins). |
-| `claims.mappings[].claim` | string | *required* | Target JWT claim name. Tier 1 claims (`iss`, `exp`, `sub`, `permissions`, `scope`, `sid`, etc.) rejected at config load. |
-| `claims.mappings[].source` | enum | *required* | One of: `roles_from_assignments`, `groups_from_memberships`, `effective_permissions`, `org_context`, `user_attribute` (with `attribute`), `role_subset` (with `prefix`), `constant` (with `value`), `omit`. |
+| `claims` | object | *(defaults)* | OPTIONAL override of the realm's token claim profile. Absent → default profile emits `roles`, `groups`, `permissions`, `oid` with their standard shapes. Note: under the layered profile model in [`AUTHZ_EXPANSION.md`](./AUTHZ_EXPANSION.md), `roles`, `groups`, AND `permissions` are gated `first_party_only: true` by default — third-party clients receive none of these by default. |
+| `claims.mappings` | array of mapping | `[]` | Ordered list of claim mappings appended after the built-in defaults and evaluated under the **layered gate-aware fallback model** per (claim-name, token-target) tuple. NOT last-wins replacement — when a YAML override's release gates fail for a given context, evaluation falls back to the default mapping for the same (claim, target) rather than suppressing the claim entirely. See `AUTHZ_EXPANSION.md` §"Evaluation and merge model" for the authoritative rule. |
+| `claims.mappings[].claim` | string | *required* | Target JWT claim name. Tier 1 claims (JWT-registered, identity, authorization, tenant-routing, OIDC flow, token-binding, client-identity, proof-of-possession, delegation-attestation, and verification-attestation claims) rejected at config load. See `AUTHZ_EXPANSION.md` §"Claim name tiers" for the full Tier 1 list. |
+| `claims.mappings[].source` | enum | *required* | One of: `roles_from_assignments`, `groups_from_memberships`, `effective_permissions`, `org_context`, `canonical_user_field` (with `field` — closed enum of OIDC standard fields), `user_attribute` (with `attribute` — `User.attributes` map lookup, **disjoint from canonical**), `role_subset` (with `prefix`), `constant` (with `value`), `omit`. |
 | `claims.mappings[].include_in_access_token` | bool | `true` | Whether this claim appears in access tokens. |
 | `claims.mappings[].include_in_id_token` | bool | `true` | Whether this claim appears in ID tokens. |
+| `claims.mappings[].include_in_userinfo` | bool | `false` | Whether this claim is emitted by the `/userinfo` endpoint. The merge model evaluates per (claim, token-target) — a YAML override gated for ID tokens does NOT suppress the default's UserInfo emission. |
+| `claims.mappings[].first_party_only` | bool | `true` for Tier 3 (custom) claims; default of the overridden mapping otherwise | Release gate: emit only when `client.trust_level == FirstParty`. Tier 3 custom claims default to `true` (over-disclosure is opt-in). |
+| `claims.mappings[].required_scopes` | array of strings | — | Release gate: if set, the **granted** scope set (post-resolution, not raw request) must include ≥1 of these for the claim to emit. |
+| `claims.mappings[].allowed_clients` | array of strings | — | Release gate: if set, the requesting client's slug must be in this list. **Managed-client slugs only** — DCR-registered slugs are rejected at config load. |
+| `protected_resources` | array of resource | `[]` | OPTIONAL RFC 8707 protected-resource registrations (e.g., MCP tool servers). Each resource owns its own scope namespace; scopes declared here are NOT realm-global and apply only when a token is issued with `aud` set to this resource's URI. See `AUTHZ_EXPANSION.md` §"Architectural Model" and `AGENT_AUTH.md` §2.5. |
+| `protected_resources[].resource_uri` | string | *required* | Canonical URI of the protected resource (becomes the token `aud` claim). |
+| `protected_resources[].display_name` | string | *required* | Shown on consent screens. |
+| `protected_resources[].scopes` | array of scope bundle | `[]` | Resource-local scope bundles. Same shape as the realm-level `scopes` entries. Looked up only when a token request includes `resource = <this URI>`; the realm-level `scopes` block is NOT consulted under a resource. |
+| `oauth_clients[].slug` | string | *required* | Realm-unique human-readable handle. Managed clients (declared in YAML) have admin-authored slugs; runtime-registered (DCR) clients have auto-generated slugs and cannot be referenced from `allowed_clients` mapper gates. |
 
 **Example:**
 
