@@ -15,6 +15,27 @@ use super::types::{PermissionDefinition, ProtectedResource, Role, RoleId, ScopeB
 /// time and at token-issue time.
 pub const MAX_ROLE_PARENT_DEPTH: usize = 10;
 
+/// Tier 2 claim names — known custom / informational claims already in use by
+/// Hearth's token issuance or common OIDC profile extensions.
+///
+/// A mapper MAY target these names, but doing so overrides Hearth's built-in
+/// emission. SDK helpers (`useHasPermission`, `HasRole`, …) operate on the
+/// overridden shape when a Tier 2 claim is overridden. An operator overriding
+/// any of these should be aware of the downstream consequences.
+///
+/// See `docs/specs/AUTHZ_EXPANSION.md` §"Claim name tiers".
+pub const TIER2_CLAIMS: &[&str] = &[
+    "employee_id",
+    "department",
+    "cost_center",
+    "tenant_id",
+    "org_id",
+    "oid",
+    "roles",
+    "groups",
+    "permissions",
+];
+
 /// Tier 1 JWT / OIDC claims that mappers MUST NOT target.
 ///
 /// See `docs/specs/AUTHZ_EXPANSION.md` §"Claim name tiers" for the
@@ -129,6 +150,18 @@ pub enum RegistryError {
         /// The forbidden claim name.
         claim: String,
     },
+    /// A custom (Tier 3) claim name fails the naming grammar.
+    ///
+    /// Custom names must be either a short `^[a-z][a-z0-9_]*$` identifier
+    /// (≤64 chars) or an HTTPS-namespaced URL (≤256 chars). HTTP URLs and
+    /// URN-form names are not permitted in this version.
+    /// See `AUTHZ_EXPANSION.md` §"Claim name tiers" for the grammar rules.
+    InvalidClaimName {
+        /// The offending claim name.
+        claim: String,
+        /// Human-readable reason.
+        reason: String,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -181,6 +214,9 @@ impl fmt::Display for RegistryError {
                     f,
                     "claim mapper target {claim:?} is a Tier 1 (reserved) claim name"
                 )
+            }
+            Self::InvalidClaimName { claim, reason } => {
+                write!(f, "invalid custom claim name {claim:?}: {reason}")
             }
         }
     }
@@ -235,6 +271,8 @@ impl RealmPermissionRegistry {
     /// 5. No cycle exists in the role parent graph (depth capped at
     ///    [`MAX_ROLE_PARENT_DEPTH`]).
     /// 6. No claim mapping targets a Tier 1 (forbidden) claim name.
+    /// 7. Custom (Tier 3) claim names pass the short-identifier or
+    ///    HTTPS-namespaced grammar.
     ///
     /// Returns `Ok(())` if all checks pass, or `Err(errors)` with every
     /// violation found. The caller should surface all errors at once rather
@@ -322,7 +360,13 @@ impl RealmPermissionRegistry {
             errors.extend(cycle_errors);
         }
 
-        // --- Claim profile: Tier 1 names ------------------------------------
+        // --- Claim profile: Tier 1/2/3 name enforcement ----------------------
+        //
+        // Tier 1: forbidden — reject.
+        // Tier 2: known overridable names — accept without additional grammar
+        //         check (they are already-valid identifiers).
+        // Tier 3: custom — must pass the short-identifier or HTTPS-namespaced
+        //         grammar defined in `validate_tier3_claim_name`.
 
         if let Some(profile) = &self.claim_profile {
             for mapping in &profile.mappings {
@@ -330,6 +374,14 @@ impl RealmPermissionRegistry {
                     errors.push(RegistryError::ForbiddenClaimTarget {
                         claim: mapping.claim.clone(),
                     });
+                } else if !TIER2_CLAIMS.contains(&mapping.claim.as_str()) {
+                    // Tier 3: validate the custom name grammar.
+                    if let Err(reason) = validate_tier3_claim_name(&mapping.claim) {
+                        errors.push(RegistryError::InvalidClaimName {
+                            claim: mapping.claim.clone(),
+                            reason,
+                        });
+                    }
                 }
             }
         }
@@ -411,6 +463,72 @@ pub fn validate_bundle_name(name: &str) -> Result<(), String> {
                      (allowed: A-Za-z0-9 _ -)"
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3 claim name validation
+// ---------------------------------------------------------------------------
+
+/// Validates a custom (Tier 3) claim name.
+///
+/// Two forms are accepted:
+///
+/// - **Short form:** `^[a-z][a-z0-9_]*$`, ≤64 chars. Used for simple custom
+///   claims such as `department` or `employee_id`.
+/// - **HTTPS-namespaced form:** must start with `https://`, ≤256 chars.
+///   Collision-free namespacing following the Auth0/Okta convention, e.g.
+///   `https://acme.com/department`. HTTP (non-TLS) URLs are rejected.
+///
+/// Tier 1 and Tier 2 names are excluded from this check by the caller —
+/// they are handled before `validate_tier3_claim_name` is called.
+pub fn validate_tier3_claim_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("claim name must not be empty".to_string());
+    }
+
+    // HTTPS-namespaced form.
+    if name.starts_with("https://") {
+        if name.len() > 256 {
+            return Err("HTTPS-namespaced claim name exceeds 256 chars".to_string());
+        }
+        if name.len() <= "https://".len() {
+            return Err(
+                "HTTPS-namespaced claim name must have a host after 'https://'".to_string(),
+            );
+        }
+        return Ok(());
+    }
+
+    // Reject HTTP (non-TLS) namespace.
+    if name.starts_with("http://") {
+        return Err(
+            "claim namespace must use 'https://' (HTTP is rejected for security)".to_string(),
+        );
+    }
+
+    // Short identifier form: ^[a-z][a-z0-9_]*$, ≤64 chars.
+    if name.len() > 64 {
+        return Err("short-form claim name exceeds 64 chars".to_string());
+    }
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        Some(c) => {
+            return Err(format!(
+                "short-form claim name must start with a lowercase ASCII letter, got '{c}'"
+            ));
+        }
+        None => return Err("claim name must not be empty".to_string()),
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return Err(format!(
+                "short-form claim name contains invalid character '{c}' \
+                 (allowed: a-z 0-9 _)"
+            ));
         }
     }
     Ok(())
@@ -572,6 +690,76 @@ mod tests {
         for claim in &["iss", "sub", "oid", "permissions", "email_verified", "act"] {
             assert!(TIER1_CLAIMS.contains(claim), "{claim} must be Tier 1");
         }
+    }
+
+    // ===== TIER2_CLAIMS =====
+
+    #[test]
+    fn tier2_list_contains_known_claims() {
+        for claim in &[
+            "employee_id",
+            "department",
+            "roles",
+            "groups",
+            "permissions",
+            "oid",
+        ] {
+            assert!(TIER2_CLAIMS.contains(claim), "{claim} must be Tier 2");
+        }
+    }
+
+    // ===== validate_tier3_claim_name =====
+
+    #[test]
+    fn tier3_short_form_valid() {
+        assert!(validate_tier3_claim_name("department").is_ok());
+        assert!(validate_tier3_claim_name("employee_id").is_ok());
+        assert!(validate_tier3_claim_name("cost_center2").is_ok());
+        assert!(validate_tier3_claim_name("a").is_ok());
+    }
+
+    #[test]
+    fn tier3_https_namespaced_valid() {
+        assert!(validate_tier3_claim_name("https://acme.com/department").is_ok());
+        assert!(validate_tier3_claim_name("https://example.com/custom/claim").is_ok());
+    }
+
+    #[test]
+    fn tier3_http_rejected() {
+        assert!(validate_tier3_claim_name("http://acme.com/department").is_err());
+    }
+
+    #[test]
+    fn tier3_short_form_uppercase_rejected() {
+        assert!(validate_tier3_claim_name("Department").is_err());
+        assert!(validate_tier3_claim_name("DEPARTMENT").is_err());
+    }
+
+    #[test]
+    fn tier3_short_form_starts_with_digit_rejected() {
+        assert!(validate_tier3_claim_name("1department").is_err());
+    }
+
+    #[test]
+    fn tier3_short_form_hyphen_rejected() {
+        assert!(validate_tier3_claim_name("my-claim").is_err());
+    }
+
+    #[test]
+    fn tier3_empty_rejected() {
+        assert!(validate_tier3_claim_name("").is_err());
+    }
+
+    #[test]
+    fn tier3_exceeds_64_chars_rejected() {
+        let long = "a".repeat(65);
+        assert!(validate_tier3_claim_name(&long).is_err());
+    }
+
+    #[test]
+    fn tier3_https_exceeds_256_chars_rejected() {
+        let long = format!("https://acme.com/{}", "x".repeat(300));
+        assert!(validate_tier3_claim_name(&long).is_err());
     }
 
     // ===== classify_scope_string =====

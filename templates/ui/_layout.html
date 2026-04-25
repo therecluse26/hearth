@@ -109,18 +109,42 @@
               </a>
             </li>
             <li>
-              <a href="/ui/admin/rbac/debug" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_debug" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_debug" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-                Permission Check
-              </a>
-            </li>
-            <li>
               <a href="/ui/admin/settings" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "settings" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "settings" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="3"/>
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                 </svg>
                 System Info
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div>
+          <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">RBAC</p>
+          <ul class="space-y-0.5">
+            <li>
+              <a href="/ui/admin/rbac/permissions" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_permissions" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_permissions" %} aria-current="page"{% endif %}>
+                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Permissions
+              </a>
+            </li>
+            <li>
+              <a href="/ui/admin/rbac/roles" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_roles" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_roles" %} aria-current="page"{% endif %}>
+                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                Roles
+              </a>
+            </li>
+            <li>
+              <a href="/ui/admin/rbac/scopes" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_scopes" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_scopes" %} aria-current="page"{% endif %}>
+                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                Scopes
+              </a>
+            </li>
+            <li>
+              <a href="/ui/admin/rbac/debug" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_debug" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_debug" %} aria-current="page"{% endif %}>
+                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                Permission Check
               </a>
             </li>
           </ul>

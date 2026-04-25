@@ -1,0 +1,90 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} &middot; Claim Profile &mdash; {{ realm_name }}{% endblock %}
+{% block breadcrumb %}
+<nav class="flex items-center gap-2 text-sm" aria-label="Breadcrumb">
+  <a href="/ui/admin/realms" class="text-ht-content-muted hover:text-ht-content-primary">Realms</a>
+  <span class="text-ht-content-muted">›</span>
+  <a href="/ui/admin/realms/{{ realm_id }}" class="text-ht-content-muted hover:text-ht-content-primary">{{ realm_name }}</a>
+  <span class="text-ht-content-muted">›</span>
+  <span class="font-medium text-ht-content-secondary">Claim Profile</span>
+</nav>
+{% endblock %}
+{% block body %}
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Claim Profile</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">
+    Read-only &mdash; manage via
+    <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs">realms.{{ realm_name }}.claims.mappings</code>
+    in <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs">hearth.yaml</code>
+  </p>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle overflow-hidden">
+  {% if mappings.is_empty() %}
+  <p class="px-6 py-10 text-center text-sm text-ht-content-muted">
+    No claim mappings configured for this realm.
+  </p>
+  {% else %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-divider-subtle">
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Claim Name</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Source</th>
+          <th class="px-4 py-3 text-center font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Access Token</th>
+          <th class="px-4 py-3 text-center font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">ID Token</th>
+          <th class="px-4 py-3 text-center font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">UserInfo</th>
+          <th class="px-4 py-3 text-center font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">First-Party Only</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Required Scopes</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-divider-subtle">
+        {% for m in mappings %}
+        <tr class="hover:bg-ht-surface-base">
+          <td class="px-4 py-3">
+            <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ m.claim }}</code>
+          </td>
+          <td class="px-4 py-3 font-mono text-xs text-ht-content-secondary">{{ m.source }}</td>
+          <td class="px-4 py-3 text-center">
+            {% if m.include_in_access_token %}
+              <span class="inline-block h-2 w-2 rounded-full bg-success-fg" title="Yes"></span>
+            {% else %}
+              <span class="inline-block h-2 w-2 rounded-full bg-ht-surface-base ring-1 ring-divider-subtle" title="No"></span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-center">
+            {% if m.include_in_id_token %}
+              <span class="inline-block h-2 w-2 rounded-full bg-success-fg" title="Yes"></span>
+            {% else %}
+              <span class="inline-block h-2 w-2 rounded-full bg-ht-surface-base ring-1 ring-divider-subtle" title="No"></span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-center">
+            {% if m.include_in_userinfo %}
+              <span class="inline-block h-2 w-2 rounded-full bg-success-fg" title="Yes"></span>
+            {% else %}
+              <span class="inline-block h-2 w-2 rounded-full bg-ht-surface-base ring-1 ring-divider-subtle" title="No"></span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-center">
+            {% if m.first_party_only %}
+              <span class="inline-block h-2 w-2 rounded-full bg-warning-fg" title="Yes"></span>
+            {% else %}
+              <span class="inline-block h-2 w-2 rounded-full bg-ht-surface-base ring-1 ring-divider-subtle" title="No"></span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 font-mono text-xs text-ht-content-muted">
+            {% if m.required_scopes.is_empty() %}
+              <span class="text-ht-content-muted">—</span>
+            {% else %}
+              {{ m.required_scopes.join(", ") }}
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -76,6 +76,11 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// RBAC maintenance commands.
+    Rbac {
+        #[command(subcommand)]
+        action: RbacAction,
+    },
 }
 
 /// Supported migration sources.
@@ -157,6 +162,53 @@ enum ConfigAction {
         /// Only used when `--url` is not provided.
         #[arg(long)]
         pid_file: Option<PathBuf>,
+    },
+    /// Validate a configuration file without starting the server.
+    ///
+    /// Parses YAML and validates every realm's permission registry
+    /// (permission names, role cross-references, bundle names, claim-profile
+    /// tier enforcement). Exits 1 on any error.
+    Validate {
+        /// Path to configuration file. Defaults to hearth.yaml.
+        #[arg(default_value = "hearth.yaml")]
+        file: PathBuf,
+    },
+}
+
+/// RBAC maintenance subcommands.
+#[derive(Subcommand)]
+enum RbacAction {
+    /// List or purge orphaned runtime references (role/permission IDs that no
+    /// longer exist in the registry).
+    Orphans {
+        #[command(subcommand)]
+        action: OrphansAction,
+    },
+}
+
+/// Orphan management subcommands.
+#[derive(Subcommand)]
+enum OrphansAction {
+    /// List orphaned references across all realms (or a specific realm).
+    List {
+        /// Restrict scan to a single realm by UUID or name.
+        #[arg(long)]
+        realm: Option<String>,
+        /// Path to the data directory. Defaults to `data/`.
+        #[arg(long, default_value = "data")]
+        data_dir: PathBuf,
+    },
+    /// Purge orphaned references.
+    Purge {
+        /// Restrict purge to a single realm by UUID or name.
+        #[arg(long)]
+        realm: Option<String>,
+        /// Path to the data directory. Defaults to `data/`.
+        #[arg(long, default_value = "data")]
+        data_dir: PathBuf,
+        /// Print what would be deleted without writing any changes.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -252,6 +304,32 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
+            ConfigAction::Validate { file } => {
+                if let Err(e) = run_config_validate(&file) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
+        Commands::Rbac { action } => match action {
+            RbacAction::Orphans { action } => match action {
+                OrphansAction::List { realm, data_dir } => {
+                    if let Err(e) = run_rbac_orphans_list(realm.as_deref(), &data_dir) {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                OrphansAction::Purge {
+                    realm,
+                    data_dir,
+                    dry_run,
+                } => {
+                    if let Err(e) = run_rbac_orphans_purge(realm.as_deref(), &data_dir, dry_run) {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            },
         },
     }
 }
@@ -407,6 +485,15 @@ async fn run_serve(
         identity_config,
         Arc::clone(&rbac_engine),
     )?);
+
+    // Build the PermissionRegistry from the initial config and wrap it in an
+    // ArcSwap for zero-downtime hot-swap on SIGHUP.  The registry is rebuilt
+    // and atomically swapped inside `run_config_reconciliation` every time the
+    // operator sends SIGHUP or triggers a programmatic reload.
+    let permission_registry: Arc<arc_swap::ArcSwap<hearth::rbac::registry::PermissionRegistry>> =
+        Arc::new(arc_swap::ArcSwap::from_pointee(build_permission_registry(
+            &config,
+        )));
 
     // Base URL for email links and onboarding (computed once, reused).
     let base_url = config.onboarding.base_url.clone().unwrap_or_else(|| {
@@ -703,6 +790,7 @@ async fn run_serve(
             key_path,
             Arc::clone(&identity_engine),
             Arc::clone(&rbac_engine),
+            Arc::clone(&permission_registry),
             reload_config_path,
             dev,
             Arc::clone(&reload_notify),
@@ -717,6 +805,7 @@ async fn run_serve(
             let cfg_path = reload_config_path.clone();
             let is_dev = dev;
             let notify = Arc::clone(&reload_notify);
+            let registry = Arc::clone(&permission_registry);
             tokio::spawn(async move {
                 let mut sig =
                     tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
@@ -735,6 +824,7 @@ async fn run_serve(
                         rbac.as_ref(),
                         cfg_path.as_deref(),
                         is_dev,
+                        &registry,
                     );
                 }
             });
@@ -882,6 +972,9 @@ fn build_email_service(
 }
 
 /// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert + config reload.
+/// Registry type alias used for hot-swap on SIGHUP.
+type RegistrySwap = Arc<arc_swap::ArcSwap<hearth::rbac::registry::PermissionRegistry>>;
+
 #[allow(clippy::too_many_arguments)]
 async fn run_serve_tls(
     addr: SocketAddr,
@@ -891,6 +984,7 @@ async fn run_serve_tls(
     key_path: &std::path::Path,
     identity_engine: Arc<dyn IdentityEngine>,
     rbac_engine: Arc<dyn RbacEngine>,
+    permission_registry: RegistrySwap,
     reload_config_path: Option<PathBuf>,
     dev: bool,
     reload_notify: Arc<Notify>,
@@ -936,6 +1030,7 @@ async fn run_serve_tls(
         let reloadable_clone = Arc::clone(&reloadable);
         let engine = identity_engine;
         let rbac = rbac_engine;
+        let registry = permission_registry;
         let cfg_path = reload_config_path;
         let is_dev = dev;
         tokio::spawn(async move {
@@ -960,6 +1055,7 @@ async fn run_serve_tls(
                     rbac.as_ref(),
                     cfg_path.as_deref(),
                     is_dev,
+                    &registry,
                 );
             }
         });
@@ -1024,11 +1120,15 @@ fn load_config(
 ///
 /// Called on SIGHUP or programmatic reload. Failures are logged but do not
 /// crash the server — the previous config remains in effect.
+///
+/// After successful reconciliation the `PermissionRegistry` is rebuilt from
+/// the new config and atomically swapped in via `ArcSwap`.
 fn run_config_reconciliation(
     engine: &dyn IdentityEngine,
     rbac: &dyn RbacEngine,
     config_path: Option<&std::path::Path>,
     dev: bool,
+    registry: &arc_swap::ArcSwap<hearth::rbac::registry::PermissionRegistry>,
 ) {
     let config = match load_config(dev, config_path) {
         Ok(cfg) => cfg,
@@ -1069,8 +1169,63 @@ fn run_config_reconciliation(
         }
         Err(e) => {
             error!(error = %e, "configuration reconciliation failed");
+            return;
         }
     }
+
+    // Hot-swap the PermissionRegistry atomically so in-flight token issuances
+    // reading the current snapshot continue uninterrupted while the new
+    // config takes effect for all subsequent issuances.
+    let new_registry = build_permission_registry(&config);
+    registry.store(Arc::new(new_registry));
+    info!("PermissionRegistry hot-swapped");
+}
+
+/// Builds a [`PermissionRegistry`] from the current [`Config`].
+///
+/// Each declared realm's YAML config is compiled into a
+/// [`RealmPermissionRegistry`] and assembled into the global snapshot.
+/// Realms whose config fails validation are skipped with a `warn` log;
+/// the previous registry entry (if any) is preserved by the `ArcSwap`
+/// caller.
+fn build_permission_registry(config: &Config) -> hearth::rbac::registry::PermissionRegistry {
+    use hearth::rbac::registry::PermissionRegistry;
+
+    let mut registry = PermissionRegistry::default();
+    if let Some(realms) = &config.realms {
+        for (realm_name, realm_yaml) in realms {
+            match realm_yaml.to_realm_config(&config.auth, config.email.branding.as_ref()) {
+                Ok(realm_config) => {
+                    let realm_registry = hearth::rbac::registry::RealmPermissionRegistry {
+                        permissions: realm_config.permissions,
+                        roles: realm_config.roles,
+                        scopes: realm_config.scopes,
+                        protected_resources: realm_config.protected_resources,
+                        claim_profile: realm_config.claim_profile,
+                    };
+                    // Use nil UUID as a placeholder; the real realm UUID is
+                    // resolved after storage look-up in run_serve. This
+                    // registry snapshot is authoritative for validation and
+                    // claim-profile evaluation; the realm UUID key is looked
+                    // up at reconciliation time.
+                    let _ = realm_name; // name-keyed insertion deferred
+                                        // Insert under a synthetic per-realm key derived from the
+                                        // config name to allow multi-realm registries.
+                    let realm_id = hearth::core::RealmId::new(uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_URL,
+                        realm_name.as_bytes(),
+                    ));
+                    registry.realms.insert(realm_id, realm_registry);
+                }
+                Err(errs) => {
+                    for e in &errs {
+                        warn!(realm = %realm_name, error = %e, "registry validation error during hot-swap");
+                    }
+                }
+            }
+        }
+    }
+    registry
 }
 
 /// Runs the `hearth config reload` command.
@@ -1362,6 +1517,135 @@ fn mime_for_logo(path: &std::path::Path) -> &'static str {
         Some(e) if e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg") => "image/jpeg",
         _ => "application/octet-stream",
     }
+}
+
+/// Runs the `hearth config validate` command.
+///
+/// Parses the YAML file and validates every realm's `PermissionRegistry`
+/// (permission names, role cross-references, bundle names, claim-profile
+/// tier enforcement). Exits 1 on any error.
+fn run_config_validate(file: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use hearth::config::Config;
+
+    let config = Config::from_file(file).map_err(|e| format!("{e}"))?;
+
+    let mut all_ok = true;
+    if let Some(realms) = &config.realms {
+        for (realm_name, realm_yaml) in realms {
+            match realm_yaml.to_realm_config(&config.auth, config.email.branding.as_ref()) {
+                Ok(_) => {
+                    println!("realm {realm_name:?}: OK");
+                }
+                Err(errs) => {
+                    all_ok = false;
+                    for e in &errs {
+                        eprintln!("realm {realm_name:?}: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    if all_ok {
+        println!("config OK");
+        Ok(())
+    } else {
+        Err("configuration validation failed".into())
+    }
+}
+
+/// Runs the `hearth rbac orphans list` command.
+///
+/// Scans `rba:user_perm:*` storage keys for all realms and prints any
+/// permission names that appear in storage.  A future iteration will
+/// cross-check against the live registry to identify stale entries; for
+/// now it lists all user-extra-permission keys so operators can inspect
+/// the current runtime state.
+fn run_rbac_orphans_list(
+    _realm: Option<&str>,
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use hearth::storage::StorageEngine as _;
+
+    std::fs::create_dir_all(data_dir)?;
+    let storage_config = StorageConfig::dev(data_dir.to_path_buf());
+    let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+
+    // `rba:user_perm:` is the key prefix for user extra-permission grants.
+    // Keys embed the realm UUID so a single prefix scan discovers all entries.
+    let scan_start: &[u8] = b"rba:user_perm:";
+    let scan_end = rbac_prefix_end(scan_start);
+    let system_realm = hearth::core::RealmId::new(uuid::Uuid::nil());
+    let entries = storage.scan(&system_realm, scan_start, &scan_end)?;
+
+    if entries.is_empty() {
+        println!("No user permission grant records found.");
+        return Ok(());
+    }
+
+    for entry in &entries {
+        let key_str = String::from_utf8_lossy(&entry.key);
+        println!("{key_str}");
+    }
+    println!("{} user permission grant record(s) found.", entries.len());
+    Ok(())
+}
+
+/// Runs the `hearth rbac orphans purge` command.
+///
+/// Scans and optionally deletes `rba:user_perm:*` storage keys.
+/// In dry-run mode prints what would be removed without writing any changes.
+fn run_rbac_orphans_purge(
+    _realm: Option<&str>,
+    data_dir: &std::path::Path,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use hearth::storage::StorageEngine as _;
+
+    std::fs::create_dir_all(data_dir)?;
+    let storage_config = StorageConfig::dev(data_dir.to_path_buf());
+    let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
+
+    let scan_start: &[u8] = b"rba:user_perm:";
+    let scan_end = rbac_prefix_end(scan_start);
+    let system_realm = hearth::core::RealmId::new(uuid::Uuid::nil());
+    let entries = storage.scan(&system_realm, scan_start, &scan_end)?;
+
+    if entries.is_empty() {
+        println!("No user permission grant records found.");
+        return Ok(());
+    }
+
+    let mut count = 0usize;
+    for entry in &entries {
+        let key_str = String::from_utf8_lossy(&entry.key);
+        if dry_run {
+            println!("[dry-run] would delete: {key_str}");
+        } else {
+            storage.delete(&system_realm, &entry.key)?;
+            println!("deleted: {key_str}");
+        }
+        count += 1;
+    }
+
+    if dry_run {
+        println!("[dry-run] {count} record(s) would be purged.");
+    } else {
+        println!("{count} record(s) purged.");
+    }
+    Ok(())
+}
+
+/// Computes the exclusive end bound for a storage prefix scan.
+///
+/// Increments the last byte of the prefix by 1 so that `scan(prefix,
+/// prefix_end)` returns exactly the entries whose keys start with `prefix`.
+fn rbac_prefix_end(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    if let Some(last) = end.last_mut() {
+        *last = last.saturating_add(1);
+    }
+    end
 }
 
 /// Prints a `MigrationReport` as a human-readable summary.

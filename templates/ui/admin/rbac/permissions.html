@@ -1,0 +1,45 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} &middot; Permissions{% endblock %}
+{% block body %}
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Permissions</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">
+    Read-only &mdash; manage in <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs">hearth.yaml</code>
+  </p>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle overflow-hidden">
+  {% if permissions.is_empty() %}
+  <p class="px-6 py-10 text-center text-sm text-ht-content-muted">
+    No permissions registered. Add them under
+    <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs">realms.&lt;id&gt;.permissions</code>
+    in <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs">hearth.yaml</code>.
+  </p>
+  {% else %}
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Name</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Description</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-divider-subtle">
+      {% for (name, description) in permissions %}
+      <tr class="hover:bg-ht-surface-base">
+        <td class="px-4 py-3">
+          <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ name }}</code>
+        </td>
+        <td class="px-4 py-3 text-ht-content-secondary">
+          {% if description.is_empty() %}
+            <span class="text-ht-content-muted">—</span>
+          {% else %}
+            {{ description }}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

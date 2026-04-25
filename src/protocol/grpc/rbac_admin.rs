@@ -666,6 +666,260 @@ impl RbacAdminService for RbacAdminSvc {
         }))
     }
 
+    async fn grant_user_permission(
+        &self,
+        req: Request<pb::GrantUserPermissionRequest>,
+    ) -> Result<Response<pb::GrantUserPermissionResponse>, Status> {
+        use crate::core::Timestamp;
+        use crate::rbac::UserPermissionGrant;
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let user_id = parse_user_id(&inner.user_id)?;
+        let permission = Permission::new(inner.permission.clone())
+            .map_err(|r| Status::invalid_argument(format!("invalid permission: {r}")))?;
+        let scope = if inner.scope_type == "org" {
+            let stripped = inner.org_id.strip_prefix("org_").unwrap_or(&inner.org_id);
+            let uuid = uuid::Uuid::parse_str(stripped)
+                .map_err(|_| Status::invalid_argument("invalid org_id"))?;
+            Scope::Org {
+                org_id: OrganizationId::new(uuid),
+            }
+        } else {
+            Scope::Realm
+        };
+        let granted_by = if inner.granted_by.is_empty() {
+            None
+        } else {
+            Some(parse_user_id(&inner.granted_by)?)
+        };
+        let grant = UserPermissionGrant {
+            realm_id: realm_id.clone(),
+            user_id,
+            permission,
+            scope,
+            granted_at: Timestamp::from_micros(0),
+            granted_by,
+        };
+        self.state
+            .rbac
+            .grant_user_permission(&realm_id, &grant)
+            .map_err(rbac_to_status)?;
+        Ok(Response::new(pb::GrantUserPermissionResponse {}))
+    }
+
+    async fn revoke_user_permission(
+        &self,
+        req: Request<pb::RevokeUserPermissionRequest>,
+    ) -> Result<Response<pb::RevokeUserPermissionResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let user_id = parse_user_id(&inner.user_id)?;
+        let permission = Permission::new(inner.permission.clone())
+            .map_err(|r| Status::invalid_argument(format!("invalid permission: {r}")))?;
+        let scope = if inner.scope_type == "org" {
+            let stripped = inner.org_id.strip_prefix("org_").unwrap_or(&inner.org_id);
+            let uuid = uuid::Uuid::parse_str(stripped)
+                .map_err(|_| Status::invalid_argument("invalid org_id"))?;
+            Scope::Org {
+                org_id: OrganizationId::new(uuid),
+            }
+        } else {
+            Scope::Realm
+        };
+        self.state
+            .rbac
+            .revoke_user_permission(&realm_id, &user_id, &permission, &scope)
+            .map_err(rbac_to_status)?;
+        Ok(Response::new(pb::RevokeUserPermissionResponse {}))
+    }
+
+    async fn list_user_permissions(
+        &self,
+        req: Request<pb::ListUserPermissionsRequest>,
+    ) -> Result<Response<pb::ListUserPermissionsResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let user_id = parse_user_id(&inner.user_id)?;
+        let grants = self
+            .state
+            .rbac
+            .list_user_permissions(&realm_id, &user_id)
+            .map_err(rbac_to_status)?;
+        let permissions = grants
+            .into_iter()
+            .map(|g| {
+                let (scope_type, org_id) = match &g.scope {
+                    Scope::Realm => ("realm".to_string(), String::new()),
+                    Scope::Org { org_id } => ("org".to_string(), org_id.to_string()),
+                };
+                pb::UserPermissionEntry {
+                    permission: g.permission.into_string(),
+                    scope_type,
+                    org_id,
+                    granted_by: g
+                        .granted_by
+                        .as_ref()
+                        .map(|u| u.as_uuid().to_string())
+                        .unwrap_or_default(),
+                    granted_at: g.granted_at.as_micros() / 1_000_000,
+                }
+            })
+            .collect();
+        Ok(Response::new(pb::ListUserPermissionsResponse {
+            permissions,
+        }))
+    }
+
+    async fn add_additional_role(
+        &self,
+        req: Request<pb::AddAdditionalRoleRequest>,
+    ) -> Result<Response<pb::AddAdditionalRoleResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let org_stripped = inner.org_id.strip_prefix("org_").unwrap_or(&inner.org_id);
+        let org_uuid = uuid::Uuid::parse_str(org_stripped)
+            .map_err(|_| Status::invalid_argument("invalid org_id"))?;
+        let org_id = OrganizationId::new(org_uuid);
+        let user_id = parse_user_id(&inner.user_id)?;
+        let granted_by = if inner.granted_by.is_empty() {
+            None
+        } else {
+            Some(parse_user_id(&inner.granted_by)?)
+        };
+        self.state
+            .rbac
+            .add_additional_role(
+                &realm_id,
+                &org_id,
+                &user_id,
+                &inner.role_name,
+                granted_by.as_ref(),
+            )
+            .map_err(rbac_to_status)?;
+        Ok(Response::new(pb::AddAdditionalRoleResponse {}))
+    }
+
+    async fn remove_additional_role(
+        &self,
+        req: Request<pb::RemoveAdditionalRoleRequest>,
+    ) -> Result<Response<pb::RemoveAdditionalRoleResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let org_stripped = inner.org_id.strip_prefix("org_").unwrap_or(&inner.org_id);
+        let org_uuid = uuid::Uuid::parse_str(org_stripped)
+            .map_err(|_| Status::invalid_argument("invalid org_id"))?;
+        let org_id = OrganizationId::new(org_uuid);
+        let user_id = parse_user_id(&inner.user_id)?;
+        self.state
+            .rbac
+            .remove_additional_role(&realm_id, &org_id, &user_id, &inner.role_name)
+            .map_err(rbac_to_status)?;
+        Ok(Response::new(pb::RemoveAdditionalRoleResponse {}))
+    }
+
+    async fn list_additional_roles(
+        &self,
+        req: Request<pb::ListAdditionalRolesRequest>,
+    ) -> Result<Response<pb::ListAdditionalRolesResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let org_stripped = inner.org_id.strip_prefix("org_").unwrap_or(&inner.org_id);
+        let org_uuid = uuid::Uuid::parse_str(org_stripped)
+            .map_err(|_| Status::invalid_argument("invalid org_id"))?;
+        let org_id = OrganizationId::new(org_uuid);
+        let user_id = parse_user_id(&inner.user_id)?;
+        let role_names = self
+            .state
+            .rbac
+            .list_additional_roles(&realm_id, &org_id, &user_id)
+            .map_err(rbac_to_status)?;
+        Ok(Response::new(pb::ListAdditionalRolesResponse {
+            role_names,
+        }))
+    }
+
+    async fn list_realm_permissions(
+        &self,
+        req: Request<pb::ListRealmPermissionsRequest>,
+    ) -> Result<Response<pb::ListRealmPermissionsResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let cursor = if inner.cursor.is_empty() {
+            None
+        } else {
+            Some(inner.cursor.as_str())
+        };
+        let limit = effective_limit(inner.limit);
+        let page = self
+            .state
+            .rbac
+            .list_roles(&realm_id, cursor, limit)
+            .map_err(rbac_to_status)?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut permissions = Vec::new();
+        for role in &page.items {
+            for p in &role.permissions {
+                if seen.insert(p.as_str().to_string()) {
+                    permissions.push(pb::PermissionEntry {
+                        name: p.as_str().to_string(),
+                        description: String::new(),
+                        category: String::new(),
+                    });
+                }
+            }
+        }
+        Ok(Response::new(pb::ListRealmPermissionsResponse {
+            permissions,
+            next_cursor: page.next_cursor.unwrap_or_default(),
+        }))
+    }
+
+    async fn list_realm_roles(
+        &self,
+        req: Request<pb::ListRealmRolesRequest>,
+    ) -> Result<Response<pb::ListRealmRolesResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let cursor = if inner.cursor.is_empty() {
+            None
+        } else {
+            Some(inner.cursor.as_str())
+        };
+        let page = self
+            .state
+            .rbac
+            .list_roles(&realm_id, cursor, effective_limit(inner.limit))
+            .map_err(rbac_to_status)?;
+        let roles = page
+            .items
+            .iter()
+            .map(|r| pb::RoleEntry {
+                id: r.id.to_string(),
+                name: r.name.clone(),
+                description: r.description.clone().unwrap_or_default(),
+                scope_kind: format!("{:?}", r.scope_kind).to_lowercase(),
+                permissions: r
+                    .permissions
+                    .iter()
+                    .map(|p| p.as_str().to_string())
+                    .collect(),
+                parent_roles: r.parent_roles.iter().map(|p| p.to_string()).collect(),
+            })
+            .collect();
+        Ok(Response::new(pb::ListRealmRolesResponse {
+            roles,
+            next_cursor: page.next_cursor.unwrap_or_default(),
+        }))
+    }
+
     async fn resolve_effective_permissions(
         &self,
         req: Request<pb::ResolveEffectivePermissionsRequest>,
@@ -706,5 +960,51 @@ impl RbacAdminService for RbacAdminSvc {
                 .map(|p| p.into_string())
                 .collect(),
         }))
+    }
+
+    /// Revokes a user's OAuth consent for a specific client.
+    async fn revoke_consent(
+        &self,
+        req: Request<pb::RevokeConsentRequest>,
+    ) -> Result<Response<pb::RevokeConsentResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let user_id = parse_user_id(&inner.user_id)?;
+        let client_uuid = uuid::Uuid::parse_str(&inner.client_id)
+            .map_err(|_| Status::new(Code::InvalidArgument, "invalid client_id"))?;
+        let client_id = crate::core::ClientId::new(client_uuid);
+        self.state
+            .identity
+            .revoke_consent(&realm_id, &user_id, &client_id)
+            .map_err(|e| Status::new(Code::Internal, e.to_string()))?;
+        Ok(Response::new(pb::RevokeConsentResponse {}))
+    }
+
+    /// Lists all active OAuth consents for a user.
+    async fn list_user_consents(
+        &self,
+        req: Request<pb::ListUserConsentsRequest>,
+    ) -> Result<Response<pb::ListUserConsentsResponse>, Status> {
+        let _auth = authenticate_admin(req.metadata(), &self.state)?;
+        let inner = req.into_inner();
+        let realm_id = parse_realm_id(&inner.realm_id)?;
+        let user_id = parse_user_id(&inner.user_id)?;
+        let entries = self
+            .state
+            .identity
+            .list_consents_by_user(&realm_id, &user_id)
+            .map_err(|e| Status::new(Code::Internal, e.to_string()))?;
+        let consents = entries
+            .into_iter()
+            .map(|e| pb::ConsentEntry {
+                client_id: e.record.client_id.as_uuid().to_string(),
+                client_name: e.client_name,
+                granted_scopes: e.record.granted_scopes,
+                granted_at: e.record.granted_at.as_micros() / 1_000_000,
+                updated_at: e.record.updated_at.as_micros() / 1_000_000,
+            })
+            .collect();
+        Ok(Response::new(pb::ListUserConsentsResponse { consents }))
     }
 }

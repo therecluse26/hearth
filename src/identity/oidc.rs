@@ -719,6 +719,13 @@ pub(crate) struct StoredGrantFamily {
     pub(crate) revoked: bool,
     /// When the family was created.
     pub(crate) created_at: Timestamp,
+    /// The OAuth client that owns this grant family.
+    ///
+    /// Optional for backward compatibility — families created before this
+    /// field was added will have `None`. When present, used for consent
+    /// digest re-checking on refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) client_id: Option<ClientId>,
 }
 
 // ===== Token Revocation (RFC 7009) =====

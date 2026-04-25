@@ -28,7 +28,9 @@ pub use email::{
     MailgunEmailSender, MailtrapEmailSender, PostmarkEmailSender, SendgridEmailSender,
     SharedEmailSender, StubHttpTransport,
 };
-pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
+pub use engine::{
+    EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig, TokenIssuanceContext,
+};
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
 pub use oidc::{
@@ -281,6 +283,25 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         user_id: &UserId,
         session_id: &SessionId,
+    ) -> Result<TokenPair, IdentityError>;
+
+    /// Issues a token pair with explicit OAuth / org context.
+    ///
+    /// Compared to the plain `issue_tokens`, this method additionally:
+    /// - Looks up the `OAuthClient` identified by `ctx.client_id` (if any)
+    ///   and uses it as the client context for claim-profile gate evaluation.
+    /// - Passes `ctx.granted_scopes` to the claim-profile resolver so
+    ///   scope-gated claim mappings are evaluated correctly.
+    /// - Embeds `ctx.oid` as the `oid` (org context) claim.
+    ///
+    /// The existing `issue_tokens` is a thin wrapper that calls this method
+    /// with `TokenIssuanceContext::default()`.
+    fn issue_tokens_with_context(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        session_id: &SessionId,
+        ctx: &TokenIssuanceContext,
     ) -> Result<TokenPair, IdentityError>;
 
     /// Validates a token via session lookup (internal hot path).

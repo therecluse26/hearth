@@ -4,7 +4,7 @@
 //! embedding the realm ID directly or by indirection through a record
 //! that itself carries a `RealmId`. See AUTHORIZATION.md § 4.1.
 
-use crate::core::{RealmId, UserId};
+use crate::core::{OrganizationId, RealmId, UserId};
 
 use super::types::{AssignmentId, GroupId, GroupMember, RoleId, Scope};
 
@@ -22,6 +22,7 @@ pub(crate) const PERM_PREFIX: &str = "rba:perm:";
 pub(crate) const SCOPE_PREFIX: &str = "rba:scope:";
 pub(crate) const USER_PERM_PREFIX: &str = "rba:user_perm:";
 pub(crate) const USER_PERM_BY_PERM_PREFIX: &str = "rba:user_perm:by_perm:";
+pub(crate) const ORG_ROLE_PREFIX: &str = "rba:org_role:";
 
 // ---------------------------------------------------------------------------
 // Roles
@@ -233,6 +234,41 @@ pub(crate) fn user_permission_by_perm_scan_prefix(
         "{USER_PERM_BY_PERM_PREFIX}{}:{permission}:{}:",
         realm_id.as_uuid(),
         scope_key(scope)
+    )
+    .into_bytes()
+}
+
+// ---------------------------------------------------------------------------
+// Org extra roles
+// ---------------------------------------------------------------------------
+
+/// `rba:org_role:{realm_id}:{org_id}:{user_id}:{role_name}`
+pub(crate) fn encode_org_extra_role(
+    realm_id: &RealmId,
+    org_id: &OrganizationId,
+    user_id: &UserId,
+    role_name: &str,
+) -> Vec<u8> {
+    format!(
+        "{ORG_ROLE_PREFIX}{}:{}:{}:{role_name}",
+        realm_id.as_uuid(),
+        org_id.as_uuid(),
+        user_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Scan prefix for all extra org roles for a user within a specific org.
+pub(crate) fn org_extra_role_scan_prefix(
+    realm_id: &RealmId,
+    org_id: &OrganizationId,
+    user_id: &UserId,
+) -> Vec<u8> {
+    format!(
+        "{ORG_ROLE_PREFIX}{}:{}:{}:",
+        realm_id.as_uuid(),
+        org_id.as_uuid(),
+        user_id.as_uuid()
     )
     .into_bytes()
 }

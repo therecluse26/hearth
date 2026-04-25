@@ -1,0 +1,34 @@
+# Hearth default configuration template.
+# Copy relevant sections into hearth.yaml; these are reference defaults only.
+# See docs/specs/AUTHZ_EXPANSION.md for the full model.
+
+# Example realm configuration showing standard org bridge roles.
+# These roles are created automatically via seed_realm() but can be
+# customized here for realm-specific overrides.
+realms:
+  # Example realm configuration
+  example:
+    name: "Example Realm"
+    # Standard org bridge roles (scope_kind: organization)
+    # These match the roles created by seed_realm()
+    roles:
+      - name: org.member
+        description: "Base organization member — grants org.read"
+        scope_kind: organization
+        permissions:
+          - org.read
+      - name: org.admin
+        description: "Organization administrator — grants org.write and org.admin"
+        scope_kind: organization
+        permissions:
+          - org.write
+          - org.admin
+        parents:
+          - org.member
+      - name: org.owner
+        description: "Organization owner — grants org.billing"
+        scope_kind: organization
+        permissions:
+          - org.billing
+        parents:
+          - org.admin

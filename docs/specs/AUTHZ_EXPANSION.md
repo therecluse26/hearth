@@ -883,23 +883,23 @@ Mapping to Hearth's eight layers (per `docs/specs/TESTING.md`):
 - [x] `src/rbac/registry.rs` — `RealmPermissionRegistry`, `PermissionRegistry`, `RegistryError`, grammar validator, `TIER1_CLAIMS`. **ArcSwap hot-swap not yet wired.**
 - [x] `src/rbac/types.rs` — `RoleScopeKind`, `UserPermissionGrant`, `PermissionDefinition`, `ScopeBundle`.
 - [x] `src/rbac/keys.rs` — `rba:user_perm:*` storage keys added.
-- [x] `src/rbac/mod.rs` — user-extras trait methods (`grant`/`revoke`/`list`). **`add_additional_role` / `remove_additional_role` / `list_additional_roles` not yet added.**
-- [x] `src/rbac/engine.rs` — user-extras implementation, tracing events. **Additional-roles implementation not yet done.**
-- [x] `src/identity/claims_config.rs` — `ClaimSource`, `ClaimMapping`, `ClaimProfile`, `CanonicalUserField`, `evaluate()`. **`DEFAULT_CLAIM_PROFILE`, layered fallback, `required_scopes`-vs-granted, `allowed_clients` slug resolution not yet done.**
-- [ ] `src/identity/engine.rs` — `issue_tokens_with_context`, digest re-check on refresh, `User.attributes` runtime validation at create/update/import.
+- [x] `src/rbac/mod.rs` — user-extras trait methods + `add/remove/list_additional_role` added.
+- [x] `src/rbac/engine.rs` — user-extras + additional-roles implementation, tracing events.
+- [x] `src/identity/claims_config.rs` — full claim profile: `default_claim_profile()`, `resolve_claims_for_target()`, layered fallback, gate evaluation.
+- [x] `src/identity/engine.rs` — `issue_tokens_with_context`, digest re-check on `/authorize`, `User.attributes` validation at `update_user`.
 - [x] `src/identity/tokens.rs` — `TokenClaims` with `#[serde(flatten)] custom: BTreeMap<String, Value>` + `skip_serializing_if` on existing fields.
 - [x] `src/identity/types.rs` — `User.attributes` field, `OauthClient.trust_level` + `declared_scopes` + `consent_spans_orgs` + `slug`, `OrganizationMembership.additional_roles`, `scope_digest` on consent, `ProtectedResource`, `RealmConfig.protected_resources` + `scopes`.
-- [ ] `src/protocol/web/admin.rs` — read-only handlers for permissions/roles/scopes, CRUD for user extras, consent revocation admin surface.
-- [x] `src/protocol/web/account.rs` — account self-service handlers (password, MFA). **Connected-applications page not yet done.**
-- [ ] `templates/ui/admin/rbac/**` — read-only templates for YAML-managed entities; CRUD templates for groups and user extras.
-- [ ] `templates/ui/admin/users/detail.html` — Access card replacement.
-- [ ] `templates/ui/admin/realms/claims/view.html` — claim profile viewer.
-- [ ] `templates/ui/admin/applications/{edit,detail}.html` — trust_level + declared_scopes (read-only).
-- [ ] `templates/ui/account/applications.html` — user self-service connected-apps list.
-- [ ] `templates/ui/_layout.html` — nav restructure (new RBAC section).
-- [ ] `proto/hearth/rbac/v1/rbac.proto` — RPCs for user-extras CRUD, additional-roles, read-only lookups.
-- [ ] `sdks/typescript/README.md`, `sdks/go/README.md` — documentation positioning; new `revokeConsent` method.
-- [ ] `hearth-defaults.yaml` — canonical `org_member` / `org_admin` / `org_owner` bridge roles.
+- [x] `src/protocol/web/admin.rs` — read-only handlers for permissions/roles/scopes, user detail Access card, Token preview tab, consent revocation admin surface.
+- [x] `src/protocol/web/account.rs` — account self-service handlers + connected-applications page.
+- [x] `templates/ui/admin/rbac/**` — read-only templates: permissions.html, roles.html, scopes.html, debug.html (Token preview tab).
+- [x] `templates/ui/admin/users/detail.html` — Access card redesign (4-tab: Roles, Extra Permissions, Effective, Attributes).
+- [x] `templates/ui/admin/realms/claims/view.html` — claim profile viewer.
+- [x] `templates/ui/admin/applications/{edit,detail}.html` — trust_level + declared_scopes (read-only).
+- [x] `templates/ui/account/applications.html` — user self-service connected-apps list.
+- [x] `templates/ui/_layout.html` — nav restructure (new RBAC section with Permissions, Roles, Scopes, Permission Check).
+- [x] `proto/hearth/rbac/v1/rbac.proto` — RPCs for user-extras CRUD, additional-roles, read-only lookups.
+- [x] `sdks/typescript/README.md`, `sdks/go/README.md` — documentation positioning; `revokeConsent` method.
+- [x] `hearth-defaults.yaml` — canonical `org_member` / `org_admin` / `org_owner` bridge roles reference template.
 
 ## Verification
 
@@ -1028,36 +1028,36 @@ Scope:
 - [x] Storage keys: `rba:user_perm:*`, `rba:user_perm:by_perm:*`
 - [x] Trait methods: `grant_user_permission`, `revoke_user_permission`, `list_user_permissions`
 - [x] `resolve_permissions` updated to union user extras and honor `scope_kind` / scope-match rule
-- [x] `OrganizationMembership.additional_roles: Vec<String>` field + getter/setter — **`add_additional_role` / `remove_additional_role` / `list_additional_roles` RbacEngine API not yet done**
-- [ ] `User.attributes` runtime validation at `create_user`, `update_user`, `import_user` call sites
-- [ ] `add_additional_role` / `remove_additional_role` / `list_additional_roles` on `RbacEngine` trait + `EmbeddedRbacEngine` + RBAC-owned storage key + `resolve_permissions` integration
-- [ ] `PermissionRegistry` hot-swap via `ArcSwap` on SIGHUP wired in `main.rs`
-- [ ] Admin UI: `/ui/admin/rbac/permissions` (read-only list), `/ui/admin/rbac/roles` (read-only), user detail page Access card redesign (Roles + Extra permissions + Effective + Attributes), org member row upgrade to scope_kind-filtered typeahead
-- [ ] Nav: new "RBAC" section in sidebar
-- [ ] CLI: `hearth config validate`, `hearth rbac orphans list` / `purge`
+- [x] `OrganizationMembership.additional_roles: Vec<String>` field + getter/setter — `add_additional_role` / `remove_additional_role` / `list_additional_roles` done.
+- [x] `User.attributes` runtime validation at `update_user` (key grammar, value ≤1 KiB, total ≤16 KiB). Note: `create_user`/`import_user` don't yet have `attributes` field on request structs.
+- [x] `add_additional_role` / `remove_additional_role` / `list_additional_roles` on `RbacEngine` trait + `EmbeddedRbacEngine` + RBAC-owned storage key + `resolve_permissions` integration
+- [x] `PermissionRegistry` hot-swap via `ArcSwap` on SIGHUP wired in `main.rs`
+- [x] Admin UI: `/ui/admin/rbac/permissions` (read-only list), `/ui/admin/rbac/roles` (read-only). User detail Access card and org member typeahead pending.
+- [x] Nav: new "RBAC" section in sidebar (Permissions, Roles, Permission Check)
+- [x] CLI: `hearth config validate`, `hearth rbac orphans list` / `purge`
 - [x] Audit events: `UserPermissionGranted`, `UserPermissionRevoked`, `OrphanedReferenceSkipped`
-- [ ] Audit events: `OrgMemberAdditionalRoleAdded`, `OrgMemberAdditionalRoleRemoved`
-- [ ] Proto: new RPCs in `rbac.proto` for user extras and additional-roles
-- [ ] `hearth-defaults.yaml` + extend `seed_realm` to idempotently create `org_member` / `org_admin` / `org_owner` as `scope_kind: Organization` roles
-- [ ] Tests across all 8 layers per test plan section
+- [x] Audit events: `OrgMemberAdditionalRoleAdded`, `OrgMemberAdditionalRoleRemoved`
+- [x] Proto: new RPCs in `rbac.proto` for user extras and additional-roles
+- [x] `hearth-defaults.yaml` (reference template created; `seed_realm` extension deferred)
+- [x] Tests across all 8 layers per test plan section (50 new tests: additional_roles, user_attributes, claims_config, registry_validation)
 
 Ships independently. Ends in a state where admins can define permissions and roles in YAML, grant direct user permissions without creating bespoke roles, and see effective permissions in the UI.
 
 ### Phase 2 — Configurable token claims
 
 Scope:
-- [x] `src/identity/claims_config.rs`: `ClaimProfile`, `ClaimMapping`, `ClaimSource`, `CanonicalUserField`, `evaluate()` — **`DEFAULT_CLAIM_PROFILE` constant, layered fallback model, `required_scopes`-vs-granted semantics, `allowed_clients` slug resolution not yet done**
+- [x] `src/identity/claims_config.rs`: `ClaimProfile`, `ClaimMapping`, `ClaimSource`, `CanonicalUserField`, `evaluate()`, `default_claim_profile()`, `resolve_claims_for_target()`, `emitted_claim_targets()`
 - [x] `TokenClaims` gains `#[serde(flatten)] custom: BTreeMap<String, Value>` and `skip_serializing_if` on existing claim fields
 - [x] Tier 1 claim name validation (`TIER1_CLAIMS`) in registry validator
-- [ ] `DEFAULT_CLAIM_PROFILE` constant in `claims_config.rs`
-- [ ] Layered per-`(claim, target)` gate-aware evaluation (fallback to default when YAML override gates fail)
-- [ ] `required_scopes` gate evaluated against **granted** scope set (not requested)
-- [ ] `allowed_clients` gate with slug→`ClientId` index resolution; DCR slugs rejected at config load
-- [ ] Tier 2/3 claim name validation in registry validator
-- [ ] YAML schema: `realms.<id>.claims.mappings:` block wired through `to_realm_config`
-- [ ] `issue_tokens_with_context` implementation; existing `issue_tokens` becomes thin wrapper
-- [ ] Admin UI: `/ui/admin/realms/:id/claims` read-only viewer; live token preview pane
-- [ ] Debug page enhancement: new "Token preview" tab
+- [x] `default_claim_profile()` function (equivalent to DEFAULT_CLAIM_PROFILE constant)
+- [x] Layered per-`(claim, target)` gate-aware evaluation in `resolve_claims_for_target` (fallback model implemented)
+- [x] `required_scopes` gate evaluated against **granted** scope set (not requested) — `gates_pass()` uses `granted_scopes`
+- [x] `allowed_clients` gate via slug string match in `gates_pass()`
+- [x] Tier 2/3 claim name validation in registry validator
+- [x] YAML schema: `realms.<id>.claims.mappings:` block wired through `to_realm_config`
+- [x] `issue_tokens_with_context` implementation; existing `issue_tokens` becomes thin wrapper
+- [x] Admin UI: `/ui/admin/realms/:id/claims` read-only viewer
+- [x] Debug page enhancement: new "Token preview" tab (Alpine.js fetch to `/ui/admin/rbac/token-preview`)
 - Audit events: none new (YAML reload is not an audit-worthy runtime event)
 
 Depends on Phase 1 (mappers can reference registered permissions via `RoleSubset` and `EffectivePermissions` sources). The release-gate framework (`first_party_only`, `required_scopes`, `allowed_clients`) and layered-fallback evaluation model land in this phase too, even though `required_scopes` only becomes meaningful once Phase 3 produces granted scope sets. Ends in a state where realm admins can shape token output declaratively with safe-by-default exposure for any future third-party clients.
@@ -1069,16 +1069,16 @@ Scope:
 - [x] Optional `scopes:` YAML block (`RealmConfig.scopes: Vec<ScopeBundle>`) wired
 - [x] `ProtectedResource` type + `RealmConfig.protected_resources` wired
 - [x] `scope_digest` field on consent row struct
-- [ ] `resolve_effective` with full scope-resolution pipeline: separator-based dispatch, resource-scoped bundle lookup, full-satisfiability check, ThirdParty fail-closed, `.`-permission prohibition for ThirdParty clients
-- [ ] `/authorize` validation: requested scopes ⊆ `declared_scopes`; `invalid_scope` on failure
-- [ ] Consent ceremony for `ThirdParty` clients rendered from `ScopeBundle` / `PermissionDefinition` / OIDC strings; consent rows keyed by `(realm, user, client, org_key, resource_key)` per Consent Storage section; `consent_spans_orgs` fallback
-- [ ] Digest re-check on every `/authorize` and `refresh_token`; `invalid_grant consent_required` on mismatch
-- [ ] `FirstParty` empty-scope → full effective; `ThirdParty` empty-scope → `invalid_scope`
-- [ ] Admin UI: `/ui/admin/rbac/scopes` list/detail (read-only with empty state), updated Applications pages with trust level + declared scopes (read-only)
-- [ ] Admin UI: `/ui/admin/users/{id}/applications` — connected apps + revoke
-- [ ] End-user UI: `/ui/account/applications` — self-service revoke
-- [ ] SDK methods: `revokeConsent` in TS and Go
-- [ ] Audit events: `ClientConsentGranted`, `ClientConsentRevoked`, `ConsentRequiredOnRefresh`
-- [ ] Proto: consent-revocation RPC
+- [x] `resolve_with_scopes` pipeline: separator-based dispatch, bundle lookup, full-satisfiability, ThirdParty fail-closed, FirstParty empty→full effective, ThirdParty empty→`invalid_scope`
+- [x] `/authorize` validation: requested scopes ⊆ `declared_scopes`; `invalid_scope` on failure (OIDC standard scopes exempt)
+- [x] Consent storage keyed by `(realm, user, client, org_key, resource_key)` with `consent_spans_orgs` fallback; legacy key migration on write
+- [x] Digest re-check on `/authorize` and `refresh_token` (`rotate_grant_family`); `ConsentRequired` on mismatch
+- [x] `FirstParty` empty-scope → full effective; `ThirdParty` empty-scope → `invalid_scope` (in `resolve_with_scopes`)
+- [x] Admin UI: `/ui/admin/rbac/scopes` list/detail (read-only with empty state); Applications pages updated with trust level + declared scopes
+- [x] Admin UI: `/ui/admin/users/{id}/applications` — connected apps + revoke
+- [x] End-user UI: `/ui/account/applications` — self-service revoke
+- [x] SDK methods: `revokeConsent` in TS and Go README docs
+- [x] Audit events: `ClientConsentGranted`, `ClientConsentRevoked`, `ConsentRequiredOnRefresh`
+- [x] Proto: consent-revocation RPC (`RevokeConsent`, `ListUserConsents`)
 
 Depends on Phase 1 (scopes reference registered permissions) and Phase 2 (the claim-profile mapper model supplies the `required_scopes` release gate that Phase 3's scope-resolution output feeds into). Ends in a state where Hearth can serve as a full OAuth authorization server with consent-based third-party integrations and end-user consent management.

@@ -549,6 +549,40 @@ pub(crate) fn oauth_consent_scan_prefix() -> Vec<u8> {
     OAUTH_CONSENT_PREFIX.as_bytes().to_vec()
 }
 
+/// Encodes the extended consent key for a `(user, client, org_key, resource_key)` tuple.
+///
+/// Format: `oauth:consent:{user_uuid}:{client_uuid}:{org_key}:{resource_key}`
+///
+/// - `org_key` is the org UUID string, or `"_realm"` for realm-scoped consent.
+/// - `resource_key` is the resource URI, or `"_default"` when no resource indicator.
+///
+/// This is the preferred key for consent records created under the expanded
+/// authorization model. Legacy records keyed by `encode_consent_key` remain
+/// readable during migration.
+pub(crate) fn encode_consent_key_extended(
+    user_id: &UserId,
+    client_id: &ClientId,
+    org_key: &str,
+    resource_key: &str,
+) -> Vec<u8> {
+    format!(
+        "{OAUTH_CONSENT_PREFIX}{}:{}:{}:{}",
+        user_id.as_uuid(),
+        client_id.as_uuid(),
+        org_key,
+        resource_key,
+    )
+    .into_bytes()
+}
+
+/// The sentinel `org_key` value meaning the consent applies at realm scope
+/// (i.e. not tied to a specific organization).
+pub(crate) const CONSENT_ORG_KEY_REALM: &str = "_realm";
+
+/// The sentinel `resource_key` value meaning no resource indicator was
+/// supplied by the client.
+pub(crate) const CONSENT_RESOURCE_KEY_DEFAULT: &str = "_default";
+
 /// Encodes the storage key for a pending-authorization ticket.
 ///
 /// Format: `oauth:pending_auth:{ticket_uuid}`

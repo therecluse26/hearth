@@ -68,7 +68,10 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         // unknown action rather than a decode error.
         domain::AuditAction::OrphanedReferenceSkipped
         | domain::AuditAction::UserPermissionGranted
-        | domain::AuditAction::UserPermissionRevoked => pb::AuditAction::Unspecified,
+        | domain::AuditAction::UserPermissionRevoked
+        | domain::AuditAction::ClientConsentGranted
+        | domain::AuditAction::ClientConsentRevoked
+        | domain::AuditAction::ConsentRequiredOnRefresh => pb::AuditAction::Unspecified,
     }
 }
 
@@ -175,6 +178,9 @@ mod tests {
             domain::AuditAction::OrphanedReferenceSkipped,
             domain::AuditAction::UserPermissionGranted,
             domain::AuditAction::UserPermissionRevoked,
+            domain::AuditAction::ClientConsentGranted,
+            domain::AuditAction::ClientConsentRevoked,
+            domain::AuditAction::ConsentRequiredOnRefresh,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

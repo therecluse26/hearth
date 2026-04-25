@@ -562,7 +562,7 @@ pub fn router(state: WebState) -> Router {
         )
         .route(
             "/account/applications",
-            axum::routing::get(account_consents::consents_index),
+            axum::routing::get(account_consents::account_applications),
         )
         .route(
             "/account/consents/revoke-all",
@@ -724,8 +724,28 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_realm_admin_revoke),
         )
         .route(
+            "/admin/realms/{id}/claims",
+            axum::routing::get(admin::admin_realm_claims),
+        )
+        .route(
             "/admin/rbac/debug",
             axum::routing::get(admin::admin_rbac_debug),
+        )
+        .route(
+            "/admin/rbac/token-preview",
+            axum::routing::post(admin::admin_rbac_token_preview),
+        )
+        .route(
+            "/admin/rbac/permissions",
+            axum::routing::get(admin::admin_rbac_permissions),
+        )
+        .route(
+            "/admin/rbac/roles",
+            axum::routing::get(admin::admin_rbac_roles),
+        )
+        .route(
+            "/admin/rbac/scopes",
+            axum::routing::get(admin::admin_rbac_scopes),
         )
         // --- Organizations ---
         .route(

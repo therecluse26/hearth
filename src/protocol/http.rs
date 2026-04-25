@@ -834,6 +834,7 @@ fn identity_error_to_response(
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
         IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
+        IdentityError::InvalidAttribute { .. } => (StatusCode::BAD_REQUEST, "invalid attribute"),
     };
 
     (status, Json(serde_json::json!({"error": message})))
@@ -1304,6 +1305,7 @@ fn rbac_error_to_response(err: &RbacError) -> (StatusCode, Json<serde_json::Valu
             (StatusCode::PAYLOAD_TOO_LARGE, "resource_exhausted")
         }
         RbacError::ReservedNamespace { .. } => (StatusCode::FORBIDDEN, "reserved_namespace"),
+        RbacError::InvalidScope { .. } => (StatusCode::BAD_REQUEST, "invalid_scope"),
         RbacError::Storage(_) | RbacError::Serialization { .. } => {
             (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         }

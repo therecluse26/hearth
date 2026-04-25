@@ -331,6 +331,14 @@ pub enum IdentityError {
         /// The size actually produced at resolve time.
         actual: usize,
     },
+    /// A user attribute key or value failed validation.
+    ///
+    /// Covers: empty key, key exceeds 64 chars, key contains invalid
+    /// characters, value exceeds 1 KiB, or total map exceeds 16 KiB.
+    InvalidAttribute {
+        /// Description of what was invalid.
+        reason: String,
+    },
 }
 
 impl fmt::Display for IdentityError {
@@ -475,6 +483,7 @@ impl fmt::Display for IdentityError {
                 f,
                 "resolved claim set exceeds size limit {limit} ({actual} > {limit_value})"
             ),
+            Self::InvalidAttribute { reason } => write!(f, "invalid attribute: {reason}"),
         }
     }
 }
@@ -564,7 +573,8 @@ impl std::error::Error for IdentityError {
             | Self::ConfigInvalid { .. }
             | Self::Serialization { .. }
             | Self::Internal { .. }
-            | Self::TokenTooLarge { .. } => None,
+            | Self::TokenTooLarge { .. }
+            | Self::InvalidAttribute { .. } => None,
         }
     }
 }

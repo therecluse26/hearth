@@ -34,6 +34,7 @@ pub use types::{
 };
 
 use crate::core::{OrganizationId, RealmId, UserId};
+use crate::identity::ClientTrustLevel;
 
 /// Trait defining the claims-based RBAC engine interface.
 ///
@@ -54,6 +55,32 @@ pub trait RbacEngine: Send + Sync {
         realm_id: &RealmId,
         org_id: Option<&OrganizationId>,
         requested_scope: Option<&str>,
+    ) -> Result<ResolvedPermissions, RbacError>;
+
+    /// Resolves the effective permission set using the full scope-resolution
+    /// pipeline described in `AUTHZ_EXPANSION.md` §"Resolution rule".
+    ///
+    /// Performs separator-based scope dispatch, full-satisfiability checking,
+    /// and trust-level-aware partial-grant or fail-closed semantics:
+    ///
+    /// - `ThirdParty` clients: fail-closed — any non-OIDC scope that is either
+    ///   undeclared or unsatisfiable causes `RbacError::InvalidScope`.
+    /// - `FirstParty` clients: silent partial grant — only satisfiable scopes
+    ///   are returned in `granted_scopes`; the rest are silently dropped.
+    /// - Empty `requested_scopes` + `FirstParty`: full effective permissions,
+    ///   `granted_scopes` is empty.
+    /// - Empty `requested_scopes` + `ThirdParty`: returns `RbacError::InvalidScope`.
+    ///
+    /// The returned `ResolvedPermissions::granted_scopes` is the space-delimited
+    /// RFC 6749 `scope` value to embed in the token.
+    fn resolve_with_scopes(
+        &self,
+        user_id: &UserId,
+        realm_id: &RealmId,
+        org_id: Option<&OrganizationId>,
+        requested_scopes: &[String],
+        client_trust_level: ClientTrustLevel,
+        declared_scopes: &[String],
     ) -> Result<ResolvedPermissions, RbacError>;
 
     /// Grants a direct permission to a user outside any role.
@@ -78,6 +105,35 @@ pub trait RbacEngine: Send + Sync {
         realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<Vec<UserPermissionGrant>, RbacError>;
+
+    /// Adds an extra org-scoped role by name to a user's membership in the given organization.
+    ///
+    /// The role must exist in the realm. Emits `OrgMemberAdditionalRoleAdded` audit event.
+    fn add_additional_role(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        role_name: &str,
+        granted_by: Option<&UserId>,
+    ) -> Result<(), RbacError>;
+
+    /// Removes an extra org-scoped role from a user's membership.
+    fn remove_additional_role(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        role_name: &str,
+    ) -> Result<(), RbacError>;
+
+    /// Lists extra org-scoped role names for a user in the given organization.
+    fn list_additional_roles(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+    ) -> Result<Vec<String>, RbacError>;
 
     // ------- Roles -------
 

@@ -419,3 +419,49 @@ fn tier3_https_claim_allowed() {
         "HTTPS-namespaced custom claim is Tier 3, allowed"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Additional Tier 1 / Tier 3 tests (spec §"Registry validation tests")
+// ---------------------------------------------------------------------------
+
+/// Tier 1 claim `sub` must be rejected as a mapper target.
+#[test]
+fn tier1_claim_rejected_as_mapper_target() {
+    let errs = reg_with_claim("sub").validate().expect_err("sub is Tier 1");
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, RegistryError::ForbiddenClaimTarget { claim } if claim == "sub")),
+        "expected ForbiddenClaimTarget for 'sub'; got {errs:?}"
+    );
+}
+
+/// Tier 3 short identifier `employee_id` must be accepted.
+#[test]
+fn tier3_short_claim_accepted() {
+    assert!(
+        reg_with_claim("employee_id").validate().is_ok(),
+        "short snake_case 'employee_id' is Tier 3 and must be accepted"
+    );
+}
+
+/// Tier 3 HTTPS-namespaced `https://example.com/dept` must be accepted.
+#[test]
+fn tier3_https_claim_accepted() {
+    assert!(
+        reg_with_claim("https://example.com/dept")
+            .validate()
+            .is_ok(),
+        "HTTPS-namespaced claim must be accepted as Tier 3"
+    );
+}
+
+/// Tier 1 claim `exp` must be rejected as a mapper target.
+#[test]
+fn tier1_claim_exp_rejected() {
+    let errs = reg_with_claim("exp").validate().expect_err("exp is Tier 1");
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, RegistryError::ForbiddenClaimTarget { claim } if claim == "exp")),
+        "expected ForbiddenClaimTarget for 'exp'; got {errs:?}"
+    );
+}

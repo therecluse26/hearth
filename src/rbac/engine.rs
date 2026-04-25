@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::core::{Clock, OrganizationId, RealmId, UserId};
+use crate::identity::ClientTrustLevel;
 use crate::storage::StorageEngine;
 
 use super::error::RbacError;
@@ -403,6 +404,30 @@ impl Resolver for EmbeddedRbacEngine {
     ) -> Result<Vec<UserPermissionGrant>, RbacError> {
         self.load_user_permissions(realm_id, user_id)
     }
+
+    fn get_role_id_by_name(
+        &self,
+        realm_id: &RealmId,
+        name: &str,
+    ) -> Result<Option<RoleId>, RbacError> {
+        self.load_role_id_by_name(realm_id, name)
+    }
+
+    fn additional_roles(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+    ) -> Result<Vec<String>, RbacError> {
+        let prefix = keys::org_extra_role_scan_prefix(realm_id, org_id, user_id);
+        let end = keys::prefix_end(&prefix);
+        let mut out = Vec::new();
+        for entry in self.storage.scan(realm_id, &prefix, &end)? {
+            let name: String = Self::de(&entry.value)?;
+            out.push(name);
+        }
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +443,26 @@ impl RbacEngine for EmbeddedRbacEngine {
         requested_scope: Option<&str>,
     ) -> Result<ResolvedPermissions, RbacError> {
         resolve::resolve_permissions(self, user_id, realm_id, org_id, requested_scope)
+    }
+
+    fn resolve_with_scopes(
+        &self,
+        user_id: &UserId,
+        realm_id: &RealmId,
+        org_id: Option<&OrganizationId>,
+        requested_scopes: &[String],
+        client_trust_level: ClientTrustLevel,
+        declared_scopes: &[String],
+    ) -> Result<ResolvedPermissions, RbacError> {
+        resolve::resolve_with_scopes(
+            self,
+            user_id,
+            realm_id,
+            org_id,
+            requested_scopes,
+            client_trust_level,
+            declared_scopes,
+        )
     }
 
     fn grant_user_permission(
@@ -486,6 +531,70 @@ impl RbacEngine for EmbeddedRbacEngine {
         user_id: &UserId,
     ) -> Result<Vec<UserPermissionGrant>, RbacError> {
         self.load_user_permissions(realm_id, user_id)
+    }
+
+    fn add_additional_role(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        role_name: &str,
+        _granted_by: Option<&UserId>,
+    ) -> Result<(), RbacError> {
+        if role_name.is_empty() {
+            return Err(RbacError::InvalidRoleName {
+                reason: "role name must not be empty".to_string(),
+            });
+        }
+        if self.get_role_by_name(realm_id, role_name)?.is_none() {
+            return Err(RbacError::RoleNotFound);
+        }
+        let key = keys::encode_org_extra_role(realm_id, org_id, user_id, role_name);
+        let value = Self::ser(&role_name)?;
+        self.storage.put(realm_id, &key, &value)?;
+        tracing::info!(
+            realm_id = %realm_id,
+            org_id = %org_id,
+            user_id = %user_id,
+            role = %role_name,
+            "org member additional role added"
+        );
+        Ok(())
+    }
+
+    fn remove_additional_role(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+        role_name: &str,
+    ) -> Result<(), RbacError> {
+        let key = keys::encode_org_extra_role(realm_id, org_id, user_id, role_name);
+        self.storage.delete(realm_id, &key)?;
+        tracing::info!(
+            realm_id = %realm_id,
+            org_id = %org_id,
+            user_id = %user_id,
+            role = %role_name,
+            "org member additional role removed"
+        );
+        Ok(())
+    }
+
+    fn list_additional_roles(
+        &self,
+        realm_id: &RealmId,
+        org_id: &OrganizationId,
+        user_id: &UserId,
+    ) -> Result<Vec<String>, RbacError> {
+        let prefix = keys::org_extra_role_scan_prefix(realm_id, org_id, user_id);
+        let end = keys::prefix_end(&prefix);
+        let mut out = Vec::new();
+        for entry in self.storage.scan(realm_id, &prefix, &end)? {
+            let name: String = Self::de(&entry.value)?;
+            out.push(name);
+        }
+        Ok(out)
     }
 
     // ---------- Roles ----------

@@ -1,0 +1,51 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} &middot; Connected Applications{% endblock %}
+{% block body %}
+<div class="mb-8 flex items-start justify-between gap-6">
+  <div>
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">Connected Applications</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">Applications you have granted access to your account.</p>
+  </div>
+  <a href="/ui/account" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Back to account</a>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
+  {% if consents.is_empty() %}
+  <p class="px-6 py-10 text-center text-sm text-ht-content-muted">No connected applications.</p>
+  {% else %}
+  <ul class="divide-y divide-divider-faint">
+    {% for c in consents %}
+    <li class="flex items-start gap-4 px-6 py-4" data-consent-client="{{ c.client_id }}">
+      <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-ht-surface-base ring-1 ring-divider-subtle">
+        <svg class="h-5 w-5 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="7" width="18" height="13" rx="2" />
+          <path d="M8 7V5a4 4 0 1 1 8 0v2" />
+        </svg>
+      </div>
+      <div class="flex-1">
+        <div class="flex items-center justify-between gap-3">
+          <h3 class="text-sm font-semibold text-ht-content-primary">{{ c.client_name }}</h3>
+          <form method="post" action="/ui/account/applications/{{ c.client_id }}/revoke">
+            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+            <button type="submit" class="text-xs font-medium text-danger-fg hover:text-red-300">
+              Revoke access
+            </button>
+          </form>
+        </div>
+        {% if c.scopes.is_empty() %}
+        <p class="mt-1 text-xs text-ht-content-muted">No scopes granted.</p>
+        {% else %}
+        <ul class="mt-2 flex flex-wrap gap-1.5">
+          {% for s in c.scopes %}
+          <li class="rounded-full bg-ht-surface-base px-2 py-0.5 font-mono text-[11px] text-ht-content-secondary ring-1 ring-divider-subtle">{{ s }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        <p class="mt-2 font-mono text-[11px] text-ht-content-muted">Granted {{ c.granted_at }}</p>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endblock %}

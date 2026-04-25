@@ -74,6 +74,15 @@ pub enum RbacError {
         /// The offending permission string.
         permission: String,
     },
+    /// One or more requested OAuth scopes could not be granted.
+    ///
+    /// Returned by `resolve_with_scopes` when a `ThirdParty` client requests
+    /// a scope outside its `declared_scopes`, or when no requested scope is
+    /// satisfiable by the user's effective permission set.
+    InvalidScope {
+        /// Human-readable reason (no sensitive data).
+        reason: String,
+    },
     /// The underlying storage layer returned an error.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization of a stored record failed.
@@ -115,6 +124,7 @@ impl fmt::Display for RbacError {
                 f,
                 "permission '{permission}' is in the reserved namespace and may not be granted by operator roles"
             ),
+            Self::InvalidScope { reason } => write!(f, "invalid_scope: {reason}"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
         }

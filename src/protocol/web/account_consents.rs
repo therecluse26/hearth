@@ -85,11 +85,54 @@ impl ConsentsIndexTemplate {
     }
 }
 
+/// Template for the `GET /ui/account/applications` Connected Applications view.
+#[derive(Template)]
+#[template(path = "ui/account/applications.html")]
+#[allow(clippy::struct_excessive_bools)]
+struct AccountApplicationsTemplate {
+    consents: Vec<ConsentRow>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `GET /ui/account/applications` — lists every OAuth client the signed-in
+/// `GET /ui/account/applications` — Connected Applications page showing every
+/// OAuth client the signed-in user has granted consent to, with per-row revoke.
+pub async fn account_applications(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+) -> Response {
+    let rows = load_consents(&state, &session);
+    let admin = super::handlers::is_admin(state.as_ref(), &session);
+    render(&AccountApplicationsTemplate {
+        consents: rows,
+        chrome: true,
+        active: "account",
+        user_email: Some(session.user_email.clone()),
+        is_admin: admin,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: true,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
+}
+
+/// `GET /ui/account/applications` (legacy) — lists every OAuth client the signed-in
 /// user has granted consent to, with per-row revoke actions.
 pub async fn consents_index(State(state): State<Arc<WebState>>, session: UiSession) -> Response {
     let rows = load_consents(&state, &session);

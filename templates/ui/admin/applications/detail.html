@@ -54,6 +54,26 @@
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Grant types</dt>
       <dd class="mt-1 text-sm text-ht-content-secondary">{{ app.grant_types().join(", ") }}</dd>
     </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Trust level</dt>
+      <dd class="mt-1">
+        {% if app.trust_level()|fmt("{:?}") == "FirstParty" %}
+          <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">First Party</span>
+        {% else %}
+          <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Third Party</span>
+        {% endif %}
+      </dd>
+    </div>
+    {% if !app.declared_scopes().is_empty() %}
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Declared scopes</dt>
+      <dd class="mt-2 flex flex-wrap gap-1.5">
+        {% for s in app.declared_scopes() %}
+          <span class="rounded-full bg-ht-surface-elevated px-2 py-0.5 font-mono text-[11px] text-ht-content-secondary ring-1 ring-divider-subtle">{{ s }}</span>
+        {% endfor %}
+      </dd>
+    </div>
+    {% endif %}
   </dl>
 </div>
 

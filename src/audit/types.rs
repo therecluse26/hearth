@@ -140,6 +140,20 @@ pub enum AuditAction {
     ///
     /// Metadata may carry `scope_type` and `permission`.
     UserPermissionRevoked,
+    /// OAuth consent was granted (new grant or scope update).
+    ///
+    /// Metadata carries `client_id` and `scopes` (space-separated).
+    ClientConsentGranted,
+    /// OAuth consent was revoked — either by the user or an admin.
+    ///
+    /// Metadata carries `client_id` and the actor type (`"self"` or `"admin"`).
+    ClientConsentRevoked,
+    /// A refresh token was rejected because the stored consent digest no
+    /// longer matches the current scope surface (e.g. bundle YAML was
+    /// updated). Equivalent to `invalid_grant consent_required`.
+    ///
+    /// Metadata carries `client_id`.
+    ConsentRequiredOnRefresh,
 }
 
 impl AuditAction {
@@ -198,6 +212,9 @@ impl AuditAction {
             Self::OrphanedReferenceSkipped => "orphaned_reference_skipped",
             Self::UserPermissionGranted => "user_permission_granted",
             Self::UserPermissionRevoked => "user_permission_revoked",
+            Self::ClientConsentGranted => "client_consent_granted",
+            Self::ClientConsentRevoked => "client_consent_revoked",
+            Self::ConsentRequiredOnRefresh => "consent_required_on_refresh",
         }
     }
 }
@@ -259,6 +276,9 @@ impl std::str::FromStr for AuditAction {
             "orphaned_reference_skipped" => Ok(Self::OrphanedReferenceSkipped),
             "user_permission_granted" => Ok(Self::UserPermissionGranted),
             "user_permission_revoked" => Ok(Self::UserPermissionRevoked),
+            "client_consent_granted" => Ok(Self::ClientConsentGranted),
+            "client_consent_revoked" => Ok(Self::ClientConsentRevoked),
+            "consent_required_on_refresh" => Ok(Self::ConsentRequiredOnRefresh),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

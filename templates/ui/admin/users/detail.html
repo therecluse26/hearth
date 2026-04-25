@@ -80,52 +80,130 @@
   </div>
 </div>
 
-{# Access across this realm #}
-<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
-  <div class="mb-4 flex items-center justify-between">
-    <h2 class="text-lg font-semibold text-ht-content-primary">Access</h2>
-    <p class="text-sm text-ht-content-muted">Direct grants in this realm. Group-inherited access is not shown.</p>
+{# Access across this realm — tabbed card #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ tab: 'roles' }">
+  {# Card header #}
+  <div class="flex flex-col gap-3 border-b border-divider-subtle px-6 pt-5 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <h2 class="text-lg font-semibold text-ht-content-primary">Access</h2>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Realm administrator:
+        {% if is_user_admin %}
+          <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Yes</span>
+        {% else %}
+          <span class="text-ht-content-secondary">No</span>
+        {% endif %}
+      </p>
+    </div>
+    {# Tab buttons #}
+    <div class="flex gap-1 self-end sm:self-auto">
+      <button @click="tab = 'roles'" type="button"
+              :class="tab === 'roles' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Roles
+      </button>
+      <button @click="tab = 'extra'" type="button"
+              :class="tab === 'extra' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Extra Permissions
+      </button>
+      <button @click="tab = 'effective'" type="button"
+              :class="tab === 'effective' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Effective
+      </button>
+      <button @click="tab = 'attrs'" type="button"
+              :class="tab === 'attrs' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Attributes
+      </button>
+    </div>
   </div>
 
-  <div class="mb-4 flex items-center gap-2">
-    <span class="font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Realm administrator</span>
-    {% if is_user_admin %}
-      <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Yes</span>
+  {# Roles tab #}
+  <div x-show="tab === 'roles'" class="p-6">
+    {% if access_groups.is_empty() %}
+      <p class="py-4 text-center text-sm text-ht-content-muted">No direct role grants in this realm.</p>
     {% else %}
-      <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">No</span>
+      {% for g in access_groups %}
+      <div class="mt-4 first:mt-0">
+        <h3 class="mb-2 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">{{ g.object_type }}</h3>
+        <ul class="divide-y divide-divider-faint">
+          {% for e in g.entries %}
+          <li class="flex items-center justify-between gap-3 py-2">
+            <div class="min-w-0 flex-1">
+              {% match e.detail_url %}
+                {% when Some with (url) %}
+                  <a href="{{ url }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ e.label }}</a>
+                {% when None %}
+                  <span class="text-sm text-ht-content-primary">{{ e.label }}</span>
+              {% endmatch %}
+              {% if e.object_id != e.label %}
+                <div class="font-mono text-xs text-ht-content-muted">{{ e.object_id }}</div>
+              {% endif %}
+            </div>
+            <span class="inline-flex shrink-0 items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">{{ e.relation }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
     {% endif %}
   </div>
 
-  {% if access_groups.is_empty() %}
-    <p class="py-6 text-center text-sm text-ht-content-muted">No direct role grants in this realm.</p>
-  {% else %}
-    {% for g in access_groups %}
-    <div class="mt-4">
-      <h3 class="mb-2 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">{{ g.object_type }}</h3>
+  {# Extra Permissions tab #}
+  <div x-show="tab === 'extra'" class="p-6">
+    {% if extra_permissions.is_empty() %}
+      <p class="py-4 text-center text-sm text-ht-content-muted">No directly-granted permissions for this user.</p>
+    {% else %}
       <ul class="divide-y divide-divider-faint">
-        {% for e in g.entries %}
+        {% for (perm, scope) in extra_permissions %}
         <li class="flex items-center justify-between gap-3 py-2">
-          <div class="min-w-0 flex-1">
-            {% match e.detail_url %}
-              {% when Some with (url) %}
-                <a href="{{ url }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ e.label }}</a>
-              {% when None %}
-                <span class="text-sm text-ht-content-primary">{{ e.label }}</span>
-            {% endmatch %}
-            {# Hide the object_id row when it's identical to the human label —
-               otherwise hearth-level grants (where label/object_id/relation all
-               collapse to "admin") render as three duplicate "admin" cells. #}
-            {% if e.object_id != e.label %}
-              <div class="text-xs text-ht-content-muted font-mono">{{ e.object_id }}</div>
-            {% endif %}
-          </div>
-          <span class="inline-flex shrink-0 items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">{{ e.relation }}</span>
+          <code class="font-mono text-xs text-ht-content-secondary">{{ perm }}</code>
+          <span class="inline-flex shrink-0 items-center rounded-full bg-slate-bg px-2 py-0.5 text-xs font-medium text-slate-fg">{{ scope }}</span>
         </li>
         {% endfor %}
       </ul>
-    </div>
-    {% endfor %}
-  {% endif %}
+    {% endif %}
+  </div>
+
+  {# Effective Permissions tab #}
+  <div x-show="tab === 'effective'" class="p-6">
+    {% if effective_permissions.is_empty() %}
+      <p class="py-4 text-center text-sm text-ht-content-muted">No effective permissions resolved for this user.</p>
+    {% else %}
+      <ul class="flex flex-wrap gap-1.5">
+        {% for perm in effective_permissions %}
+        <li>
+          <code class="inline-flex items-center rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ perm }}</code>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+
+  {# Attributes tab #}
+  <div x-show="tab === 'attrs'" class="p-6">
+    {% if attributes.is_empty() %}
+      <p class="py-4 text-center text-sm text-ht-content-muted">No attributes set on this user.</p>
+    {% else %}
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-divider-subtle">
+            <th class="pb-2 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Key</th>
+            <th class="pb-2 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Value</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-divider-faint">
+          {% for (key, val) in attributes %}
+          <tr>
+            <td class="py-2 pr-4"><code class="font-mono text-xs text-ht-content-secondary">{{ key }}</code></td>
+            <td class="py-2 text-ht-content-primary">{{ val }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
 </div>
 
 {# Sessions section #}

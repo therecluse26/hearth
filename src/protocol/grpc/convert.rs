@@ -56,6 +56,7 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::NotAMember
         | IdentityError::UserNotVerified => (Code::PermissionDenied, err.to_string()),
         IdentityError::InvalidInput { .. }
+        | IdentityError::InvalidAttribute { .. }
         | IdentityError::InvalidRedirectUri
         | IdentityError::InvalidAuthorizationCode
         | IdentityError::InvalidGrant { .. }
@@ -133,6 +134,7 @@ pub fn rbac_to_status(err: RbacError) -> Status {
             Status::new(Code::ResourceExhausted, err.to_string())
         }
         RbacError::ReservedNamespace { .. } => Status::new(Code::PermissionDenied, err.to_string()),
+        RbacError::InvalidScope { .. } => Status::new(Code::InvalidArgument, err.to_string()),
         RbacError::Storage(e) => {
             tracing::error!(error = %e, "rbac storage error");
             Status::new(Code::Internal, "internal error")

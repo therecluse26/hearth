@@ -48,6 +48,9 @@ use crate::identity::{
     Session, UpdateOrganizationRequest, UpdateUserRequest, User, UserStatus,
 };
 
+use crate::identity::claims_config::ClaimSource;
+use crate::rbac::RoleScopeKind;
+
 use super::auth::{verify_csrf_form_field, RequireAdmin, TargetRealm};
 use super::templates::{render, Flash};
 use super::WebState;
@@ -468,6 +471,12 @@ struct UserDetailTemplate {
     created_at_display: String,
     /// Formatted last-updated timestamp.
     updated_at_display: String,
+    /// Directly-granted user permissions: `(permission_name, scope_label)`.
+    extra_permissions: Vec<(String, String)>,
+    /// Fully resolved effective permission names for this user.
+    effective_permissions: Vec<String>,
+    /// User attributes as sorted `(key, value)` pairs.
+    attributes: Vec<(String, String)>,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -590,6 +599,37 @@ pub async fn admin_user_detail(
     let created_at_display = format_ts(user.created_at());
     let updated_at_display = format_ts(user.updated_at());
 
+    // Directly-granted permissions for this user in the current realm.
+    let extra_permissions: Vec<(String, String)> = state
+        .rbac
+        .list_user_permissions(target.id(), &uid)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|g| {
+            let scope_label = match &g.scope {
+                crate::rbac::Scope::Realm => "realm".to_string(),
+                crate::rbac::Scope::Org { org_id } => {
+                    format!("org:{}", org_id.as_uuid())
+                }
+            };
+            (g.permission.into_string(), scope_label)
+        })
+        .collect();
+
+    // Fully resolved effective permissions (union of roles + direct grants).
+    let effective_permissions: Vec<String> = state
+        .rbac
+        .resolve_permissions(&uid, target.id(), None, None)
+        .map(|r| r.permissions.into_iter().map(|p| p.into_string()).collect())
+        .unwrap_or_default();
+
+    // User attributes as sorted (key, value) pairs.
+    let attributes: Vec<(String, String)> = user
+        .attributes()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
     render(&UserDetailTemplate {
         user,
         sessions,
@@ -601,6 +641,9 @@ pub async fn admin_user_detail(
         access_groups,
         created_at_display,
         updated_at_display,
+        extra_permissions,
+        effective_permissions,
+        attributes,
         chrome: true,
         active: "users",
         user_email: Some(session.user_email.clone()),
@@ -4548,6 +4591,172 @@ pub async fn admin_rbac_debug(
 }
 
 // =========================================================================
+// RBAC token preview (POST /ui/admin/rbac/token-preview)
+// =========================================================================
+
+/// Form body for the token preview endpoint.
+#[derive(Debug, Deserialize)]
+pub struct TokenPreviewForm {
+    /// UUID (bare or with `user_` prefix) of the user to preview.
+    #[serde(default)]
+    pub user_id: String,
+}
+
+/// `POST /ui/admin/rbac/token-preview` — returns a JSON snippet previewing
+/// the access-token claims that would be embedded for the given user in the
+/// current realm.
+pub async fn admin_rbac_token_preview(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
+    axum::Form(form): axum::Form<TokenPreviewForm>,
+) -> Response {
+    use axum::response::IntoResponse;
+    use serde_json::{json, to_string_pretty};
+
+    let user_id_str = form.user_id.trim().to_string();
+    let uuid_result = user_id_str
+        .strip_prefix("user_")
+        .unwrap_or(user_id_str.as_str())
+        .parse::<uuid::Uuid>();
+
+    let json_text = match uuid_result {
+        Err(_) => {
+            let v = json!({"error": "Invalid user UUID"});
+            to_string_pretty(&v).unwrap_or_default()
+        }
+        Ok(u) => {
+            let uid = crate::core::UserId::new(u);
+            match state
+                .rbac
+                .resolve_permissions(&uid, target.id(), None, None)
+            {
+                Err(e) => {
+                    let v = json!({"error": format!("Resolution failed: {e}")});
+                    to_string_pretty(&v).unwrap_or_default()
+                }
+                Ok(resolved) => {
+                    let permissions: Vec<String> = resolved
+                        .permissions
+                        .into_iter()
+                        .map(|p| p.into_string())
+                        .collect();
+                    let v = json!({
+                        "sub": format!("user_{u}"),
+                        "oid": null,
+                        "realm": target.id().as_uuid().to_string(),
+                        "roles": resolved.roles,
+                        "groups": resolved.groups,
+                        "permissions": permissions,
+                        "_note": "Mock preview — iss/aud/exp/iat omitted"
+                    });
+                    to_string_pretty(&v).unwrap_or_default()
+                }
+            }
+        }
+    };
+
+    (
+        axum::http::StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        json_text,
+    )
+        .into_response()
+}
+
+// =========================================================================
+// RBAC scopes list (GET /ui/admin/rbac/scopes)
+// =========================================================================
+
+/// A single row on the scopes list page.
+struct ScopeRow {
+    /// Bundle name (e.g. `read:docs`).
+    name: String,
+    /// Optional human-readable description.
+    description: String,
+    /// Comma-separated list of permission names this bundle grants.
+    permissions: String,
+}
+
+/// Template for `GET /ui/admin/rbac/scopes`.
+#[derive(Template)]
+#[template(path = "ui/admin/rbac/scopes.html")]
+struct RbacScopesTemplate {
+    /// Scope bundle rows for the current realm.
+    scopes: Vec<ScopeRow>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// `GET /ui/admin/rbac/scopes` — read-only list of registered scope bundles.
+///
+/// Reads the realm's scope bundle definitions from config; these are
+/// YAML-managed and not editable through the UI.
+pub async fn admin_rbac_scopes(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+) -> Response {
+    let realm_name = state
+        .identity
+        .get_realm(target.id())
+        .ok()
+        .flatten()
+        .map(|r| r.name().to_string());
+
+    let scopes = realm_name
+        .as_deref()
+        .and_then(|name| {
+            state
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.realms.as_ref())
+                .and_then(|realms| realms.get(name))
+        })
+        .and_then(|r| r.scopes.as_ref())
+        .map(|bundles| {
+            bundles
+                .iter()
+                .map(|b| ScopeRow {
+                    name: b.name.clone(),
+                    description: b.description.clone().unwrap_or_default(),
+                    permissions: b
+                        .permissions
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    render(&RbacScopesTemplate {
+        scopes,
+        chrome: true,
+        active: "rbac_scopes",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
+}
+
+// =========================================================================
 // Realm admin picker (Phase 6 — Roles UI second pass)
 // =========================================================================
 
@@ -4780,4 +4989,260 @@ fn resolve_user_access_groups(
             entries,
         })
         .collect()
+}
+
+// =========================================================================
+// RBAC permissions list
+// =========================================================================
+
+/// Template for `GET /ui/admin/rbac/permissions`.
+#[derive(Template)]
+#[template(path = "ui/admin/rbac/permissions.html")]
+struct RbacPermissionsTemplate {
+    /// Pairs of (permission_name, description) from the registry.
+    permissions: Vec<(String, String)>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// `GET /ui/admin/rbac/permissions` — read-only list of declared permissions.
+///
+/// Reads the realm's permission definitions from config; these are
+/// YAML-managed and not editable through the UI.
+pub async fn admin_rbac_permissions(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+) -> Response {
+    // Look up realm name so we can index into config by name.
+    let realm_name = state
+        .identity
+        .get_realm(target.id())
+        .ok()
+        .flatten()
+        .map(|r| r.name().to_string());
+
+    let permissions = realm_name
+        .as_deref()
+        .and_then(|name| {
+            state
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.realms.as_ref())
+                .and_then(|realms| realms.get(name))
+        })
+        .and_then(|r| r.permissions.as_ref())
+        .map(|perms| {
+            perms
+                .iter()
+                .map(|p| (p.name.clone(), p.description.clone().unwrap_or_default()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    render(&RbacPermissionsTemplate {
+        permissions,
+        chrome: true,
+        active: "rbac_permissions",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
+}
+
+// =========================================================================
+// RBAC roles list
+// =========================================================================
+
+/// Row data for a role in the roles list template.
+struct RoleRow {
+    name: String,
+    scope: String,
+    permission_count: usize,
+    description: String,
+}
+
+/// Template for `GET /ui/admin/rbac/roles`.
+#[derive(Template)]
+#[template(path = "ui/admin/rbac/roles.html")]
+struct RbacRolesTemplate {
+    /// Rows for each role in the current realm.
+    roles: Vec<RoleRow>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// `GET /ui/admin/rbac/roles` — read-only list of defined roles.
+pub async fn admin_rbac_roles(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+) -> Response {
+    let page = state
+        .rbac
+        .list_roles(target.id(), None, 200)
+        .unwrap_or_default();
+
+    let roles = page
+        .items
+        .into_iter()
+        .map(|r| RoleRow {
+            name: r.name.clone(),
+            scope: match r.scope_kind {
+                RoleScopeKind::Realm => "realm".to_string(),
+                RoleScopeKind::Organization => "organization".to_string(),
+                RoleScopeKind::Any => "any".to_string(),
+            },
+            permission_count: r.permissions.len(),
+            description: r.description.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    render(&RbacRolesTemplate {
+        roles,
+        chrome: true,
+        active: "rbac_roles",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
+}
+
+// =========================================================================
+// Realm claim profile viewer
+// =========================================================================
+
+/// A single row in the claim profile table.
+struct ClaimMappingRow {
+    claim: String,
+    source: String,
+    include_in_access_token: bool,
+    include_in_id_token: bool,
+    include_in_userinfo: bool,
+    first_party_only: bool,
+    required_scopes: Vec<String>,
+}
+
+/// Template for `GET /ui/admin/realms/:id/claims`.
+#[derive(Template)]
+#[template(path = "ui/admin/realms/claims/view.html")]
+struct RealmClaimsTemplate {
+    realm_id: String,
+    realm_name: String,
+    mappings: Vec<ClaimMappingRow>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// Converts a [`ClaimSource`] to a short human-readable label.
+fn claim_source_label(source: &ClaimSource) -> String {
+    match source {
+        ClaimSource::RolesFromAssignments => "roles_from_assignments".to_string(),
+        ClaimSource::GroupsFromMemberships => "groups_from_memberships".to_string(),
+        ClaimSource::EffectivePermissions => "effective_permissions".to_string(),
+        ClaimSource::OrgContext => "org_context".to_string(),
+        ClaimSource::CanonicalUserField { field } => format!("user.{field:?}").to_lowercase(),
+        ClaimSource::UserAttribute { attribute } => format!("attribute:{attribute}"),
+        ClaimSource::RoleSubset { prefix } => format!("role_subset:{prefix}"),
+        ClaimSource::Constant { value } => format!("constant:{value}"),
+        ClaimSource::Omit => "omit".to_string(),
+    }
+}
+
+/// `GET /ui/admin/realms/:id/claims` — read-only claim profile viewer.
+pub async fn admin_realm_claims(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    AxumPath(rid): AxumPath<String>,
+) -> Response {
+    let Ok(realm_uuid) = rid.parse::<uuid::Uuid>() else {
+        return super::handlers_common::not_found("Realm not found");
+    };
+    let realm_id = RealmId::new(realm_uuid);
+
+    let realm = match state.identity.get_realm(&realm_id) {
+        Ok(Some(r)) => r,
+        _ => return super::handlers_common::not_found("Realm not found"),
+    };
+
+    // Attempt to find the claim profile from config (YAML-managed) or fall
+    // back to an empty list when no profile has been declared.
+    let mappings = state
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.realms.as_ref())
+        .and_then(|realms| realms.get(realm.name()))
+        .and_then(|r| r.claims.as_ref())
+        .map(|profile| {
+            profile
+                .mappings
+                .iter()
+                .map(|m| ClaimMappingRow {
+                    claim: m.claim.clone(),
+                    source: claim_source_label(&m.source),
+                    include_in_access_token: m.include_in_access_token,
+                    include_in_id_token: m.include_in_id_token,
+                    include_in_userinfo: m.include_in_userinfo,
+                    first_party_only: m.first_party_only,
+                    required_scopes: m.required_scopes.clone().unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    render(&RealmClaimsTemplate {
+        realm_id: realm_id.as_uuid().to_string(),
+        realm_name: realm.name().to_string(),
+        mappings,
+        chrome: true,
+        active: "realms",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name.clone(),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
 }
