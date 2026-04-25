@@ -166,7 +166,12 @@ fn reconcile_declared_realms(
 
     // Process each YAML entry
     for (name, yaml_cfg) in yaml_realms {
-        let realm_config = yaml_cfg.to_realm_config(&config.auth, config.email.branding.as_ref());
+        let realm_config = yaml_cfg
+            .to_realm_config(&config.auth, config.email.branding.as_ref())
+            .map_err(|errors| IdentityError::ConfigInvalid {
+                realm_name: name.clone(),
+                errors,
+            })?;
 
         let realm_id = match engine.get_realm_by_name(name)? {
             None => {
@@ -253,9 +258,12 @@ fn reconcile_declared_realms(
 }
 
 /// Builds a `RealmConfig` from global auth defaults (used for the auto-created "default" realm).
+///
+/// Uses a default (empty) `RealmYamlConfig`, so validation always succeeds.
 fn default_realm_config(auth: &AuthConfig, config: &Config) -> RealmConfig {
     let yaml = RealmYamlConfig::default();
     yaml.to_realm_config(auth, config.email.branding.as_ref())
+        .expect("default RealmYamlConfig must always pass validation")
 }
 
 /// UUID v5 namespace for deterministic application client IDs.

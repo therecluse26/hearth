@@ -24,6 +24,7 @@ mod types;
 
 pub use engine::EmbeddedRbacEngine;
 pub use error::RbacError;
+pub use registry::RegistryError;
 pub use types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
     GroupId, GroupMember, GroupMembership, Page, Permission, PermissionDefinition,

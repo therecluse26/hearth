@@ -829,7 +829,10 @@ fn identity_error_to_response(
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)
         | IdentityError::Serialization { .. }
-        | IdentityError::Internal { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        | IdentityError::Internal { .. }
+        | IdentityError::ConfigInvalid { .. } => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
         IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
     };
 

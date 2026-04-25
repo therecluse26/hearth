@@ -1044,13 +1044,23 @@ impl RealmYamlConfig {
     /// Merges this per-realm config with global auth defaults to produce a
     /// `RealmConfig` suitable for storage.
     ///
+    /// Returns `Err(errors)` if any permission names are grammatically
+    /// invalid, scope bundle names are malformed, role parent references
+    /// are undeclared, cycles exist in the role parent graph, or claim
+    /// mappings target Tier 1 (reserved) claim names. All violations are
+    /// collected before returning so the caller can surface them at once.
+    ///
     /// `web_theme_css` is populated by the caller (main.rs) after reading
     /// the optional CSS file from disk; it is `None` here.
     pub fn to_realm_config(
         &self,
         global: &AuthConfig,
         global_branding: Option<&EmailBranding>,
-    ) -> crate::identity::RealmConfig {
+    ) -> Result<crate::identity::RealmConfig, Vec<crate::rbac::RegistryError>> {
+        use crate::rbac::registry::RegistryError;
+        use std::collections::HashMap;
+        use uuid::Uuid;
+
         let session_ttl_micros = self
             .session_ttl
             .as_deref()
@@ -1108,24 +1118,39 @@ impl RealmYamlConfig {
             .and_then(|a| a.registration.as_ref())
             .map(RegistrationPolicyYaml::to_domain);
 
-        let permissions = self
+        // Accumulate all validation errors upfront so callers see the full
+        // set of problems in one pass rather than stopping at the first error.
+        let mut errors: Vec<RegistryError> = Vec::new();
+
+        // --- Permissions: grammar-validate each name -----------------------
+
+        let permissions: Vec<PermissionDefinition> = self
             .permissions
             .clone()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|permission| {
-                Permission::new(permission.name)
-                    .ok()
-                    .map(|name| PermissionDefinition {
+            .filter_map(
+                |permission| match Permission::new(permission.name.clone()) {
+                    Ok(name) => Some(PermissionDefinition {
                         name,
                         display_name: permission.display_name,
                         description: permission.description,
                         category: permission.category,
-                    })
-            })
+                    }),
+                    Err(reason) => {
+                        errors.push(RegistryError::InvalidPermissionName {
+                            name: permission.name,
+                            reason,
+                        });
+                        None
+                    }
+                },
+            )
             .collect();
 
-        let scopes = self
+        // --- Scope bundles: grammar-validate permission names --------------
+
+        let scopes: Vec<ScopeBundle> = self
             .scopes
             .clone()
             .unwrap_or_default()
@@ -1137,15 +1162,38 @@ impl RealmYamlConfig {
                 permissions: bundle
                     .permissions
                     .into_iter()
-                    .filter_map(|permission| Permission::new(permission).ok())
+                    .filter_map(|permission| match Permission::new(permission.clone()) {
+                        Ok(p) => Some(p),
+                        Err(reason) => {
+                            errors.push(RegistryError::InvalidPermissionName {
+                                name: permission,
+                                reason,
+                            });
+                            None
+                        }
+                    })
                     .collect(),
             })
             .collect();
 
-        let roles = self
-            .roles
-            .clone()
-            .unwrap_or_default()
+        // --- Roles: two-pass to wire up parent_roles by name → ID ---------
+        //
+        // Pass 1: assign a stable RoleId to each role name.
+        // Pass 2: resolve `parents: Vec<String>` to Vec<RoleId>.
+        //
+        // Roles in the in-memory registry use the nil UUID as the realm_id
+        // sentinel — the actual RealmId is applied by the seeding / reconcile
+        // path that writes roles into the RBAC engine's storage.
+
+        let yaml_roles = self.roles.clone().unwrap_or_default();
+        // Build name → RoleId map first (owned keys avoid a borrow-move conflict
+        // when we consume yaml_roles via into_iter() immediately after).
+        let name_to_id: HashMap<String, RoleId> = yaml_roles
+            .iter()
+            .map(|r| (r.name.clone(), RoleId::generate()))
+            .collect();
+
+        let roles: Vec<Role> = yaml_roles
             .into_iter()
             .map(|role| {
                 let scope_kind = match role.scope_kind.as_deref() {
@@ -1153,17 +1201,43 @@ impl RealmYamlConfig {
                     Some("any") => RoleScopeKind::Any,
                     _ => RoleScopeKind::Realm,
                 };
+
+                let id = name_to_id[role.name.as_str()].clone();
+
+                let role_permissions: Vec<Permission> = role
+                    .permissions
+                    .into_iter()
+                    .filter_map(|permission| match Permission::new(permission.clone()) {
+                        Ok(p) => Some(p),
+                        Err(reason) => {
+                            errors.push(RegistryError::InvalidPermissionName {
+                                name: permission,
+                                reason,
+                            });
+                            None
+                        }
+                    })
+                    .collect();
+
+                // Resolve parent names to IDs; unknown names surface as
+                // UndeclaredParentRole errors during registry.validate().
+                // We store whatever IDs we can resolve here so the
+                // structural cycle-detector can run on what's available.
+                let parent_roles: Vec<RoleId> = role
+                    .parents
+                    .into_iter()
+                    .filter_map(|parent_name| name_to_id.get(parent_name.as_str()).cloned())
+                    .collect();
+
                 Role {
-                    id: RoleId::generate(),
-                    realm_id: crate::core::RealmId::generate(),
+                    id,
+                    // Nil UUID sentinel: actual realm ID is injected at
+                    // seed/reconcile time, not at YAML parse time.
+                    realm_id: crate::core::RealmId::new(Uuid::nil()),
                     name: role.name,
                     description: role.description,
-                    permissions: role
-                        .permissions
-                        .into_iter()
-                        .filter_map(|permission| Permission::new(permission).ok())
-                        .collect(),
-                    parent_roles: Vec::new(),
+                    permissions: role_permissions,
+                    parent_roles,
                     scope_kind,
                     created_at: crate::core::Timestamp::from_micros(0),
                     updated_at: crate::core::Timestamp::from_micros(0),
@@ -1171,7 +1245,9 @@ impl RealmYamlConfig {
             })
             .collect();
 
-        let protected_resources = self
+        // --- Protected resources: grammar-validate bundle perm names -------
+
+        let protected_resources: Vec<ProtectedResource> = self
             .protected_resources
             .clone()
             .unwrap_or_default()
@@ -1189,12 +1265,23 @@ impl RealmYamlConfig {
                         permissions: bundle
                             .permissions
                             .into_iter()
-                            .filter_map(|permission| Permission::new(permission).ok())
+                            .filter_map(|permission| match Permission::new(permission.clone()) {
+                                Ok(p) => Some(p),
+                                Err(reason) => {
+                                    errors.push(RegistryError::InvalidPermissionName {
+                                        name: permission,
+                                        reason,
+                                    });
+                                    None
+                                }
+                            })
                             .collect(),
                     })
                     .collect(),
             })
             .collect();
+
+        // --- Claim profile -------------------------------------------------
 
         let claim_profile =
             self.claims
@@ -1204,7 +1291,26 @@ impl RealmYamlConfig {
                     updated_at: None,
                 });
 
-        crate::identity::RealmConfig {
+        // --- Structural validation (cross-references, cycles, Tier 1) ------
+        //
+        // Bail early on grammar errors before running the structural checks
+        // to avoid cascading noise (e.g. an undeclared perm in a role would
+        // generate both an InvalidPermissionName AND an UndeclaredPermission
+        // error for the same typo).
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        let registry = crate::rbac::registry::RealmPermissionRegistry {
+            permissions: permissions.clone(),
+            roles: roles.clone(),
+            scopes: scopes.clone(),
+            protected_resources: protected_resources.clone(),
+            claim_profile: claim_profile.clone(),
+        };
+        registry.validate()?;
+
+        Ok(crate::identity::RealmConfig {
             session_ttl_micros,
             password_memory_cost,
             password_time_cost,
@@ -1234,7 +1340,7 @@ impl RealmYamlConfig {
             scopes,
             protected_resources,
             claim_profile,
-        }
+        })
     }
 }
 
@@ -1342,7 +1448,9 @@ mod tests {
             session_ttl: Some("12h".to_string()),
             ..RealmYamlConfig::default()
         };
-        let merged = realm_cfg.to_realm_config(&global, None);
+        let merged = realm_cfg
+            .to_realm_config(&global, None)
+            .expect("default realm config must be valid");
         // Per-realm TTL overrides global
         assert_eq!(merged.session_ttl_micros, Some(43_200_000_000));
         // Inherited from global

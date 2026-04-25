@@ -294,6 +294,19 @@ pub enum IdentityError {
     /// The supplied SCIM `externalId` is already associated with a
     /// different user (or organization) in this realm.
     DuplicateScimExternalId,
+    /// YAML-authored realm configuration failed registry validation.
+    ///
+    /// Emitted at startup or SIGHUP reload when `to_realm_config` detects
+    /// invalid permission names, malformed scope bundle names, undeclared
+    /// permission references, role parent cycles, or Tier 1 claim targets.
+    /// All violations are collected and returned together so operators can
+    /// fix them in a single pass.
+    ConfigInvalid {
+        /// Name of the realm whose config failed validation.
+        realm_name: String,
+        /// Every validation error found in the registry.
+        errors: Vec<crate::rbac::RegistryError>,
+    },
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
@@ -441,6 +454,16 @@ impl fmt::Display for IdentityError {
             Self::SamlInvalidAuthnRequest { reason } => {
                 write!(f, "invalid SAML AuthnRequest: {reason}")
             }
+            Self::ConfigInvalid { realm_name, errors } => write!(
+                f,
+                "realm '{realm_name}' config is invalid ({} error(s)): {}",
+                errors.len(),
+                errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
             Self::Internal { reason } => write!(f, "internal error: {reason}"),
@@ -538,6 +561,7 @@ impl std::error::Error for IdentityError {
             | Self::SamlInvalidAuthnRequest { .. }
             | Self::SystemRealmProtected { .. }
             | Self::DuplicateScimExternalId
+            | Self::ConfigInvalid { .. }
             | Self::Serialization { .. }
             | Self::Internal { .. }
             | Self::TokenTooLarge { .. } => None,
