@@ -69,18 +69,16 @@
     <thead>
       <tr class="border-b border-divider-subtle">
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">User</th>
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Roles / Permissions</th>
         <th class="px-3 py-2"></th>
       </tr>
     </thead>
-    <tbody>
-      {% for m in members %}
-      {% include "ui/admin/organizations/_member_row.html" %}
-      {% endfor %}
-      {% if members.is_empty() %}
-      <tr><td colspan="3" class="px-3 py-6 text-center text-sm text-ht-content-muted">No members yet.</td></tr>
-      {% endif %}
-    </tbody>
+    {% for m in members %}
+    {% include "ui/admin/organizations/_member_row.html" %}
+    {% endfor %}
+    {% if members.is_empty() %}
+    <tbody><tr><td colspan="3" class="px-3 py-6 text-center text-sm text-ht-content-muted">No members yet.</td></tr></tbody>
+    {% endif %}
   </table>
 </div>
 

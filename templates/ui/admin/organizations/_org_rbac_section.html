@@ -1,0 +1,97 @@
+<div x-data="{ assignOpen: false }">
+
+  {# Current org-scoped RBAC assignments #}
+  {% if org_rbac_assignments.is_empty() %}
+    <p class="py-4 text-center text-sm text-ht-content-muted">No RBAC role assignments scoped to this organization yet.</p>
+  {% else %}
+    <table class="w-full">
+      <thead>
+        <tr class="border-b border-divider-subtle">
+          <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Member</th>
+          <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
+          <th class="px-3 py-2"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in org_rbac_assignments %}
+        <tr class="border-b border-divider-faint">
+          <td class="px-3 py-2">
+            <a href="/ui/admin/users/{{ a.user_id }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ a.user_name }}</a>
+          </td>
+          <td class="px-3 py-2">
+            <span class="inline-flex items-center rounded-full bg-teal-bg px-2.5 py-0.5 text-xs font-medium text-teal-fg">{{ a.role_name }}</span>
+          </td>
+          <td class="px-3 py-2 text-right">
+            <form method="post"
+                  action="/ui/admin/organizations/{{ org_id }}/rbac/{{ a.assignment_id }}/unassign"
+                  hx-post="/ui/admin/organizations/{{ org_id }}/rbac/{{ a.assignment_id }}/unassign"
+                  hx-target="#org-rbac-section"
+                  hx-swap="innerHTML"
+                  class="inline-block">
+              {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+              <button type="submit"
+                      class="rounded px-2 py-1 text-xs text-ht-content-muted transition-colors hover:bg-danger/[0.10] hover:text-danger-fg">
+                Remove
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  {# Assign Role form #}
+  {% if !available_roles.is_empty() && !members.is_empty() %}
+  <div class="mt-5 border-t border-divider-faint pt-4">
+    <button @click="assignOpen = !assignOpen" type="button"
+            class="inline-flex items-center gap-1.5 text-sm font-medium text-teal-fg transition-colors hover:text-teal-fg/80">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4">
+        <path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z" />
+      </svg>
+      <span x-text="assignOpen ? 'Cancel' : 'Assign Role'"></span>
+    </button>
+
+    <div x-show="assignOpen" x-cloak class="mt-4 rounded-lg border border-white/[0.10] bg-ht-surface-base p-4">
+      <form method="post"
+            action="/ui/admin/organizations/{{ org_id }}/rbac/assign"
+            hx-post="/ui/admin/organizations/{{ org_id }}/rbac/assign"
+            hx-target="#org-rbac-section"
+            hx-swap="innerHTML"
+            @submit="assignOpen = false">
+        {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="mb-1.5 block font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Member</label>
+            <select name="user_id"
+                    class="w-full rounded-sm border border-white/[0.10] bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-teal-fg/50 focus:outline-none focus:ring-1 focus:ring-teal-fg/30">
+              {% for m in members %}
+              <option value="{{ m.membership.user_id().as_uuid() }}">{{ m.user_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div>
+            <label class="mb-1.5 block font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Role</label>
+            <select name="role_id"
+                    class="w-full rounded-sm border border-white/[0.10] bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-teal-fg/50 focus:outline-none focus:ring-1 focus:ring-teal-fg/30">
+              {% for role in available_roles %}
+              <option value="{{ role.id }}">{{ role.name }}{% if !role.description.is_empty() %} — {{ role.description }}{% endif %} ({{ role.scope_kind }})</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div class="mt-4 flex justify-end">
+          <button type="submit"
+                  class="btn-ember inline-flex items-center rounded px-4 py-2 text-sm font-semibold text-graphite-950 shadow-cta-hover transition-opacity hover:opacity-90">
+            Assign Role
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+</div>

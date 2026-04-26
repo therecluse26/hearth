@@ -683,6 +683,22 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_user_revoke_webauthn),
         )
         .route(
+            "/admin/users/{id}/roles/assign",
+            axum::routing::post(admin::admin_user_assign_role),
+        )
+        .route(
+            "/admin/users/{id}/roles/{assignment_id}/unassign",
+            axum::routing::post(admin::admin_user_unassign_role),
+        )
+        .route(
+            "/admin/users/{id}/permissions/grant",
+            axum::routing::post(admin::admin_user_grant_permission),
+        )
+        .route(
+            "/admin/users/{id}/permissions/revoke",
+            axum::routing::post(admin::admin_user_revoke_permission),
+        )
+        .route(
             "/admin/users/{id}/consents",
             axum::routing::get(admin::admin_user_consents_list),
         )
@@ -791,6 +807,22 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/organizations/{id}/invitations/{iid}/revoke",
             axum::routing::post(admin::admin_org_revoke_invite),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{uid}/rbac/assign",
+            axum::routing::post(admin::admin_org_member_assign_role),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{uid}/rbac/{aid}/unassign",
+            axum::routing::post(admin::admin_org_member_unassign_role),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{uid}/permissions/grant",
+            axum::routing::post(admin::admin_org_member_grant_perm),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{uid}/permissions/revoke",
+            axum::routing::post(admin::admin_org_member_revoke_perm),
         )
         // --- User search API (HTMX) ---
         .route(

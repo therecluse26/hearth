@@ -425,27 +425,74 @@ pub struct OrgMembershipRow {
     pub role: String,
 }
 
-/// One `(object_id, relation)` entry in the user Access panel, with an
-/// optional linkable detail URL.
-pub struct UserAccessEntry {
-    /// Object id (UUID / slug) as shown in the UI.
-    pub object_id: String,
-    /// Human-friendly label. For organizations this resolves to the org
-    /// name; for everything else it's the raw `object_id`.
-    pub label: String,
-    /// Relation name (e.g. "admin", "member", "viewer").
-    pub relation: String,
-    /// Optional link target — set when a detail page exists for the
-    /// object type (currently organizations). None → rendered as plain text.
-    pub detail_url: Option<String>,
+/// A single RBAC role assignment row for the user detail page Roles tab.
+pub struct UserRoleAssignmentRow {
+    /// `AssignmentId` UUID string — used in the unassign POST URL.
+    pub assignment_id: String,
+    /// Human-readable role name.
+    pub role_name: String,
+    /// Display label for the scope ("Realm-wide" or "Org: {name}").
+    pub scope_label: String,
+    /// Wire value sent back in the unassign form ("realm" | "org:{uuid}").
+    pub scope_raw: String,
 }
 
-/// A single group on the user Access panel — e.g. "Organizations", "Realm".
-pub struct UserAccessGroup {
-    /// Heading for the group ("realm", "organization", "application", etc.).
-    pub object_type: String,
-    /// Entries in this group.
-    pub entries: Vec<UserAccessEntry>,
+/// A realm role available for assignment in the assign-role form.
+pub struct AvailableRole {
+    /// `RoleId` UUID string.
+    pub id: String,
+    /// Human-readable role name.
+    pub name: String,
+    /// Optional description shown as a hint in the dropdown.
+    pub description: String,
+    /// Where this role may be assigned: "Realm", "Organization", or "Any".
+    pub scope_kind: String,
+}
+
+/// An organization available for scope selection in the assign forms.
+pub struct AvailableOrg {
+    /// `OrganizationId` UUID string.
+    pub id: String,
+    /// Organization display name.
+    pub name: String,
+}
+
+/// A single org-scoped RBAC role held by a member (embedded in `MemberWithAccess`).
+pub struct MemberRbacRole {
+    /// `AssignmentId` UUID string — used in the unassign POST URL.
+    pub assignment_id: String,
+    /// `RoleId` UUID string.
+    pub role_id: String,
+    /// Human-readable role name.
+    pub role_name: String,
+}
+
+/// A single org-scoped direct permission held by a member (embedded in `MemberWithAccess`).
+pub struct MemberPermGrant {
+    /// Permission string (e.g. `billing.read`).
+    pub permission: String,
+    /// Wire value sent back in the revoke form ("org:{uuid}").
+    pub scope_raw: String,
+}
+
+/// A member view enriched with their org-scoped RBAC roles and direct permissions.
+pub struct MemberWithAccess {
+    /// Core member identity and membership info.
+    pub view: MemberView,
+    /// RBAC roles assigned to this member within this org.
+    pub rbac_roles: Vec<MemberRbacRole>,
+    /// Direct permissions granted to this member within this org.
+    pub extra_perms: Vec<MemberPermGrant>,
+}
+
+/// A directly-granted permission row for the user detail page Extra Permissions tab.
+pub struct UserPermissionGrantRow {
+    /// The permission string (e.g. `documents.read`).
+    pub permission: String,
+    /// Display label for the scope ("Realm-wide" or "Org: {name}").
+    pub scope_label: String,
+    /// Wire value sent back in the revoke form ("realm" | "org:{uuid}").
+    pub scope_raw: String,
 }
 
 /// Template for `GET /ui/admin/users/:id`.
@@ -454,6 +501,8 @@ pub struct UserAccessGroup {
 #[allow(clippy::struct_excessive_bools)]
 struct UserDetailTemplate {
     user: User,
+    /// User UUID string — shared with embedded partials via `{% include %}`.
+    user_id: String,
     sessions: Vec<UserSessionRow>,
     mfa_enabled: bool,
     webauthn_credentials: Vec<WebAuthnCredRow>,
@@ -461,18 +510,20 @@ struct UserDetailTemplate {
     flash_message: Option<String>,
     /// Whether the displayed user has the `hearth#admin` role.
     is_user_admin: bool,
-    /// Direct `(object, relation)` grants this user has on the active
-    /// realm, grouped by object type for display. Populated via the
-    /// reverse-index scan exposed by `list_direct_relations_for_subject`.
-    /// Empty when the user has no tuples — the template renders an
-    /// empty-state hint in that case.
-    access_groups: Vec<UserAccessGroup>,
+    /// Current RBAC role assignments for this user in the active realm.
+    role_assignments: Vec<UserRoleAssignmentRow>,
+    /// All roles defined in the active realm (for the assign-role form).
+    available_roles: Vec<AvailableRole>,
+    /// All organizations in the realm (for the org scope picker).
+    available_orgs: Vec<AvailableOrg>,
     /// Formatted creation timestamp.
     created_at_display: String,
     /// Formatted last-updated timestamp.
     updated_at_display: String,
-    /// Directly-granted user permissions: `(permission_name, scope_label)`.
-    extra_permissions: Vec<(String, String)>,
+    /// Directly-granted permissions with scope display info.
+    extra_permissions: Vec<UserPermissionGrantRow>,
+    /// Known permission strings across all realm roles (for the datalist).
+    available_permissions: Vec<String>,
     /// Fully resolved effective permission names for this user.
     effective_permissions: Vec<String>,
     /// User attributes as sorted `(key, value)` pairs.
@@ -489,6 +540,28 @@ struct UserDetailTemplate {
     logo_url: String,
     theme_css: String,
     realm_theme_css: Option<String>,
+}
+
+/// Template for the Roles tab HTMX partial.
+#[derive(Template)]
+#[template(path = "ui/admin/users/_roles_tab.html")]
+struct UserRolesTabTemplate {
+    user_id: String,
+    role_assignments: Vec<UserRoleAssignmentRow>,
+    available_roles: Vec<AvailableRole>,
+    available_orgs: Vec<AvailableOrg>,
+    csrf: Option<String>,
+}
+
+/// Template for the Extra Permissions tab HTMX partial.
+#[derive(Template)]
+#[template(path = "ui/admin/users/_permissions_tab.html")]
+struct UserPermissionsTabTemplate {
+    user_id: String,
+    extra_permissions: Vec<UserPermissionGrantRow>,
+    available_permissions: Vec<String>,
+    available_orgs: Vec<AvailableOrg>,
+    csrf: Option<String>,
 }
 
 /// Query params for user detail page (flash messages).
@@ -591,30 +664,43 @@ pub async fn admin_user_detail(
         "mfa_disabled" => "MFA has been disabled for this user.".to_string(),
         "session_revoked" => "Session revoked.".to_string(),
         "webauthn_revoked" => "WebAuthn credential revoked.".to_string(),
+        "role_assigned" => "Role assigned.".to_string(),
+        "role_unassigned" => "Role removed.".to_string(),
+        "permission_granted" => "Permission granted.".to_string(),
+        "permission_revoked" => "Permission revoked.".to_string(),
         other => other.to_string(),
     });
 
     let is_user_admin = check_user_admin(&state, target.id(), &uid);
-    let access_groups = resolve_user_access_groups(&state, target.id(), &uid);
     let created_at_display = format_ts(user.created_at());
     let updated_at_display = format_ts(user.updated_at());
 
-    // Directly-granted permissions for this user in the current realm.
-    let extra_permissions: Vec<(String, String)> = state
+    // Role assignments with display metadata.
+    let role_assignments = build_role_assignment_rows(&state, target.id(), &uid);
+
+    // All roles in this realm (for the assign-role form dropdown).
+    let available_roles: Vec<AvailableRole> = state
         .rbac
-        .list_user_permissions(target.id(), &uid)
+        .list_roles(target.id(), None, 200)
+        .map(|p| p.items)
         .unwrap_or_default()
         .into_iter()
-        .map(|g| {
-            let scope_label = match &g.scope {
-                crate::rbac::Scope::Realm => "realm".to_string(),
-                crate::rbac::Scope::Org { org_id } => {
-                    format!("org:{}", org_id.as_uuid())
-                }
-            };
-            (g.permission.into_string(), scope_label)
+        .map(|r| AvailableRole {
+            id: r.id.as_uuid().to_string(),
+            description: r.description.unwrap_or_default(),
+            scope_kind: format!("{:?}", r.scope_kind),
+            name: r.name,
         })
         .collect();
+
+    // All orgs in this realm (for the scope picker).
+    let available_orgs = build_available_orgs(&state, target.id());
+
+    // Directly-granted permissions with scope display info.
+    let extra_permissions = build_permission_grant_rows(&state, target.id(), &uid);
+
+    // Known permission strings across all roles (autocomplete datalist).
+    let available_permissions = collect_realm_permissions(&state, target.id());
 
     // Fully resolved effective permissions (union of roles + direct grants).
     let effective_permissions: Vec<String> = state
@@ -631,6 +717,7 @@ pub async fn admin_user_detail(
         .collect();
 
     render(&UserDetailTemplate {
+        user_id: uid.as_uuid().to_string(),
         user,
         sessions,
         mfa_enabled,
@@ -638,10 +725,13 @@ pub async fn admin_user_detail(
         org_memberships,
         flash_message,
         is_user_admin,
-        access_groups,
+        role_assignments,
+        available_roles,
+        available_orgs,
         created_at_display,
         updated_at_display,
         extra_permissions,
+        available_permissions,
         effective_permissions,
         attributes,
         chrome: true,
@@ -2412,9 +2502,15 @@ pub struct MemberView {
 #[template(path = "ui/admin/organizations/detail.html")]
 struct OrgDetailTemplate {
     org: Organization,
-    members: Vec<MemberView>,
+    /// Org UUID string — shared with embedded partials via `{% include %}`.
+    org_id: String,
+    members: Vec<MemberWithAccess>,
     invitations: Vec<OrganizationInvitation>,
     max_members: Option<u32>,
+    /// All realm roles for the per-member assign form.
+    available_roles: Vec<AvailableRole>,
+    /// Permission suggestions for the per-member grant form (datalist).
+    available_permissions: Vec<String>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2467,8 +2563,12 @@ pub async fn admin_org_detail(
         .map(|p| p.items)
         .unwrap_or_default();
 
-    // Resolve user details for each membership
-    let members = memberships
+    let available_roles = build_org_available_roles(&state, target.id());
+    let available_permissions = collect_org_permissions(&state, target.id());
+    let org_id_str = org_id.as_uuid().to_string();
+
+    // Resolve user details and RBAC access for each membership
+    let members: Vec<MemberWithAccess> = memberships
         .into_iter()
         .map(|m| {
             let (name, email) = state
@@ -2480,11 +2580,12 @@ pub async fn admin_org_detail(
                     || (m.user_id().as_uuid().to_string(), String::from("(unknown)")),
                     |u| (u.display_name().to_string(), u.email().to_string()),
                 );
-            MemberView {
+            let view = MemberView {
                 membership: m,
                 user_name: name,
                 user_email: email,
-            }
+            };
+            build_member_with_access(&state, target.id(), &org_id, view)
         })
         .collect();
 
@@ -2507,9 +2608,12 @@ pub async fn admin_org_detail(
 
     render(&OrgDetailTemplate {
         org,
+        org_id: org_id_str,
         members,
         invitations,
         max_members,
+        available_roles,
+        available_permissions,
         chrome: true,
         active: "organizations",
         user_email: Some(session.user_email.clone()),
@@ -2775,22 +2879,27 @@ struct MemberPickerRowsTemplate {
     query: String,
     next_cursor: Option<String>,
     csrf: Option<String>,
+    /// All realm roles for the per-row role dropdown (replaces hardcoded Member/Admin/Owner).
+    available_roles: Vec<AvailableRole>,
     product_name: String,
     logo_url: String,
     theme_css: String,
     realm_theme_css: Option<String>,
 }
 
-/// Template for a single member row. Included by `detail.html` in the
-/// member loop, and returned standalone as an HTMX partial from
-/// `admin_org_update_role` so the row swaps in place without a full-page
-/// reload.
+/// Template for a single member row (`<tbody>`). Included by `detail.html` in the
+/// member loop, and returned standalone as an HTMX partial from role/perm handlers
+/// so the row block swaps in place without a full-page reload.
 #[derive(Template)]
 #[template(path = "ui/admin/organizations/_member_row.html")]
 #[allow(dead_code)]
 struct MemberRowTemplate {
-    org: Organization,
-    m: MemberView,
+    org_id: String,
+    m: MemberWithAccess,
+    /// All realm roles for the assign-role inline form.
+    available_roles: Vec<AvailableRole>,
+    /// Permission suggestions for the grant-permission inline form (datalist).
+    available_permissions: Vec<String>,
     csrf: Option<String>,
 }
 
@@ -2849,12 +2958,14 @@ pub async fn admin_org_member_picker(
     // The picker is always rendered inline into `#member-picker-results`
     // on the org detail page — no modal wrapper. CSRF is threaded in so
     // each per-row Add form can echo the token.
+    let available_roles = build_org_available_roles(&state, target.id());
     render(&MemberPickerRowsTemplate {
         org_id: org_id_str,
         users,
         query,
         next_cursor,
         csrf: session.csrf.clone(),
+        available_roles,
         product_name: String::new(),
         logo_url: String::new(),
         theme_css: state.theme_css.clone(),
@@ -2928,17 +3039,15 @@ pub async fn admin_org_remove_member(
                     .identity
                     .get_membership(target.id(), &org_id, &user_id)
                 {
-                    if let Ok(Some(org)) = state.identity.get_organization(target.id(), &org_id) {
-                        return render_member_row_with_toast(
-                            &state,
-                            &session,
-                            target.id(),
-                            org,
-                            m,
-                            &msg,
-                            "error",
-                        );
-                    }
+                    return render_member_row_with_toast(
+                        &state,
+                        &session,
+                        target.id(),
+                        &org_id,
+                        m,
+                        &msg,
+                        "error",
+                    );
                 }
                 super::templates::htmx_toast_response(&msg, "error")
             } else {
@@ -2957,14 +3066,14 @@ fn is_htmx_request(headers: &axum::http::HeaderMap) -> bool {
         .is_some_and(|v| v == "true")
 }
 
-/// Re-renders a single member row with an attached `HX-Trigger: showToast`
-/// header. Used by the role-update and remove handlers to swap the row in
-/// place while also firing a client-side toast.
+/// Re-renders a single member `<tbody>` block with an attached `HX-Trigger: showToast`.
+/// Used by role-update, perm grant/revoke, and RBAC assign/unassign handlers
+/// to swap the row block in place while firing a client-side toast.
 fn render_member_row_with_toast(
-    state: &WebState,
+    state: &Arc<WebState>,
     session: &super::auth::UiSession,
     realm: &RealmId,
-    org: Organization,
+    org_id: &OrganizationId,
     m: OrganizationMembership,
     message: &str,
     kind: &str,
@@ -2978,13 +3087,19 @@ fn render_member_row_with_toast(
             || (m.user_id().as_uuid().to_string(), String::from("(unknown)")),
             |u| (u.display_name().to_string(), u.email().to_string()),
         );
+    let view = MemberView {
+        membership: m,
+        user_name: name,
+        user_email: email,
+    };
+    let m_access = build_member_with_access(state, realm, org_id, view);
+    let available_roles = build_org_available_roles(state, realm);
+    let available_permissions = collect_org_permissions(state, realm);
     let tmpl = MemberRowTemplate {
-        org,
-        m: MemberView {
-            membership: m,
-            user_name: name,
-            user_email: email,
-        },
+        org_id: org_id.as_uuid().to_string(),
+        m: m_access,
+        available_roles,
+        available_permissions,
         csrf: session.csrf.clone(),
     };
     let mut response = render(&tmpl);
@@ -3077,22 +3192,19 @@ pub async fn admin_org_update_role(
                 mirror_org_member_added(&state, &session, target.id(), &org_id, &user_id, new_role);
             }
             if is_htmx {
-                match (
-                    state.identity.get_organization(target.id(), &org_id),
-                    state
-                        .identity
-                        .get_membership(target.id(), &org_id, &user_id),
-                ) {
-                    (Ok(Some(org)), Ok(Some(m))) => render_member_row_with_toast(
+                if let Ok(Some(m)) = state.identity.get_membership(target.id(), &org_id, &user_id)
+                {
+                    render_member_row_with_toast(
                         &state,
                         &session,
                         target.id(),
-                        org,
+                        &org_id,
                         m,
                         "Role updated",
                         "success",
-                    ),
-                    _ => super::templates::htmx_toast_response("Role updated", "success"),
+                    )
+                } else {
+                    super::templates::htmx_toast_response("Role updated", "success")
                 }
             } else {
                 org_redirect_flash(&org_id, "Role updated", "success")
@@ -3102,20 +3214,13 @@ pub async fn admin_org_update_role(
             tracing::warn!(error = %e, "update_member_role failed");
             let msg = format!("{e}");
             if is_htmx {
-                // Row swap must put the pre-change state back so the
-                // dropdown visually reverts. Fetch the current membership
-                // (unchanged after failure) and re-render the row.
-                if let (Ok(Some(org)), Ok(Some(m))) = (
-                    state.identity.get_organization(target.id(), &org_id),
-                    state
-                        .identity
-                        .get_membership(target.id(), &org_id, &user_id),
-                ) {
+                if let Ok(Some(m)) = state.identity.get_membership(target.id(), &org_id, &user_id)
+                {
                     return render_member_row_with_toast(
                         &state,
                         &session,
                         target.id(),
-                        org,
+                        &org_id,
                         m,
                         &msg,
                         "error",
@@ -4958,76 +5063,955 @@ fn mirror_org_member_removed(
 /// Failures at any step fall back to an empty panel rather than surfacing
 /// an error — operators should still be able to use the rest of the user
 /// detail page even if the RBAC engine is briefly unavailable.
-fn resolve_user_access_groups(
+/// Builds role assignment display rows for the user detail Roles tab.
+fn build_role_assignment_rows(
     state: &Arc<WebState>,
     realm_id: &RealmId,
     user_id: &crate::core::UserId,
-) -> Vec<UserAccessGroup> {
-    use std::collections::BTreeMap;
-    let mut groups: BTreeMap<String, Vec<UserAccessEntry>> = BTreeMap::new();
+) -> Vec<UserRoleAssignmentRow> {
+    let assignments = state
+        .rbac
+        .list_user_assignments(realm_id, user_id)
+        .unwrap_or_default();
+    let mut rows = Vec::with_capacity(assignments.len());
+    for a in assignments {
+        let role_name = match state.rbac.get_role(realm_id, &a.role_id) {
+            Ok(Some(r)) => r.name,
+            _ => a.role_id.as_uuid().to_string(),
+        };
+        let (scope_label, scope_raw) = match &a.scope {
+            crate::rbac::Scope::Realm => ("Realm-wide".to_string(), "realm".to_string()),
+            crate::rbac::Scope::Org { org_id } => {
+                let org_name = state
+                    .identity
+                    .get_organization(realm_id, org_id)
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| org_id.as_uuid().to_string(), |o| o.name().to_string());
+                (
+                    format!("Org: {org_name}"),
+                    format!("org:{}", org_id.as_uuid()),
+                )
+            }
+        };
+        rows.push(UserRoleAssignmentRow {
+            assignment_id: a.id.as_uuid().to_string(),
+            role_name,
+            scope_label,
+            scope_raw,
+        });
+    }
+    rows.sort_by(|a, b| {
+        a.role_name
+            .cmp(&b.role_name)
+            .then(a.scope_label.cmp(&b.scope_label))
+    });
+    rows
+}
 
-    // Role assignments.
-    if let Ok(assignments) = state.rbac.list_user_assignments(realm_id, user_id) {
-        for a in assignments {
-            let role = match state.rbac.get_role(realm_id, &a.role_id) {
-                Ok(Some(r)) => r,
-                _ => continue,
-            };
-            let relation = match a.scope {
-                crate::rbac::Scope::Realm => "realm".to_string(),
-                crate::rbac::Scope::Org { ref org_id } => {
-                    format!("org:{}", org_id.as_uuid())
+/// Builds permission grant display rows for the user detail Extra Permissions tab.
+fn build_permission_grant_rows(
+    state: &Arc<WebState>,
+    realm_id: &RealmId,
+    user_id: &crate::core::UserId,
+) -> Vec<UserPermissionGrantRow> {
+    state
+        .rbac
+        .list_user_permissions(realm_id, user_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|g| {
+            let (scope_label, scope_raw) = match &g.scope {
+                crate::rbac::Scope::Realm => ("Realm-wide".to_string(), "realm".to_string()),
+                crate::rbac::Scope::Org { org_id } => {
+                    let org_name = state
+                        .identity
+                        .get_organization(realm_id, org_id)
+                        .ok()
+                        .flatten()
+                        .map_or_else(|| org_id.as_uuid().to_string(), |o| o.name().to_string());
+                    (
+                        format!("Org: {org_name}"),
+                        format!("org:{}", org_id.as_uuid()),
+                    )
                 }
             };
-            groups
-                .entry("role".to_string())
-                .or_default()
-                .push(UserAccessEntry {
-                    object_id: a.id.as_uuid().to_string(),
-                    label: role.name.clone(),
-                    relation,
-                    detail_url: None,
-                });
-        }
-    }
-
-    // Organization memberships (direct).
-    if let Ok(page) = state
-        .identity
-        .list_user_organizations(realm_id, user_id, None, 100)
-    {
-        for m in page.items {
-            let org = state
-                .identity
-                .get_organization(realm_id, m.org_id())
-                .ok()
-                .flatten();
-            let label = org.as_ref().map_or_else(
-                || m.org_id().as_uuid().to_string(),
-                |o| o.name().to_string(),
-            );
-            groups
-                .entry("organization".to_string())
-                .or_default()
-                .push(UserAccessEntry {
-                    object_id: m.org_id().as_uuid().to_string(),
-                    label,
-                    relation: format!("{:?}", m.role()).to_lowercase(),
-                    detail_url: Some(format!("/ui/admin/organizations/{}", m.org_id().as_uuid())),
-                });
-        }
-    }
-
-    for entries in groups.values_mut() {
-        entries.sort_by(|a, b| a.label.cmp(&b.label).then(a.relation.cmp(&b.relation)));
-    }
-    groups
-        .into_iter()
-        .map(|(object_type, entries)| UserAccessGroup {
-            object_type,
-            entries,
+            UserPermissionGrantRow {
+                permission: g.permission.into_string(),
+                scope_label,
+                scope_raw,
+            }
         })
         .collect()
+}
+
+/// Collects all unique permission strings defined across all roles in the realm,
+/// for use as autocomplete suggestions.
+fn collect_realm_permissions(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let roles = state
+        .rbac
+        .list_roles(realm_id, None, 500)
+        .map(|p| p.items)
+        .unwrap_or_default();
+    let mut set = BTreeSet::new();
+    for r in roles {
+        for p in r.permissions {
+            set.insert(p.into_string());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Permission name suggestions appropriate for org-scope grants: only those
+/// defined on `Organization` or `Any` scope-kind roles. Realm-only permissions
+/// (e.g. `realm.admin`, `hearth.admin`) are excluded because they have no
+/// meaning at org scope.
+fn collect_org_permissions(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let roles = state
+        .rbac
+        .list_roles(realm_id, None, 500)
+        .map(|p| p.items)
+        .unwrap_or_default();
+    let mut set = BTreeSet::new();
+    for r in roles {
+        if !matches!(
+            r.scope_kind,
+            crate::rbac::RoleScopeKind::Organization | crate::rbac::RoleScopeKind::Any
+        ) {
+            continue;
+        }
+        for p in r.permissions {
+            set.insert(p.into_string());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Loads all organizations in the realm for the org scope picker.
+fn build_available_orgs(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<AvailableOrg> {
+    state
+        .identity
+        .list_organizations(realm_id, None, 200)
+        .map(|p| p.items)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|o| AvailableOrg {
+            id: o.id().as_uuid().to_string(),
+            name: o.name().to_string(),
+        })
+        .collect()
+}
+
+/// Parses a scope string ("realm" | "org:{uuid}") into an RBAC `Scope`.
+fn parse_rbac_scope(scope: &str) -> Result<crate::rbac::Scope, String> {
+    if scope == "realm" {
+        return Ok(crate::rbac::Scope::Realm);
+    }
+    if let Some(rest) = scope.strip_prefix("org:") {
+        let uuid = rest
+            .parse::<uuid::Uuid>()
+            .map_err(|_| format!("invalid org UUID: {rest}"))?;
+        return Ok(crate::rbac::Scope::Org {
+            org_id: OrganizationId::new(uuid),
+        });
+    }
+    Err(format!("unrecognised scope: {scope}"))
+}
+
+// =========================================================================
+// User role/permission mutation handlers
+// =========================================================================
+
+#[derive(Deserialize)]
+pub struct AssignRoleForm {
+    #[serde(rename = "_csrf", default)]
+    csrf: String,
+    role_id: String,
+    scope: String,
+}
+
+#[derive(Deserialize)]
+pub struct UnassignRoleForm {
+    #[serde(rename = "_csrf", default)]
+    csrf: String,
+}
+
+#[derive(Deserialize)]
+pub struct GrantPermissionForm {
+    #[serde(rename = "_csrf", default)]
+    csrf: String,
+    permission: String,
+    scope: String,
+}
+
+#[derive(Deserialize)]
+pub struct RevokePermissionForm {
+    #[serde(rename = "_csrf", default)]
+    csrf: String,
+    permission: String,
+    scope: String,
+}
+
+/// Renders the Roles tab partial for HTMX responses.
+fn render_roles_tab(
+    state: &Arc<WebState>,
+    session: &super::auth::UiSession,
+    realm_id: &RealmId,
+    user_id: &crate::core::UserId,
+) -> Response {
+    let user_id_str = user_id.as_uuid().to_string();
+    let role_assignments = build_role_assignment_rows(state, realm_id, user_id);
+    let available_roles: Vec<AvailableRole> = state
+        .rbac
+        .list_roles(realm_id, None, 200)
+        .map(|p| p.items)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| AvailableRole {
+            id: r.id.as_uuid().to_string(),
+            description: r.description.unwrap_or_default(),
+            scope_kind: format!("{:?}", r.scope_kind),
+            name: r.name,
+        })
+        .collect();
+    let available_orgs = build_available_orgs(state, realm_id);
+    render(&UserRolesTabTemplate {
+        user_id: user_id_str,
+        role_assignments,
+        available_roles,
+        available_orgs,
+        csrf: session.csrf.clone(),
+    })
+}
+
+/// Renders the Extra Permissions tab partial for HTMX responses.
+fn render_permissions_tab(
+    state: &Arc<WebState>,
+    session: &super::auth::UiSession,
+    realm_id: &RealmId,
+    user_id: &crate::core::UserId,
+) -> Response {
+    let user_id_str = user_id.as_uuid().to_string();
+    let extra_permissions = build_permission_grant_rows(state, realm_id, user_id);
+    let available_permissions = collect_realm_permissions(state, realm_id);
+    let available_orgs = build_available_orgs(state, realm_id);
+    render(&UserPermissionsTabTemplate {
+        user_id: user_id_str,
+        extra_permissions,
+        available_permissions,
+        available_orgs,
+        csrf: session.csrf.clone(),
+    })
+}
+
+/// `POST /ui/admin/users/:id/roles/assign` — assigns a realm RBAC role to a user.
+pub async fn admin_user_assign_role(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(user_id): AxumPath<String>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<AssignRoleForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let uid = match user_id.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let Ok(role_uuid) = form.role_id.parse::<uuid::Uuid>() else {
+        return if is_htmx_request(&headers) {
+            super::templates::htmx_toast_response("Invalid role ID", "error")
+        } else {
+            Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_role")).into_response()
+        };
+    };
+    let role_id = crate::rbac::RoleId::new(role_uuid);
+    let scope = match parse_rbac_scope(&form.scope) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid scope in assign_role form");
+            return if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response("Invalid scope", "error")
+            } else {
+                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_scope"))
+                    .into_response()
+            };
+        }
+    };
+    let req = crate::rbac::AssignRoleRequest {
+        subject: crate::rbac::Subject::User(uid.clone()),
+        role_id,
+        scope,
+        assigned_by: Some(session.user_id.clone()),
+    };
+    match state.rbac.assign_role(target.id(), &req) {
+        Ok(_) => {
+            audit_role_event(
+                &state,
+                &session,
+                target.id(),
+                &uid,
+                true,
+                "user",
+                &uid.as_uuid().to_string(),
+                &form.role_id,
+            );
+            if is_htmx_request(&headers) {
+                render_roles_tab(&state, &session, target.id(), &uid)
+            } else {
+                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=role_assigned"))
+                    .into_response()
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "assign_role failed");
+            if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response(&format!("{e}"), "error")
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=assign_role_failed"
+                ))
+                .into_response()
+            }
+        }
+    }
+}
+
+/// `POST /ui/admin/users/:id/roles/:assignment_id/unassign` — removes a role assignment.
+pub async fn admin_user_unassign_role(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((user_id, assignment_id)): AxumPath<(String, String)>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<UnassignRoleForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let uid = match user_id.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let Ok(assign_uuid) = assignment_id.parse::<uuid::Uuid>() else {
+        return super::handlers_common::not_found("Assignment not found");
+    };
+    let aid = crate::rbac::AssignmentId::new(assign_uuid);
+    match state.rbac.unassign_role(target.id(), &aid) {
+        Ok(()) => {
+            audit_role_event(
+                &state,
+                &session,
+                target.id(),
+                &uid,
+                false,
+                "user",
+                &uid.as_uuid().to_string(),
+                &assignment_id,
+            );
+            if is_htmx_request(&headers) {
+                render_roles_tab(&state, &session, target.id(), &uid)
+            } else {
+                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=role_unassigned"))
+                    .into_response()
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "unassign_role failed");
+            if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response(&format!("{e}"), "error")
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=unassign_role_failed"
+                ))
+                .into_response()
+            }
+        }
+    }
+}
+
+/// `POST /ui/admin/users/:id/permissions/grant` — grants a direct permission to a user.
+pub async fn admin_user_grant_permission(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(user_id): AxumPath<String>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<GrantPermissionForm>,
+) -> Response {
+    use crate::core::Timestamp;
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let uid = match user_id.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let permission = match crate::rbac::Permission::new(form.permission.trim().to_string()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid permission in grant form");
+            return if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response(
+                    "Invalid permission string (use dot-separated segments, e.g. users.read)",
+                    "error",
+                )
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=invalid_permission"
+                ))
+                .into_response()
+            };
+        }
+    };
+    let scope = match parse_rbac_scope(&form.scope) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid scope in grant_permission form");
+            return if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response("Invalid scope", "error")
+            } else {
+                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_scope"))
+                    .into_response()
+            };
+        }
+    };
+    let grant = crate::rbac::UserPermissionGrant {
+        realm_id: target.id().clone(),
+        user_id: uid.clone(),
+        permission,
+        scope,
+        granted_at: Timestamp::from_micros(0),
+        granted_by: Some(session.user_id.clone()),
+    };
+    match state.rbac.grant_user_permission(target.id(), &grant) {
+        Ok(_) => {
+            use crate::audit::{AuditAction, CreateAuditEvent};
+            if let Err(e) = state.audit.append(&CreateAuditEvent {
+                realm_id: target.id().clone(),
+                actor: session.user_id.as_uuid().to_string(),
+                action: AuditAction::UserPermissionGranted,
+                resource_type: "user".to_string(),
+                resource_id: uid.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({
+                    "via": "ui",
+                    "permission": grant.permission.as_str(),
+                    "scope": form.scope,
+                })),
+            }) {
+                tracing::warn!(error = %e, "permission grant audit append failed");
+            }
+            if is_htmx_request(&headers) {
+                render_permissions_tab(&state, &session, target.id(), &uid)
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=permission_granted"
+                ))
+                .into_response()
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "grant_user_permission failed");
+            if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response(&format!("{e}"), "error")
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=grant_permission_failed"
+                ))
+                .into_response()
+            }
+        }
+    }
+}
+
+/// `POST /ui/admin/users/:id/permissions/revoke` — revokes a direct permission from a user.
+pub async fn admin_user_revoke_permission(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(user_id): AxumPath<String>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<RevokePermissionForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let uid = match user_id.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let permission = match crate::rbac::Permission::new(form.permission.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid permission in revoke form");
+            return if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response("Invalid permission string", "error")
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=invalid_permission"
+                ))
+                .into_response()
+            };
+        }
+    };
+    let scope = match parse_rbac_scope(&form.scope) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid scope in revoke_permission form");
+            return if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response("Invalid scope", "error")
+            } else {
+                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_scope"))
+                    .into_response()
+            };
+        }
+    };
+    match state
+        .rbac
+        .revoke_user_permission(target.id(), &uid, &permission, &scope)
+    {
+        Ok(()) => {
+            use crate::audit::{AuditAction, CreateAuditEvent};
+            if let Err(e) = state.audit.append(&CreateAuditEvent {
+                realm_id: target.id().clone(),
+                actor: session.user_id.as_uuid().to_string(),
+                action: AuditAction::UserPermissionRevoked,
+                resource_type: "user".to_string(),
+                resource_id: uid.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({
+                    "via": "ui",
+                    "permission": permission.as_str(),
+                    "scope": form.scope,
+                })),
+            }) {
+                tracing::warn!(error = %e, "permission revoke audit append failed");
+            }
+            if is_htmx_request(&headers) {
+                render_permissions_tab(&state, &session, target.id(), &uid)
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=permission_revoked"
+                ))
+                .into_response()
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "revoke_user_permission failed");
+            if is_htmx_request(&headers) {
+                super::templates::htmx_toast_response(&format!("{e}"), "error")
+            } else {
+                Redirect::to(&format!(
+                    "/ui/admin/users/{user_id}?flash=revoke_permission_failed"
+                ))
+                .into_response()
+            }
+        }
+    }
+}
+
+// =========================================================================
+// Per-member RBAC role and permission management (org context)
+// =========================================================================
+
+/// Builds a `MemberWithAccess` from a `MemberView` by loading org-scoped RBAC roles
+/// and direct permissions for the member.
+fn build_member_with_access(
+    state: &Arc<WebState>,
+    realm_id: &RealmId,
+    org_id: &OrganizationId,
+    view: MemberView,
+) -> MemberWithAccess {
+    let uid = view.membership.user_id();
+    let org_scope = crate::rbac::Scope::Org {
+        org_id: org_id.clone(),
+    };
+    let rbac_roles = state
+        .rbac
+        .list_user_assignments(realm_id, uid)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.scope == org_scope)
+        .filter_map(|a| {
+            let role = state
+                .rbac
+                .get_role(realm_id, &a.role_id)
+                .ok()
+                .flatten();
+            // Skip roles defined as Realm-only scope — they don't belong on
+            // the org page even if an assignment exists at org scope.
+            if let Some(ref r) = role {
+                if r.scope_kind == crate::rbac::RoleScopeKind::Realm {
+                    return None;
+                }
+            }
+            let role_name = role.map_or_else(
+                || a.role_id.as_uuid().to_string(),
+                |r| r.name,
+            );
+            Some(MemberRbacRole {
+                assignment_id: a.id.as_uuid().to_string(),
+                role_id: a.role_id.as_uuid().to_string(),
+                role_name,
+            })
+        })
+        .collect();
+    let scope_raw = format!("org:{}", org_id.as_uuid());
+    let extra_perms = state
+        .rbac
+        .list_user_permissions(realm_id, uid)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|g| g.scope == org_scope)
+        .map(|g| MemberPermGrant {
+            permission: g.permission.into_string(),
+            scope_raw: scope_raw.clone(),
+        })
+        .collect();
+    MemberWithAccess {
+        view,
+        rbac_roles,
+        extra_perms,
+    }
+}
+
+/// Loads all realm roles as `AvailableRole` display structs.
+fn build_realm_available_roles(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<AvailableRole> {
+    state
+        .rbac
+        .list_roles(realm_id, None, 200)
+        .map(|p| p.items)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| AvailableRole {
+            id: r.id.as_uuid().to_string(),
+            name: r.name,
+            description: r.description.unwrap_or_default(),
+            scope_kind: format!("{:?}", r.scope_kind),
+        })
+        .collect()
+}
+
+/// Loads roles appropriate for org-scope assignment: `Organization` and `Any` only.
+/// Excludes `Realm`-scoped roles, which have no meaning at org context.
+fn build_org_available_roles(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<AvailableRole> {
+    state
+        .rbac
+        .list_roles(realm_id, None, 200)
+        .map(|p| p.items)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| {
+            matches!(
+                r.scope_kind,
+                crate::rbac::RoleScopeKind::Organization | crate::rbac::RoleScopeKind::Any
+            )
+        })
+        .map(|r| AvailableRole {
+            id: r.id.as_uuid().to_string(),
+            name: r.name,
+            description: r.description.unwrap_or_default(),
+            scope_kind: format!("{:?}", r.scope_kind),
+        })
+        .collect()
+}
+
+/// Form for assigning an RBAC role to an org member inline.
+#[derive(Debug, Deserialize)]
+pub struct MemberAssignRoleForm {
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+    /// UUID of the role to assign.
+    pub role_id: String,
+}
+
+/// Form for unassigning an RBAC role from an org member.
+#[derive(Debug, Deserialize)]
+pub struct MemberUnassignRoleForm {
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// Form for granting a direct permission to an org member.
+#[derive(Debug, Deserialize)]
+pub struct MemberGrantPermForm {
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+    pub permission: String,
+    pub scope: String,
+}
+
+/// Form for revoking a direct permission from an org member.
+#[derive(Debug, Deserialize)]
+pub struct MemberRevokePermForm {
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+    pub permission: String,
+    pub scope: String,
+}
+
+/// `POST /ui/admin/organizations/:id/members/:uid/rbac/assign` — assigns an RBAC role to a member.
+pub async fn admin_org_member_assign_role(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<MemberAssignRoleForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+    let user_id = match uid.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let Ok(role_uuid) = form.role_id.parse::<uuid::Uuid>() else {
+        return super::templates::htmx_toast_response("Invalid role ID", "error");
+    };
+    let role_id = crate::rbac::RoleId::new(role_uuid);
+    let scope = crate::rbac::Scope::Org {
+        org_id: org_id.clone(),
+    };
+    let req = crate::rbac::AssignRoleRequest {
+        subject: crate::rbac::Subject::User(user_id.clone()),
+        role_id,
+        scope,
+        assigned_by: Some(session.user_id.clone()),
+    };
+    match state.rbac.assign_role(target.id(), &req) {
+        Ok(_) => {
+            audit_role_event(
+                &state,
+                &session,
+                target.id(),
+                &user_id,
+                true,
+                "organization",
+                &oid,
+                &form.role_id,
+            );
+            if is_htmx_request(&headers) {
+                if let Ok(Some(m)) =
+                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                {
+                    render_member_row_with_toast(
+                        &state,
+                        &session,
+                        target.id(),
+                        &org_id,
+                        m,
+                        "Role assigned",
+                        "success",
+                    )
+                } else {
+                    super::templates::htmx_toast_response("Role assigned", "success")
+                }
+            } else {
+                org_redirect_flash(&org_id, "Role assigned", "success")
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "org member assign_role failed");
+            super::templates::htmx_toast_response(&format!("{e}"), "error")
+        }
+    }
+}
+
+/// `POST /ui/admin/organizations/:id/members/:uid/rbac/:aid/unassign` — removes an RBAC role from a member.
+pub async fn admin_org_member_unassign_role(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((oid, uid, aid)): AxumPath<(String, String, String)>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<MemberUnassignRoleForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+    let user_id = match uid.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let Ok(assign_uuid) = aid.parse::<uuid::Uuid>() else {
+        return super::handlers_common::not_found("Assignment not found");
+    };
+    let assignment_id = crate::rbac::AssignmentId::new(assign_uuid);
+    match state.rbac.unassign_role(target.id(), &assignment_id) {
+        Ok(()) => {
+            if is_htmx_request(&headers) {
+                if let Ok(Some(m)) =
+                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                {
+                    render_member_row_with_toast(
+                        &state,
+                        &session,
+                        target.id(),
+                        &org_id,
+                        m,
+                        "Role removed",
+                        "success",
+                    )
+                } else {
+                    super::templates::htmx_toast_response("Role removed", "success")
+                }
+            } else {
+                org_redirect_flash(&org_id, "Role removed", "success")
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "org member unassign_role failed");
+            super::templates::htmx_toast_response(&format!("{e}"), "error")
+        }
+    }
+}
+
+/// `POST /ui/admin/organizations/:id/members/:uid/permissions/grant` — grants a direct permission to a member.
+pub async fn admin_org_member_grant_perm(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<MemberGrantPermForm>,
+) -> Response {
+    use crate::core::Timestamp;
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+    let user_id = match uid.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let permission = match crate::rbac::Permission::new(form.permission.trim().to_string()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid permission in org member grant form");
+            return super::templates::htmx_toast_response("Invalid permission string", "error");
+        }
+    };
+    let scope = match parse_rbac_scope(&form.scope) {
+        Ok(s) => s,
+        Err(_) => crate::rbac::Scope::Org {
+            org_id: org_id.clone(),
+        },
+    };
+    let grant = crate::rbac::UserPermissionGrant {
+        realm_id: target.id().clone(),
+        user_id: user_id.clone(),
+        permission,
+        scope,
+        granted_at: Timestamp::now(),
+        granted_by: Some(session.user_id.clone()),
+    };
+    match state.rbac.grant_user_permission(target.id(), &grant) {
+        Ok(_) => {
+            if is_htmx_request(&headers) {
+                if let Ok(Some(m)) =
+                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                {
+                    render_member_row_with_toast(
+                        &state,
+                        &session,
+                        target.id(),
+                        &org_id,
+                        m,
+                        "Permission granted",
+                        "success",
+                    )
+                } else {
+                    super::templates::htmx_toast_response("Permission granted", "success")
+                }
+            } else {
+                org_redirect_flash(&org_id, "Permission granted", "success")
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "org member grant_perm failed");
+            super::templates::htmx_toast_response(&format!("{e}"), "error")
+        }
+    }
+}
+
+/// `POST /ui/admin/organizations/:id/members/:uid/permissions/revoke` — revokes a direct permission from a member.
+pub async fn admin_org_member_revoke_perm(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<MemberRevokePermForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+    let user_id = match uid.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let permission = match crate::rbac::Permission::new(form.permission.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid permission in org member revoke form");
+            return super::templates::htmx_toast_response("Invalid permission string", "error");
+        }
+    };
+    let scope = match parse_rbac_scope(&form.scope) {
+        Ok(s) => s,
+        Err(_) => crate::rbac::Scope::Org {
+            org_id: org_id.clone(),
+        },
+    };
+    match state
+        .rbac
+        .revoke_user_permission(target.id(), &user_id, &permission, &scope)
+    {
+        Ok(()) => {
+            if is_htmx_request(&headers) {
+                if let Ok(Some(m)) =
+                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                {
+                    render_member_row_with_toast(
+                        &state,
+                        &session,
+                        target.id(),
+                        &org_id,
+                        m,
+                        "Permission revoked",
+                        "success",
+                    )
+                } else {
+                    super::templates::htmx_toast_response("Permission revoked", "success")
+                }
+            } else {
+                org_redirect_flash(&org_id, "Permission revoked", "success")
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "org member revoke_perm failed");
+            super::templates::htmx_toast_response(&format!("{e}"), "error")
+        }
+    }
 }
 
 // =========================================================================
