@@ -4999,8 +4999,8 @@ fn resolve_user_access_groups(
 #[derive(Template)]
 #[template(path = "ui/admin/rbac/permissions.html")]
 struct RbacPermissionsTemplate {
-    /// Pairs of (permission_name, description) from the registry.
-    permissions: Vec<(String, String)>,
+    /// One row per known permission (declared in YAML or referenced by a role).
+    permissions: Vec<PermissionRow>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -5014,10 +5014,23 @@ struct RbacPermissionsTemplate {
     realm_theme_css: Option<String>,
 }
 
-/// `GET /ui/admin/rbac/permissions` — read-only list of declared permissions.
+/// Row data for a permission in the permissions list template.
+struct PermissionRow {
+    name: String,
+    description: String,
+    /// True if the permission is declared in the YAML `permissions:` block.
+    /// False means it was discovered only via a role's permission list.
+    declared: bool,
+    /// Names of roles that grant this permission, sorted alphabetically.
+    roles: Vec<String>,
+}
+
+/// `GET /ui/admin/rbac/permissions` — list every permission known in the realm.
 ///
-/// Reads the realm's permission definitions from config; these are
-/// YAML-managed and not editable through the UI.
+/// Merges YAML-declared permissions (which carry descriptions) with permissions
+/// referenced by any role. For each permission, reports the count and names of
+/// roles that grant it; flags permissions referenced by roles but missing from
+/// the YAML `permissions:` block as `declared: false`.
 pub async fn admin_rbac_permissions(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
@@ -5031,7 +5044,8 @@ pub async fn admin_rbac_permissions(
         .flatten()
         .map(|r| r.name().to_string());
 
-    let permissions = realm_name
+    // Source 1: YAML-declared permissions (only place descriptions live).
+    let yaml_perms: Vec<(String, String)> = realm_name
         .as_deref()
         .and_then(|name| {
             state
@@ -5045,9 +5059,60 @@ pub async fn admin_rbac_permissions(
             perms
                 .iter()
                 .map(|p| (p.name.clone(), p.description.clone().unwrap_or_default()))
-                .collect::<Vec<_>>()
+                .collect()
         })
         .unwrap_or_default();
+
+    // Source 2: roles + their direct permissions.
+    let roles_page = state
+        .rbac
+        .list_roles(target.id(), None, 200)
+        .unwrap_or_default();
+
+    let mut by_name: std::collections::BTreeMap<String, PermissionRow> =
+        std::collections::BTreeMap::new();
+
+    for (name, description) in yaml_perms {
+        by_name.insert(
+            name.clone(),
+            PermissionRow {
+                name,
+                description,
+                declared: true,
+                roles: Vec::new(),
+            },
+        );
+    }
+
+    for role in &roles_page.items {
+        for perm in &role.permissions {
+            let entry = by_name
+                .entry(perm.as_str().to_string())
+                .or_insert_with(|| PermissionRow {
+                    name: perm.as_str().to_string(),
+                    description: String::new(),
+                    declared: false,
+                    roles: Vec::new(),
+                });
+            entry.roles.push(role.name.clone());
+        }
+    }
+
+    let permissions: Vec<PermissionRow> = by_name
+        .into_values()
+        .map(|mut row| {
+            row.roles.sort();
+            row.roles.dedup();
+            // Backfill descriptions for built-in seed permissions when the
+            // realm's YAML config doesn't declare an override.
+            if row.description.is_empty() {
+                if let Some(d) = crate::rbac::seed_permission_description(&row.name) {
+                    row.description = d.to_string();
+                }
+            }
+            row
+        })
+        .collect();
 
     render(&RbacPermissionsTemplate {
         permissions,
@@ -5073,7 +5138,9 @@ pub async fn admin_rbac_permissions(
 struct RoleRow {
     name: String,
     scope: String,
-    permission_count: usize,
+    /// Direct permission names granted by this role (sorted, deduped).
+    /// Does not include permissions inherited via `parent_roles`.
+    permissions: Vec<String>,
     description: String,
 }
 
@@ -5110,15 +5177,24 @@ pub async fn admin_rbac_roles(
     let roles = page
         .items
         .into_iter()
-        .map(|r| RoleRow {
-            name: r.name.clone(),
-            scope: match r.scope_kind {
-                RoleScopeKind::Realm => "realm".to_string(),
-                RoleScopeKind::Organization => "organization".to_string(),
-                RoleScopeKind::Any => "any".to_string(),
-            },
-            permission_count: r.permissions.len(),
-            description: r.description.clone().unwrap_or_default(),
+        .map(|r| {
+            let mut permissions: Vec<String> = r
+                .permissions
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            permissions.sort();
+            permissions.dedup();
+            RoleRow {
+                name: r.name.clone(),
+                scope: match r.scope_kind {
+                    RoleScopeKind::Realm => "realm".to_string(),
+                    RoleScopeKind::Organization => "organization".to_string(),
+                    RoleScopeKind::Any => "any".to_string(),
+                },
+                permissions,
+                description: r.description.clone().unwrap_or_default(),
+            }
         })
         .collect();
 

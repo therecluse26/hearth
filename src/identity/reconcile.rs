@@ -203,6 +203,12 @@ fn reconcile_declared_realms(
                         report.updated.push(name.clone());
                     }
                 }
+                // Re-run seed on existing realms too. `seed_realm` is
+                // idempotent: it skips already-correct records and rewrites
+                // only roles whose `scope_kind` drifted from the spec (e.g.
+                // legacy `org.*` roles seeded before the field existed, which
+                // deserialize as `Realm` by default).
+                seed_realm_or_log(rbac, existing.id(), name);
                 existing.id().clone()
             }
         };

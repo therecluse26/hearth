@@ -27,11 +27,11 @@
     </thead>
     <tbody class="divide-y divide-divider-subtle">
       {% for row in roles %}
-      <tr class="hover:bg-ht-surface-base">
-        <td class="px-4 py-3">
+      <tr class="hover:bg-ht-surface-base align-top">
+        <td class="px-4 py-3 whitespace-nowrap">
           <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ row.name }}</code>
         </td>
-        <td class="px-4 py-3">
+        <td class="px-4 py-3 whitespace-nowrap">
           {% if row.scope == "organization" %}
             <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Organization</span>
           {% else if row.scope == "any" %}
@@ -40,7 +40,17 @@
             <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Realm</span>
           {% endif %}
         </td>
-        <td class="px-4 py-3 font-mono text-xs text-ht-content-secondary">{{ row.permission_count }}</td>
+        <td class="px-4 py-3">
+          {% if row.permissions.is_empty() %}
+            <span class="text-ht-content-muted">—</span>
+          {% else %}
+            <div class="flex flex-wrap gap-1">
+              {% for perm in row.permissions %}
+              <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ perm }}</code>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </td>
         <td class="px-4 py-3 text-ht-content-secondary">
           {% if row.description.is_empty() %}
             <span class="text-ht-content-muted">—</span>

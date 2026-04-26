@@ -19,29 +19,85 @@ use super::error::RbacError;
 use super::keys;
 use super::types::{Permission, Role, RoleId, RoleScopeKind};
 
-/// Seed permission identifiers (§ 9.1).
-pub(crate) const SEED_PERMISSIONS: &[&str] = &[
-    "hearth.admin",
-    "realm.read",
-    "realm.write",
-    "realm.admin",
-    "org.read",
-    "org.write",
-    "org.admin",
-    "org.billing",
-    "user.read",
-    "user.write",
-    "user.impersonate",
+/// Seed permission identifiers and human-readable descriptions (§ 9.1).
+///
+/// Tuples are `(name, description)`. Descriptions are surfaced through the
+/// admin UI when no override is declared in the realm's YAML `permissions:`
+/// block; the storage record itself remains a bare `Permission` newtype so
+/// the on-disk format is unchanged.
+pub(crate) const SEED_PERMISSIONS: &[(&str, &str)] = &[
+    (
+        "hearth.admin",
+        "Full superuser access to the Hearth system realm; manage realms, global config, and platform-level settings.",
+    ),
+    (
+        "realm.read",
+        "View realm metadata, roles, groups, applications, and audit events within the current realm.",
+    ),
+    (
+        "realm.write",
+        "Modify realm-scoped resources: users, applications, roles, groups, and assignments.",
+    ),
+    (
+        "realm.admin",
+        "Full administrative control of the current realm, including settings, signing keys, and identity providers.",
+    ),
+    (
+        "org.read",
+        "View organizations, their members, and invitations within the current realm.",
+    ),
+    (
+        "org.write",
+        "Create, update, and delete organizations and manage their memberships and invitations.",
+    ),
+    (
+        "org.admin",
+        "Full administrative control of organizations, including role and member management within an org.",
+    ),
+    (
+        "org.billing",
+        "Access organization billing, subscription, and payment-related settings.",
+    ),
+    (
+        "user.read",
+        "View user profiles, attributes, sessions, and credential metadata in the current realm.",
+    ),
+    (
+        "user.write",
+        "Create, update, and delete users; manage their credentials, attributes, and direct permission grants.",
+    ),
+    (
+        "user.impersonate",
+        "Issue tokens on behalf of another user — a sensitive operation typically reserved for support staff.",
+    ),
 ];
 
+/// Returns the canonical description for a seed permission, or `None` if
+/// `name` is not one of the built-in permissions defined in
+/// [`SEED_PERMISSIONS`]. Used by the admin UI as a fallback when no override
+/// is supplied via YAML.
+#[must_use]
+pub fn seed_permission_description(name: &str) -> Option<&'static str> {
+    SEED_PERMISSIONS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, d)| *d)
+}
+
 /// Seed role specification. We store IDs resolved at first-seed time so
-/// subsequent runs can find existing roles and skip rewrites.
+/// subsequent runs can find existing roles and reconcile drift.
 struct SeedRoleSpec {
     name: &'static str,
     /// Permissions granted directly by this role.
     permissions: &'static [&'static str],
     /// Parent role names (resolved after first pass).
     parent_names: &'static [&'static str],
+    /// Canonical scope for this role. `org.*` roles are organization-scoped;
+    /// `realm.*` roles are realm-scoped. Stored explicitly (not derived from
+    /// the name) so seed-time intent is unambiguous, and reconciled on every
+    /// `seed_realm` call to repair legacy records that defaulted to
+    /// `RoleScopeKind::Realm` on deserialization.
+    scope_kind: RoleScopeKind,
 }
 
 /// The five seed roles (§ 9.2).
@@ -66,26 +122,31 @@ const SEED_ROLES: &[SeedRoleSpec] = &[
             "user.impersonate",
         ],
         parent_names: &[],
+        scope_kind: RoleScopeKind::Realm,
     },
     SeedRoleSpec {
         name: "realm.member",
         permissions: &[],
         parent_names: &[],
+        scope_kind: RoleScopeKind::Realm,
     },
     SeedRoleSpec {
         name: "org.member",
         permissions: &["org.read"],
         parent_names: &[],
+        scope_kind: RoleScopeKind::Organization,
     },
     SeedRoleSpec {
         name: "org.admin",
         permissions: &["org.write", "org.admin"],
         parent_names: &["org.member"],
+        scope_kind: RoleScopeKind::Organization,
     },
     SeedRoleSpec {
         name: "org.owner",
         permissions: &["org.billing"],
         parent_names: &["org.admin"],
+        scope_kind: RoleScopeKind::Organization,
     },
 ];
 
@@ -142,7 +203,7 @@ pub(crate) fn seed_realm(
 }
 
 fn seed_permissions(storage: &Arc<dyn StorageEngine>, realm_id: &RealmId) -> Result<(), RbacError> {
-    for p in SEED_PERMISSIONS {
+    for (p, _desc) in SEED_PERMISSIONS {
         let perm = Permission::new(*p).map_err(|reason| RbacError::InvalidPermission { reason })?;
         let key = keys::encode_permission(realm_id, perm.as_str());
         if storage.get(realm_id, &key)?.is_some() {
@@ -176,8 +237,28 @@ fn seed_roles(
     let now: Timestamp = clock.now();
 
     for spec in SEED_ROLES {
-        // Skip if already seeded.
-        if find_role_id(spec.name)?.is_some() {
+        // Reconcile if already seeded: load the stored Role and rewrite its
+        // scope_kind if it disagrees with the spec. This repairs legacy
+        // records written before scope_kind existed (which deserialize to
+        // RoleScopeKind::Realm by default).
+        if let Some(existing_id) = find_role_id(spec.name)? {
+            let role_key = keys::encode_role(&existing_id);
+            let Some(raw) = storage.get(realm_id, &role_key)? else {
+                continue;
+            };
+            let mut role: Role =
+                serde_json::from_slice(&raw).map_err(|e| RbacError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            if role.scope_kind != spec.scope_kind {
+                role.scope_kind = spec.scope_kind;
+                role.updated_at = now;
+                let role_bytes =
+                    serde_json::to_vec(&role).map_err(|e| RbacError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                storage.put(realm_id, &role_key, &role_bytes)?;
+            }
             continue;
         }
 
@@ -211,11 +292,7 @@ fn seed_roles(
             description: Some(format!("Seed role: {}", spec.name)),
             permissions,
             parent_roles,
-            scope_kind: if spec.name.starts_with("org.") {
-                RoleScopeKind::Organization
-            } else {
-                RoleScopeKind::Realm
-            },
+            scope_kind: spec.scope_kind,
             created_at: now,
             updated_at: now,
         };
@@ -287,7 +364,7 @@ mod tests {
     fn seed_writes_all_permissions() {
         let (storage, clock, realm) = setup();
         seed_realm(&storage, &clock, &realm).expect("seed");
-        for p in SEED_PERMISSIONS {
+        for (p, _desc) in SEED_PERMISSIONS {
             let k = keys::encode_permission(&realm, p);
             assert!(
                 storage.get(&realm, &k).expect("get").is_some(),
@@ -355,7 +432,7 @@ mod tests {
 
         // Should include hearth.admin (reserved) and all seed perms directly.
         let names: Vec<&str> = role.permissions.iter().map(Permission::as_str).collect();
-        for p in SEED_PERMISSIONS {
+        for (p, _desc) in SEED_PERMISSIONS {
             assert!(
                 names.contains(p),
                 "realm.admin missing direct permission: {p}"
