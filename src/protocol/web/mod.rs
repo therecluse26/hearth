@@ -802,6 +802,11 @@ pub fn router(state: WebState) -> Router {
             "/admin/api/config/reload",
             axum::routing::post(admin::admin_api_config_reload),
         )
+        // --- Sidebar nav data (realm tree) ---
+        .route(
+            "/admin/api/nav/realms",
+            axum::routing::get(admin::admin_api_nav_realms),
+        )
         // --- Admin realm switcher ---
         .route(
             "/admin/switch-realm",

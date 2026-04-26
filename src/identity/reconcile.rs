@@ -142,6 +142,84 @@ fn seed_realm_or_log(rbac: &dyn RbacEngine, realm_id: &RealmId, realm_name: &str
     }
 }
 
+/// Persists YAML-declared permissions, roles, and scope bundles into the
+/// realm's RBAC storage. Idempotent: each underlying engine method upserts
+/// by name. Logs (does not raise) on individual failures so one bad block
+/// doesn't abort reconciliation of subsequent realms or other concerns
+/// (organizations, federation, etc.).
+fn reconcile_rbac_for_realm(
+    rbac: &dyn RbacEngine,
+    realm_id: &RealmId,
+    realm_name: &str,
+    yaml_cfg: &RealmYamlConfig,
+) {
+    let perm_count = yaml_cfg.permissions.as_ref().map_or(0, Vec::len);
+    let role_count = yaml_cfg.roles.as_ref().map_or(0, Vec::len);
+    let scope_count = yaml_cfg.scopes.as_ref().map_or(0, Vec::len);
+    tracing::info!(
+        realm = realm_name,
+        permissions = perm_count,
+        roles = role_count,
+        scopes = scope_count,
+        "reconciling YAML RBAC"
+    );
+
+    if let Some(perms) = yaml_cfg.permissions.as_ref() {
+        let names: Vec<String> = perms.iter().map(|p| p.name.clone()).collect();
+        if let Err(e) = rbac.reconcile_permissions(realm_id, &names) {
+            tracing::warn!(
+                realm = realm_name,
+                error = %e,
+                "failed to reconcile YAML permissions"
+            );
+        }
+    }
+
+    if let Some(roles) = yaml_cfg.roles.as_ref() {
+        let specs: Vec<crate::rbac::RoleSpec> = roles
+            .iter()
+            .map(|r| crate::rbac::RoleSpec {
+                name: r.name.clone(),
+                description: r.description.clone(),
+                permissions: r.permissions.clone(),
+                parent_names: r.parents.clone(),
+                scope_kind: match r.scope_kind.as_deref() {
+                    Some("organization") => crate::rbac::RoleScopeKind::Organization,
+                    Some("any") => crate::rbac::RoleScopeKind::Any,
+                    _ => crate::rbac::RoleScopeKind::Realm,
+                },
+            })
+            .collect();
+        for spec in &specs {
+            if let Err(e) = rbac.reconcile_roles(realm_id, std::slice::from_ref(spec)) {
+                tracing::warn!(
+                    realm = realm_name,
+                    role = %spec.name,
+                    error = %e,
+                    "failed to reconcile YAML role"
+                );
+            }
+        }
+    }
+
+    if let Some(scopes) = yaml_cfg.scopes.as_ref() {
+        let specs: Vec<crate::rbac::ScopeSpec> = scopes
+            .iter()
+            .map(|s| crate::rbac::ScopeSpec {
+                name: s.name.clone(),
+                permissions: Some(s.permissions.clone()),
+            })
+            .collect();
+        if let Err(e) = rbac.reconcile_scopes(realm_id, &specs) {
+            tracing::warn!(
+                realm = realm_name,
+                error = %e,
+                "failed to reconcile YAML scope bundles"
+            );
+        }
+    }
+}
+
 /// Reconciles a declared `realms:` map.
 fn reconcile_declared_realms(
     engine: &dyn IdentityEngine,
@@ -212,6 +290,12 @@ fn reconcile_declared_realms(
                 existing.id().clone()
             }
         };
+
+        // Reconcile YAML-declared RBAC: permissions before roles before
+        // scopes, mirroring the seed order so name references resolve.
+        // Errors are logged (not fatal) so a bad RBAC block doesn't abort
+        // reconciliation of other realms.
+        reconcile_rbac_for_realm(rbac, &realm_id, name, yaml_cfg);
 
         // Reconcile managed OAuth clients declared under this realm.
         if let Some(apps) = yaml_cfg

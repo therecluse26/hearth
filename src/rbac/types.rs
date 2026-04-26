@@ -356,6 +356,30 @@ pub struct ResolvedPermissions {
     pub granted_scopes: Vec<String>,
 }
 
+/// Declarative role definition consumed by `RbacEngine::reconcile_roles`.
+///
+/// Carries parent and permission references by *name* so the engine can
+/// resolve them against the realm's current state at reconcile time, rather
+/// than relying on caller-generated UUIDs that won't match storage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleSpec {
+    pub name: String,
+    pub description: Option<String>,
+    pub permissions: Vec<String>,
+    pub parent_names: Vec<String>,
+    pub scope_kind: RoleScopeKind,
+}
+
+/// Declarative scope-bundle definition consumed by `RbacEngine::reconcile_scopes`.
+///
+/// `permissions: None` means an OIDC standard scope (no narrowing); `Some(list)`
+/// is the literal permission set the scope maps to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeSpec {
+    pub name: String,
+    pub permissions: Option<Vec<String>>,
+}
+
 /// Runtime direct permission grant for a user.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserPermissionGrant {

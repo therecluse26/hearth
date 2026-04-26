@@ -29,9 +29,9 @@ pub use seed::seed_permission_description;
 pub use types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
     GroupId, GroupMember, GroupMembership, Page, Permission, PermissionDefinition,
-    ProtectedResource, ResolvedPermissions, Role, RoleAssignment, RoleId, RoleScopeKind,
-    RoleSubject, Scope, ScopeBundle, Subject, TraversalKind, UpdateGroupRequest, UpdateRoleRequest,
-    UserPermissionGrant,
+    ProtectedResource, ResolvedPermissions, Role, RoleAssignment, RoleId, RoleScopeKind, RoleSpec,
+    RoleSubject, Scope, ScopeBundle, ScopeSpec, Subject, TraversalKind, UpdateGroupRequest,
+    UpdateRoleRequest, UserPermissionGrant,
 };
 
 use crate::core::{OrganizationId, RealmId, UserId};
@@ -269,4 +269,31 @@ pub trait RbacEngine: Send + Sync {
     /// Idempotent: re-running on a realm that already has seed state is a
     /// no-op. See AUTHORIZATION.md § 9.
     fn seed_realm(&self, realm_id: &RealmId) -> Result<(), RbacError>;
+
+    // ------- Declarative reconciliation (YAML-driven) -------
+
+    /// Persists each declared permission name into per-realm storage if it
+    /// is not already registered. Idempotent. Description and category
+    /// metadata is *not* stored here — those continue to be read from the
+    /// YAML config at request time.
+    fn reconcile_permissions(
+        &self,
+        realm_id: &RealmId,
+        permission_names: &[String],
+    ) -> Result<(), RbacError>;
+
+    /// Persists each declared role into per-realm storage by name, resolving
+    /// `parent_names` against existing roles (including seed roles). Roles
+    /// that already exist are updated in place if their permissions, parents,
+    /// scope, or description disagree with the spec. Idempotent.
+    ///
+    /// Caller MUST call `reconcile_permissions` first so role-permission
+    /// references resolve.
+    fn reconcile_roles(&self, realm_id: &RealmId, specs: &[RoleSpec]) -> Result<(), RbacError>;
+
+    /// Persists each declared scope bundle into per-realm storage by name.
+    /// Existing seed scopes not present in `specs` are left intact. Bundles
+    /// that already exist are overwritten with the spec's permission list.
+    /// Idempotent.
+    fn reconcile_scopes(&self, realm_id: &RealmId, specs: &[ScopeSpec]) -> Result<(), RbacError>;
 }

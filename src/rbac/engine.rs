@@ -23,8 +23,8 @@ use super::seed::{self, StoredScope};
 use super::types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
     GroupId, GroupMember, GroupMembership, Page, Permission, ResolvedPermissions, Role,
-    RoleAssignment, RoleId, RoleSubject, Scope, Subject, TraversalKind, UpdateGroupRequest,
-    UpdateRoleRequest, UserPermissionGrant,
+    RoleAssignment, RoleId, RoleSpec, RoleSubject, Scope, ScopeSpec, Subject, TraversalKind,
+    UpdateGroupRequest, UpdateRoleRequest, UserPermissionGrant,
 };
 use super::RbacEngine;
 
@@ -1150,6 +1150,129 @@ impl RbacEngine for EmbeddedRbacEngine {
 
     fn seed_realm(&self, realm_id: &RealmId) -> Result<(), RbacError> {
         seed::seed_realm(&self.storage, &self.clock, realm_id)
+    }
+
+    // ---------- Declarative reconciliation ----------
+
+    fn reconcile_permissions(
+        &self,
+        realm_id: &RealmId,
+        permission_names: &[String],
+    ) -> Result<(), RbacError> {
+        for name in permission_names {
+            let perm = Permission::new(name.clone())
+                .map_err(|reason| RbacError::InvalidPermission { reason })?;
+            let key = keys::encode_permission(realm_id, perm.as_str());
+            if self.storage.get(realm_id, &key)?.is_some() {
+                continue;
+            }
+            self.storage.put(realm_id, &key, &Self::ser(&perm)?)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_roles(&self, realm_id: &RealmId, specs: &[RoleSpec]) -> Result<(), RbacError> {
+        let now = self.clock.now();
+
+        for spec in specs {
+            Self::validate_role_name(&spec.name)?;
+
+            let permissions: Vec<Permission> = spec
+                .permissions
+                .iter()
+                .map(|p| {
+                    Permission::new(p.clone())
+                        .map_err(|reason| RbacError::InvalidPermission { reason })
+                })
+                .collect::<Result<_, _>>()?;
+            Self::validate_permissions_for_operator(&permissions)?;
+
+            // Resolve parent names against the realm's current state.
+            // Unknown parents are a hard error — the YAML referenced something
+            // that doesn't exist (and isn't being created in this batch).
+            let mut parent_roles: Vec<RoleId> = Vec::with_capacity(spec.parent_names.len());
+            for pname in &spec.parent_names {
+                match self.load_role_id_by_name(realm_id, pname)? {
+                    Some(pid) => parent_roles.push(pid),
+                    None => {
+                        return Err(RbacError::Serialization {
+                            reason: format!(
+                                "role '{}' references missing parent '{pname}'",
+                                spec.name
+                            ),
+                        });
+                    }
+                }
+            }
+
+            if let Some(existing_id) = self.load_role_id_by_name(realm_id, &spec.name)? {
+                let Some(mut role) = self.load_role(realm_id, &existing_id)? else {
+                    continue;
+                };
+                let drift = role.description != spec.description
+                    || role.permissions != permissions
+                    || role.parent_roles != parent_roles
+                    || role.scope_kind != spec.scope_kind;
+                if drift {
+                    role.description.clone_from(&spec.description);
+                    role.permissions = permissions;
+                    role.parent_roles = parent_roles;
+                    role.scope_kind = spec.scope_kind;
+                    role.updated_at = now;
+                    self.check_role_parents_no_cycle(realm_id, &role.id, &role.parent_roles)?;
+                    let role_key = keys::encode_role(&role.id);
+                    self.storage.put(realm_id, &role_key, &Self::ser(&role)?)?;
+                }
+                continue;
+            }
+
+            // New role: create.
+            let role = Role {
+                id: RoleId::generate(),
+                realm_id: realm_id.clone(),
+                name: spec.name.clone(),
+                description: spec.description.clone(),
+                permissions,
+                parent_roles,
+                scope_kind: spec.scope_kind,
+                created_at: now,
+                updated_at: now,
+            };
+            self.check_role_parents_no_cycle(realm_id, &role.id, &role.parent_roles)?;
+            let role_key = keys::encode_role(&role.id);
+            let name_key = keys::encode_role_name(realm_id, &role.name);
+            self.storage.put_batch(
+                realm_id,
+                &[
+                    (role_key, Self::ser(&role)?),
+                    (name_key, Self::ser(&role.id)?),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_scopes(&self, realm_id: &RealmId, specs: &[ScopeSpec]) -> Result<(), RbacError> {
+        for spec in specs {
+            let permissions: Option<Vec<Permission>> = match &spec.permissions {
+                None => None,
+                Some(list) => Some(
+                    list.iter()
+                        .map(|p| {
+                            Permission::new(p.clone())
+                                .map_err(|reason| RbacError::InvalidPermission { reason })
+                        })
+                        .collect::<Result<_, _>>()?,
+                ),
+            };
+            let stored = seed::StoredScope {
+                name: spec.name.clone(),
+                permissions,
+            };
+            let key = keys::encode_scope(realm_id, &spec.name);
+            self.storage.put(realm_id, &key, &Self::ser(&stored)?)?;
+        }
+        Ok(())
     }
 }
 

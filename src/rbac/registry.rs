@@ -282,8 +282,16 @@ impl RealmPermissionRegistry {
 
         // --- Build lookup sets -----------------------------------------------
 
-        let declared_perms: HashSet<&str> =
+        // Seed permissions are always installed by `seed_realm` and so are
+        // implicitly available in every realm's runtime registry. Include
+        // them in the declared set so YAML roles and scope bundles can
+        // reference (e.g.) `user.read` or `org.read` without re-declaring
+        // them in the realm's `permissions:` block.
+        let mut declared_perms: HashSet<&str> =
             self.permissions.iter().map(|p| p.name.as_str()).collect();
+        for (name, _desc) in super::seed::SEED_PERMISSIONS {
+            declared_perms.insert(name);
+        }
 
         let role_ids: HashSet<&RoleId> = self.roles.iter().map(|r| &r.id).collect();
 

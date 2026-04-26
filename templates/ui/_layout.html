@@ -63,8 +63,11 @@
         </div>
 
         {% if is_admin %}
+        {# System-level admin: realm-agnostic pages. Realm-scoped pages
+           (Users, Organizations, Permissions, etc.) live under each realm
+           in the tree below. #}
         <div>
-          <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Admin</p>
+          <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">System</p>
           <ul class="space-y-0.5">
             <li>
               <a href="/ui/admin/admin-users" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "admin-users" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "admin-users" %} aria-current="page"{% endif %}>
@@ -79,36 +82,6 @@
               </a>
             </li>
             <li>
-              <a href="/ui/admin/users" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "users" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "users" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                Users
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/organizations" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "organizations" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "organizations" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 9h1"/><path d="M9 13h1"/><path d="M9 17h1"/><path d="M14 9h1"/><path d="M14 13h1"/><path d="M14 17h1"/></svg>
-                Organizations
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/applications" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "applications" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "applications" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 10h20"/></svg>
-                Applications
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/sessions" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "sessions" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "sessions" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                Sessions
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/audit" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "audit" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "audit" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                Audit Log
-              </a>
-            </li>
-            <li>
               <a href="/ui/admin/settings" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "settings" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "settings" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="3"/>
@@ -120,33 +93,44 @@
           </ul>
         </div>
 
-        <div>
-          <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">RBAC</p>
-          <ul class="space-y-0.5">
-            <li>
-              <a href="/ui/admin/rbac/permissions" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_permissions" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_permissions" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                Permissions
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/rbac/roles" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_roles" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_roles" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                Roles
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/rbac/scopes" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_scopes" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_scopes" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                Scopes
-              </a>
-            </li>
-            <li>
-              <a href="/ui/admin/rbac/debug" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "rbac_debug" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "rbac_debug" %} aria-current="page"{% endif %}>
-                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-                Permission Check
-              </a>
-            </li>
+        {# Per-realm tree: realms fetched from /ui/admin/api/nav/realms,
+           rendered client-side. The current realm is read from ?realm=<name>
+           or the hearth_ui_admin_target cookie; that realm is auto-expanded
+           and highlighted. The active page (server-rendered `active` value)
+           is matched inside the expanded subtree. #}
+        <div x-data="realmNav('{{ active }}')" x-init="load()">
+          <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Realms</p>
+          <template x-if="loading">
+            <p class="px-2 text-xs text-ht-content-muted">Loading…</p>
+          </template>
+          <template x-if="!loading && realms.length === 0">
+            <p class="px-2 text-xs text-ht-content-muted">No realms.</p>
+          </template>
+          <ul class="space-y-0.5" x-show="!loading && realms.length > 0">
+            <template x-for="r in realms" :key="r.name">
+              <li x-data="{ open: r.name === currentRealm }">
+                <button @click="open = !open"
+                        class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium hover-bg-divider"
+                        :class="r.name === currentRealm ? 'text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary'">
+                  <svg class="h-3 w-3 shrink-0 transition-transform" :class="open ? 'rotate-90' : ''" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                  <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                  <span x-text="r.name" :class="r.archived ? 'text-ht-content-muted line-through' : ''"></span>
+                  <template x-if="r.archived">
+                    <span class="ml-auto rounded bg-steel-bg px-1.5 py-0.5 text-[10px] font-medium uppercase text-steel-fg">archived</span>
+                  </template>
+                </button>
+                <ul x-show="open" x-transition.duration.150ms class="ml-3 mt-0.5 space-y-0.5 border-l border-divider pl-2">
+                  <template x-for="link in subPages" :key="link.key">
+                    <li>
+                      <a :href="link.href.replace('{realm}', encodeURIComponent(r.name))"
+                         class="flex items-center gap-2 rounded-md px-2 py-1 text-sm"
+                         :class="(r.name === currentRealm && link.key === activePage) ? 'bg-divider text-ht-content-primary font-medium' : 'text-ht-content-secondary hover:text-ht-content-primary hover-bg-divider'"
+                         x-text="link.label"></a>
+                    </li>
+                  </template>
+                </ul>
+              </li>
+            </template>
           </ul>
         </div>
         {% endif %}
@@ -246,6 +230,51 @@
         submitting: false,
         loadingMessage: message || 'Loading\u2026',
         submit() { this.submitting = true; }
+      }));
+
+      // Sidebar realm tree. Fetches realms once at mount, derives the
+      // current realm from ?realm=<name> or the hearth_ui_admin_target
+      // cookie so the matching subtree auto-expands and highlights.
+      Alpine.data('realmNav', (activePage) => ({
+        loading: true,
+        realms: [],
+        currentRealm: '',
+        activePage: activePage || '',
+        subPages: [
+          { key: 'users',            label: 'Users',            href: '/ui/admin/users?realm={realm}' },
+          { key: 'organizations',    label: 'Organizations',    href: '/ui/admin/organizations?realm={realm}' },
+          { key: 'applications',     label: 'Applications',     href: '/ui/admin/applications?realm={realm}' },
+          { key: 'sessions',         label: 'Sessions',         href: '/ui/admin/sessions?realm={realm}' },
+          { key: 'audit',            label: 'Audit Log',        href: '/ui/admin/audit?realm={realm}' },
+          { key: 'rbac_permissions', label: 'Permissions',      href: '/ui/admin/rbac/permissions?realm={realm}' },
+          { key: 'rbac_roles',       label: 'Roles',            href: '/ui/admin/rbac/roles?realm={realm}' },
+          { key: 'rbac_scopes',      label: 'Scopes',           href: '/ui/admin/rbac/scopes?realm={realm}' },
+          { key: 'rbac_debug',       label: 'Permission Check', href: '/ui/admin/rbac/debug?realm={realm}' },
+        ],
+        readCookie(name) {
+          const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
+          return m ? decodeURIComponent(m[1]) : '';
+        },
+        deriveCurrentRealm() {
+          const params = new URLSearchParams(window.location.search);
+          const fromQuery = params.get('realm');
+          if (fromQuery) return fromQuery;
+          return this.readCookie('hearth_ui_admin_target');
+        },
+        async load() {
+          this.currentRealm = this.deriveCurrentRealm();
+          try {
+            const res = await fetch('/ui/admin/api/nav/realms', { credentials: 'same-origin' });
+            if (res.ok) {
+              const data = await res.json();
+              this.realms = data.realms || [];
+            }
+          } catch (e) {
+            // Silently degrade — sidebar tree is non-essential.
+          } finally {
+            this.loading = false;
+          }
+        },
       }));
     });
   </script>

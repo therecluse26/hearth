@@ -3372,6 +3372,45 @@ pub async fn admin_switch_realm(
 
 /// `POST /admin/api/config/reload` — triggers config hot-reload.
 ///
+/// `GET /ui/admin/_nav/realms.json` — returns the realm list used by the
+/// sidebar navigation tree. Client-rendered (Alpine.js) so we don't need
+/// to thread the list through every admin template struct.
+///
+/// Filters out the system realm (which is reachable via separate top-level
+/// links: `Admin Users`, `Realms`, `System Info`). Includes archived realms
+/// with a flag so the sidebar can dim them.
+pub async fn admin_api_nav_realms(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+) -> Response {
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let system_id = crate::identity::keys::system_realm_id();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = match state.identity.list_realms(cursor.as_deref(), 100) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "list_realms failed in nav endpoint");
+                return super::handlers_common::server_error();
+            }
+        };
+        for realm in &page.items {
+            if realm.id() == &system_id {
+                continue;
+            }
+            items.push(serde_json::json!({
+                "name": realm.name(),
+                "archived": realm.status() == RealmStatus::Archived,
+            }));
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    axum::response::Json(serde_json::json!({ "realms": items })).into_response()
+}
+
 /// Notifies the SIGHUP handler loop to re-read the config file and run
 /// reconciliation. Returns a JSON acknowledgement.
 pub async fn admin_api_config_reload(
