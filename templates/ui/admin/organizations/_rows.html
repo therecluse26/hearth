@@ -1,7 +1,17 @@
+{# Note: empty-state is rendered by list.html (full-panel design). This
+   partial only emits non-empty rows so the bare "No organizations found"
+   td is never shown. #}
 {% for o in organizations %}
 <tr class="border-b border-divider-subtle">
   <td class="px-4 py-3">
-    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ o.name() }}</a>
+    <input type="checkbox" value="{{ o.id().as_uuid() }}"
+           aria-label="Select {{ o.name() }}"
+           @change="$dispatch('org-checked')"
+           class="row-check h-4 w-4 rounded border-divider bg-ht-surface-elevated">
+  </td>
+  <td class="px-4 py-3">
+    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+       class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ o.name() }}</a>
   </td>
   <td class="px-4 py-3">
     <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ o.slug() }}</code>
@@ -14,10 +24,8 @@
     {% endif %}
   </td>
   <td class="px-4 py-3 text-right">
-    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}/edit" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
+    <a href="/ui/admin/organizations/{{ o.id().as_uuid() }}/edit{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+       class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
   </td>
 </tr>
 {% endfor %}
-{% if organizations.is_empty() %}
-<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-ht-content-muted">No organizations found.</td></tr>
-{% endif %}

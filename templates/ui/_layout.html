@@ -286,7 +286,90 @@
       var d = typeof e.detail === 'string' ? JSON.parse(e.detail) : e.detail;
       window.dispatchEvent(new CustomEvent('show-toast', {detail: d}));
     });
+
+    // -------------------------------------------------------------------
+    // Global keyboard shortcuts. We bind on `keydown` so the captured
+    // key is reliable cross-browser, and bail when focus is in any
+    // text-bearing control or contenteditable region — otherwise '/'
+    // would steal keystrokes from the very inputs we want to focus.
+    //   /   focus the page-level search box (`#page-search`)
+    //   c   click the primary CTA on the page (`#primary-cta`)
+    //   ?   open the shortcut overlay
+    // -------------------------------------------------------------------
+    (function () {
+      function inEditable(el) {
+        if (!el) return false;
+        if (el.isContentEditable) return true;
+        var tag = (el.tagName || '').toLowerCase();
+        if (tag === 'input') {
+          var t = (el.type || 'text').toLowerCase();
+          // Allow shortcuts when focus is in non-text inputs (checkboxes,
+          // buttons, etc.) — only swallow when typing.
+          return ['text','search','email','password','number','tel','url','date','datetime-local','time','month','week'].indexOf(t) !== -1;
+        }
+        return tag === 'textarea' || tag === 'select';
+      }
+
+      window.__hearthShortcutHelpOpen = false;
+      document.addEventListener('keydown', function (e) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (inEditable(e.target)) return;
+        switch (e.key) {
+          case '/': {
+            var search = document.getElementById('page-search');
+            if (search) {
+              e.preventDefault();
+              search.focus();
+              search.select && search.select();
+            }
+            break;
+          }
+          case 'c': {
+            var cta = document.getElementById('primary-cta');
+            if (cta) {
+              e.preventDefault();
+              cta.click();
+            }
+            break;
+          }
+          case '?': {
+            e.preventDefault();
+            window.dispatchEvent(new CustomEvent('hearth-shortcut-help'));
+            break;
+          }
+          case 'Escape': {
+            window.dispatchEvent(new CustomEvent('hearth-shortcut-help-close'));
+            break;
+          }
+          default: break;
+        }
+      });
+    })();
   </script>
+
+  {# Keyboard-shortcut overlay (global). Bound to `?` via the listener
+     above; ESC closes. Uses x-cloak so it doesn't flash on first paint. #}
+  <div x-data="{ show: false }"
+       @hearth-shortcut-help.window="show = true"
+       @hearth-shortcut-help-close.window="show = false"
+       @keydown.escape.window="show = false"
+       x-show="show" x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div class="w-full max-w-md rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle shadow-md" @click.outside="show = false">
+      <div class="flex items-start justify-between">
+        <h2 class="font-display text-lg font-medium text-ht-content-primary">Keyboard shortcuts</h2>
+        <button @click="show = false" class="text-ht-content-muted hover:text-ht-content-primary" aria-label="Close">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <dl class="mt-4 space-y-2 text-sm">
+        <div class="flex items-center justify-between"><dt class="text-ht-content-secondary">Focus search</dt><dd><kbd class="rounded-sm border border-divider bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-primary">/</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ht-content-secondary">Open primary action</dt><dd><kbd class="rounded-sm border border-divider bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-primary">c</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ht-content-secondary">Show this overlay</dt><dd><kbd class="rounded-sm border border-divider bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-primary">?</kbd></dd></div>
+        <div class="flex items-center justify-between"><dt class="text-ht-content-secondary">Close any overlay</dt><dd><kbd class="rounded-sm border border-divider bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-primary">Esc</kbd></dd></div>
+      </dl>
+    </div>
+  </div>
   {% block scripts %}{% endblock %}
 </body>
 </html>

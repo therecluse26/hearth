@@ -3,39 +3,121 @@
 {% block body %}
 {% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="text-2xl font-semibold text-ht-content-primary">Organizations</h1>
-  <a href="{% match target_realm_name %}{% when Some with (name) %}/ui/admin/organizations/new?realm={{ name }}{% when None %}/ui/admin/organizations/new{% endmatch %}"
+  <div>
+    <h1 class="text-2xl font-semibold text-ht-content-primary">Organizations</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">B2B customer groups inside this realm. Members share roles, RBAC, and audit history.</p>
+  </div>
+  <a id="primary-cta"
+     href="{% match target_realm_name %}{% when Some with (name) %}/ui/admin/organizations/new?realm={{ name }}{% when None %}/ui/admin/organizations/new{% endmatch %}"
      class="btn-ember inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     Create organization
   </a>
 </div>
 
-<div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
-  <table class="w-full">
-    <thead>
-      <tr class="border-b border-divider bg-ht-surface-elevated">
-        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Name</th>
-        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Slug</th>
-        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
-        <th class="px-4 py-3"></th>
-      </tr>
-    </thead>
-    <tbody id="table-body">
-      {% include "ui/admin/organizations/_rows.html" %}
-    </tbody>
-  </table>
-</div>
+{# Search bar — substring match over name/slug. Form GET keeps state in
+   the URL and refreshes the realm-scoped list pattern. #}
+<form method="get" action="/ui/admin/organizations" class="mb-4">
+  {% match target_realm_name %}
+    {% when Some with (name) %}<input type="hidden" name="realm" value="{{ name }}">
+    {% when None %}
+  {% endmatch %}
+  <div class="relative">
+    <input id="page-search" type="search" name="q" value="{{ search_query }}" placeholder="Search by name or slug…"
+           class="block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 pl-9 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+    <svg class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+  </div>
+</form>
 
-{% match next_cursor %}
-  {% when Some with (cursor) %}
-    <nav class="mt-4 flex justify-end">
-      <a href="/ui/admin/organizations?cursor={{ cursor }}"
-         class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-        Next page
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-      </a>
-    </nav>
-  {% when None %}
-{% endmatch %}
+{% if organizations.is_empty() && next_cursor.is_none() && search_query.is_empty() %}
+  {# Empty-state panel — replaces the bare "No organizations found." td.
+     A blank realm is the most likely first impression for a new admin,
+     so the panel doubles as orientation: what an org *is*, plus the
+     CTA to create one. #}
+  <div class="rounded-lg border border-divider-subtle bg-ht-surface-elevated px-6 py-12 text-center">
+    <svg class="mx-auto h-10 w-10 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h.01M15 9h.01M9 13h.01M15 13h.01M9 17h6"/>
+    </svg>
+    <h2 class="mt-4 font-display text-lg font-medium text-ht-content-primary">No organizations yet</h2>
+    <p class="mx-auto mt-2 max-w-md text-sm text-ht-content-secondary">
+      Organizations group customers, projects, or teams within this realm. Members share RBAC roles, invitations, and audit history.
+    </p>
+    <a href="{% match target_realm_name %}{% when Some with (name) %}/ui/admin/organizations/new?realm={{ name }}{% when None %}/ui/admin/organizations/new{% endmatch %}"
+       class="btn-ember mt-6 inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Create your first organization
+    </a>
+  </div>
+{% else if organizations.is_empty() && !search_query.is_empty() %}
+  <div class="rounded-md bg-ht-surface-elevated p-6 text-center ring-1 ring-divider-subtle">
+    <p class="text-sm text-ht-content-secondary">No organizations match <code class="rounded-sm bg-ht-surface-elevated px-1 py-0.5 font-mono text-ht-content-primary">{{ search_query }}</code>.</p>
+  </div>
+{% else %}
+  {# Bulk-action wrapper: <form> wraps both the toolbar and the table so
+     row checkboxes (`name="ids"`) post with the form. Two-click confirm
+     mirrors the per-row revoke pattern. #}
+  <form method="post"
+        action="/ui/admin/organizations/bulk-delete{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+        x-data="{ selected: 0, confirm: false, allChecked: false, idsCsv: '' }"
+        @org-checked.window="
+          let checked = $el.querySelectorAll('input.row-check:checked');
+          selected = checked.length;
+          idsCsv = Array.from(checked).map(c => c.value).join(',');"
+        class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
+    {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+    <input type="hidden" name="ids" :value="idsCsv">
+    <div class="flex items-center justify-between gap-3 border-b border-divider-subtle px-4 py-2">
+      <span class="font-mono text-xs text-ht-content-muted" x-text="selected === 0 ? '{{ organizations.len() }} loaded' : selected + ' selected'"></span>
+      <div class="flex items-center gap-2" x-show="selected > 0" x-cloak>
+        <button type="button"
+                @click="
+                  if (!confirm) {
+                    confirm = true;
+                    setTimeout(() => { confirm = false }, 4000);
+                    return;
+                  }
+                  $root.submit();"
+                :class="confirm ? 'btn-danger text-graphite-950' : 'border border-strong bg-ht-surface-elevated text-danger-fg hover-bg-divider'"
+                x-text="confirm ? 'Confirm delete' : 'Delete selected'"
+                class="rounded px-3 py-1 text-xs font-semibold transition-colors"></button>
+      </div>
+    </div>
+    <div class="overflow-hidden">
+      <table class="w-full">
+        <thead>
+          <tr class="border-b border-divider bg-ht-surface-elevated">
+            <th class="w-8 px-4 py-3">
+              <input type="checkbox"
+                     aria-label="Select all"
+                     x-model="allChecked"
+                     @change="
+                       $root.querySelectorAll('input.row-check').forEach(c => { c.checked = allChecked });
+                       $dispatch('org-checked');"
+                     class="h-4 w-4 rounded border-divider bg-ht-surface-elevated">
+            </th>
+            <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Name</th>
+            <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Slug</th>
+            <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody id="table-body">
+          {% include "ui/admin/organizations/_rows.html" %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+
+  {% match next_cursor %}
+    {% when Some with (cursor) %}
+      <nav class="mt-4 flex justify-end">
+        <a href="/ui/admin/organizations?cursor={{ cursor }}{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+           class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+          Next page
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </a>
+      </nav>
+    {% when None %}
+  {% endmatch %}
+{% endif %}
 {% endblock %}

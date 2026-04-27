@@ -147,3 +147,64 @@ pub(crate) fn server_error() -> Response {
         StatusCode::INTERNAL_SERVER_ERROR,
     )
 }
+
+// ---------------------------------------------------------------------------
+// Friendly form extractor
+// ---------------------------------------------------------------------------
+
+/// `Form<T>`-equivalent extractor that intercepts deserialization
+/// failures and returns a styled HTML page instead of axum's default
+/// `text/plain` rejection body.
+///
+/// Plain-text rejections replace the entire admin page with a single
+/// terse line (e.g., `Failed to deserialize form body: …`), which is a
+/// jarring UX. This wrapper renders the standard 400 template — same
+/// chrome, same dark theme — so the user can navigate back without
+/// losing visual context.
+///
+/// The wrapped form data is retrievable via `.0`, mirroring `Form<T>`.
+pub(crate) struct FriendlyForm<T>(pub(crate) T);
+
+impl<T, S> axum::extract::FromRequest<S> for FriendlyForm<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::Form::<T>::from_request(req, state).await {
+            Ok(axum::Form(value)) => Ok(Self(value)),
+            Err(rej) => {
+                tracing::warn!(error = %rej, "form deserialization failed");
+                Err(bad_request(
+                    "We couldn't read that form. Please go back and try again.",
+                ))
+            }
+        }
+    }
+}
+
+/// Deserializer that maps both a missing key and an empty string to `None`.
+///
+/// Browsers always submit empty `<input type="number">` fields as
+/// `field=` rather than omitting them, but `serde_urlencoded` only treats
+/// *missing* keys as `None` for `Option<T>`. Without this helper, optional
+/// numeric form fields fail with `cannot parse integer from empty string`.
+///
+/// # Errors
+///
+/// Returns a deserializer error if the value is non-empty but fails to
+/// parse into `T`.
+pub(crate) fn empty_string_as_none<'de, D, T>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let opt: Option<String> = serde::Deserialize::deserialize(de)?;
+    match opt.as_deref() {
+        None | Some("") => Ok(None),
+        Some(s) => s.parse::<T>().map(Some).map_err(serde::de::Error::custom),
+    }
+}

@@ -773,6 +773,10 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(admin::admin_org_create_form).post(admin::admin_org_create_submit),
         )
         .route(
+            "/admin/organizations/bulk-delete",
+            axum::routing::post(admin::admin_orgs_bulk_delete),
+        )
+        .route(
             "/admin/organizations/{id}",
             axum::routing::get(admin::admin_org_detail),
         )
@@ -805,8 +809,16 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(admin::admin_org_invite),
         )
         .route(
+            "/admin/organizations/{id}/status",
+            axum::routing::post(admin::admin_org_status_toggle),
+        )
+        .route(
             "/admin/organizations/{id}/invitations/{iid}/revoke",
             axum::routing::post(admin::admin_org_revoke_invite),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations/{iid}/resend",
+            axum::routing::post(admin::admin_org_resend_invite),
         )
         .route(
             "/admin/organizations/{id}/members/{uid}/rbac/assign",

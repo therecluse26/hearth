@@ -395,3 +395,86 @@ async fn bulk_add_route_is_gone() {
         response.status()
     );
 }
+
+/// Regression: the create-org form must accept an empty `max_members`
+/// field (the browser always posts `max_members=` for an empty
+/// `<input type="number">`). Before the fix, `Option<u32>` with the
+/// default `serde_urlencoded` mapping rejected `""` with
+/// `cannot parse integer from empty string` and replaced the page with a
+/// raw error string, losing the user's input. The fix routes those
+/// fields through `empty_string_as_none`.
+#[tokio::test]
+async fn create_org_accepts_empty_max_members() {
+    let rig = build_rig();
+    let csrf = "csrf-empty-max";
+    let cookie = admin_cookie(&rig, csrf);
+    let body =
+        format!("name=New+Customer&slug=new-customer&description=&max_members=&_csrf={csrf}");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/admin/organizations/new?realm=Acme")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "create-org with empty max_members must redirect to detail, \
+         not return a form-deserialization error"
+    );
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        location.starts_with("/ui/admin/organizations/"),
+        "expected redirect to org detail, got: {location}"
+    );
+}
+
+/// Regression: the edit-org form must also accept clearing
+/// `max_members` (browser posts the empty string). Same root cause /
+/// same fix as `create_org_accepts_empty_max_members`.
+#[tokio::test]
+async fn edit_org_accepts_empty_max_members() {
+    let rig = build_rig();
+    let csrf = "csrf-edit-empty";
+    let cookie = admin_cookie(&rig, csrf);
+    let body = format!("name=Customer+One&description=&status=Active&max_members=&_csrf={csrf}");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/ui/admin/organizations/{}/edit?realm=Acme",
+                    rig.org_id.as_uuid()
+                ))
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "edit-org with empty max_members must redirect to detail, \
+         not return a form-deserialization error"
+    );
+}

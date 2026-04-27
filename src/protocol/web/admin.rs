@@ -35,7 +35,6 @@ use askama::Template;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::Form;
 use base64::Engine as _;
 use serde::Deserialize;
 
@@ -52,6 +51,7 @@ use crate::identity::claims_config::ClaimSource;
 use crate::rbac::RoleScopeKind;
 
 use super::auth::{verify_csrf_form_field, RequireAdmin, TargetRealm};
+use super::handlers_common::FriendlyForm;
 use super::templates::{render, Flash};
 use super::WebState;
 
@@ -284,7 +284,7 @@ pub async fn admin_user_create_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    Form(form): Form<CreateUserForm>,
+    FriendlyForm(form): FriendlyForm<CreateUserForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -986,7 +986,7 @@ pub async fn admin_user_edit_submit(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
-    Form(form): Form<EditUserForm>,
+    FriendlyForm(form): FriendlyForm<EditUserForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -1077,7 +1077,7 @@ pub async fn admin_user_delete(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
-    Form(form): Form<DeleteUserForm>,
+    FriendlyForm(form): FriendlyForm<DeleteUserForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -1383,7 +1383,7 @@ pub async fn admin_realm_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     AxumPath(tid): AxumPath<String>,
-    Form(form): Form<DeleteForm>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -1580,7 +1580,7 @@ pub async fn admin_app_regenerate_secret(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(cid): AxumPath<String>,
-    Form(form): Form<DeleteForm>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -1930,7 +1930,7 @@ pub async fn admin_session_revoke(
     target: TargetRealm,
     htmx: super::templates::IsHtmx,
     AxumPath(sid): AxumPath<String>,
-    Form(form): Form<DeleteForm>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -2013,7 +2013,10 @@ pub struct AuditFilterParams {
     #[serde(default)]
     pub end_date: Option<String>,
     /// Maximum events to show.
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::handlers_common::empty_string_as_none"
+    )]
     pub limit: Option<usize>,
 }
 
@@ -2240,7 +2243,7 @@ pub async fn admin_test_email(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    Form(form): Form<TestEmailForm>,
+    FriendlyForm(form): FriendlyForm<TestEmailForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -2282,6 +2285,15 @@ pub async fn admin_test_email(
 // Organization list
 // ---------------------------------------------------------------------------
 
+/// Query params for `GET /ui/admin/organizations`.
+#[derive(Debug, Deserialize)]
+pub struct OrgListParams {
+    /// Opaque cursor for the next page.
+    pub cursor: Option<String>,
+    /// Search query (matches name or slug, case-insensitive substring).
+    pub q: Option<String>,
+}
+
 /// Template for `GET /ui/admin/organizations`.
 #[derive(Template)]
 #[template(path = "ui/admin/organizations/list.html")]
@@ -2289,6 +2301,7 @@ pub async fn admin_test_email(
 struct OrgListTemplate {
     organizations: Vec<Organization>,
     next_cursor: Option<String>,
+    search_query: String,
     target_realm_name: Option<String>,
     target_realm_id_hex: Option<String>,
     active_tab: &'static str,
@@ -2310,15 +2323,44 @@ pub async fn admin_orgs_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    Query(params): Query<PaginationParams>,
+    Query(params): Query<OrgListParams>,
 ) -> Response {
-    match state
-        .identity
-        .list_organizations(target.id(), params.cursor.as_deref(), 20)
-    {
+    let search_query = params.q.clone().unwrap_or_default();
+    let result = if search_query.len() >= 2 {
+        // No engine-level secondary index on org name/slug yet; scan a
+        // bounded window and filter in-handler. Bound matches the
+        // assignment-flow fan-out at admin.rs §RBAC and is a soft cap —
+        // realms with thousands of orgs will need a dedicated engine
+        // method, tracked as future work.
+        state
+            .identity
+            .list_organizations(target.id(), None, 200)
+            .map(|page| {
+                let needle = search_query.to_ascii_lowercase();
+                let filtered: Vec<Organization> = page
+                    .items
+                    .into_iter()
+                    .filter(|o| {
+                        o.name().to_ascii_lowercase().contains(&needle)
+                            || o.slug().to_ascii_lowercase().contains(&needle)
+                    })
+                    .collect();
+                Page {
+                    items: filtered,
+                    next_cursor: None,
+                }
+            })
+    } else {
+        state
+            .identity
+            .list_organizations(target.id(), params.cursor.as_deref(), 20)
+    };
+
+    match result {
         Ok(page) => render(&OrgListTemplate {
             organizations: page.items,
             next_cursor: page.next_cursor,
+            search_query,
             target_realm_name: Some(target.0.name().to_string()),
             target_realm_id_hex: Some(target.id().as_uuid().to_string()),
             active_tab: "organizations",
@@ -2354,6 +2396,9 @@ struct OrgNewTemplate {
     form_slug: String,
     form_description: String,
     form_max_members: Option<u32>,
+    target_realm_name: Option<String>,
+    target_realm_id_hex: Option<String>,
+    active_tab: &'static str,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2371,6 +2416,7 @@ struct OrgNewTemplate {
 pub async fn admin_org_create_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
 ) -> Response {
     render(&OrgNewTemplate {
         error: None,
@@ -2378,8 +2424,11 @@ pub async fn admin_org_create_form(
         form_slug: String::new(),
         form_description: String::new(),
         form_max_members: None,
+        target_realm_name: Some(target.0.name().to_string()),
+        target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+        active_tab: "organizations",
         chrome: true,
-        active: "organizations",
+        active: "realm-workspace",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
         flash: None,
@@ -2401,7 +2450,10 @@ pub struct CreateOrgForm {
     pub slug: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::handlers_common::empty_string_as_none"
+    )]
     pub max_members: Option<u32>,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
@@ -2412,7 +2464,7 @@ pub async fn admin_org_create_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    Form(form): Form<CreateOrgForm>,
+    FriendlyForm(form): FriendlyForm<CreateOrgForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -2428,6 +2480,8 @@ pub async fn admin_org_create_submit(
         max_members: Some(max_members),
     });
 
+    let realm_name = target.0.name().to_string();
+
     match state.identity.create_organization(
         target.id(),
         &CreateOrganizationRequest {
@@ -2439,7 +2493,12 @@ pub async fn admin_org_create_submit(
     ) {
         Ok(org) => {
             audit_org_event(&state, &session, &target.0, org.id(), "create");
-            Redirect::to(&format!("/ui/admin/organizations/{}", org.id().as_uuid())).into_response()
+            Redirect::to(&format!(
+                "/ui/admin/organizations/{}?realm={}",
+                org.id().as_uuid(),
+                realm_name
+            ))
+            .into_response()
         }
         Err(IdentityError::DuplicateOrgSlug) => render(&OrgNewTemplate {
             error: Some("An organization with that slug already exists.".to_string()),
@@ -2447,8 +2506,11 @@ pub async fn admin_org_create_submit(
             form_slug: form.slug,
             form_description: form.description,
             form_max_members: form.max_members,
+            target_realm_name: Some(realm_name),
+            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            active_tab: "organizations",
             chrome: true,
-            active: "organizations",
+            active: "realm-workspace",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -2467,8 +2529,11 @@ pub async fn admin_org_create_submit(
                 form_slug: form.slug,
                 form_description: form.description,
                 form_max_members: form.max_members,
+                target_realm_name: Some(realm_name),
+                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+                active_tab: "organizations",
                 chrome: true,
-                active: "organizations",
+                active: "realm-workspace",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
@@ -2505,12 +2570,23 @@ struct OrgDetailTemplate {
     /// Org UUID string — shared with embedded partials via `{% include %}`.
     org_id: String,
     members: Vec<MemberWithAccess>,
+    /// Member count (length of `members`) — surfaced separately so the
+    /// header can display "N members" without iterating the list in
+    /// templating logic.
+    member_count: usize,
     invitations: Vec<OrganizationInvitation>,
     max_members: Option<u32>,
     /// All realm roles for the per-member assign form.
     available_roles: Vec<AvailableRole>,
     /// Permission suggestions for the per-member grant form (datalist).
     available_permissions: Vec<String>,
+    /// Active sub-tab name (`overview`, `members`, `invitations`,
+    /// `danger`). Driven by `?tab=` query string. Defaults to
+    /// `overview`. Shareable URLs surface the right tab on first paint.
+    active_subtab: &'static str,
+    target_realm_name: Option<String>,
+    target_realm_id_hex: Option<String>,
+    active_tab: &'static str,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2533,6 +2609,10 @@ pub struct OrgDetailParams {
     /// Flash kind: "success" or "error".
     #[serde(default)]
     pub flash_kind: Option<String>,
+    /// Active sub-tab. One of `overview`, `members`, `invitations`,
+    /// `danger`. Anything else is treated as `overview`.
+    #[serde(default)]
+    pub tab: Option<String>,
 }
 
 /// `GET /ui/admin/organizations/:id`.
@@ -2605,17 +2685,30 @@ pub async fn admin_org_detail(
     });
 
     let max_members = org.config().max_members;
+    let member_count = members.len();
+
+    let active_subtab = match params.tab.as_deref() {
+        Some("members") => "members",
+        Some("invitations") => "invitations",
+        Some("danger") => "danger",
+        _ => "overview",
+    };
 
     render(&OrgDetailTemplate {
         org,
         org_id: org_id_str,
         members,
+        member_count,
         invitations,
         max_members,
         available_roles,
         available_permissions,
+        active_subtab,
+        target_realm_name: Some(target.0.name().to_string()),
+        target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+        active_tab: "organizations",
         chrome: true,
-        active: "organizations",
+        active: "realm-workspace",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
         flash,
@@ -2642,6 +2735,9 @@ struct OrgEditTemplate {
     form_description: String,
     form_status: String,
     form_max_members: Option<u32>,
+    target_realm_name: Option<String>,
+    target_realm_id_hex: Option<String>,
+    active_tab: &'static str,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -2675,8 +2771,11 @@ pub async fn admin_org_edit_form(
             form_max_members: org.config().max_members,
             org,
             error: None,
+            target_realm_name: Some(target.0.name().to_string()),
+            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            active_tab: "organizations",
             chrome: true,
-            active: "organizations",
+            active: "realm-workspace",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
@@ -2704,7 +2803,10 @@ pub struct EditOrgForm {
     pub description: String,
     #[serde(default)]
     pub status: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::handlers_common::empty_string_as_none"
+    )]
     pub max_members: Option<u32>,
     #[serde(rename = "_csrf", default)]
     pub csrf: String,
@@ -2716,7 +2818,7 @@ pub async fn admin_org_edit_submit(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
-    Form(form): Form<EditOrgForm>,
+    FriendlyForm(form): FriendlyForm<EditOrgForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -2743,6 +2845,8 @@ pub async fn admin_org_edit_submit(
         max_members: form.max_members,
     });
 
+    let realm_name = target.0.name().to_string();
+
     match state.identity.update_organization(
         target.id(),
         &org_id,
@@ -2755,7 +2859,12 @@ pub async fn admin_org_edit_submit(
     ) {
         Ok(_) => {
             audit_org_event(&state, &session, &target.0, &org_id, "update");
-            Redirect::to(&format!("/ui/admin/organizations/{}", org_id.as_uuid())).into_response()
+            Redirect::to(&format!(
+                "/ui/admin/organizations/{}?realm={}",
+                org_id.as_uuid(),
+                realm_name
+            ))
+            .into_response()
         }
         Err(IdentityError::OrganizationNotFound) => {
             super::handlers_common::not_found("Organization not found")
@@ -2777,7 +2886,7 @@ pub async fn admin_org_delete(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
-    Form(form): Form<DeleteForm>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -2788,10 +2897,12 @@ pub async fn admin_org_delete(
         Err(_) => return super::handlers_common::not_found("Organization not found"),
     };
 
+    let realm_name = target.0.name().to_string();
+
     match state.identity.delete_organization(target.id(), &org_id) {
         Ok(()) => {
             audit_org_event(&state, &session, &target.0, &org_id, "delete");
-            Redirect::to("/ui/admin/organizations").into_response()
+            Redirect::to(&format!("/ui/admin/organizations?realm={realm_name}")).into_response()
         }
         Err(IdentityError::OrganizationNotFound) => {
             super::handlers_common::not_found("Organization not found")
@@ -2801,6 +2912,62 @@ pub async fn admin_org_delete(
             super::handlers_common::server_error()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bulk-delete organizations
+// ---------------------------------------------------------------------------
+
+/// Form data for `POST /ui/admin/organizations/bulk-delete`.
+///
+/// `ids` is a comma-separated list of organization UUIDs. We use a
+/// single string rather than `Vec<String>` because axum's default form
+/// extractor (`serde_urlencoded`) does not handle repeated keys; the
+/// client builds the list in Alpine before submitting.
+#[derive(Debug, Deserialize)]
+pub struct BulkDeleteOrgsForm {
+    #[serde(default)]
+    pub ids: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/bulk-delete`.
+///
+/// Deletes each selected organization and audits each as its own event.
+/// Mid-batch failures are logged but do not abort the rest — the user
+/// can retry; cascade deletion is idempotent (see
+/// `MEMORY.md: Idempotent delete_realm`).
+pub async fn admin_orgs_bulk_delete(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    FriendlyForm(form): FriendlyForm<BulkDeleteOrgsForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let realm_name = target.0.name().to_string();
+    for raw in form.ids.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(uuid) = raw.parse::<uuid::Uuid>() else {
+            continue;
+        };
+        let org_id = OrganizationId::new(uuid);
+        match state.identity.delete_organization(target.id(), &org_id) {
+            Ok(()) => audit_org_event(&state, &session, &target.0, &org_id, "delete"),
+            Err(IdentityError::OrganizationNotFound) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, org_id = %org_id.as_uuid(), "bulk delete_organization failed");
+            }
+        }
+    }
+
+    Redirect::to(&format!("/ui/admin/organizations?realm={realm_name}")).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2825,7 +2992,7 @@ pub async fn admin_org_add_member(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
-    Form(form): Form<AddMemberForm>,
+    FriendlyForm(form): FriendlyForm<AddMemberForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -2839,7 +3006,7 @@ pub async fn admin_org_add_member(
     let user_id = match form.user_id.trim().parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
         Err(_) => {
-            return org_redirect_flash(&org_id, "Invalid user selection", "error");
+            return org_redirect_flash(&org_id, target.0.name(), "Invalid user selection", "error");
         }
     };
 
@@ -2851,14 +3018,22 @@ pub async fn admin_org_add_member(
     {
         Ok(_) => {
             mirror_org_member_added(&state, &session, target.id(), &org_id, &user_id, role);
-            org_redirect_flash(&org_id, "Member added successfully", "success")
+            org_redirect_flash(
+                &org_id,
+                target.0.name(),
+                "Member added successfully",
+                "success",
+            )
         }
-        Err(IdentityError::AlreadyMember) => {
-            org_redirect_flash(&org_id, "User is already a member", "error")
-        }
+        Err(IdentityError::AlreadyMember) => org_redirect_flash(
+            &org_id,
+            target.0.name(),
+            "User is already a member",
+            "error",
+        ),
         Err(e) => {
             tracing::warn!(error = %e, "add_member failed");
-            org_redirect_flash(&org_id, "Failed to add member", "error")
+            org_redirect_flash(&org_id, target.0.name(), "Failed to add member", "error")
         }
     }
 }
@@ -2989,7 +3164,7 @@ pub async fn admin_org_remove_member(
     target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<DeleteForm>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -3024,7 +3199,7 @@ pub async fn admin_org_remove_member(
             if is_htmx {
                 super::templates::htmx_toast_response("Member removed", "success")
             } else {
-                org_redirect_flash(&org_id, "Member removed", "success")
+                org_redirect_flash(&org_id, target.0.name(), "Member removed", "success")
             }
         }
         Err(e) => {
@@ -3051,7 +3226,7 @@ pub async fn admin_org_remove_member(
                 }
                 super::templates::htmx_toast_response(&msg, "error")
             } else {
-                org_redirect_flash(&org_id, &msg, "error")
+                org_redirect_flash(&org_id, target.0.name(), &msg, "error")
             }
         }
     }
@@ -3143,7 +3318,7 @@ pub async fn admin_org_update_role(
     target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<UpdateRoleForm>,
+    FriendlyForm(form): FriendlyForm<UpdateRoleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -3192,7 +3367,9 @@ pub async fn admin_org_update_role(
                 mirror_org_member_added(&state, &session, target.id(), &org_id, &user_id, new_role);
             }
             if is_htmx {
-                if let Ok(Some(m)) = state.identity.get_membership(target.id(), &org_id, &user_id)
+                if let Ok(Some(m)) = state
+                    .identity
+                    .get_membership(target.id(), &org_id, &user_id)
                 {
                     render_member_row_with_toast(
                         &state,
@@ -3207,14 +3384,16 @@ pub async fn admin_org_update_role(
                     super::templates::htmx_toast_response("Role updated", "success")
                 }
             } else {
-                org_redirect_flash(&org_id, "Role updated", "success")
+                org_redirect_flash(&org_id, target.0.name(), "Role updated", "success")
             }
         }
         Err(e) => {
             tracing::warn!(error = %e, "update_member_role failed");
             let msg = format!("{e}");
             if is_htmx {
-                if let Ok(Some(m)) = state.identity.get_membership(target.id(), &org_id, &user_id)
+                if let Ok(Some(m)) = state
+                    .identity
+                    .get_membership(target.id(), &org_id, &user_id)
                 {
                     return render_member_row_with_toast(
                         &state,
@@ -3228,7 +3407,7 @@ pub async fn admin_org_update_role(
                 }
                 super::templates::htmx_toast_response(&msg, "error")
             } else {
-                org_redirect_flash(&org_id, &msg, "error")
+                org_redirect_flash(&org_id, target.0.name(), &msg, "error")
             }
         }
     }
@@ -3255,7 +3434,7 @@ pub async fn admin_org_invite(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
-    Form(form): Form<InviteForm>,
+    FriendlyForm(form): FriendlyForm<InviteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -3312,11 +3491,16 @@ pub async fn admin_org_invite(
                 }
             }
             let msg = format!("Invitation sent to {}", form.email);
-            org_redirect_flash(&org_id, &msg, "success")
+            org_redirect_flash(&org_id, target.0.name(), &msg, "success")
         }
         Err(e) => {
             tracing::warn!(error = %e, email = %form.email, "create_invitation failed");
-            org_redirect_flash(&org_id, "Failed to create invitation", "error")
+            org_redirect_flash(
+                &org_id,
+                target.0.name(),
+                "Failed to create invitation",
+                "error",
+            )
         }
     }
 }
@@ -3331,7 +3515,7 @@ pub async fn admin_org_revoke_invite(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     AxumPath((oid, iid)): AxumPath<(String, String)>,
-    Form(form): Form<DeleteForm>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -3357,7 +3541,210 @@ pub async fn admin_org_revoke_invite(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/organizations/{}", org_id.as_uuid())).into_response()
+    Redirect::to(&format!(
+        "/ui/admin/organizations/{}?realm={}",
+        org_id.as_uuid(),
+        target.0.name()
+    ))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Toggle organization status (Active <-> Suspended)
+// ---------------------------------------------------------------------------
+
+/// Form data for `POST /ui/admin/organizations/:id/status`.
+#[derive(Debug, Deserialize)]
+pub struct StatusToggleForm {
+    /// Target status — must be `"Active"` or `"Suspended"`.
+    #[serde(default)]
+    pub status: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/organizations/:id/status`.
+///
+/// One-click status toggle exposed in the org detail header so admins
+/// can suspend or resume an organization without opening the edit form.
+pub async fn admin_org_status_toggle(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(oid): AxumPath<String>,
+    FriendlyForm(form): FriendlyForm<StatusToggleForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let new_status = match form.status.as_str() {
+        "Active" => OrganizationStatus::Active,
+        "Suspended" => OrganizationStatus::Suspended,
+        _ => {
+            return org_redirect_flash(
+                &org_id,
+                target.0.name(),
+                "Unknown organization status",
+                "error",
+            )
+        }
+    };
+
+    match state.identity.update_organization(
+        target.id(),
+        &org_id,
+        &UpdateOrganizationRequest {
+            name: None,
+            description: None,
+            status: Some(new_status),
+            config: None,
+        },
+    ) {
+        Ok(_) => {
+            audit_org_event(&state, &session, &target.0, &org_id, "status_change");
+            let label = match new_status {
+                OrganizationStatus::Active => "Organization resumed",
+                OrganizationStatus::Suspended => "Organization suspended",
+            };
+            org_redirect_flash(&org_id, target.0.name(), label, "success")
+        }
+        Err(IdentityError::OrganizationNotFound) => {
+            super::handlers_common::not_found("Organization not found")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "update_organization (status) failed");
+            org_redirect_flash(&org_id, target.0.name(), "Failed to change status", "error")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resend invitation
+// ---------------------------------------------------------------------------
+
+/// `POST /ui/admin/organizations/:id/invitations/:iid/resend`.
+///
+/// Rotates an invitation: revokes the existing record (if pending) and
+/// creates a fresh one for the same email + role, re-emitting the email
+/// with a brand-new accept link. Existing tokens are invalidated — only
+/// the fresh link works. The cleartext token is not stored, so a true
+/// "re-send the same link" is not implementable.
+pub async fn admin_org_resend_invite(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((oid, iid)): AxumPath<(String, String)>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let org_id = match oid.parse::<uuid::Uuid>() {
+        Ok(u) => OrganizationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Organization not found"),
+    };
+
+    let invitation_id = match iid.parse::<uuid::Uuid>() {
+        Ok(u) => InvitationId::new(u),
+        Err(_) => return super::handlers_common::not_found("Invitation not found"),
+    };
+
+    let existing = match state
+        .identity
+        .list_invitations(target.id(), &org_id, None, 200)
+    {
+        Ok(page) => page
+            .items
+            .into_iter()
+            .find(|i| i.id().as_uuid() == invitation_id.as_uuid()),
+        Err(e) => {
+            tracing::warn!(error = %e, "list_invitations failed during resend");
+            return org_redirect_flash(
+                &org_id,
+                target.0.name(),
+                "Failed to load invitation",
+                "error",
+            );
+        }
+    };
+
+    let Some(existing) = existing else {
+        return super::handlers_common::not_found("Invitation not found");
+    };
+
+    let email = existing.email().to_string();
+    let role = existing.role();
+
+    // Revoke first so we don't leave two pending invites for the same
+    // address. If revoke fails (already-revoked, expired) we still try
+    // the re-create — the worst case is two records but the new token
+    // is what the user receives.
+    if let Err(e) = state
+        .identity
+        .revoke_invitation(target.id(), &invitation_id)
+    {
+        tracing::debug!(error = %e, "revoke_invitation during resend (non-fatal)");
+    }
+
+    match state.identity.create_invitation(
+        target.id(),
+        &CreateInvitationRequest {
+            org_id: org_id.clone(),
+            email: email.clone(),
+            role,
+            invited_by: session.user_id.clone(),
+        },
+    ) {
+        Ok((_invitation, token)) => {
+            if let Some(ref email_service) = state.email {
+                let org_name = state
+                    .identity
+                    .get_organization(target.id(), &org_id)
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| "your organization".to_string(), |o| o.name().to_string());
+                let base_url = state
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.onboarding.base_url.clone())
+                    .unwrap_or_else(|| "https://hearth.local".to_string());
+                let accept_url = format!("{base_url}/ui/accept-invitation?token={token}");
+                let realm_branding = state
+                    .identity
+                    .get_realm(target.id())
+                    .ok()
+                    .flatten()
+                    .and_then(|t| t.config().email_branding.clone());
+                if let Err(e) = email_service.send_invitation_email(
+                    &email,
+                    &accept_url,
+                    &org_name,
+                    &session.user_email,
+                    realm_branding.as_ref(),
+                ) {
+                    tracing::warn!(error = %e, "failed to send resend invitation email");
+                }
+            }
+            let msg = format!("Invitation resent to {email}");
+            org_redirect_flash(&org_id, target.0.name(), &msg, "success")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, email = %email, "resend create_invitation failed");
+            org_redirect_flash(
+                &org_id,
+                target.0.name(),
+                "Failed to resend invitation",
+                "error",
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3438,7 +3825,7 @@ pub struct SwitchRealmForm {
 pub async fn admin_switch_realm(
     State(_state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    Form(form): Form<SwitchRealmForm>,
+    FriendlyForm(form): FriendlyForm<SwitchRealmForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -3555,7 +3942,17 @@ const fn nibble_to_hex(n: u8) -> char {
 }
 
 /// Redirects to an org detail page with a flash message in query params.
-fn org_redirect_flash(org_id: &OrganizationId, message: &str, kind: &str) -> Response {
+///
+/// `realm_name` is included so the redirect preserves the realm context
+/// across the post-redirect-get cycle. Without it, drilling into an org
+/// detail page after a member action would silently switch to the
+/// default realm.
+fn org_redirect_flash(
+    org_id: &OrganizationId,
+    realm_name: &str,
+    message: &str,
+    kind: &str,
+) -> Response {
     // Percent-encode the message for safe inclusion in query params.
     let mut encoded = String::with_capacity(message.len());
     for b in message.bytes() {
@@ -3570,7 +3967,7 @@ fn org_redirect_flash(org_id: &OrganizationId, message: &str, kind: &str) -> Res
         }
     }
     Redirect::to(&format!(
-        "/ui/admin/organizations/{}?flash={encoded}&flash_kind={kind}",
+        "/ui/admin/organizations/{}?realm={realm_name}&flash={encoded}&flash_kind={kind}",
         org_id.as_uuid()
     ))
     .into_response()
@@ -3755,7 +4152,7 @@ pub async fn admin_config_editor(
 pub async fn admin_config_editor_preview(
     State(state): State<Arc<WebState>>,
     RequireAdmin(_session): RequireAdmin,
-    Form(form): Form<ConfigEditorForm>,
+    FriendlyForm(form): FriendlyForm<ConfigEditorForm>,
 ) -> Response {
     let new_yaml = form.yaml;
 
@@ -3788,7 +4185,7 @@ pub async fn admin_config_editor_preview(
 pub async fn admin_config_editor_apply(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    Form(form): Form<ConfigEditorForm>,
+    FriendlyForm(form): FriendlyForm<ConfigEditorForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -4357,7 +4754,7 @@ pub async fn admin_user_consent_revoke(
     RequireAdmin(session): RequireAdmin,
     target_realm: TargetRealm,
     AxumPath((user_id_str, client_id_str)): AxumPath<(String, String)>,
-    Form(form): Form<CsrfOnlyForm>,
+    FriendlyForm(form): FriendlyForm<CsrfOnlyForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -4506,7 +4903,7 @@ pub async fn admin_realm_admin_grant(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     AxumPath(rid): AxumPath<String>,
-    Form(form): Form<RealmAdminGrantForm>,
+    FriendlyForm(form): FriendlyForm<RealmAdminGrantForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -4555,7 +4952,7 @@ pub async fn admin_realm_admin_revoke(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     AxumPath((rid, uid)): AxumPath<(String, String)>,
-    Form(form): Form<DeleteForm>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -5313,7 +5710,7 @@ pub async fn admin_user_assign_role(
     target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<AssignRoleForm>,
+    FriendlyForm(form): FriendlyForm<AssignRoleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -5388,7 +5785,7 @@ pub async fn admin_user_unassign_role(
     target: TargetRealm,
     AxumPath((user_id, assignment_id)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<UnassignRoleForm>,
+    FriendlyForm(form): FriendlyForm<UnassignRoleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -5441,7 +5838,7 @@ pub async fn admin_user_grant_permission(
     target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<GrantPermissionForm>,
+    FriendlyForm(form): FriendlyForm<GrantPermissionForm>,
 ) -> Response {
     use crate::core::Timestamp;
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -5535,7 +5932,7 @@ pub async fn admin_user_revoke_permission(
     target: TargetRealm,
     AxumPath(user_id): AxumPath<String>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<RevokePermissionForm>,
+    FriendlyForm(form): FriendlyForm<RevokePermissionForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -5636,11 +6033,7 @@ fn build_member_with_access(
         .into_iter()
         .filter(|a| a.scope == org_scope)
         .filter_map(|a| {
-            let role = state
-                .rbac
-                .get_role(realm_id, &a.role_id)
-                .ok()
-                .flatten();
+            let role = state.rbac.get_role(realm_id, &a.role_id).ok().flatten();
             // Skip roles defined as Realm-only scope — they don't belong on
             // the org page even if an assignment exists at org scope.
             if let Some(ref r) = role {
@@ -5648,10 +6041,7 @@ fn build_member_with_access(
                     return None;
                 }
             }
-            let role_name = role.map_or_else(
-                || a.role_id.as_uuid().to_string(),
-                |r| r.name,
-            );
+            let role_name = role.map_or_else(|| a.role_id.as_uuid().to_string(), |r| r.name);
             Some(MemberRbacRole {
                 assignment_id: a.id.as_uuid().to_string(),
                 role_id: a.role_id.as_uuid().to_string(),
@@ -5760,7 +6150,7 @@ pub async fn admin_org_member_assign_role(
     target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<MemberAssignRoleForm>,
+    FriendlyForm(form): FriendlyForm<MemberAssignRoleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -5799,8 +6189,9 @@ pub async fn admin_org_member_assign_role(
                 &form.role_id,
             );
             if is_htmx_request(&headers) {
-                if let Ok(Some(m)) =
-                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                if let Ok(Some(m)) = state
+                    .identity
+                    .get_membership(target.id(), &org_id, &user_id)
                 {
                     render_member_row_with_toast(
                         &state,
@@ -5815,7 +6206,7 @@ pub async fn admin_org_member_assign_role(
                     super::templates::htmx_toast_response("Role assigned", "success")
                 }
             } else {
-                org_redirect_flash(&org_id, "Role assigned", "success")
+                org_redirect_flash(&org_id, target.0.name(), "Role assigned", "success")
             }
         }
         Err(e) => {
@@ -5832,7 +6223,7 @@ pub async fn admin_org_member_unassign_role(
     target: TargetRealm,
     AxumPath((oid, uid, aid)): AxumPath<(String, String, String)>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<MemberUnassignRoleForm>,
+    FriendlyForm(form): FriendlyForm<MemberUnassignRoleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -5852,8 +6243,9 @@ pub async fn admin_org_member_unassign_role(
     match state.rbac.unassign_role(target.id(), &assignment_id) {
         Ok(()) => {
             if is_htmx_request(&headers) {
-                if let Ok(Some(m)) =
-                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                if let Ok(Some(m)) = state
+                    .identity
+                    .get_membership(target.id(), &org_id, &user_id)
                 {
                     render_member_row_with_toast(
                         &state,
@@ -5868,7 +6260,7 @@ pub async fn admin_org_member_unassign_role(
                     super::templates::htmx_toast_response("Role removed", "success")
                 }
             } else {
-                org_redirect_flash(&org_id, "Role removed", "success")
+                org_redirect_flash(&org_id, target.0.name(), "Role removed", "success")
             }
         }
         Err(e) => {
@@ -5885,7 +6277,7 @@ pub async fn admin_org_member_grant_perm(
     target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<MemberGrantPermForm>,
+    FriendlyForm(form): FriendlyForm<MemberGrantPermForm>,
 ) -> Response {
     use crate::core::Timestamp;
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -5923,8 +6315,9 @@ pub async fn admin_org_member_grant_perm(
     match state.rbac.grant_user_permission(target.id(), &grant) {
         Ok(_) => {
             if is_htmx_request(&headers) {
-                if let Ok(Some(m)) =
-                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                if let Ok(Some(m)) = state
+                    .identity
+                    .get_membership(target.id(), &org_id, &user_id)
                 {
                     render_member_row_with_toast(
                         &state,
@@ -5939,7 +6332,7 @@ pub async fn admin_org_member_grant_perm(
                     super::templates::htmx_toast_response("Permission granted", "success")
                 }
             } else {
-                org_redirect_flash(&org_id, "Permission granted", "success")
+                org_redirect_flash(&org_id, target.0.name(), "Permission granted", "success")
             }
         }
         Err(e) => {
@@ -5956,7 +6349,7 @@ pub async fn admin_org_member_revoke_perm(
     target: TargetRealm,
     AxumPath((oid, uid)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<MemberRevokePermForm>,
+    FriendlyForm(form): FriendlyForm<MemberRevokePermForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
@@ -5988,8 +6381,9 @@ pub async fn admin_org_member_revoke_perm(
     {
         Ok(()) => {
             if is_htmx_request(&headers) {
-                if let Ok(Some(m)) =
-                    state.identity.get_membership(target.id(), &org_id, &user_id)
+                if let Ok(Some(m)) = state
+                    .identity
+                    .get_membership(target.id(), &org_id, &user_id)
                 {
                     render_member_row_with_toast(
                         &state,
@@ -6004,7 +6398,7 @@ pub async fn admin_org_member_revoke_perm(
                     super::templates::htmx_toast_response("Permission revoked", "success")
                 }
             } else {
-                org_redirect_flash(&org_id, "Permission revoked", "success")
+                org_redirect_flash(&org_id, target.0.name(), "Permission revoked", "success")
             }
         }
         Err(e) => {

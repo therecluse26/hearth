@@ -10,8 +10,8 @@
         <div class="text-xs text-ht-content-muted">{{ m.view.user_email }}</div>
       </a>
     </td>
-    <td class="px-3 py-3">
-      {# RBAC role chips + permission chips + add buttons #}
+    <td class="px-3 py-3 align-top">
+      {# RBAC role chips + add-role button #}
       <div class="flex flex-wrap items-center gap-1.5">
         {% for ra in m.rbac_roles %}
         <span class="inline-flex items-center gap-1 rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">
@@ -32,6 +32,41 @@
         </span>
         {% endfor %}
 
+        {% if !available_roles.is_empty() %}
+        <button @click="addRoleOpen = !addRoleOpen; addPermOpen = false" type="button"
+                class="inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs text-ht-content-muted transition-colors hover:bg-teal-bg hover:text-teal-fg">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor" class="h-3 w-3"><path d="M6.75 3.25a.75.75 0 0 0-1.5 0v2h-2a.75.75 0 0 0 0 1.5h2v2a.75.75 0 0 0 1.5 0v-2h2a.75.75 0 0 0 0-1.5h-2v-2Z"/></svg>
+          Role
+        </button>
+        {% endif %}
+      </div>
+
+      {# Assign role inline form #}
+      {% if !available_roles.is_empty() %}
+      <div x-show="addRoleOpen" x-cloak class="mt-2">
+        <form method="post"
+              action="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
+              hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
+              hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
+              hx-swap="outerHTML"
+              @submit="addRoleOpen = false"
+              class="flex flex-wrap items-center gap-2">
+          {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+          <select name="role_id"
+                  class="rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1 text-xs text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+            {% for role in available_roles %}
+            <option value="{{ role.id }}">{{ role.name }}{% if !role.description.is_empty() %} — {{ role.description }}{% endif %} ({{ role.scope_kind }})</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn-ember rounded px-2 py-1 text-xs font-semibold text-graphite-950">Assign</button>
+          <button type="button" @click="addRoleOpen = false" class="text-xs text-ht-content-muted hover:text-ht-content-secondary">Cancel</button>
+        </form>
+      </div>
+      {% endif %}
+    </td>
+    <td class="px-3 py-3 align-top">
+      {# Permission chips + add-permission button #}
+      <div class="flex flex-wrap items-center gap-1.5">
         {% for p in m.extra_perms %}
         <span class="inline-flex items-center gap-1 rounded-full border border-white/[0.10] bg-ht-surface-base px-2 py-0.5 font-mono text-xs text-ht-content-secondary">
           {{ p.permission }}
@@ -53,43 +88,12 @@
         </span>
         {% endfor %}
 
-        {% if !available_roles.is_empty() %}
-        <button @click="addRoleOpen = !addRoleOpen; addPermOpen = false" type="button"
-                class="inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs text-ht-content-muted transition-colors hover:bg-teal-bg hover:text-teal-fg">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor" class="h-3 w-3"><path d="M6.75 3.25a.75.75 0 0 0-1.5 0v2h-2a.75.75 0 0 0 0 1.5h2v2a.75.75 0 0 0 1.5 0v-2h2a.75.75 0 0 0 0-1.5h-2v-2Z"/></svg>
-          Role
-        </button>
-        {% endif %}
-
         <button @click="addPermOpen = !addPermOpen; addRoleOpen = false" type="button"
                 class="inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs text-ht-content-muted transition-colors hover:bg-steel-bg hover:text-ht-content-primary">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor" class="h-3 w-3"><path d="M6.75 3.25a.75.75 0 0 0-1.5 0v2h-2a.75.75 0 0 0 0 1.5h2v2a.75.75 0 0 0 1.5 0v-2h2a.75.75 0 0 0 0-1.5h-2v-2Z"/></svg>
           Perm
         </button>
       </div>
-
-      {# Assign role inline form #}
-      {% if !available_roles.is_empty() %}
-      <div x-show="addRoleOpen" x-cloak class="mt-2">
-        <form method="post"
-              action="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
-              hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
-              hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
-              hx-swap="outerHTML"
-              @submit="addRoleOpen = false"
-              class="flex flex-wrap items-center gap-2">
-          {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-          <select name="role_id"
-                  class="rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1 text-xs text-ht-content-primary focus:outline-none">
-            {% for role in available_roles %}
-            <option value="{{ role.id }}">{{ role.name }}{% if !role.description.is_empty() %} — {{ role.description }}{% endif %} ({{ role.scope_kind }})</option>
-            {% endfor %}
-          </select>
-          <button type="submit" class="btn-ember rounded px-2 py-1 text-xs font-semibold text-graphite-950">Assign</button>
-          <button type="button" @click="addRoleOpen = false" class="text-xs text-ht-content-muted hover:text-ht-content-secondary">Cancel</button>
-        </form>
-      </div>
-      {% endif %}
 
       {# Grant permission inline form #}
       <div x-show="addPermOpen" x-cloak class="mt-2">
@@ -102,17 +106,13 @@
               class="flex flex-wrap items-center gap-2">
           {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
           <input type="hidden" name="scope" value="org:{{ org_id }}">
-          <input type="text"
-                 name="permission"
-                 list="perm-list-{{ m.view.membership.user_id().as_uuid() }}"
-                 placeholder="e.g. billing.read"
-                 required
-                 class="rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1 font-mono text-xs text-ht-content-primary placeholder-ht-content-muted focus:outline-none">
-          <datalist id="perm-list-{{ m.view.membership.user_id().as_uuid() }}">
+          <select name="permission"
+                  required
+                  class="rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1 font-mono text-xs text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
             {% for p in available_permissions %}
-            <option value="{{ p }}"></option>
+            <option value="{{ p }}">{{ p }}</option>
             {% endfor %}
-          </datalist>
+          </select>
           <button type="submit" class="btn-ember rounded px-2 py-1 text-xs font-semibold text-graphite-950">Grant</button>
           <button type="button" @click="addPermOpen = false" class="text-xs text-ht-content-muted hover:text-ht-content-secondary">Cancel</button>
         </form>
@@ -120,7 +120,21 @@
     </td>
     <td class="px-3 py-3 text-right">
       <div class="flex items-center justify-end gap-2">
-        <span class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-muted">{{ m.view.membership.role()|fmt("{:?}") }}</span>
+        {# Inline org-membership role selector. Auto-submits via HTMX
+           on change; the response is the refreshed `<tbody>` partial. #}
+        <form hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/role"
+              hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
+              hx-swap="outerHTML"
+              hx-trigger="change"
+              class="inline-block">
+          {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+          <select name="role"
+                  class="rounded-sm border border-divider bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary focus:border-ht-content-brand focus:outline-none">
+            <option value="Member" {% if m.view.membership.role()|fmt("{:?}") == "Member" %}selected{% endif %}>Member</option>
+            <option value="Admin" {% if m.view.membership.role()|fmt("{:?}") == "Admin" %}selected{% endif %}>Admin</option>
+            <option value="Owner" {% if m.view.membership.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
+          </select>
+        </form>
         <a href="/ui/admin/rbac/debug?user_id={{ m.view.membership.user_id().as_uuid() }}&org_id={{ org_id }}"
            class="text-xs text-ht-content-muted hover:text-ht-content-secondary"
            title="Open permission resolver pre-filled for this member">Check</a>
