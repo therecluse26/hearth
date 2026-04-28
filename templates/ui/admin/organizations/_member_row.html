@@ -1,8 +1,10 @@
 {# Single member block. Included by detail.html in the member loop (parent scope),
    and returned standalone as an HTMX partial from role/perm mutation handlers.
-   Expects: org_id (String), m (MemberWithAccess), available_roles, available_permissions, csrf. #}
+   Expects: org_id (String), m (MemberWithAccess), available_roles, csrf.
+   Per-member grantable permissions live on `m.available_permissions` (already
+   excludes direct grants and role-inherited permissions for this member). #}
 <tbody id="member-{{ m.view.membership.user_id().as_uuid() }}"
-       x-data="{ addRoleOpen: false, addPermOpen: false }">
+       x-data="{ addRoleOpen: false, addPermOpen: false, expandedRole: null }">
   <tr class="border-b border-divider-faint">
     <td class="px-3 py-3">
       <a href="/ui/admin/users/{{ m.view.membership.user_id().as_uuid() }}" class="group">
@@ -11,11 +13,17 @@
       </a>
     </td>
     <td class="px-3 py-3 align-top">
-      {# RBAC role chips + add-role button #}
+      {# RBAC role chips + add-role button. Click a role name to toggle its
+         inherited-permissions preview below. #}
       <div class="flex flex-wrap items-center gap-1.5">
         {% for ra in m.rbac_roles %}
         <span class="inline-flex items-center gap-1 rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">
-          {{ ra.role_name }}
+          <button type="button"
+                  @click="expandedRole = (expandedRole === '{{ ra.assignment_id }}' ? null : '{{ ra.assignment_id }}')"
+                  class="cursor-pointer hover:underline focus:outline-none"
+                  :title="expandedRole === '{{ ra.assignment_id }}' ? 'Hide permissions' : 'Show {{ ra.permissions.len() }} permission{% if ra.permissions.len() != 1 %}s{% endif %}'">
+            {{ ra.role_name }}
+          </button>
           <form method="post"
                 action="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/{{ ra.assignment_id }}/unassign"
                 hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/{{ ra.assignment_id }}/unassign"
@@ -40,6 +48,22 @@
         </button>
         {% endif %}
       </div>
+
+      {# Inherited-permissions preview for whichever role chip was clicked. #}
+      {% for ra in m.rbac_roles %}
+      <div x-show="expandedRole === '{{ ra.assignment_id }}'" x-cloak class="mt-2">
+        {% if ra.permissions.is_empty() %}
+        <p class="text-xs italic text-ht-content-muted">This role grants no permissions.</p>
+        {% else %}
+        <p class="mb-1 text-xs text-ht-content-muted">Inherited from <span class="font-medium text-ht-content-secondary">{{ ra.role_name }}</span>:</p>
+        <div class="flex flex-wrap gap-1">
+          {% for perm in ra.permissions %}
+          <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 font-mono text-xs text-violet-fg">{{ perm }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
 
       {# Assign role inline form #}
       {% if !available_roles.is_empty() %}
@@ -106,14 +130,18 @@
               class="flex flex-wrap items-center gap-2">
           {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
           <input type="hidden" name="scope" value="org:{{ org_id }}">
+          {% if m.available_permissions.is_empty() %}
+          <span class="text-xs italic text-ht-content-muted">All org permissions are already granted to this member (directly or via roles).</span>
+          {% else %}
           <select name="permission"
                   required
                   class="rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1 font-mono text-xs text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
-            {% for p in available_permissions %}
+            {% for p in m.available_permissions %}
             <option value="{{ p }}">{{ p }}</option>
             {% endfor %}
           </select>
           <button type="submit" class="btn-ember rounded px-2 py-1 text-xs font-semibold text-graphite-950">Grant</button>
+          {% endif %}
           <button type="button" @click="addPermOpen = false" class="text-xs text-ht-content-muted hover:text-ht-content-secondary">Cancel</button>
         </form>
       </div>

@@ -429,12 +429,29 @@ pub struct OrgMembershipRow {
 pub struct UserRoleAssignmentRow {
     /// `AssignmentId` UUID string — used in the unassign POST URL.
     pub assignment_id: String,
+    /// `RoleId` UUID string — used as a stable key in the template.
+    pub role_id: String,
     /// Human-readable role name.
     pub role_name: String,
     /// Display label for the scope ("Realm-wide" or "Org: {name}").
     pub scope_label: String,
     /// Wire value sent back in the unassign form ("realm" | "org:{uuid}").
     pub scope_raw: String,
+    /// Permissions granted by this role (sorted). Empty if the role lookup
+    /// failed or the role grants no permissions.
+    pub permissions: Vec<String>,
+}
+
+/// Permissions inherited by a user, grouped by the role assignment that
+/// granted them. Rendered in the Permissions tab to attribute each
+/// inherited permission to its source role + scope.
+pub struct RoleInheritedGroup {
+    /// Human-readable role name.
+    pub role_name: String,
+    /// Display label for the scope ("Realm-wide" or "Org: {name}").
+    pub scope_label: String,
+    /// Permissions granted by this assignment (sorted).
+    pub permissions: Vec<String>,
 }
 
 /// A realm role available for assignment in the assign-role form.
@@ -447,6 +464,8 @@ pub struct AvailableRole {
     pub description: String,
     /// Where this role may be assigned: "Realm", "Organization", or "Any".
     pub scope_kind: String,
+    /// Direct permissions granted by this role (sorted).
+    pub permissions: Vec<String>,
 }
 
 /// An organization available for scope selection in the assign forms.
@@ -465,6 +484,9 @@ pub struct MemberRbacRole {
     pub role_id: String,
     /// Human-readable role name.
     pub role_name: String,
+    /// Permissions granted by this role (sorted, deduplicated). Empty if the
+    /// role lookup failed or the role grants no permissions.
+    pub permissions: Vec<String>,
 }
 
 /// A single org-scoped direct permission held by a member (embedded in `MemberWithAccess`).
@@ -483,6 +505,10 @@ pub struct MemberWithAccess {
     pub rbac_roles: Vec<MemberRbacRole>,
     /// Direct permissions granted to this member within this org.
     pub extra_perms: Vec<MemberPermGrant>,
+    /// Permission strings still grantable to this member at this org scope:
+    /// the union of org-applicable permissions minus any already granted
+    /// directly or inherited via this member's org-scoped role assignments.
+    pub available_permissions: Vec<String>,
 }
 
 /// A directly-granted permission row for the user detail page Extra Permissions tab.
@@ -522,10 +548,15 @@ struct UserDetailTemplate {
     updated_at_display: String,
     /// Directly-granted permissions with scope display info.
     extra_permissions: Vec<UserPermissionGrantRow>,
-    /// Known permission strings across all realm roles (for the datalist).
+    /// Per-role groups of inherited permissions, used to attribute each
+    /// inherited permission to its source role + scope in the Permissions tab.
+    role_inherited_groups: Vec<RoleInheritedGroup>,
+    /// Known permission strings not already inherited via roles (for the datalist).
     available_permissions: Vec<String>,
     /// Fully resolved effective permission names for this user.
     effective_permissions: Vec<String>,
+    /// JSON object mapping role UUID → sorted permission strings, for Alpine.js.
+    role_perms_json: String,
     /// User attributes as sorted `(key, value)` pairs.
     attributes: Vec<(String, String)>,
     // Chrome fields.
@@ -550,6 +581,8 @@ struct UserRolesTabTemplate {
     role_assignments: Vec<UserRoleAssignmentRow>,
     available_roles: Vec<AvailableRole>,
     available_orgs: Vec<AvailableOrg>,
+    /// JSON object mapping role UUID → sorted permission strings, for Alpine.js in-browser lookup.
+    role_perms_json: String,
     csrf: Option<String>,
 }
 
@@ -559,6 +592,9 @@ struct UserRolesTabTemplate {
 struct UserPermissionsTabTemplate {
     user_id: String,
     extra_permissions: Vec<UserPermissionGrantRow>,
+    /// Per-role groups of inherited permissions for attribution display.
+    role_inherited_groups: Vec<RoleInheritedGroup>,
+    /// Known permission strings not already inherited via roles (for the datalist).
     available_permissions: Vec<String>,
     available_orgs: Vec<AvailableOrg>,
     csrf: Option<String>,
@@ -677,6 +713,7 @@ pub async fn admin_user_detail(
 
     // Role assignments with display metadata.
     let role_assignments = build_role_assignment_rows(&state, target.id(), &uid);
+    let role_inherited_groups = build_role_inherited_groups(&role_assignments);
 
     // All roles in this realm (for the assign-role form dropdown).
     let available_roles: Vec<AvailableRole> = state
@@ -685,13 +722,30 @@ pub async fn admin_user_detail(
         .map(|p| p.items)
         .unwrap_or_default()
         .into_iter()
-        .map(|r| AvailableRole {
-            id: r.id.as_uuid().to_string(),
-            description: r.description.unwrap_or_default(),
-            scope_kind: format!("{:?}", r.scope_kind),
-            name: r.name,
+        .map(|r| {
+            let mut perms: Vec<String> = r
+                .permissions
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            perms.sort_unstable();
+            AvailableRole {
+                id: r.id.as_uuid().to_string(),
+                description: r.description.unwrap_or_default(),
+                scope_kind: format!("{:?}", r.scope_kind),
+                name: r.name,
+                permissions: perms,
+            }
         })
         .collect();
+
+    // Build role_id → [permissions] JSON map for Alpine.js in-browser lookup.
+    let role_perms_map: std::collections::HashMap<&str, &[String]> = available_roles
+        .iter()
+        .map(|r| (r.id.as_str(), r.permissions.as_slice()))
+        .collect();
+    let role_perms_json =
+        serde_json::to_string(&role_perms_map).unwrap_or_else(|_| "{}".to_string());
 
     // All orgs in this realm (for the scope picker).
     let available_orgs = build_available_orgs(&state, target.id());
@@ -699,15 +753,34 @@ pub async fn admin_user_detail(
     // Directly-granted permissions with scope display info.
     let extra_permissions = build_permission_grant_rows(&state, target.id(), &uid);
 
-    // Known permission strings across all roles (autocomplete datalist).
-    let available_permissions = collect_realm_permissions(&state, target.id());
-
     // Fully resolved effective permissions (union of roles + direct grants).
     let effective_permissions: Vec<String> = state
         .rbac
         .resolve_permissions(&uid, target.id(), None, None)
         .map(|r| r.permissions.into_iter().map(|p| p.into_string()).collect())
         .unwrap_or_default();
+
+    // Permissions the user inherits via roles (effective minus direct grants).
+    let direct_grant_set: std::collections::HashSet<&str> = extra_permissions
+        .iter()
+        .map(|p| p.permission.as_str())
+        .collect();
+    let mut role_inherited_permissions: Vec<String> = effective_permissions
+        .iter()
+        .filter(|p| !direct_grant_set.contains(p.as_str()))
+        .cloned()
+        .collect();
+    role_inherited_permissions.sort_unstable();
+    let role_inherited_set: std::collections::HashSet<&str> = role_inherited_permissions
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    // Known permission strings not already covered by roles (datalist autocomplete).
+    let available_permissions: Vec<String> = collect_realm_permissions(&state, target.id())
+        .into_iter()
+        .filter(|p| !role_inherited_set.contains(p.as_str()))
+        .collect();
 
     // User attributes as sorted (key, value) pairs.
     let attributes: Vec<(String, String)> = user
@@ -731,8 +804,10 @@ pub async fn admin_user_detail(
         created_at_display,
         updated_at_display,
         extra_permissions,
+        role_inherited_groups,
         available_permissions,
         effective_permissions,
+        role_perms_json,
         attributes,
         chrome: true,
         active: "users",
@@ -2578,8 +2653,6 @@ struct OrgDetailTemplate {
     max_members: Option<u32>,
     /// All realm roles for the per-member assign form.
     available_roles: Vec<AvailableRole>,
-    /// Permission suggestions for the per-member grant form (datalist).
-    available_permissions: Vec<String>,
     /// Active sub-tab name (`overview`, `members`, `invitations`,
     /// `danger`). Driven by `?tab=` query string. Defaults to
     /// `overview`. Shareable URLs surface the right tab on first paint.
@@ -2644,7 +2717,6 @@ pub async fn admin_org_detail(
         .unwrap_or_default();
 
     let available_roles = build_org_available_roles(&state, target.id());
-    let available_permissions = collect_org_permissions(&state, target.id());
     let org_id_str = org_id.as_uuid().to_string();
 
     // Resolve user details and RBAC access for each membership
@@ -2702,7 +2774,6 @@ pub async fn admin_org_detail(
         invitations,
         max_members,
         available_roles,
-        available_permissions,
         active_subtab,
         target_realm_name: Some(target.0.name().to_string()),
         target_realm_id_hex: Some(target.id().as_uuid().to_string()),
@@ -3073,8 +3144,6 @@ struct MemberRowTemplate {
     m: MemberWithAccess,
     /// All realm roles for the assign-role inline form.
     available_roles: Vec<AvailableRole>,
-    /// Permission suggestions for the grant-permission inline form (datalist).
-    available_permissions: Vec<String>,
     csrf: Option<String>,
 }
 
@@ -3269,12 +3338,10 @@ fn render_member_row_with_toast(
     };
     let m_access = build_member_with_access(state, realm, org_id, view);
     let available_roles = build_org_available_roles(state, realm);
-    let available_permissions = collect_org_permissions(state, realm);
     let tmpl = MemberRowTemplate {
         org_id: org_id.as_uuid().to_string(),
         m: m_access,
         available_roles,
-        available_permissions,
         csrf: session.csrf.clone(),
     };
     let mut response = render(&tmpl);
@@ -5472,10 +5539,18 @@ fn build_role_assignment_rows(
         .unwrap_or_default();
     let mut rows = Vec::with_capacity(assignments.len());
     for a in assignments {
-        let role_name = match state.rbac.get_role(realm_id, &a.role_id) {
-            Ok(Some(r)) => r.name,
-            _ => a.role_id.as_uuid().to_string(),
+        let (role_name, mut permissions) = match state.rbac.get_role(realm_id, &a.role_id) {
+            Ok(Some(r)) => {
+                let perms: Vec<String> = r
+                    .permissions
+                    .iter()
+                    .map(|p| p.as_str().to_string())
+                    .collect();
+                (r.name, perms)
+            }
+            _ => (a.role_id.as_uuid().to_string(), Vec::new()),
         };
+        permissions.sort_unstable();
         let (scope_label, scope_raw) = match &a.scope {
             crate::rbac::Scope::Realm => ("Realm-wide".to_string(), "realm".to_string()),
             crate::rbac::Scope::Org { org_id } => {
@@ -5493,9 +5568,11 @@ fn build_role_assignment_rows(
         };
         rows.push(UserRoleAssignmentRow {
             assignment_id: a.id.as_uuid().to_string(),
+            role_id: a.role_id.as_uuid().to_string(),
             role_name,
             scope_label,
             scope_raw,
+            permissions,
         });
     }
     rows.sort_by(|a, b| {
@@ -5504,6 +5581,20 @@ fn build_role_assignment_rows(
             .then(a.scope_label.cmp(&b.scope_label))
     });
     rows
+}
+
+/// Builds the per-role inheritance groups shown in the Permissions tab.
+/// Skips assignments whose role grants no permissions, so the UI is not
+/// cluttered with empty groups.
+fn build_role_inherited_groups(rows: &[UserRoleAssignmentRow]) -> Vec<RoleInheritedGroup> {
+    rows.iter()
+        .filter(|r| !r.permissions.is_empty())
+        .map(|r| RoleInheritedGroup {
+            role_name: r.role_name.clone(),
+            scope_label: r.scope_label.clone(),
+            permissions: r.permissions.clone(),
+        })
+        .collect()
 }
 
 /// Builds permission grant display rows for the user detail Extra Permissions tab.
@@ -5666,19 +5757,35 @@ fn render_roles_tab(
         .map(|p| p.items)
         .unwrap_or_default()
         .into_iter()
-        .map(|r| AvailableRole {
-            id: r.id.as_uuid().to_string(),
-            description: r.description.unwrap_or_default(),
-            scope_kind: format!("{:?}", r.scope_kind),
-            name: r.name,
+        .map(|r| {
+            let mut perms: Vec<String> = r
+                .permissions
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            perms.sort_unstable();
+            AvailableRole {
+                id: r.id.as_uuid().to_string(),
+                description: r.description.unwrap_or_default(),
+                scope_kind: format!("{:?}", r.scope_kind),
+                name: r.name,
+                permissions: perms,
+            }
         })
         .collect();
+    let role_perms_map: std::collections::HashMap<&str, &[String]> = available_roles
+        .iter()
+        .map(|r| (r.id.as_str(), r.permissions.as_slice()))
+        .collect();
+    let role_perms_json =
+        serde_json::to_string(&role_perms_map).unwrap_or_else(|_| "{}".to_string());
     let available_orgs = build_available_orgs(state, realm_id);
     render(&UserRolesTabTemplate {
         user_id: user_id_str,
         role_assignments,
         available_roles,
         available_orgs,
+        role_perms_json,
         csrf: session.csrf.clone(),
     })
 }
@@ -5692,11 +5799,35 @@ fn render_permissions_tab(
 ) -> Response {
     let user_id_str = user_id.as_uuid().to_string();
     let extra_permissions = build_permission_grant_rows(state, realm_id, user_id);
-    let available_permissions = collect_realm_permissions(state, realm_id);
+    let role_assignments = build_role_assignment_rows(state, realm_id, user_id);
+    let role_inherited_groups = build_role_inherited_groups(&role_assignments);
+    let effective_permissions: Vec<String> = state
+        .rbac
+        .resolve_permissions(user_id, realm_id, None, None)
+        .map(|r| r.permissions.into_iter().map(|p| p.into_string()).collect())
+        .unwrap_or_default();
+    let direct_grant_set: std::collections::HashSet<&str> = extra_permissions
+        .iter()
+        .map(|p| p.permission.as_str())
+        .collect();
+    let mut role_inherited_permissions: Vec<String> = effective_permissions
+        .into_iter()
+        .filter(|p| !direct_grant_set.contains(p.as_str()))
+        .collect();
+    role_inherited_permissions.sort_unstable();
+    let role_inherited_set: std::collections::HashSet<&str> = role_inherited_permissions
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let available_permissions: Vec<String> = collect_realm_permissions(state, realm_id)
+        .into_iter()
+        .filter(|p| !role_inherited_set.contains(p.as_str()))
+        .collect();
     let available_orgs = build_available_orgs(state, realm_id);
     render(&UserPermissionsTabTemplate {
         user_id: user_id_str,
         extra_permissions,
+        role_inherited_groups,
         available_permissions,
         available_orgs,
         csrf: session.csrf.clone(),
@@ -6026,7 +6157,7 @@ fn build_member_with_access(
     let org_scope = crate::rbac::Scope::Org {
         org_id: org_id.clone(),
     };
-    let rbac_roles = state
+    let rbac_roles: Vec<MemberRbacRole> = state
         .rbac
         .list_user_assignments(realm_id, uid)
         .unwrap_or_default()
@@ -6041,16 +6172,29 @@ fn build_member_with_access(
                     return None;
                 }
             }
-            let role_name = role.map_or_else(|| a.role_id.as_uuid().to_string(), |r| r.name);
+            let (role_name, mut permissions) = match role {
+                Some(r) => {
+                    let perms: Vec<String> = r
+                        .permissions
+                        .iter()
+                        .map(|p| p.as_str().to_string())
+                        .collect();
+                    (r.name, perms)
+                }
+                None => (a.role_id.as_uuid().to_string(), Vec::new()),
+            };
+            permissions.sort_unstable();
+            permissions.dedup();
             Some(MemberRbacRole {
                 assignment_id: a.id.as_uuid().to_string(),
                 role_id: a.role_id.as_uuid().to_string(),
                 role_name,
+                permissions,
             })
         })
         .collect();
     let scope_raw = format!("org:{}", org_id.as_uuid());
-    let extra_perms = state
+    let extra_perms: Vec<MemberPermGrant> = state
         .rbac
         .list_user_permissions(realm_id, uid)
         .unwrap_or_default()
@@ -6061,10 +6205,24 @@ fn build_member_with_access(
             scope_raw: scope_raw.clone(),
         })
         .collect();
+    // Per-member grantable permissions: org-applicable perms minus any
+    // already granted directly or inherited via this member's org roles.
+    let mut already_held: std::collections::HashSet<String> =
+        extra_perms.iter().map(|p| p.permission.clone()).collect();
+    for r in &rbac_roles {
+        for p in &r.permissions {
+            already_held.insert(p.clone());
+        }
+    }
+    let available_permissions: Vec<String> = collect_org_permissions(state, realm_id)
+        .into_iter()
+        .filter(|p| !already_held.contains(p))
+        .collect();
     MemberWithAccess {
         view,
         rbac_roles,
         extra_perms,
+        available_permissions,
     }
 }
 
@@ -6076,11 +6234,20 @@ fn build_realm_available_roles(state: &Arc<WebState>, realm_id: &RealmId) -> Vec
         .map(|p| p.items)
         .unwrap_or_default()
         .into_iter()
-        .map(|r| AvailableRole {
-            id: r.id.as_uuid().to_string(),
-            name: r.name,
-            description: r.description.unwrap_or_default(),
-            scope_kind: format!("{:?}", r.scope_kind),
+        .map(|r| {
+            let mut perms: Vec<String> = r
+                .permissions
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            perms.sort_unstable();
+            AvailableRole {
+                id: r.id.as_uuid().to_string(),
+                name: r.name,
+                description: r.description.unwrap_or_default(),
+                scope_kind: format!("{:?}", r.scope_kind),
+                permissions: perms,
+            }
         })
         .collect()
 }
@@ -6100,11 +6267,20 @@ fn build_org_available_roles(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<A
                 crate::rbac::RoleScopeKind::Organization | crate::rbac::RoleScopeKind::Any
             )
         })
-        .map(|r| AvailableRole {
-            id: r.id.as_uuid().to_string(),
-            name: r.name,
-            description: r.description.unwrap_or_default(),
-            scope_kind: format!("{:?}", r.scope_kind),
+        .map(|r| {
+            let mut perms: Vec<String> = r
+                .permissions
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            perms.sort_unstable();
+            AvailableRole {
+                id: r.id.as_uuid().to_string(),
+                name: r.name,
+                description: r.description.unwrap_or_default(),
+                scope_kind: format!("{:?}", r.scope_kind),
+                permissions: perms,
+            }
         })
         .collect()
 }

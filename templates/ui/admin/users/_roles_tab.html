@@ -1,4 +1,17 @@
-<div x-data="{ assignOpen: false, scopeType: 'realm', selectedOrg: '' }">
+<script>
+  function rolesTabData() {
+    return {
+      assignOpen: false,
+      scopeType: 'realm',
+      selectedOrg: '',
+      selectedRoleId: {% if let Some(first) = available_roles.first() %}'{{ first.id }}'{% else %}''{% endif %},
+      rolePerms: {{ role_perms_json|safe }},
+      get inheritedPerms() { return this.rolePerms[this.selectedRoleId] || []; }
+    };
+  }
+</script>
+
+<div x-data="rolesTabData()">
 
   {# Current assignments #}
   {% if role_assignments.is_empty() %}
@@ -6,23 +19,45 @@
   {% else %}
     <ul class="divide-y divide-divider-faint">
       {% for row in role_assignments %}
-      <li class="flex items-center justify-between gap-3 py-2.5">
-        <div class="flex min-w-0 flex-1 items-center gap-2.5">
-          <span class="inline-flex items-center rounded-full bg-teal-bg px-2.5 py-0.5 text-xs font-medium text-teal-fg">{{ row.role_name }}</span>
-          <span class="inline-flex items-center rounded-sm bg-ht-surface-base px-2 py-0.5 font-mono text-xs text-ht-content-muted">{{ row.scope_label }}</span>
+      <li class="py-2.5" x-data="{ open: false }">
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex min-w-0 flex-1 items-center gap-2.5">
+            <span class="inline-flex items-center rounded-full bg-teal-bg px-2.5 py-0.5 text-xs font-medium text-teal-fg">{{ row.role_name }}</span>
+            <span class="inline-flex items-center rounded-sm bg-ht-surface-base px-2 py-0.5 font-mono text-xs text-ht-content-muted">{{ row.scope_label }}</span>
+            {% if row.permissions.is_empty() %}
+            <span class="text-xs italic text-ht-content-muted">no permissions</span>
+            {% else %}
+            <button type="button"
+                    @click="open = !open"
+                    class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-ht-content-muted transition-colors hover:bg-ht-surface-base hover:text-ht-content-secondary"
+                    :title="open ? 'Hide permissions' : 'Show permissions'">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor" class="h-3 w-3 transition-transform" :class="{ 'rotate-90': open }">
+                <path d="M4.5 2.5 8 6l-3.5 3.5"  stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              </svg>
+              <span>{{ row.permissions.len() }} permission{% if row.permissions.len() != 1 %}s{% endif %}</span>
+            </button>
+            {% endif %}
+          </div>
+          <form method="post"
+                action="/ui/admin/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
+                hx-post="/ui/admin/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
+                hx-target="#roles-tab-content"
+                hx-swap="innerHTML">
+            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+            <button type="submit"
+                    class="flex-shrink-0 rounded px-2 py-1 text-xs text-ht-content-muted transition-colors hover:bg-danger/[0.10] hover:text-danger-fg"
+                    title="Remove role assignment">
+              Remove
+            </button>
+          </form>
         </div>
-        <form method="post"
-              action="/ui/admin/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
-              hx-post="/ui/admin/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
-              hx-target="#roles-tab-content"
-              hx-swap="innerHTML">
-          {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-          <button type="submit"
-                  class="flex-shrink-0 rounded px-2 py-1 text-xs text-ht-content-muted transition-colors hover:bg-danger/[0.10] hover:text-danger-fg"
-                  title="Remove role assignment">
-            Remove
-          </button>
-        </form>
+        {% if !row.permissions.is_empty() %}
+        <div x-show="open" x-cloak class="mt-2 flex flex-wrap gap-1.5 pl-1">
+          {% for perm in row.permissions %}
+          <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 font-mono text-xs text-violet-fg">{{ perm }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -57,11 +92,25 @@
             <div>
               <label class="mb-1.5 block font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Role</label>
               <select name="role_id"
+                      x-model="selectedRoleId"
                       class="w-full rounded-sm border border-white/[0.10] bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-teal-fg/50 focus:outline-none focus:ring-1 focus:ring-teal-fg/30">
                 {% for role in available_roles %}
                 <option value="{{ role.id }}">{{ role.name }}{% if !role.description.is_empty() %} — {{ role.description }}{% endif %} ({{ role.scope_kind }})</option>
                 {% endfor %}
               </select>
+
+              {# Permissions preview for the selected role #}
+              <div x-show="inheritedPerms.length > 0" x-cloak class="mt-2">
+                <p class="mb-1 text-xs text-ht-content-muted">Permissions included:</p>
+                <div class="flex flex-wrap gap-1">
+                  <template x-for="perm in inheritedPerms" :key="perm">
+                    <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 font-mono text-xs text-violet-fg" x-text="perm"></span>
+                  </template>
+                </div>
+              </div>
+              <div x-show="inheritedPerms.length === 0" x-cloak class="mt-2">
+                <p class="text-xs italic text-ht-content-muted">This role grants no permissions.</p>
+              </div>
             </div>
 
             <div>
