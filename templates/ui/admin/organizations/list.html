@@ -67,7 +67,7 @@
     {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
     <input type="hidden" name="ids" :value="idsCsv">
     <div class="flex items-center justify-between gap-3 border-b border-divider-subtle px-4 py-2">
-      <span class="font-mono text-xs text-ht-content-muted" x-text="selected === 0 ? '{{ organizations.len() }} loaded' : selected + ' selected'"></span>
+      <span class="font-mono text-xs text-ht-content-muted" x-text="selected === 0 ? '{{ organizations.len() }} organization{% if organizations.len() != 1 %}s{% endif %}' : selected + ' selected'"></span>
       <div class="flex items-center gap-2" x-show="selected > 0" x-cloak>
         <button type="button"
                 @click="

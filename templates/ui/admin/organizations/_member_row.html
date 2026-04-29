@@ -149,7 +149,9 @@
     <td class="px-3 py-3 text-right">
       <div class="flex items-center justify-end gap-2">
         {# Inline org-membership role selector. Auto-submits via HTMX
-           on change; the response is the refreshed `<tbody>` partial. #}
+           on change; the response is the refreshed `<tbody>` partial.
+           The selector is disabled when this row is the only Owner —
+           letting it submit would only earn a `LastOwner` engine error. #}
         <form hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/role"
               hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
               hx-swap="outerHTML"
@@ -157,7 +159,8 @@
               class="inline-block">
           {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
           <select name="role"
-                  class="rounded-sm border border-divider bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary focus:border-ht-content-brand focus:outline-none">
+                  {% if m.is_last_owner %}disabled title="Promote another member to Owner before changing this role."{% endif %}
+                  class="rounded-sm border border-divider bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary focus:border-ht-content-brand focus:outline-none disabled:cursor-not-allowed disabled:opacity-50">
             <option value="Member" {% if m.view.membership.role()|fmt("{:?}") == "Member" %}selected{% endif %}>Member</option>
             <option value="Admin" {% if m.view.membership.role()|fmt("{:?}") == "Admin" %}selected{% endif %}>Admin</option>
             <option value="Owner" {% if m.view.membership.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
@@ -166,6 +169,12 @@
         <a href="/ui/admin/rbac/debug?user_id={{ m.view.membership.user_id().as_uuid() }}&org_id={{ org_id }}"
            class="text-xs text-ht-content-muted hover:text-ht-content-secondary"
            title="Open permission resolver pre-filled for this member">Check</a>
+        {% if m.is_last_owner %}
+        <button type="button"
+                disabled
+                title="Promote another member to Owner before removing this one."
+                class="rounded border border-divider bg-ht-surface-elevated px-2 py-1 text-xs font-medium text-ht-content-muted opacity-50 cursor-not-allowed">Remove</button>
+        {% else %}
         <form hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/remove"
               hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
               hx-swap="outerHTML"
@@ -178,6 +187,7 @@
                   class="rounded px-2 py-1 text-xs font-medium"
                   x-text="confirm ? 'Confirm' : 'Remove'"></button>
         </form>
+        {% endif %}
       </div>
     </td>
   </tr>

@@ -501,6 +501,11 @@ pub struct MemberPermGrant {
 pub struct MemberWithAccess {
     /// Core member identity and membership info.
     pub view: MemberView,
+    /// True when this member is the *only* Owner of the org. The remove
+    /// button and role-downgrade dropdown are rendered disabled in the UI
+    /// to keep admins from learning the engine's `LastOwner` guard the
+    /// hard way.
+    pub is_last_owner: bool,
     /// RBAC roles assigned to this member within this org.
     pub rbac_roles: Vec<MemberRbacRole>,
     /// Direct permissions granted to this member within this org.
@@ -2568,6 +2573,37 @@ pub async fn admin_org_create_submit(
     ) {
         Ok(org) => {
             audit_org_event(&state, &session, &target.0, org.id(), "create");
+            // Auto-add the creator as Owner when they live in the target realm.
+            // Cross-realm system admins (creator in `hearth#admin`, org in a
+            // tenant realm) are not realm users — skip silently and rely on
+            // the cross-realm "Initial owner email" affordance to seed the
+            // first owner via invitation.
+            if session.realm_id == *target.id() {
+                match state.identity.add_member(
+                    target.id(),
+                    org.id(),
+                    &session.user_id,
+                    OrganizationRole::Owner,
+                ) {
+                    Ok(_) => {
+                        mirror_org_member_added(
+                            &state,
+                            &session,
+                            target.id(),
+                            org.id(),
+                            &session.user_id,
+                            OrganizationRole::Owner,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            org_id = %org.id().as_uuid(),
+                            "auto-add creator as owner failed; org was created without an owner"
+                        );
+                    }
+                }
+            }
             Redirect::to(&format!(
                 "/ui/admin/organizations/{}?realm={}",
                 org.id().as_uuid(),
@@ -2695,6 +2731,7 @@ pub async fn admin_org_detail(
     target: TargetRealm,
     AxumPath(oid): AxumPath<String>,
     Query(params): Query<OrgDetailParams>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let org_id = match oid.parse::<uuid::Uuid>() {
         Ok(u) => OrganizationId::new(u),
@@ -2719,10 +2756,18 @@ pub async fn admin_org_detail(
     let available_roles = build_org_available_roles(&state, target.id());
     let org_id_str = org_id.as_uuid().to_string();
 
+    // Pre-count owners once so each member row can decide whether it's the
+    // last-owner — saving N redundant scans.
+    let owner_count = memberships
+        .iter()
+        .filter(|m| m.role() == OrganizationRole::Owner)
+        .count();
+
     // Resolve user details and RBAC access for each membership
     let members: Vec<MemberWithAccess> = memberships
         .into_iter()
         .map(|m| {
+            let is_last_owner = m.role() == OrganizationRole::Owner && owner_count == 1;
             let (name, email) = state
                 .identity
                 .get_user(target.id(), m.user_id())
@@ -2737,7 +2782,7 @@ pub async fn admin_org_detail(
                 user_name: name,
                 user_email: email,
             };
-            build_member_with_access(&state, target.id(), &org_id, view)
+            build_member_with_access(&state, target.id(), &org_id, view, is_last_owner)
         })
         .collect();
 
@@ -2747,13 +2792,19 @@ pub async fn admin_org_detail(
         .map(|p| p.items)
         .unwrap_or_default();
 
-    let flash = params.flash.map(|msg| {
-        let kind = params.flash_kind.as_deref().unwrap_or("success");
-        if kind == "error" {
-            Flash::error(msg)
-        } else {
-            Flash::success(msg)
-        }
+    // Cookie-based flash: read once, render, then clear via Set-Cookie
+    // on the response. Falls back to legacy `?flash=…` query params for
+    // a single release so any in-flight redirects already in transit
+    // when this binary boots still display correctly.
+    let flash = super::templates::take_flash_cookie(&headers).or_else(|| {
+        params.flash.clone().map(|msg| {
+            let kind = params.flash_kind.as_deref().unwrap_or("success");
+            if kind == "error" {
+                Flash::error(msg)
+            } else {
+                Flash::success(msg)
+            }
+        })
     });
 
     let max_members = org.config().max_members;
@@ -2766,7 +2817,8 @@ pub async fn admin_org_detail(
         _ => "overview",
     };
 
-    render(&OrgDetailTemplate {
+    let had_flash = flash.is_some();
+    let mut response = render(&OrgDetailTemplate {
         org,
         org_id: org_id_str,
         members,
@@ -2789,7 +2841,17 @@ pub async fn admin_org_detail(
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
-    })
+    });
+    if had_flash {
+        if let Ok(value) =
+            axum::http::HeaderValue::from_str(&super::templates::clear_flash_cookie())
+        {
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, value);
+        }
+    }
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -3331,12 +3393,14 @@ fn render_member_row_with_toast(
             || (m.user_id().as_uuid().to_string(), String::from("(unknown)")),
             |u| (u.display_name().to_string(), u.email().to_string()),
         );
+    let owners_left = count_org_owners(state, realm, org_id);
+    let is_last_owner = m.role() == OrganizationRole::Owner && owners_left == 1;
     let view = MemberView {
         membership: m,
         user_name: name,
         user_email: email,
     };
-    let m_access = build_member_with_access(state, realm, org_id, view);
+    let m_access = build_member_with_access(state, realm, org_id, view, is_last_owner);
     let available_roles = build_org_available_roles(state, realm);
     let tmpl = MemberRowTemplate {
         org_id: org_id.as_uuid().to_string(),
@@ -3999,16 +4063,8 @@ pub async fn admin_api_config_reload(
 // Organization helpers
 // ---------------------------------------------------------------------------
 
-/// Converts a nibble (0..15) to its ASCII hex character.
-const fn nibble_to_hex(n: u8) -> char {
-    if n < 10 {
-        (b'0' + n) as char
-    } else {
-        (b'A' + n - 10) as char
-    }
-}
-
-/// Redirects to an org detail page with a flash message in query params.
+/// Redirects to an org detail page with a flash message stored in a
+/// short-lived `hearth_ui_flash` cookie.
 ///
 /// `realm_name` is included so the redirect preserves the realm context
 /// across the post-redirect-get cycle. Without it, drilling into an org
@@ -4020,24 +4076,14 @@ fn org_redirect_flash(
     message: &str,
     kind: &str,
 ) -> Response {
-    // Percent-encode the message for safe inclusion in query params.
-    let mut encoded = String::with_capacity(message.len());
-    for b in message.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
-            encoded.push(b as char);
-        } else if b == b' ' {
-            encoded.push('+');
-        } else {
-            encoded.push('%');
-            encoded.push(nibble_to_hex(b >> 4));
-            encoded.push(nibble_to_hex(b & 0x0F));
-        }
-    }
-    Redirect::to(&format!(
-        "/ui/admin/organizations/{}?realm={realm_name}&flash={encoded}&flash_kind={kind}",
+    // Cookie-based flash: redirect URL stays clean (no `?flash=…`)
+    // so refreshes / bookmarks / back-button traversals don't replay the
+    // banner, and there is no reflected-text surface in the URL.
+    let url = format!(
+        "/ui/admin/organizations/{}?realm={realm_name}",
         org_id.as_uuid()
-    ))
-    .into_response()
+    );
+    super::templates::redirect_with_flash(&url, message, kind)
 }
 
 /// Parses an organization role string from a form field.
@@ -6152,6 +6198,7 @@ fn build_member_with_access(
     realm_id: &RealmId,
     org_id: &OrganizationId,
     view: MemberView,
+    is_last_owner: bool,
 ) -> MemberWithAccess {
     let uid = view.membership.user_id();
     let org_scope = crate::rbac::Scope::Org {
@@ -6220,10 +6267,30 @@ fn build_member_with_access(
         .collect();
     MemberWithAccess {
         view,
+        is_last_owner,
         rbac_roles,
         extra_perms,
         available_permissions,
     }
+}
+
+/// Counts how many members of `org_id` hold the `Owner` role.
+///
+/// Used by every code path that rebuilds a member row so the UI can
+/// disable destructive controls on the only owner. Cheap: a single
+/// `list_members` scan capped at 1000 entries (orgs are not expected to
+/// hold thousands of owners specifically; we'd revisit if proven wrong).
+fn count_org_owners(state: &Arc<WebState>, realm_id: &RealmId, org_id: &OrganizationId) -> usize {
+    state
+        .identity
+        .list_members(realm_id, org_id, None, 1000)
+        .map(|p| {
+            p.items
+                .into_iter()
+                .filter(|m| m.role() == OrganizationRole::Owner)
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 /// Loads all realm roles as `AvailableRole` display structs.

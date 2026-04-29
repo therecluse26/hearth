@@ -19,7 +19,8 @@
 {% endif %}
 
 <div class="mb-8">
-  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Welcome{% match user_email %}{% when Some with (email) %}, {{ email }}{% when None %}{% endmatch %}</h1>
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Welcome, {{ greeting_name }}</h1>
+  {% match user_email %}{% when Some with (email) %}<p class="mt-0.5 text-xs text-ht-content-muted">{{ email }}</p>{% when None %}{% endmatch %}
   <p class="mt-1 text-sm text-ht-content-muted">
     Hearth admin console. Manage your account below or use the admin surface if you have the <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 text-xs">hearth#admin</code> role.
   </p>

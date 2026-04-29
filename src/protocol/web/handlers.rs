@@ -288,6 +288,10 @@ struct DashboardTemplate {
     realm_count: usize,
     app_count: usize,
     org_count: usize,
+    /// Friendly greeting name — first non-empty of display name, given
+    /// name, or local part of the email. Surfaced in the "Welcome, X"
+    /// heading so admins are not greeted by a raw email address.
+    greeting_name: String,
 }
 
 /// Invalid / expired / malformed verification link page.
@@ -1437,6 +1441,8 @@ pub async fn dashboard(
         (0, 0, 0, 0)
     };
 
+    let greeting_name = greeting_name_for(&session);
+
     render(&DashboardTemplate {
         chrome: true,
         active: "dashboard",
@@ -1454,7 +1460,26 @@ pub async fn dashboard(
         realm_count,
         app_count,
         org_count,
+        greeting_name,
     })
+}
+
+/// Picks the friendliest available name for the dashboard greeting:
+/// a non-empty display name, otherwise the local part of the email.
+/// Falls back to the literal email address when the local part is also
+/// empty (which validation should prevent, but we are defensive).
+fn greeting_name_for(session: &super::auth::UiSession) -> String {
+    let display = session.user_display_name.trim();
+    if !display.is_empty() && display != session.user_email {
+        return display.to_string();
+    }
+    session
+        .user_email
+        .split_once('@')
+        .map(|(local, _)| local)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&session.user_email)
+        .to_string()
 }
 
 /// Returns `true` iff the signed-in user has the `hearth.admin` permission.

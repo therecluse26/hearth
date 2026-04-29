@@ -157,7 +157,18 @@
     {% include "ui/admin/organizations/_member_row.html" %}
     {% endfor %}
     {% if members.is_empty() %}
-    <tbody><tr><td colspan="4" class="px-3 py-6 text-center text-sm text-ht-content-muted">No members yet.</td></tr></tbody>
+    <tbody>
+      <tr>
+        <td colspan="4" class="px-3 py-8 text-center">
+          <p class="text-sm text-ht-content-secondary">No members yet.</p>
+          <p class="mt-1 text-xs text-ht-content-muted">
+            Use the search above to add an existing user, or
+            <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}?tab=invitations{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+               class="text-ht-content-brand hover:underline">invite by email</a>.
+          </p>
+        </td>
+      </tr>
+    </tbody>
     {% endif %}
   </table>
 </div>
@@ -283,8 +294,15 @@
 {# Danger zone — delete is gated by typing the org slug exactly. #}
 <div class="rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false, confirmText: '' }">
   <h2 class="text-base font-semibold text-danger-fg">Danger zone</h2>
-  <p class="mt-1 text-sm text-ht-content-secondary">Deleting this organization removes ALL its members and invitations permanently.</p>
-  <button @click="showDialog = true; confirmText = ''" type="button"
+  <p class="mt-1 text-sm text-ht-content-secondary">
+    Deleting this organization permanently removes
+    <strong class="text-ht-content-primary">{{ member_count }} member{% if member_count != 1 %}s{% endif %}</strong>,
+    <strong class="text-ht-content-primary">{{ invitations.len() }} invitation{% if invitations.len() != 1 %}s{% endif %}</strong>,
+    and all RBAC role assignments scoped to this org. The slug
+    <code class="rounded-sm bg-ht-surface-base px-1 font-mono text-ht-content-primary">{{ org.slug() }}</code>
+    becomes available for re-registration immediately.
+  </p>
+  <button @click="showDialog = true; confirmText = ''; $nextTick(() => $refs.slugInput.focus())" type="button"
           class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
     Delete organization
   </button>
@@ -292,34 +310,42 @@
   <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
     <div class="w-full max-w-md rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
       <h3 class="text-lg font-semibold text-ht-content-primary">Delete organization?</h3>
-      <p class="mt-2 text-sm text-ht-content-secondary">This will permanently delete <strong class="text-ht-content-primary">{{ org.name() }}</strong> and ALL its members and invitations. This action cannot be undone.</p>
+      <p class="mt-2 text-sm text-ht-content-secondary">
+        This will permanently delete <strong class="text-ht-content-primary">{{ org.name() }}</strong>,
+        its <strong class="text-ht-content-primary">{{ member_count }} member{% if member_count != 1 %}s{% endif %}</strong>,
+        and <strong class="text-ht-content-primary">{{ invitations.len() }} invitation{% if invitations.len() != 1 %}s{% endif %}</strong>.
+        This action cannot be undone.
+      </p>
       <label class="mt-4 block text-xs font-medium text-ht-content-secondary">
         Type <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-ht-content-primary">{{ org.slug() }}</code> to confirm:
       </label>
-      <input type="text"
-             x-model="confirmText"
-             autocomplete="off"
-             class="mt-2 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-danger focus:outline-none focus:shadow-focus">
-      <div class="mt-6 flex justify-end gap-3">
-        <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-          Cancel
-        </button>
-        <form method="post"
-              action="/ui/admin/organizations/{{ org.id().as_uuid() }}/delete{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}">
-          {% match csrf %}
-            {% when Some with (token) %}
-              <input type="hidden" name="_csrf" value="{{ token }}">
-            {% when None %}
-          {% endmatch %}
+      <form method="post"
+            action="/ui/admin/organizations/{{ org.id().as_uuid() }}/delete{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+            @keydown.enter.prevent="if (confirmText === '{{ org.slug() }}') $el.submit()">
+        {% match csrf %}
+          {% when Some with (token) %}
+            <input type="hidden" name="_csrf" value="{{ token }}">
+          {% when None %}
+        {% endmatch %}
+        <input type="text"
+               x-ref="slugInput"
+               x-model="confirmText"
+               autocomplete="off"
+               aria-label="Confirm by typing the slug"
+               class="mt-2 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-danger focus:outline-none focus:shadow-focus">
+        <div class="mt-6 flex justify-end gap-3">
+          <button @click="showDialog = false" type="button"
+                  class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+            Cancel
+          </button>
           <button type="submit"
                   :disabled="confirmText !== '{{ org.slug() }}'"
                   :class="confirmText === '{{ org.slug() }}' ? 'btn-danger opacity-100' : 'btn-danger opacity-40 cursor-not-allowed'"
                   class="rounded px-4 py-2 text-sm font-semibold transition-opacity">
             Delete
           </button>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   </div>
 </div>
