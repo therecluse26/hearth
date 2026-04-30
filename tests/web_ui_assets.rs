@@ -18,7 +18,10 @@ use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{
     CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
 };
-use hearth::protocol::web::{self, assert_app_css_sane, CookieSecret, WebState};
+use hearth::protocol::web::{
+    self, assert_app_css_sane, assert_bytes_sane, etag_for_bytes, CookieSecret, WebState,
+    APP_CSS_FALLBACK, APP_CSS_MIN_BYTES, APP_CSS_SENTINEL,
+};
 use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig};
 use tower::ServiceExt;
@@ -161,6 +164,65 @@ async fn theme_css_route_always_emits_root_block() {
         body.contains("--ht-surface-base"),
         "theme.css must define --ht-surface-base — customer overrides anchor here"
     );
+}
+
+/// `WebState::with_app_css` replaces the bytes served at `/ui/static/app.css`
+/// without recompiling the binary. This is the contract that lets operators
+/// rebuild Tailwind, restart the server, and pick up the new theme — the
+/// reload mechanism the user surfaced as broken on 2026-04-29.
+#[tokio::test]
+async fn with_app_css_overrides_embedded_bytes() {
+    // Build a sentinel-passing payload that's distinguishable from the
+    // embedded fallback. We need at least APP_CSS_MIN_BYTES of content
+    // and a substring matching APP_CSS_SENTINEL.
+    let marker = b"/* RUNTIME_LOAD_MARKER */";
+    let mut runtime_bytes = vec![b' '; APP_CSS_MIN_BYTES];
+    runtime_bytes.extend_from_slice(marker);
+    runtime_bytes.extend_from_slice(APP_CSS_SENTINEL);
+    runtime_bytes.extend_from_slice(b"{display:none}");
+    assert!(assert_bytes_sane(&runtime_bytes).is_ok());
+
+    let state = minimal_web_state().with_app_css(runtime_bytes.clone());
+
+    // The ETag must reflect the runtime bytes, not the embedded fallback.
+    assert_eq!(state.app_css_etag, etag_for_bytes(&runtime_bytes));
+    assert_ne!(
+        state.app_css_etag,
+        etag_for_bytes(APP_CSS_FALLBACK),
+        "runtime ETag must differ from embedded fallback ETag"
+    );
+
+    // The route must hand back the runtime payload, not the embedded one.
+    let app = web::router(state);
+    let req = Request::builder()
+        .uri("/ui/static/app.css")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_str(resp).await;
+    assert!(
+        body.contains("RUNTIME_LOAD_MARKER"),
+        "served bytes must come from with_app_css, not include_bytes!"
+    );
+}
+
+/// Without `with_app_css`, the embedded fallback is served. Pins the
+/// single-binary deploy story.
+#[tokio::test]
+async fn embedded_fallback_is_served_when_with_app_css_unset() {
+    let state = minimal_web_state();
+    assert_eq!(state.app_css_etag, etag_for_bytes(APP_CSS_FALLBACK));
+
+    let app = web::router(state);
+    let req = Request::builder()
+        .uri("/ui/static/app.css")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_str(resp).await;
+    assert!(body.contains(".bg-ht-surface-raised"));
 }
 
 /// `/favicon.ico` and `/ui/static/favicon.svg` both serve the SVG mark.

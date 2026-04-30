@@ -92,6 +92,12 @@ struct UserListTemplate {
     // is explicitly cross-workspace system-realm scope.
     target_realm_name: Option<String>,
     target_realm_id_hex: Option<String>,
+    /// URL query string appended to per-user links so the user-detail
+    /// handler resolves the same realm context as the list page.
+    /// Example values: `"?realm=internal-tools"` for tenant lists,
+    /// `"?admin_target=system"` for the admin-users surface, or empty
+    /// when no override is needed.
+    target_query: String,
     active_tab: &'static str,
     // Chrome fields.
     chrome: bool,
@@ -136,6 +142,7 @@ pub async fn admin_users_list(
             search_query,
             target_realm_name: Some(target.0.name().to_string()),
             target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            target_query: format!("?realm={}", target.0.name()),
             active_tab: "users",
             chrome: true,
             active: "realm-workspace",
@@ -190,6 +197,12 @@ pub async fn admin_admin_users_list(
             search_query,
             target_realm_name: None,
             target_realm_id_hex: None,
+            // System realm sentinel — `TargetRealm` resolves this to
+            // the system realm only on `/ui/admin/*` routes (gated by
+            // `RequireAdmin`). Without it, clicking a row would 404
+            // because `?realm=system` is rejected by the standard
+            // resolver and the default falls back to a tenant realm.
+            target_query: "?admin_target=system".to_string(),
             active_tab: "",
             chrome: true,
             active: "admin-users",
@@ -223,6 +236,14 @@ struct UserNewTemplate {
     form_display_name: String,
     form_first_name: String,
     form_last_name: String,
+    /// Query string the form must round-trip so the POST handler and
+    /// Cancel link land in the realm the operator was working in. The
+    /// 2026-04-29 audit caught the legacy form dropping the `?realm=`
+    /// param on Cancel — clicking Cancel from a tenant-realm Users page
+    /// would dump the operator into `/ui/admin/users` with no realm
+    /// context. Format: `"?realm=<name>"`, `"?admin_target=system"`,
+    /// or empty.
+    target_query: String,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -241,25 +262,49 @@ struct UserNewTemplate {
 pub async fn admin_user_create_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    raw_query: axum::extract::RawQuery,
 ) -> Response {
+    let target_query = realm_query_string(raw_query.0.as_deref());
     render(&UserNewTemplate {
         error: None,
         form_email: String::new(),
         form_display_name: String::new(),
         form_first_name: String::new(),
         form_last_name: String::new(),
+        target_query,
         chrome: true,
         active: "users",
         user_email: Some(session.user_email.clone()),
         is_admin: true,
         flash: None,
         csrf: session.csrf.clone(),
-        narrow: true,
+        narrow: false,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
     })
+}
+
+/// Extracts `?realm=<name>` or `?admin_target=system` from a raw query
+/// string and reformats it as a single round-trippable token suitable
+/// for appending to form actions and link hrefs. Returns the empty
+/// string when neither key is present (caller renders unscoped URLs).
+fn realm_query_string(raw: Option<&str>) -> String {
+    let Some(q) = raw else {
+        return String::new();
+    };
+    for part in q.split('&') {
+        if let Some(name) = part.strip_prefix("realm=") {
+            if !name.is_empty() {
+                return format!("?realm={name}");
+            }
+        }
+        if part == "admin_target=system" {
+            return "?admin_target=system".to_string();
+        }
+    }
+    String::new()
 }
 
 /// `application/x-www-form-urlencoded` body for creating a user.
@@ -297,6 +342,15 @@ pub async fn admin_user_create_submit(
         last_name: form.last_name.clone(),
     };
 
+    // Round-trip the realm context so the re-rendered form on error
+    // (and the post-success redirect) keeps the operator inside the
+    // realm they were creating into.
+    let target_query = if *target.id().as_uuid() == uuid::Uuid::nil() {
+        "?admin_target=system".to_string()
+    } else {
+        format!("?realm={}", target.0.name())
+    };
+
     match state.identity.create_user(target.id(), &req) {
         Ok(user) => {
             // Set the initial password.
@@ -319,7 +373,12 @@ pub async fn admin_user_create_submit(
 
             // Audit.
             audit_user_event(&state, &session, &target.0, user.id(), "create");
-            Redirect::to(&format!("/ui/admin/users/{}", user.id().as_uuid())).into_response()
+            Redirect::to(&format!(
+                "/ui/admin/users/{}{}",
+                user.id().as_uuid(),
+                target_query
+            ))
+            .into_response()
         }
         Err(IdentityError::DuplicateEmail) => render(&UserNewTemplate {
             error: Some("A user with that email already exists.".to_string()),
@@ -327,13 +386,14 @@ pub async fn admin_user_create_submit(
             form_display_name: form.display_name.clone(),
             form_first_name: form.first_name.clone(),
             form_last_name: form.last_name.clone(),
+            target_query: target_query.clone(),
             chrome: true,
             active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
             csrf: session.csrf.clone(),
-            narrow: true,
+            narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
@@ -345,13 +405,14 @@ pub async fn admin_user_create_submit(
             form_display_name: form.display_name.clone(),
             form_first_name: form.first_name.clone(),
             form_last_name: form.last_name.clone(),
+            target_query: target_query.clone(),
             chrome: true,
             active: "users",
             user_email: Some(session.user_email.clone()),
             is_admin: true,
             flash: None,
             csrf: session.csrf.clone(),
-            narrow: true,
+            narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
@@ -365,13 +426,14 @@ pub async fn admin_user_create_submit(
                 form_display_name: form.display_name.clone(),
                 form_first_name: form.first_name.clone(),
                 form_last_name: form.last_name.clone(),
+                target_query,
                 chrome: true,
                 active: "users",
                 user_email: Some(session.user_email.clone()),
                 is_admin: true,
                 flash: None,
                 csrf: session.csrf.clone(),
-                narrow: true,
+                narrow: false,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
@@ -623,12 +685,16 @@ pub async fn admin_user_detail(
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
-        Err(_) => return super::handlers_common::not_found("User not found"),
+        Err(_) => {
+            return super::handlers_common::not_found_authed(&state, &session, "User not found");
+        }
     };
 
     let user = match state.identity.get_user(target.id(), &uid) {
         Ok(Some(u)) => u,
-        Ok(None) => return super::handlers_common::not_found("User not found"),
+        Ok(None) => {
+            return super::handlers_common::not_found_authed(&state, &session, "User not found");
+        }
         Err(e) => {
             tracing::warn!(error = %e, "get_user failed");
             return super::handlers_common::server_error();
@@ -820,7 +886,7 @@ pub async fn admin_user_detail(
         is_admin: true,
         flash: None,
         csrf: session.csrf.clone(),
-        narrow: true,
+        narrow: false,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
@@ -1025,7 +1091,7 @@ pub async fn admin_user_edit_form(
                 is_admin: true,
                 flash: None,
                 csrf: session.csrf.clone(),
-                narrow: true,
+                narrow: false,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
@@ -1227,7 +1293,7 @@ fn render_edit_error(
                 is_admin: true,
                 flash: None,
                 csrf: session.csrf.clone(),
-                narrow: true,
+                narrow: false,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
@@ -1376,6 +1442,14 @@ struct RealmAdminView {
     display_name: String,
     /// User's email.
     email: String,
+    /// `true` when the user is an admin via a `realm.admin` grant on the
+    /// system realm (so they have access to every realm). `false` for
+    /// users granted `realm.admin` directly on this realm.
+    ///
+    /// Surfaced in the template as a "Global" badge so an empty
+    /// realm-scoped list doesn't *look* empty when system admins exist —
+    /// fixes the 2026-04-29 audit's "no administrators yet" finding.
+    is_system_admin: bool,
 }
 
 #[derive(Template)]
@@ -1637,7 +1711,7 @@ pub async fn admin_app_detail(
             is_admin: true,
             flash: None,
             csrf: session.csrf.clone(),
-            narrow: true,
+            narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
@@ -1688,7 +1762,7 @@ pub async fn admin_app_regenerate_secret(
                     is_admin: true,
                     flash: None,
                     csrf: session.csrf.clone(),
-                    narrow: true,
+                    narrow: false,
                     product_name: state.product_name.clone(),
                     logo_url: state.logo_url.clone(),
                     theme_css: state.theme_css.clone(),
@@ -1757,6 +1831,15 @@ pub struct SessionRow {
     pub device_label: String,
     /// Client IP address or "\u{2014}" (em dash) if unavailable.
     pub ip_address: String,
+    /// Display name of the realm this session lives in. `"system"` for
+    /// admin sessions, the realm name for tenant sessions. Surfaced as a
+    /// column in the global sessions view at `/ui/admin/sessions`.
+    pub realm_name: String,
+    /// Query string the revoke form must append so the
+    /// `admin_session_revoke` handler resolves the right realm — either
+    /// `"?admin_target=system"` for the system realm or
+    /// `"?realm=<name>"` for a tenant.
+    pub realm_target_query: String,
 }
 
 #[derive(Template)]
@@ -1766,6 +1849,11 @@ struct SessionListTemplate {
     next_cursor: Option<String>,
     target_realm_name: Option<String>,
     target_realm_id_hex: Option<String>,
+    /// `true` when the page is rendering the cross-realm aggregation at
+    /// `/ui/admin/sessions` (no `?realm=` / `?admin_target=`). The list
+    /// template uses this to swap the heading and reveal the Realm
+    /// column.
+    is_global: bool,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -1949,57 +2037,203 @@ fn resolve_user_email(
 }
 
 /// `GET /ui/admin/sessions`.
+///
+/// Renders one of three views depending on the request's realm context:
+///
+/// 1. `?realm=<name>` — sessions in that tenant realm only.
+/// 2. `?admin_target=system` — sessions in the system realm (operators).
+/// 3. No realm query param — **global** view aggregating across the
+///    system realm + every tenant realm. Surfaces the admin's own
+///    session, which would otherwise be invisible from the tenant-only
+///    fallback that the legacy handler used. Reveals a "Realm" column
+///    so each row's origin is unambiguous, and routes per-row revoke
+///    requests back to the row's realm via `realm_target_query`.
+///
+/// Cursor pagination is intentionally disabled for the global view —
+/// stitching cursors across realms would require a fan-out paginator
+/// that this PR doesn't introduce. A LIMIT-per-realm cap keeps the
+/// query bounded; busy deployments should narrow with `?realm=` until
+/// a real cross-realm cursor is added.
+#[allow(clippy::too_many_lines)]
 pub async fn admin_sessions_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    target: TargetRealm,
     Query(params): Query<PaginationParams>,
+    raw_query: axum::extract::RawQuery,
 ) -> Response {
-    match state
-        .identity
-        .list_sessions_by_realm(target.id(), params.cursor.as_deref(), 20)
-    {
-        Ok(page) => {
-            let rows: Vec<SessionRow> = page
-                .items
-                .into_iter()
-                .map(|s| {
-                    let email = resolve_user_email(&state, target.id(), s.user_id());
-                    let device_label = s.device_label().unwrap_or("Unknown device").to_string();
-                    let ip_address = s.ip_address().unwrap_or("\u{2014}").to_string();
-                    SessionRow {
-                        created_at_display: format_ts(s.created_at()),
-                        expires_at_display: format_ts(s.expires_at()),
-                        session: s,
-                        user_email: email,
-                        device_label,
-                        ip_address,
-                    }
+    // Per-realm cap when aggregating globally. Avoids unbounded fan-out
+    // on deployments with many realms; the current handler doesn't
+    // have a cross-realm cursor yet (see doc comment).
+    const PER_REALM_GLOBAL_LIMIT: usize = 50;
+
+    let query_str = raw_query.0.unwrap_or_default();
+    let has_realm_param = query_str
+        .split('&')
+        .any(|p| p.starts_with("realm=") || p.starts_with("admin_target="));
+
+    // ---------- Single-realm modes (?realm= / ?admin_target=) ----------
+    if has_realm_param {
+        // Re-run TargetRealm extraction by hand — Axum's extractor isn't
+        // re-entrant from inside another handler. Mirrors the cookie /
+        // query / sentinel logic in `auth::TargetRealm`.
+        let admin_target = query_str
+            .split('&')
+            .find_map(|p| p.strip_prefix("admin_target="));
+        let realm_name = query_str.split('&').find_map(|p| p.strip_prefix("realm="));
+
+        let realm = if admin_target == Some("system") {
+            let id = crate::identity::keys::system_realm_id();
+            match state.identity.get_realm(&id) {
+                Ok(Some(r)) => r,
+                _ => return super::handlers_common::server_error(),
+            }
+        } else if let Some(name) = realm_name {
+            match state.identity.get_realm_by_name(name) {
+                Ok(Some(r)) => r,
+                _ => return super::handlers_common::not_found("Realm not found."),
+            }
+        } else {
+            return super::handlers_common::server_error();
+        };
+
+        match state
+            .identity
+            .list_sessions_by_realm(realm.id(), params.cursor.as_deref(), 20)
+        {
+            Ok(page) => {
+                let target_query = if admin_target == Some("system") {
+                    "?admin_target=system".to_string()
+                } else {
+                    format!("?realm={}", realm.name())
+                };
+                let rows: Vec<SessionRow> = page
+                    .items
+                    .into_iter()
+                    .map(|s| build_session_row(&state, realm.id(), realm.name(), &target_query, s))
+                    .collect();
+                let in_realm_workspace = *realm.id().as_uuid() != uuid::Uuid::nil();
+                render(&SessionListTemplate {
+                    sessions: rows,
+                    next_cursor: page.next_cursor,
+                    target_realm_name: Some(realm.name().to_string()),
+                    target_realm_id_hex: Some(realm.id().as_uuid().to_string()),
+                    is_global: false,
+                    active_tab: "sessions",
+                    chrome: true,
+                    active: if in_realm_workspace {
+                        "realm-workspace"
+                    } else {
+                        "admin-users"
+                    },
+                    user_email: Some(session.user_email.clone()),
+                    is_admin: true,
+                    flash: None,
+                    csrf: session.csrf.clone(),
+                    narrow: false,
+                    product_name: state.product_name.clone(),
+                    logo_url: state.logo_url.clone(),
+                    theme_css: state.theme_css.clone(),
+                    realm_theme_css: state.realm_theme_css(),
                 })
-                .collect();
-            render(&SessionListTemplate {
-                sessions: rows,
-                next_cursor: page.next_cursor,
-                target_realm_name: Some(target.0.name().to_string()),
-                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
-                active_tab: "sessions",
-                chrome: true,
-                active: "realm-workspace",
-                user_email: Some(session.user_email.clone()),
-                is_admin: true,
-                flash: None,
-                csrf: session.csrf.clone(),
-                narrow: false,
-                product_name: state.product_name.clone(),
-                logo_url: state.logo_url.clone(),
-                theme_css: state.theme_css.clone(),
-                realm_theme_css: state.realm_theme_css(),
-            })
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "list_sessions_by_realm failed");
+                super::handlers_common::server_error()
+            }
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "list_sessions_by_realm failed");
-            super::handlers_common::server_error()
+    } else {
+        // ---------- Global view (no realm in query) ----------
+        let mut rows: Vec<SessionRow> = Vec::new();
+
+        // System realm first — operators including the requesting admin.
+        let system_id = crate::identity::keys::system_realm_id();
+        if let Ok(Some(system_realm)) = state.identity.get_realm(&system_id) {
+            if let Ok(page) =
+                state
+                    .identity
+                    .list_sessions_by_realm(&system_id, None, PER_REALM_GLOBAL_LIMIT)
+            {
+                for s in page.items {
+                    rows.push(build_session_row(
+                        &state,
+                        &system_id,
+                        system_realm.name(),
+                        "?admin_target=system",
+                        s,
+                    ));
+                }
+            }
         }
+
+        // Tenant realms.
+        if let Ok(realms_page) = state.identity.list_realms(None, 100) {
+            for realm in realms_page.items {
+                let target_query = format!("?realm={}", realm.name());
+                if let Ok(page) =
+                    state
+                        .identity
+                        .list_sessions_by_realm(realm.id(), None, PER_REALM_GLOBAL_LIMIT)
+                {
+                    for s in page.items {
+                        rows.push(build_session_row(
+                            &state,
+                            realm.id(),
+                            realm.name(),
+                            &target_query,
+                            s,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Newest first across realms.
+        rows.sort_by(|a, b| b.session.created_at().cmp(&a.session.created_at()));
+
+        render(&SessionListTemplate {
+            sessions: rows,
+            next_cursor: None,
+            target_realm_name: None,
+            target_realm_id_hex: None,
+            is_global: true,
+            active_tab: "",
+            chrome: true,
+            active: "sessions-global",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        })
+    }
+}
+
+/// Builds a [`SessionRow`] with display fields and the realm-context
+/// query string used by the revoke form. Centralises the per-row glue
+/// so both single-realm and global views render identical row shapes.
+fn build_session_row(
+    state: &Arc<WebState>,
+    realm_id: &crate::core::RealmId,
+    realm_name: &str,
+    target_query: &str,
+    s: Session,
+) -> SessionRow {
+    let user_email = resolve_user_email(state, realm_id, s.user_id());
+    let device_label = s.device_label().unwrap_or("Unknown device").to_string();
+    let ip_address = s.ip_address().unwrap_or("\u{2014}").to_string();
+    SessionRow {
+        created_at_display: format_ts(s.created_at()),
+        expires_at_display: format_ts(s.expires_at()),
+        session: s,
+        user_email,
+        device_label,
+        ip_address,
+        realm_name: realm_name.to_string(),
+        realm_target_query: target_query.to_string(),
     }
 }
 
@@ -2513,7 +2747,7 @@ pub async fn admin_org_create_form(
         is_admin: true,
         flash: None,
         csrf: session.csrf.clone(),
-        narrow: true,
+        narrow: false,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
@@ -2626,7 +2860,7 @@ pub async fn admin_org_create_submit(
             is_admin: true,
             flash: None,
             csrf: session.csrf.clone(),
-            narrow: true,
+            narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
@@ -2649,7 +2883,7 @@ pub async fn admin_org_create_submit(
                 is_admin: true,
                 flash: None,
                 csrf: session.csrf.clone(),
-                narrow: true,
+                narrow: false,
                 product_name: state.product_name.clone(),
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
@@ -2913,7 +3147,7 @@ pub async fn admin_org_edit_form(
             is_admin: true,
             flash: None,
             csrf: session.csrf.clone(),
-            narrow: true,
+            narrow: false,
             product_name: state.product_name.clone(),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
@@ -4848,7 +5082,7 @@ pub async fn admin_user_consents_list(
         is_admin: true,
         flash: None,
         csrf: session.csrf.clone(),
-        narrow: true,
+        narrow: false,
         product_name: state.product_name.clone(),
         logo_url: state.logo_url.clone(),
         theme_css: String::new(),
@@ -4960,20 +5194,58 @@ fn format_ts_admin(ts: crate::core::Timestamp) -> String {
 /// effectively orphaned and a stale display would confuse operators more
 /// than a missing row.
 fn resolve_realm_admins(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<RealmAdminView> {
-    let Ok(Some(role)) = state.rbac.get_role_by_name(realm_id, "realm.admin") else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
+
+    // Direct realm-scoped admins: users with `realm.admin` granted on
+    // *this* realm.
+    if let Ok(Some(role)) = state.rbac.get_role_by_name(realm_id, "realm.admin") {
+        collect_role_members(state, realm_id, &role.id, false, &mut out);
+    }
+
+    // System-realm admins: users with `realm.admin` on the system realm
+    // implicitly have admin authority on every realm. Always surface them
+    // here so a tenant realm with no direct grants doesn't look like it
+    // has nobody managing it (the 2026-04-29 audit's "no administrators
+    // yet" UX bug). Skip when the page already *is* the system realm.
+    let system_id = crate::identity::keys::system_realm_id();
+    if realm_id.as_uuid() != system_id.as_uuid() {
+        if let Ok(Some(role)) = state.rbac.get_role_by_name(&system_id, "realm.admin") {
+            collect_role_members(state, &system_id, &role.id, true, &mut out);
+        }
+    }
+
+    // De-duplicate (a user could be both system admin AND directly
+    // assigned on this realm; show them once, prefer the realm-scoped
+    // entry since it's the one a manage-admins action can revoke).
+    out.sort_by(|a, b| {
+        a.email
+            .cmp(&b.email)
+            .then(a.is_system_admin.cmp(&b.is_system_admin))
+    });
+    out.dedup_by(|a, b| a.email == b.email);
+    out.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    out
+}
+
+/// Pages through `list_role_members` for a specific (realm, role) pair
+/// and appends hydrated [`RealmAdminView`] entries to `out`.
+fn collect_role_members(
+    state: &Arc<WebState>,
+    realm_id: &RealmId,
+    role_id: &crate::rbac::RoleId,
+    is_system_admin: bool,
+    out: &mut Vec<RealmAdminView>,
+) {
     let mut cursor: Option<String> = None;
     loop {
         let page = match state
             .rbac
-            .list_role_members(realm_id, &role.id, cursor.as_deref(), 100)
+            .list_role_members(realm_id, role_id, cursor.as_deref(), 100)
         {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, "list realm admins: list_role_members failed");
-                return out;
+                return;
             }
         };
         for member in page.items {
@@ -4992,6 +5264,7 @@ fn resolve_realm_admins(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<RealmA
                 user_id: uid.as_uuid().to_string(),
                 display_name,
                 email: user.email().to_string(),
+                is_system_admin,
             });
         }
         match page.next_cursor {
@@ -4999,8 +5272,6 @@ fn resolve_realm_admins(state: &Arc<WebState>, realm_id: &RealmId) -> Vec<RealmA
             None => break,
         }
     }
-    out.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-    out
 }
 
 /// `application/x-www-form-urlencoded` body for granting realm admin.
@@ -6681,6 +6952,15 @@ struct PermissionRow {
     /// True if the permission is declared in the YAML `permissions:` block.
     /// False means it was discovered only via a role's permission list.
     declared: bool,
+    /// True for permissions baked into Hearth's RBAC seed (`realm.admin`,
+    /// `org.read`, …). The 2026-04-29 audit caught the legacy "UNDECLARED"
+    /// badge surfacing on every seed permission — technically accurate
+    /// (they aren't in the YAML), but unhelpful: an operator can't
+    /// "declare" a built-in permission, and seeing the warning everywhere
+    /// trains them to ignore it. The template renders these as "Built-in"
+    /// so the truly orphan permissions (a role referencing a typoed name,
+    /// for instance) stand out.
+    seed_bundled: bool,
     /// Names of roles that grant this permission, sorted alphabetically.
     roles: Vec<String>,
 }
@@ -6739,6 +7019,7 @@ pub async fn admin_rbac_permissions(
                 name,
                 description,
                 declared: true,
+                seed_bundled: false,
                 roles: Vec::new(),
             },
         );
@@ -6752,6 +7033,7 @@ pub async fn admin_rbac_permissions(
                     name: perm.as_str().to_string(),
                     description: String::new(),
                     declared: false,
+                    seed_bundled: false,
                     roles: Vec::new(),
                 });
             entry.roles.push(role.name.clone());
@@ -6764,11 +7046,15 @@ pub async fn admin_rbac_permissions(
             row.roles.sort();
             row.roles.dedup();
             // Backfill descriptions for built-in seed permissions when the
-            // realm's YAML config doesn't declare an override.
-            if row.description.is_empty() {
-                if let Some(d) = crate::rbac::seed_permission_description(&row.name) {
+            // realm's YAML config doesn't declare an override. A permission
+            // with a known seed description is bundled with Hearth's RBAC
+            // model, not "missing" — the template uses `seed_bundled` to
+            // tell the two cases apart.
+            if let Some(d) = crate::rbac::seed_permission_description(&row.name) {
+                if row.description.is_empty() {
                     row.description = d.to_string();
                 }
+                row.seed_bundled = true;
             }
             row
         })

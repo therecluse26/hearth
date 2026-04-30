@@ -17,10 +17,24 @@
       {% when None %}
     {% endmatch %}
 
-    <form method="post" action="/ui/account/password" autocomplete="off" class="space-y-4">
+    <form method="post" action="/ui/account/password" class="space-y-4">
       {% match csrf %}
         {% when Some with (token) %}
           <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+
+      {# Hidden username field — Chrome (and other modern browsers) emit a
+         a11y warning when password forms have no associated username,
+         since password managers can't pair the entry with the right
+         account. Bound to the signed-in user's email; the server ignores
+         this field, but the browser uses it for autofill / save prompts.
+         See goo.gl/9p2vKq. #}
+      {% match user_email %}
+        {% when Some with (email) %}
+          <input type="email" name="username" autocomplete="username"
+                 value="{{ email }}" readonly aria-hidden="true"
+                 class="absolute -left-[10000px] h-px w-px overflow-hidden opacity-0">
         {% when None %}
       {% endmatch %}
 

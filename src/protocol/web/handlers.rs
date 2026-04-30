@@ -1414,29 +1414,56 @@ pub async fn dashboard(
         Vec::new()
     };
 
-    // Count entities for admin stats. Non-fatal — defaults to 0.
+    // Aggregate entity counts across the system realm + every tenant
+    // realm so the dashboard cards reflect the operator's full scope —
+    // not just the realm the admin happens to be signed into.
+    //
+    // The 2026-04-29 UX audit caught the legacy single-realm count
+    // showing "Organizations 0" while a tenant realm clearly held one;
+    // the cards are global by definition (they link to global list
+    // pages), so the counts must be too. Failures fall through silently
+    // — partial counts are better than a 500 on a stat card.
     let (user_count, realm_count, app_count, org_count) = if is_admin {
-        let uc = state
-            .identity
-            .list_users(&session.realm_id, None, 10_000)
-            .map(|p| p.items.len())
-            .unwrap_or(0);
-        let tc = state
+        let realm_count = state
             .identity
             .list_realms(None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
-        let ac = state
+
+        let system_id = crate::identity::keys::system_realm_id();
+        let mut user_count = 0;
+        let mut app_count = 0;
+        let mut org_count = 0;
+
+        // System realm — operators only.
+        user_count += state
             .identity
-            .list_clients(&session.realm_id, None, 10_000)
+            .list_users(&system_id, None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
-        let oc = state
-            .identity
-            .list_organizations(&session.realm_id, None, 10_000)
-            .map(|p| p.items.len())
-            .unwrap_or(0);
-        (uc, tc, ac, oc)
+
+        // Tenant realms — sum users / clients / orgs from each.
+        if let Ok(realms_page) = state.identity.list_realms(None, 10_000) {
+            for realm in realms_page.items {
+                user_count += state
+                    .identity
+                    .list_users(realm.id(), None, 10_000)
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+                app_count += state
+                    .identity
+                    .list_clients(realm.id(), None, 10_000)
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+                org_count += state
+                    .identity
+                    .list_organizations(realm.id(), None, 10_000)
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+            }
+        }
+
+        (user_count, realm_count, app_count, org_count)
     } else {
         (0, 0, 0, 0)
     };

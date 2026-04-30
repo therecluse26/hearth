@@ -10,7 +10,11 @@
 {% block body %}
 <div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ realm.name() }}</h1>
-  <span class="text-sm text-ht-content-muted">Configured in hearth.yaml</span>
+  <a href="/ui/admin/settings/editor?section=realms&amp;realm={{ realm.name() }}"
+     class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
+    Edit in Config Editor
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+  </a>
 </div>
 
 {# Workspace tabs — all resources in this realm are reachable from here. #}
@@ -309,8 +313,13 @@
       {% for a in admins %}
       <tr class="border-b border-divider-faint">
         <td class="px-3 py-2">
-          <a href="/ui/admin/users/{{ a.user_id }}" class="group">
-            <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ a.display_name }}</div>
+          <a href="/ui/admin/users/{{ a.user_id }}{% if a.is_system_admin %}?admin_target=system{% endif %}" class="group">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ a.display_name }}</span>
+              {% if a.is_system_admin %}
+              <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-fg" title="Granted realm.admin on the system realm — implicit access to every realm.">global</span>
+              {% endif %}
+            </div>
             <div class="text-xs text-ht-content-muted">{{ a.email }}</div>
           </a>
         </td>
@@ -319,17 +328,21 @@
           <div class="flex items-center justify-end gap-3">
             <a href="/ui/admin/rbac/debug?user_id={{ a.user_id }}"
                class="text-xs text-ht-content-muted hover:text-ht-content-secondary"
-               title="Open permission resolver pre-filled for this admin">Check access</a>
+               title="Open Permission Check pre-filled for this admin">Check access</a>
+            {% if !a.is_system_admin %}
             <form method="post" action="/ui/admin/realms/{{ realm.id().as_uuid() }}/admins/{{ a.user_id }}/revoke">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
               <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
             </form>
+            {% else %}
+            <span class="text-xs text-ht-content-muted" title="System-realm admins are managed from /ui/admin/admin-users; revoke their global grant there.">via system realm</span>
+            {% endif %}
           </div>
         </td>
       </tr>
       {% endfor %}
       {% if admins.is_empty() %}
-      <tr><td colspan="3" class="px-3 py-6 text-center text-sm text-ht-content-muted">No administrators yet.</td></tr>
+      <tr><td colspan="3" class="px-3 py-6 text-center text-sm text-ht-content-muted">No administrators yet — grant <code class="font-mono">realm.admin</code> to a user above, or add a system-realm operator at <a href="/ui/admin/admin-users" class="text-ht-content-brand hover:text-ht-brand-deep">Admin Users</a>.</td></tr>
       {% endif %}
     </tbody>
   </table>

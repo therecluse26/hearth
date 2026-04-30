@@ -180,7 +180,7 @@
 
       {# Page content #}
       <main class="min-h-0 flex-1 overflow-y-auto p-6">
-        <div class="mx-auto {% if narrow %}max-w-lg{% else %}max-w-5xl{% endif %}">
+        <div class="{% if narrow %}mx-auto max-w-lg{% endif %}">
           {% match flash %}
             {% when Some with (f) %}
               <div class="mb-6 rounded px-4 py-3 text-sm font-medium {% if f.kind == "error" %}bg-danger/[0.12] text-danger-fg{% else %}bg-success/[0.12] text-success-fg{% endif %}" role="{% if f.kind == "error" %}alert{% else %}status{% endif %}">

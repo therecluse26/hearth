@@ -203,10 +203,30 @@
 <script>
 function configEditor() {
   const initialConfig = {{ config_json|safe }};
+
+  // Read deep-link hints set by other admin pages so the editor opens
+  // on the relevant section without a manual click. Format:
+  //   /ui/admin/settings/editor?section=<key>[&realm=<name>]
+  // E.g. the Realms list links here with `?section=realms` so an
+  // operator can edit `realms.<name>` without hunting through the nav.
+  const params = new URLSearchParams(window.location.search);
+  const linkedSection = params.get('section');
+  const linkedRealm = params.get('realm');
+  // The "realms" section is virtual — it doesn't appear in the
+  // sections array; the realm list lives under its own panel keyed by
+  // `activeRealm`. Map the deep link onto that state.
+  let initialSection = 'server';
+  let initialRealm = null;
+  if (linkedSection === 'realms' && linkedRealm) {
+    initialRealm = linkedRealm;
+  } else if (linkedSection) {
+    initialSection = linkedSection;
+  }
+
   return {
     mode: 'visual',
-    activeSection: 'server',
-    activeRealm: null,
+    activeSection: initialSection,
+    activeRealm: initialRealm,
     config: JSON.parse(JSON.stringify(initialConfig || {})),
     originalConfig: JSON.stringify(initialConfig || {}),
     csrf: document.querySelector('meta[name="csrf"]')?.content || '',

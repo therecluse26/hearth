@@ -62,6 +62,23 @@ pub struct ServerConfig {
     /// `bind_address` when unset.
     #[serde(default)]
     pub grpc_bind_address: Option<String>,
+    /// Filesystem directory containing the admin UI's mutable static
+    /// assets — currently only `app.css` (the Tailwind build output).
+    ///
+    /// When set, [`crate::protocol::web::serve_static`] reads
+    /// `<assets_dir>/app.css` once at server startup; restarting the
+    /// server picks up a fresh Tailwind build without recompiling Rust.
+    /// When `None` (the default) the binary serves the copy embedded by
+    /// `include_bytes!` at compile time.
+    ///
+    /// Path resolution: relative paths are interpreted relative to the
+    /// process working directory. A typical container layout exposes
+    /// `/etc/hearth/assets/` and points this at it.
+    ///
+    /// Other static assets (`htmx.min.js`, the Hearth SVG marks) remain
+    /// truly immutable for a binary's lifetime and stay embedded.
+    #[serde(default)]
+    pub assets_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -87,6 +104,7 @@ impl Default for ServerConfig {
             default_realm: None,
             grpc_port: None,
             grpc_bind_address: None,
+            assets_dir: None,
         }
     }
 }

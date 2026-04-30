@@ -125,9 +125,50 @@ use axum::response::Response;
 use super::templates::render_status;
 
 /// Renders a 404 page with a custom message.
+///
+/// Unauthenticated variant — used when no session context is available
+/// (pre-login pages, public OIDC error paths). Renders without the
+/// admin chrome, which is the right call for those paths but looks
+/// jarring from inside the admin shell. Authenticated handlers should
+/// prefer [`not_found_authed`] so the user keeps their navigation.
 pub(crate) fn not_found(msg: &str) -> Response {
     render_status(
         &NotFoundTemplate::new(msg.to_string()),
+        StatusCode::NOT_FOUND,
+    )
+}
+
+/// Renders a 404 page inside the authenticated admin shell.
+///
+/// The 2026-04-29 UX audit caught the bare `not_found` rendering as a
+/// stand-alone unstyled white page when an admin clicked through to a
+/// missing resource — losing sidebar, user pill, theme. This variant
+/// keeps the chrome so the user can navigate back without retracing
+/// their URL.
+pub(crate) fn not_found_authed(
+    state: &super::WebState,
+    session: &super::auth::UiSession,
+    msg: &str,
+) -> Response {
+    render_status(
+        &NotFoundTemplate {
+            message: msg.to_string(),
+            chrome: true,
+            active: "",
+            user_email: Some(session.user_email.clone()),
+            // Caller is already inside an authenticated admin handler
+            // (every internal use site is gated by `RequireAdmin`); we
+            // don't re-check here because doing so would mean an extra
+            // RBAC lookup just to set a layout flag.
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: true,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        },
         StatusCode::NOT_FOUND,
     )
 }

@@ -1,11 +1,13 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} &middot; Permissions{% endblock %}
 {% block body %}
-<div class="mb-6">
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <h1 class="font-display text-2xl font-medium text-ht-content-primary">Permissions</h1>
-  <p class="mt-1 text-sm text-ht-content-muted">
-    Read-only &mdash; manage in <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs">hearth.yaml</code>
-  </p>
+  <a href="/ui/admin/settings/editor?section=auth"
+     class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
+    Edit in Config Editor
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+  </a>
 </div>
 
 <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle overflow-hidden">
@@ -29,8 +31,10 @@
       <tr class="hover:bg-ht-surface-base align-top">
         <td class="px-4 py-3 whitespace-nowrap">
           <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ row.name }}</code>
-          {% if !row.declared %}
-          <span class="ml-2 inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-steel-fg" title="Referenced by a role but not declared in the realm's permissions: block">undeclared</span>
+          {% if !row.declared && row.seed_bundled %}
+          <span class="ml-2 inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-teal-fg" title="Bundled with Hearth's RBAC model — seeded automatically per realm.">built-in</span>
+          {% else if !row.declared %}
+          <span class="ml-2 inline-flex items-center rounded-full bg-warning/[0.2] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-warning-fg" title="Referenced by a role but not declared in the realm's permissions block — likely a typo.">undeclared</span>
           {% endif %}
         </td>
         <td class="px-4 py-3 text-ht-content-secondary">

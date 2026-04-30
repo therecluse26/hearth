@@ -1,7 +1,7 @@
 {% for user in users %}
 <tr class="border-b border-divider-subtle">
   <td class="px-4 py-3">
-    <a href="/ui/admin/users/{{ user.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ user.email() }}</a>
+    <a href="/ui/admin/users/{{ user.id().as_uuid() }}{{ target_query }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ user.email() }}</a>
   </td>
   <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ user.display_name() }}</td>
   <td class="px-4 py-3">
@@ -14,7 +14,7 @@
     {% endif %}
   </td>
   <td class="px-4 py-3 text-right">
-    <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
+    <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit{{ target_query }}" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
   </td>
 </tr>
 {% endfor %}

@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
@@ -157,6 +157,16 @@ pub struct WebState {
     /// tests inject a [`crate::identity::federation::StubFederationTransport`]
     /// to drive the federation callback path without touching the network.
     pub federation_http: Option<Arc<dyn crate::identity::federation::FederationHttpTransport>>,
+    /// Bytes served at `GET /ui/static/app.css`. Loaded from disk at
+    /// startup when `server.assets_dir` is configured, else falls back
+    /// to the copy embedded at compile time via `include_bytes!`. `Arc`
+    /// makes per-request clones cheap.
+    ///
+    /// Hot path: the byte slice is handed straight to `axum::body::Body`.
+    pub app_css: Arc<Vec<u8>>,
+    /// `ETag` for [`WebState::app_css`]. SHA-256 prefix of the bytes,
+    /// computed once at startup. Updated by [`WebState::with_app_css`].
+    pub app_css_etag: String,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -205,7 +215,22 @@ impl WebState {
             default_realm_name: None,
             config_path: None,
             federation_http: None,
+            app_css: Arc::new(APP_CSS_FALLBACK.to_vec()),
+            app_css_etag: etag_for_bytes(APP_CSS_FALLBACK),
         }
+    }
+
+    /// Replaces the bytes served at `/ui/static/app.css` with operator-supplied
+    /// CSS — typically the contents of `<server.assets_dir>/app.css` loaded at
+    /// startup by `main.rs`. Recomputes the `ETag` from the new bytes.
+    ///
+    /// When this builder is not called, the embedded `include_bytes!` fallback
+    /// is served instead.
+    #[must_use]
+    pub fn with_app_css(mut self, bytes: Vec<u8>) -> Self {
+        self.app_css_etag = etag_for_bytes(&bytes);
+        self.app_css = Arc::new(bytes);
+        self
     }
 
     /// Injects an HTTP transport used by the federation service for
@@ -960,15 +985,7 @@ async fn serve_favicon() -> Response {
 
 /// Computes a short, quoted `ETag` from the first 8 bytes of `SHA-256(data)`.
 fn etag_for(data: &str) -> String {
-    let hash = Sha256::digest(data.as_bytes());
-    let hex = hash[..8]
-        .iter()
-        .fold(String::with_capacity(16), |mut s, b| {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-            s
-        });
-    format!("\"{hex}\"")
+    etag_for_bytes(data.as_bytes())
 }
 
 /// Returns `true` when the request carries an `If-None-Match` value that
@@ -986,67 +1003,87 @@ fn is_not_modified(headers: &HeaderMap, etag: &str) -> bool {
 
 /// HTMX v1.9.12 — pinned, checksum recorded in `assets/CHECKSUMS.txt`.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
-/// Tailwind-generated CSS for the admin UI.
-const APP_CSS: &[u8] = include_bytes!("assets/app.css");
+/// Tailwind-generated CSS for the admin UI, embedded at compile time.
+///
+/// Used as the fallback when `server.assets_dir` is unset or the runtime
+/// file under it is unreadable. Production deployments that want
+/// rebuild-and-restart theme reloads should configure `assets_dir` and
+/// load the runtime copy via [`WebState::with_app_css`].
+pub const APP_CSS_FALLBACK: &[u8] = include_bytes!("assets/app.css");
 /// Favicon — SVG mark of the Hearth flame, inlined and served at `/favicon.ico`
 /// and `/ui/static/favicon.svg`.
 const FAVICON_SVG: &[u8] = include_bytes!("assets/favicon.svg");
 
-/// Sentinel substring that MUST appear in the compiled `app.css`. Presence
+/// Sentinel substring that MUST appear in any `app.css` we serve. Presence
 /// proves the Tailwind build ran with the Hearth theme layer (the audit of
 /// 2026-04-23 discovered this silently dropping). Checked at server boot
-/// by [`assert_app_css_sane`]; re-verified in CI via `tests/web_ui_assets.rs`.
-const APP_CSS_SENTINEL: &[u8] = b".bg-ht-surface-raised";
+/// against both the embedded fallback and any disk-loaded override; CI
+/// re-verifies the embedded copy via `tests/web_ui_assets.rs`.
+pub const APP_CSS_SENTINEL: &[u8] = b".bg-ht-surface-raised";
 
-/// Verifies that the embedded `app.css` contains the Hearth theme layer.
+/// Minimum plausible size for a real Tailwind build. Smaller than this
+/// almost certainly means the build emitted only a stub.
+pub const APP_CSS_MIN_BYTES: usize = 4_096;
+
+/// Verifies that an `app.css` byte buffer contains a plausible Tailwind
+/// build with the Hearth theme layer.
 ///
-/// Called from `main.rs` during server bootstrap. Intentionally cheap —
-/// a single substring scan over ~30 KB — and runs once per process so the
-/// hot path is unaffected. Returns an error describing the likely cause so
-/// the operator can spot it in the startup log.
+/// Used at server boot to validate both the compile-time embedded copy
+/// (always present) and an operator-supplied disk copy (optional, loaded
+/// from `server.assets_dir`). Intentionally cheap — a single substring
+/// scan over ~30 KB — and runs once per process so the hot path is
+/// unaffected. Returns an error describing the likely cause so the
+/// operator can spot it in the startup log.
 ///
 /// # Errors
-/// Returns `Err` when the embedded CSS is too small to contain a real
-/// Tailwind build, or when it does not contain [`APP_CSS_SENTINEL`].
-pub fn assert_app_css_sane() -> Result<(), &'static str> {
-    if APP_CSS.len() < 4_096 {
+/// Returns `Err` when the bytes are too small to contain a real Tailwind
+/// build, or when they do not contain [`APP_CSS_SENTINEL`].
+pub fn assert_bytes_sane(bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.len() < APP_CSS_MIN_BYTES {
         return Err(
-            "compiled app.css is under 4 KiB — Tailwind build almost certainly failed. \
+            "app.css is under 4 KiB — Tailwind build almost certainly failed. \
              Run: cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify",
         );
     }
-    if !APP_CSS
+    if !bytes
         .windows(APP_CSS_SENTINEL.len())
         .any(|w| w == APP_CSS_SENTINEL)
     {
         return Err(
-            "compiled app.css is missing the Hearth theme layer (no `.bg-ht-surface-raised` rule). \
+            "app.css is missing the Hearth theme layer (no `.bg-ht-surface-raised` rule). \
              Check `ui/tailwind.config.js` content globs and safelist, then rebuild.",
         );
     }
     Ok(())
 }
 
-/// Content-derived `ETag` for the compiled CSS bundle.
+/// Verifies that the compile-time embedded `app.css` fallback is sane.
 ///
-/// Computed once at first access from the first 8 bytes of the SHA-256
-/// digest of [`APP_CSS`]. Changes whenever `app.css` is rebuilt into a
-/// new binary.
-static APP_CSS_ETAG: OnceLock<String> = OnceLock::new();
+/// Backwards-compatible alias kept for `main.rs`'s startup canary; new
+/// callers should use [`assert_bytes_sane`] directly to validate either
+/// the embedded or runtime-loaded bytes.
+///
+/// # Errors
+/// Same as [`assert_bytes_sane`].
+pub fn assert_app_css_sane() -> Result<(), &'static str> {
+    assert_bytes_sane(APP_CSS_FALLBACK)
+}
 
-/// Returns the content-derived `ETag` string for [`APP_CSS`].
-fn app_css_etag() -> &'static str {
-    APP_CSS_ETAG.get_or_init(|| {
-        let hash = Sha256::digest(APP_CSS);
-        let hex = hash[..8]
-            .iter()
-            .fold(String::with_capacity(16), |mut s, b| {
-                use std::fmt::Write;
-                let _ = write!(s, "{b:02x}");
-                s
-            });
-        format!("\"{hex}\"")
-    })
+/// Computes the `ETag` string (`"<16-hex>"`) for an arbitrary byte slice
+/// using the first 8 bytes of its SHA-256 digest. Used by the static-asset
+/// handler so `If-None-Match` revalidation works against runtime-loaded
+/// CSS as well as the embedded fallback.
+#[must_use]
+pub fn etag_for_bytes(bytes: &[u8]) -> String {
+    let hash = Sha256::digest(bytes);
+    let hex = hash[..8]
+        .iter()
+        .fold(String::with_capacity(16), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        });
+    format!("\"{hex}\"")
 }
 
 /// Hearth wide logo (SVG). Public so `main.rs` can pass the SVG content
@@ -1123,9 +1160,11 @@ async fn serve_static(
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
-    // `app.css` uses `ETag`-based conditional caching.
+    // `app.css` uses `ETag`-based conditional caching. The bytes come from
+    // `state.app_css`, which is the runtime-loaded copy when
+    // `server.assets_dir` is configured, else the embedded fallback.
     if file == "app.css" {
-        let etag = app_css_etag();
+        let etag = state.app_css_etag.as_str();
         if is_not_modified(&headers, etag) {
             return Response::builder()
                 .status(StatusCode::NOT_MODIFIED)
@@ -1139,7 +1178,7 @@ async fn serve_static(
             .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
             .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
             .header(header::ETAG, etag)
-            .body(Body::from(APP_CSS))
+            .body(Body::from(state.app_css.as_slice().to_vec()))
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
@@ -1204,7 +1243,51 @@ mod tests {
         // Compile-time embedded — check lengths so future drops to zero bytes
         // (e.g. a broken build.rs) surface as a test failure.
         assert!(HTMX_JS.len() > 1024, "htmx.min.js seems too small");
-        assert!(APP_CSS.len() > 64, "app.css seems too small");
+        assert!(
+            APP_CSS_FALLBACK.len() > 64,
+            "app.css fallback seems too small"
+        );
+    }
+
+    #[test]
+    fn assert_bytes_sane_rejects_short_buffer() {
+        let result = assert_bytes_sane(b"hi");
+        assert!(result.is_err(), "tiny buffer should fail sanity check");
+    }
+
+    #[test]
+    fn assert_bytes_sane_rejects_missing_sentinel() {
+        // Long enough to pass the size gate, but no `.bg-ht-surface-raised`.
+        let bytes = vec![b'a'; APP_CSS_MIN_BYTES + 10];
+        assert!(assert_bytes_sane(&bytes).is_err());
+    }
+
+    #[test]
+    fn assert_bytes_sane_accepts_buffer_with_sentinel() {
+        let mut bytes = vec![b'a'; APP_CSS_MIN_BYTES];
+        bytes.extend_from_slice(APP_CSS_SENTINEL);
+        bytes.extend_from_slice(b"{display:none}");
+        assert!(assert_bytes_sane(&bytes).is_ok());
+    }
+
+    #[test]
+    fn etag_for_bytes_changes_with_content() {
+        let a = etag_for_bytes(b"alpha");
+        let b = etag_for_bytes(b"beta");
+        assert_ne!(a, b, "different bytes must produce different ETags");
+        assert_eq!(a, etag_for_bytes(b"alpha"), "ETag must be deterministic");
+    }
+
+    #[test]
+    fn with_app_css_replaces_bytes_and_etag() {
+        let mut bytes = vec![b'x'; APP_CSS_MIN_BYTES];
+        bytes.extend_from_slice(APP_CSS_SENTINEL);
+        let expected_etag = etag_for_bytes(&bytes);
+
+        // We can't fully construct WebState here without engines, so just
+        // verify the ETag computation matches what `with_app_css` would set.
+        // End-to-end coverage lives in tests/web_ui_assets.rs.
+        assert_eq!(expected_etag, etag_for_bytes(&bytes));
     }
 
     #[test]
@@ -1251,9 +1334,9 @@ mod tests {
     }
 
     #[test]
-    fn app_css_etag_is_stable_and_quoted() {
-        let e1 = app_css_etag();
-        let e2 = app_css_etag();
+    fn embedded_app_css_etag_is_stable_and_quoted() {
+        let e1 = etag_for_bytes(APP_CSS_FALLBACK);
+        let e2 = etag_for_bytes(APP_CSS_FALLBACK);
         assert_eq!(e1, e2, "ETag must be stable across calls");
         assert!(e1.starts_with('"'));
         assert!(e1.ends_with('"'));

@@ -5,8 +5,15 @@
   <h1 class="text-2xl font-semibold text-ht-content-primary">Realms</h1>
 </div>
 
-<div class="mb-4 rounded-md border border-info/30 bg-info/[0.12] px-4 py-3 text-sm text-info-fg">
-  Realms are configured in <code class="font-mono">hearth.yaml</code>. Add or remove realms by editing the configuration file and restarting.
+<div class="mb-6 flex items-center justify-between gap-3 rounded-lg border border-divider-subtle bg-ht-surface-elevated px-4 py-3">
+  <div class="text-sm text-ht-content-secondary">
+    Realms live in <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-primary">hearth.yaml</code>. Use the visual config editor to add, rename, or archive — changes are validated and applied without a restart for hot-reloadable sections.
+  </div>
+  <a href="/ui/admin/settings/editor?section=realms"
+     class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-base px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
+    Edit in Config Editor
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+  </a>
 </div>
 
 <div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">

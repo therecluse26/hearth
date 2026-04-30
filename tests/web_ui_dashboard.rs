@@ -286,6 +286,80 @@ async fn dashboard_renders_signed_in_page() {
     );
 }
 
+/// Regression: dashboard counts (Users / Realms / Applications /
+/// Organizations) must aggregate across the system realm and every
+/// tenant realm — not just the realm the admin happens to be signed
+/// into. The 2026-04-29 audit caught the legacy single-realm count
+/// showing "Organizations 0" while a tenant realm clearly held one,
+/// since the admin signed in via the tenant realm in some flows but
+/// orgs / apps in *other* realms went unsurfaced.
+#[tokio::test]
+async fn dashboard_counts_aggregate_across_realms() {
+    let rig = build_rig();
+
+    // Seed a second tenant realm with an organization. The dashboard
+    // count must include it even though the admin is signed into Acme.
+    let other_realm = rig
+        .identity
+        .create_realm(&CreateRealmRequest {
+            name: "OtherCorp".to_string(),
+            config: None,
+        })
+        .expect("create OtherCorp");
+    rig.identity
+        .create_organization(
+            other_realm.id(),
+            &hearth::identity::CreateOrganizationRequest {
+                name: "Cross-Realm Org".to_string(),
+                slug: "cross-realm-org".to_string(),
+                description: None,
+                config: None,
+            },
+        )
+        .expect("create org in OtherCorp");
+
+    let cookie = auth_cookie(&rig, "csrf-counts");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    // The Realms count is global — must include both Acme and OtherCorp.
+    // The cards in dashboard.html render the count next to a label;
+    // both number and label appear in the rendered HTML, so a contains
+    // check on the labelled value pins the realm-aware aggregation.
+    assert!(body.contains("Realms"), "Realms card present");
+    // Org count must be 1 (from OtherCorp), even though the admin
+    // signed in via Acme. The legacy code reading session.realm_id
+    // would have shown 0.
+    assert!(body.contains("Organizations"), "Organizations card present");
+    // The number rendered in the org card. dashboard.html composes the
+    // count + label inside the same anchor, so a substring of both
+    // tokens within a window distinguishes the right card.
+    let snippet = "Organizations";
+    let idx = body.find(snippet).expect("Organizations label");
+    let window = &body[idx..usize::min(idx + 256, body.len())];
+    assert!(
+        window.contains(">1<"),
+        "Organizations count must be 1 (aggregated from OtherCorp). Window: {window}"
+    );
+}
+
 #[tokio::test]
 async fn logout_without_csrf_returns_403() {
     let rig = build_rig();

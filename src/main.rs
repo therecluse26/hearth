@@ -650,6 +650,42 @@ async fn run_serve(
         web_state = web_state.with_custom_logo(bytes, content_type);
     }
 
+    // When `server.assets_dir` is set, try to load `<assets_dir>/app.css`
+    // from disk. Lets operators rebuild Tailwind and restart the server
+    // without recompiling Rust (the embedded copy from `include_bytes!`
+    // is otherwise frozen at `cargo build` time). Falls back silently to
+    // the embedded copy on any failure — production never serves an
+    // unstyled UI just because a config path was wrong.
+    if let Some(assets_dir) = config.server.assets_dir.as_ref() {
+        let path = assets_dir.join("app.css");
+        match std::fs::read(&path) {
+            Ok(bytes) => match web::assert_bytes_sane(&bytes) {
+                Ok(()) => {
+                    info!(
+                        path = %path.display(),
+                        bytes = bytes.len(),
+                        "loaded admin UI CSS from server.assets_dir; restart-to-reload is active"
+                    );
+                    web_state = web_state.with_app_css(bytes);
+                }
+                Err(reason) => {
+                    warn!(
+                        path = %path.display(),
+                        reason,
+                        "server.assets_dir/app.css failed sanity check; serving embedded fallback"
+                    );
+                }
+            },
+            Err(e) => {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "could not read server.assets_dir/app.css; serving embedded fallback"
+                );
+            }
+        }
+    }
+
     // Build global theme CSS: named theme base + optional operator custom CSS file.
     let named_theme = config.branding.theme.as_deref().unwrap_or("ember");
     let theme_base_css = web::themes::theme_css(named_theme);

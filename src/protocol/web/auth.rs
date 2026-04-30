@@ -604,6 +604,44 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let web_state = Arc::<WebState>::from_ref(state);
 
+        // System-realm sentinel: admin pages that operate on system-realm
+        // users (the operators listed at `/ui/admin/admin-users`) link to
+        // `/ui/admin/users/{id}?admin_target=system` so the same handlers
+        // serve both surfaces. The standard `?realm=<name>` resolver
+        // explicitly rejects the literal name `system` to keep the system
+        // realm out of tenant URLs, so admin-targeting needs its own key.
+        //
+        // Safe because every caller of `TargetRealm` is gated by
+        // `RequireAdmin` at the route level — all `TargetRealm`
+        // consumers live in `protocol::web::admin`. A non-admin route
+        // adding this extractor would be a code-review red flag, not a
+        // privilege-escalation vector.
+        let admin_target = parts.uri.query().and_then(|q| {
+            q.split('&')
+                .find_map(|p| p.strip_prefix("admin_target="))
+                .map(percent_decode)
+        });
+        if admin_target.as_deref() == Some("system") {
+            let system_id = crate::identity::keys::system_realm_id();
+            match web_state.identity.get_realm(&system_id) {
+                Ok(Some(realm)) => return Ok(TargetRealm(realm)),
+                Ok(None) => {
+                    tracing::warn!("TargetRealm: system realm not found in storage");
+                    return Err(render_status(
+                        &super::handlers_common::ServerErrorTemplate::new(),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "TargetRealm: get_realm(system) failed");
+                    return Err(render_status(
+                        &super::handlers_common::ServerErrorTemplate::new(),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ));
+                }
+            }
+        }
+
         // Highest-priority source: the canonical
         // `/ui/admin/realms/{name}/...` path segment. When the URL names
         // a realm, it is the realm — no cookie or query override can

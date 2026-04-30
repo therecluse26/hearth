@@ -491,6 +491,233 @@ async fn admin_user_detail_renders() {
     assert!(body.contains("Delete user"));
 }
 
+/// Regression: clicking a row on `/ui/admin/admin-users` must reach a
+/// working user-detail page. Before the `?admin_target=system` sentinel,
+/// the link 404'd because the standard `?realm=<name>` resolver excludes
+/// the system realm and the default fallback picks the first tenant
+/// realm — where the system admin doesn't exist.
+#[tokio::test]
+async fn admin_user_detail_resolves_system_realm_via_admin_target_sentinel() {
+    let rig = build_rig();
+    // `admin_user_id` lives in the system realm, mirroring how the seed
+    // operator is created in production (`create_admin_user` always pins
+    // to `RealmId::nil()`).
+    #[allow(deprecated)]
+    let admin_uid = rig.admin_user_id.as_uuid();
+    let cookie = admin_cookie(&rig, "csrf-admin-target-system");
+
+    let uri = format!("/ui/admin/users/{admin_uid}?admin_target=system");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "?admin_target=system must let the user-detail handler resolve the system realm"
+    );
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+    assert!(
+        body.contains("admin@acme.test"),
+        "system-realm admin email must render"
+    );
+}
+
+/// `/ui/admin/sessions` with no realm query renders the cross-realm
+/// global view: shows the admin's system-realm session AND the tenant
+/// session in the same table, with a Realm column. Pins the fix for
+/// the audit's "own session invisible" finding.
+#[tokio::test]
+async fn admin_sessions_global_view_includes_system_and_tenant() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-sessions-global");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/sessions")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    assert!(
+        body.contains("All sessions"),
+        "global view must use the cross-realm heading"
+    );
+    assert!(
+        body.contains("admin@acme.test"),
+        "system admin session must appear in global view"
+    );
+    assert!(
+        body.contains("bob@acme.test"),
+        "tenant user session must appear in global view"
+    );
+    assert!(
+        body.contains("Realm</th>"),
+        "global view must surface a Realm column"
+    );
+    assert!(
+        body.contains("?admin_target=system"),
+        "system-realm rows' revoke action must carry the admin-target sentinel"
+    );
+    assert!(
+        body.contains("?realm=Acme"),
+        "tenant rows' revoke action must carry the tenant realm name"
+    );
+}
+
+/// `/ui/admin/sessions?realm=<name>` renders the per-realm view (no
+/// Realm column, scoped heading). Pins that the global view didn't
+/// regress the realm-scoped view.
+#[tokio::test]
+async fn admin_sessions_realm_scoped_view_omits_realm_column() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-sessions-acme");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/sessions?realm=Acme")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+    assert!(
+        !body.contains("Realm</th>"),
+        "scoped view must not show a Realm column"
+    );
+    assert!(body.contains("bob@acme.test"));
+    // Match by session UUID rather than email — the admin's email also
+    // appears in the page chrome (topbar, sign-out menu) so a string
+    // search would always find it. Counting "session-<uuid>" row IDs is
+    // unambiguous: exactly one tenant session, zero system sessions.
+    let admin_session_marker = format!("session-{}", rig.admin_session_id.as_uuid());
+    let tenant_session_marker = format!("session-{}", rig.non_admin_session_id.as_uuid());
+    assert!(
+        body.contains(&tenant_session_marker),
+        "scoped view must include the tenant session row"
+    );
+    assert!(
+        !body.contains(&admin_session_marker),
+        "scoped view must not leak the system admin's session into the Acme realm"
+    );
+}
+
+/// Regression: a 404 from inside the admin shell renders **with**
+/// chrome (sidebar, user pill, dark theme), not as a stand-alone
+/// unstyled white page. The 2026-04-29 audit caught the legacy
+/// behaviour leaving an authenticated admin staring at a bare
+/// "Not Found" line with no nav to recover.
+#[tokio::test]
+async fn admin_user_detail_404_renders_inside_admin_shell() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-404-chrome");
+
+    // Hit a UUID that doesn't exist in the default-resolved tenant realm.
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/users/00000000-0000-0000-0000-0000ffff0001")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    assert!(body.contains("Not Found"));
+    // Sidebar nav links — confirm the admin chrome is intact.
+    assert!(
+        body.contains("/ui/admin/realms"),
+        "404 inside admin shell must keep the sidebar (Realms link)"
+    );
+    assert!(
+        body.contains("/ui/logout"),
+        "404 inside admin shell must keep the user pill / sign-out"
+    );
+    assert!(
+        body.contains("admin@acme.test"),
+        "404 inside admin shell must show the signed-in user's email"
+    );
+}
+
+/// Without the sentinel, the same request 404s because TargetRealm
+/// falls back to the first tenant realm. Pins the URL contract.
+#[tokio::test]
+async fn admin_user_detail_404s_for_system_admin_without_sentinel() {
+    let rig = build_rig();
+    #[allow(deprecated)]
+    let admin_uid = rig.admin_user_id.as_uuid();
+    let cookie = admin_cookie(&rig, "csrf-no-sentinel");
+
+    let uri = format!("/ui/admin/users/{admin_uid}");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "without ?admin_target=system, lookup falls back to a tenant realm \
+         where the system admin doesn't exist"
+    );
+}
+
 #[tokio::test]
 async fn admin_user_detail_returns_404_for_unknown() {
     let rig = build_rig();
@@ -779,7 +1006,18 @@ async fn admin_app_list_renders() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("Managed via hearth.yaml"));
+    // The legacy "Managed via hearth.yaml" badge was replaced by an
+    // "Edit in Config Editor" CTA in PR3 — operators have a working
+    // path to the editor now, not a dead-end note. See the 2026-04-29
+    // UX audit, finding #8.
+    assert!(
+        body.contains("Edit in Config Editor"),
+        "applications list must surface a CTA to the config editor"
+    );
+    assert!(
+        body.contains("/ui/admin/settings/editor?section=oidc"),
+        "applications CTA must deep-link to the OIDC section"
+    );
 }
 
 #[tokio::test]

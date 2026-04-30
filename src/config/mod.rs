@@ -154,6 +154,7 @@ impl Config {
                 default_realm: None,
                 grpc_port: None,
                 grpc_bind_address: None,
+                assets_dir: None,
             },
             storage: StorageSection {
                 data_dir: String::new(),

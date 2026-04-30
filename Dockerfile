@@ -104,6 +104,9 @@ COPY benches ./benches
 # had the same mtime (rare but possible with very fast builds). `build.rs`
 # is touched too so cargo re-runs it and regenerates `src/protocol/generated/`
 # (which was produced in the cache pass, then wiped with the stub src/).
+# Templates are touched for the same reason: Askama compiles them at build time
+# via proc macros, and the BuildKit cache mount can leave stale fingerprints
+# that cause Cargo to skip recompilation even when template files changed.
 # Final build: only the hearth crate recompiles (deps are cached). The binary
 # must be copied out of the cache mount within this RUN step — the mount
 # vanishes from the layer once the command finishes.
@@ -111,6 +114,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     touch src/main.rs src/lib.rs simulation/src/lib.rs build.rs \
+    && find templates -type f -exec touch {} + \
     && cargo build --release --bin hearth \
     && strip target/release/hearth \
     && cp target/release/hearth /tmp/hearth
