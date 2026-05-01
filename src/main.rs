@@ -709,25 +709,39 @@ async fn run_serve(
     }
     let global_theme_css = format!("{theme_base_css}\n{global_custom_css}");
 
-    // Build per-realm theme CSS map (keyed by realm UUID string).
+    // Build per-realm theme CSS map (keyed by realm UUID string) and the
+    // per-realm product-name override map in the same pass.
     let mut realm_themes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut realm_product_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for (realm_name, realm_yaml) in config.realms.iter().flatten() {
         let web_cfg = match realm_yaml.web.as_ref() {
-            Some(w) if w.theme.is_some() || w.custom_css.is_some() => w,
+            Some(w)
+                if w.theme.is_some() || w.custom_css.is_some() || w.product_name.is_some() =>
+            {
+                w
+            }
             _ => continue,
         };
         let realm = match identity_engine.get_realm_by_name(realm_name) {
             Ok(Some(t)) => t,
             Ok(None) => {
-                warn!(name = %realm_name, "realm not found in storage, skipping per-realm theme");
+                warn!(name = %realm_name, "realm not found in storage, skipping per-realm web overrides");
                 continue;
             }
             Err(e) => {
-                warn!(name = %realm_name, error = %e, "failed to look up realm for theme wiring");
+                warn!(name = %realm_name, error = %e, "failed to look up realm for web overrides");
                 continue;
             }
         };
+        let realm_uuid = realm.id().as_uuid().to_string();
+        if let Some(name) = web_cfg.product_name.as_deref() {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                realm_product_names.insert(realm_uuid.clone(), trimmed.to_string());
+            }
+        }
         let base = web_cfg.theme.as_deref().map_or("", web::themes::theme_css);
         let custom = web_cfg
             .custom_css
@@ -749,7 +763,7 @@ async fn run_serve(
         }
         let combined = format!("{base}\n{custom}");
         if !combined.trim().is_empty() {
-            realm_themes.insert(realm.id().as_uuid().to_string(), combined);
+            realm_themes.insert(realm_uuid, combined);
         }
     }
 
@@ -770,6 +784,7 @@ async fn run_serve(
     web_state = web_state
         .with_theme_css(global_theme_css)
         .with_realm_themes(realm_themes)
+        .with_realm_product_names(realm_product_names)
         .with_reload_notify(Arc::clone(&reload_notify));
     if let Some(ref cfg_path) = reload_config_path {
         web_state = web_state.with_config_path(cfg_path.clone());

@@ -162,6 +162,11 @@ pub(super) struct FederationButton {
 struct LoginTemplate {
     error: Option<String>,
     return_to: Option<String>,
+    /// Submitted email, echoed back into the form on auth failure so the
+    /// user doesn't have to retype it. Empty on the initial GET.
+    /// Carries no enumeration risk: we always show the same generic error,
+    /// so the field is preserved whether or not the address matches a user.
+    email: String,
     /// URL the form POSTs to — empty for bare `/ui/login`, or
     /// `/ui/realms/<name>/login` for a realm-scoped form.
     form_action: String,
@@ -203,6 +208,7 @@ impl LoginTemplate {
         Self {
             error,
             return_to,
+            email: String::new(),
             form_action: format!("{action_prefix}/login"),
             forgot_url: format!("{action_prefix}/forgot-password"),
             register_url: format!("{action_prefix}/register"),
@@ -798,6 +804,7 @@ fn login_submit_impl(
         let action_prefix = action_prefix.clone();
         let return_to = return_to.clone();
         let realm_theme = realm_theme.clone();
+        let submitted_email = email.to_string();
         move || {
             let mut tmpl = LoginTemplate::new(
                 Some("Sign-in failed. Check your credentials and try again.".to_string()),
@@ -807,6 +814,11 @@ fn login_submit_impl(
                 product_name.clone(),
                 logo_url.clone(),
             );
+            // Echo the submitted email back into the form so the user
+            // doesn't have to retype it. The error message is constant
+            // regardless of whether the address matches a real account
+            // (enumeration resistance), so this leaks nothing.
+            tmpl.email.clone_from(&submitted_email);
             tmpl.theme_css.clone_from(&theme_css);
             tmpl.realm_theme_css.clone_from(&realm_theme);
             render_status(&tmpl, StatusCode::UNAUTHORIZED)
@@ -887,6 +899,7 @@ fn login_submit_impl(
                 state.product_name.clone(),
                 state.logo_url.clone(),
             );
+            tmpl.email = email.to_string();
             tmpl.theme_css.clone_from(&state.theme_css);
             tmpl.realm_theme_css = realm_theme;
             render_status(&tmpl, StatusCode::FORBIDDEN)

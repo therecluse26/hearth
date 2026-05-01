@@ -125,6 +125,10 @@ pub struct WebState {
     /// Served at `GET /ui/static/realm-theme/{id}`. Empty when no realms
     /// have per-realm themes configured.
     pub realm_themes: HashMap<String, String>,
+    /// Per-realm product-name overrides keyed by `RealmId` hyphenated UUID
+    /// string. Resolved by [`WebState::product_name_for`] with fallback to
+    /// the global `product_name`. Empty when no realm sets `web.product_name`.
+    pub realm_product_names: HashMap<String, String>,
     /// `ETag` for the global theme CSS (SHA-256 of [`WebState::theme_css`],
     /// first 8 bytes). Updated by [`WebState::with_theme_css`].
     pub theme_css_etag: String,
@@ -208,6 +212,7 @@ impl WebState {
             config: None,
             theme_css: String::new(),
             realm_themes: HashMap::new(),
+            realm_product_names: HashMap::new(),
             theme_css_etag: etag_for(""),
             realm_theme_etags: HashMap::new(),
             trusted_proxies: Vec::new(),
@@ -319,6 +324,14 @@ impl WebState {
         self
     }
 
+    /// Sets the per-realm product-name overrides (realm UUID string →
+    /// display name). Empty map is a no-op fallback to global.
+    #[must_use]
+    pub fn with_realm_product_names(mut self, map: HashMap<String, String>) -> Self {
+        self.realm_product_names = map;
+        self
+    }
+
     /// Attaches the reload notifier for triggering config hot-reload
     /// from the admin API.
     #[must_use]
@@ -349,6 +362,21 @@ impl WebState {
     pub fn realm_theme_css_for(&self, realm_id: &RealmId) -> Option<String> {
         let id = realm_id.as_uuid().to_string();
         self.realm_themes.get(&id).cloned()
+    }
+
+    /// Resolves the product name to display for a request scoped to the
+    /// given realm. Falls back to the global `product_name` when no
+    /// per-realm override is configured. The 2026-04-30 UX audit caught
+    /// every page rendering the first realm's product name regardless of
+    /// scope — this method is the seam handlers should call instead of
+    /// reaching for the global field directly.
+    #[must_use]
+    pub fn product_name_for(&self, realm_id: &RealmId) -> String {
+        let id = realm_id.as_uuid().to_string();
+        self.realm_product_names
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| self.product_name.clone())
     }
 
     /// Pins a realm as the "current" one for this process. Called by
@@ -963,7 +991,22 @@ pub fn router(state: WebState) -> Router {
         .route("/favicon.ico", axum::routing::get(serve_favicon))
         .route("/favicon.svg", axum::routing::get(serve_favicon))
         .nest("/ui", ui_routes)
+        // Branded 404 for any /ui/* path that no nested route matched, plus
+        // every other unrouted path on the web tree. Without this, axum's
+        // default falls through with an empty body and the browser paints
+        // its native error page (Chrome's "This site can't be reached"),
+        // which looks like the server is broken — caught by the 2026-04-30
+        // UX audit. The handler ignores the request body and renders the
+        // same template as the explicit `not_found_authed` calls.
+        .fallback(serve_branded_404)
         .with_state(shared)
+}
+
+/// Default 404 handler. Returns the branded error page rather than letting
+/// axum fall through to a bare `404 Not Found` text body.
+async fn serve_branded_404(req: axum::extract::Request) -> Response {
+    let path = req.uri().path().to_string();
+    handlers_common::not_found(&format!("No page exists at {path}."))
 }
 
 /// Serves the Hearth flame as `image/svg+xml`. Works for both `.ico` and

@@ -151,7 +151,7 @@ pub async fn admin_users_list(
             flash: None,
             csrf: session.csrf.clone(),
             narrow: false,
-            product_name: state.product_name.clone(),
+            product_name: state.product_name_for(target.id()),
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
             realm_theme_css: state.realm_theme_css(),
@@ -457,6 +457,12 @@ pub struct UserSessionRow {
     pub expires_at: String,
     /// Whether the session has been revoked.
     pub revoked: bool,
+    /// Whether the session has passed its expires_at relative to wall-clock
+    /// at request time. The 2026-04-30 UX audit caught listings showing
+    /// already-expired sessions as "Active" simply because the storage row
+    /// hadn't been touched. Computed server-side; the template branches on
+    /// this before showing the success-coloured "Active" badge.
+    pub expired: bool,
     /// Device label (e.g. "Chrome, Mac OSX") or "Unknown device".
     pub device_label: String,
     /// Client IP address or "\u{2014}" (em dash) if unavailable.
@@ -706,6 +712,9 @@ pub async fn admin_user_detail(
         .identity
         .list_sessions_by_user(target.id(), &uid, None, 10)
         .unwrap_or_default();
+    // Single now-snapshot for the whole list so two rows can't disagree
+    // on whether they're past expiry within the same render.
+    let now_micros = crate::core::Timestamp::now().as_micros();
     let sessions: Vec<UserSessionRow> = raw_sessions
         .items
         .iter()
@@ -714,6 +723,7 @@ pub async fn admin_user_detail(
             created_at: format_ts(s.created_at()),
             expires_at: format_ts(s.expires_at()),
             revoked: s.is_revoked(),
+            expired: s.expires_at().as_micros() <= now_micros,
             device_label: s.device_label().unwrap_or("Unknown device").to_string(),
             ip_address: s.ip_address().unwrap_or("\u{2014}").to_string(),
         })
@@ -887,7 +897,7 @@ pub async fn admin_user_detail(
         flash: None,
         csrf: session.csrf.clone(),
         narrow: false,
-        product_name: state.product_name.clone(),
+        product_name: state.product_name_for(target.id()),
         logo_url: state.logo_url.clone(),
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
@@ -1462,6 +1472,14 @@ struct RealmDetailTemplate {
     refresh_token_ttl_display: Option<String>,
     /// Pre-formatted lockout duration.
     lockout_duration_display: Option<String>,
+    /// Pre-formatted session TTL (e.g. "8h"). The 2026-04-30 UX audit
+    /// caught raw "28800s" rendering — operators had to do mental math.
+    /// The raw seconds value stays available via the tooltip on the
+    /// rendered text.
+    session_ttl_display: Option<String>,
+    /// Pre-formatted Argon2id memory cost (e.g. "128 MiB" from 131072
+    /// KiB). Same rationale as `session_ttl_display`.
+    password_memory_cost_display: Option<String>,
     /// Users holding `hearth#admin` on this realm.
     admins: Vec<RealmAdminView>,
     chrome: bool,
@@ -1494,12 +1512,18 @@ pub async fn admin_realm_detail(
             let access_token_ttl_display = cfg.access_token_ttl_micros.map(format_micros_human);
             let refresh_token_ttl_display = cfg.refresh_token_ttl_micros.map(format_micros_human);
             let lockout_duration_display = cfg.lockout_duration_micros.map(format_micros_human);
+            let session_ttl_display = cfg.session_ttl_micros.map(format_micros_human);
+            let password_memory_cost_display =
+                cfg.password_memory_cost.map(format_kib_human);
             let admins = resolve_realm_admins(&state, realm.id());
+            let product_name = state.product_name_for(realm.id());
             render(&RealmDetailTemplate {
                 realm,
                 access_token_ttl_display,
                 refresh_token_ttl_display,
                 lockout_duration_display,
+                session_ttl_display,
+                password_memory_cost_display,
                 admins,
                 chrome: true,
                 active: "realms",
@@ -1508,7 +1532,7 @@ pub async fn admin_realm_detail(
                 flash: None,
                 csrf: session.csrf.clone(),
                 narrow: false,
-                product_name: state.product_name.clone(),
+                product_name,
                 logo_url: state.logo_url.clone(),
                 theme_css: state.theme_css.clone(),
                 realm_theme_css: state.realm_theme_css(),
@@ -2002,6 +2026,26 @@ fn format_micros_human(micros: i64) -> String {
     parts.join(" ")
 }
 
+/// Formats an Argon2id memory-cost value (already in KiB) as a human-readable
+/// string with the original KiB count alongside.
+///
+/// Examples: `131_072` → "128 MiB (131072 KiB)", `4_096` → "4 MiB (4096 KiB)",
+/// `512` → "512 KiB". The 2026-04-30 UX audit caught the raw number leaking
+/// to operators with no unit conversion.
+fn format_kib_human(kib: u32) -> String {
+    if kib >= 1024 {
+        let mib = f64::from(kib) / 1024.0;
+        // Whole-MiB values render without trailing zero noise.
+        if (mib.fract()).abs() < f64::EPSILON {
+            format!("{} MiB ({kib} KiB)", mib as u32)
+        } else {
+            format!("{mib:.1} MiB ({kib} KiB)")
+        }
+    } else {
+        format!("{kib} KiB")
+    }
+}
+
 /// Converts a Unix day number to (year, month 1–12, day 1–31).
 ///
 /// Algorithm from Howard Hinnant's chrono-compatible
@@ -2309,6 +2353,117 @@ pub struct AuditRow {
     pub event: crate::audit::AuditEvent,
     /// Human-readable timestamp.
     pub timestamp_display: String,
+    /// Friendly actor label — resolved email when the actor is a user UUID,
+    /// "system" when the event was generated by an internal subsystem, or
+    /// the raw actor string when no resolution applies. The 2026-04-30 UX
+    /// audit caught audit logs rendering nothing but UUIDs, leaving
+    /// administrators unable to scan for who did what.
+    pub actor_display: String,
+    /// Friendly resource label — display name of the user / org / client /
+    /// realm referenced by `resource_type` + `resource_id`. Falls back to a
+    /// short id (first 8 hex chars) when the resource cannot be resolved
+    /// (deleted, cross-realm, unknown type).
+    pub resource_display: String,
+}
+
+/// Resolves an audit-event actor string (typically a user UUID) to a
+/// human-friendly display value. Returns "system" verbatim, looks up users
+/// by id, and falls back to the original string when no lookup applies.
+fn resolve_audit_actor(
+    state: &Arc<WebState>,
+    realm_id: &RealmId,
+    actor: &str,
+    cache: &mut std::collections::HashMap<String, String>,
+) -> String {
+    if actor == "system" {
+        return "system".to_string();
+    }
+    if let Some(hit) = cache.get(actor) {
+        return hit.clone();
+    }
+    let resolved = match uuid::Uuid::parse_str(actor) {
+        Ok(uuid) => {
+            let uid = crate::core::UserId::new(uuid);
+            // Audit actors can be cross-realm: a system-realm admin acting
+            // on a tenant realm shows up with their system-realm user id
+            // but the audit row is scoped to the tenant realm. Try the
+            // event realm first; fall through to the system realm so the
+            // common case (super-admin acting on tenants) resolves.
+            let from_event_realm = state
+                .identity
+                .get_user(realm_id, &uid)
+                .ok()
+                .flatten()
+                .map(|u| u.email().to_string());
+            from_event_realm
+                .or_else(|| {
+                    let system = crate::identity::keys::system_realm_id();
+                    if &system == realm_id {
+                        return None;
+                    }
+                    state
+                        .identity
+                        .get_user(&system, &uid)
+                        .ok()
+                        .flatten()
+                        .map(|u| u.email().to_string())
+                })
+                .unwrap_or_else(|| actor.to_string())
+        }
+        Err(_) => actor.to_string(),
+    };
+    cache.insert(actor.to_string(), resolved.clone());
+    resolved
+}
+
+/// Resolves an audit-event resource (`type`, `id`) to a display name.
+/// Hits the identity engine on misses; cached per request to avoid
+/// quadratic lookups on tightly-clustered events.
+fn resolve_audit_resource(
+    state: &Arc<WebState>,
+    realm_id: &RealmId,
+    resource_type: &str,
+    resource_id: &str,
+    cache: &mut std::collections::HashMap<(String, String), String>,
+) -> String {
+    let key = (resource_type.to_string(), resource_id.to_string());
+    if let Some(hit) = cache.get(&key) {
+        return hit.clone();
+    }
+    let resolved = match resource_type {
+        "user" => uuid::Uuid::parse_str(resource_id).ok().and_then(|u| {
+            state
+                .identity
+                .get_user(realm_id, &crate::core::UserId::new(u))
+                .ok()
+                .flatten()
+                .map(|user| user.email().to_string())
+        }),
+        "realm" => uuid::Uuid::parse_str(resource_id).ok().and_then(|u| {
+            state
+                .identity
+                .get_realm(&RealmId::new(u))
+                .ok()
+                .flatten()
+                .map(|r| r.name().to_string())
+        }),
+        "organization" => uuid::Uuid::parse_str(resource_id).ok().and_then(|u| {
+            state
+                .identity
+                .get_organization(realm_id, &crate::core::OrganizationId::new(u))
+                .ok()
+                .flatten()
+                .map(|o| o.name().to_string())
+        }),
+        _ => None,
+    };
+    let display = resolved.unwrap_or_else(|| {
+        // Fallback: show short id so the row stays compact and scannable.
+        let short = resource_id.get(..8).unwrap_or(resource_id);
+        format!("{short}…")
+    });
+    cache.insert(key, display.clone());
+    display
 }
 
 /// Query params for the UI audit page.
@@ -2369,6 +2524,10 @@ struct AuditListTemplate {
     form_start_date: String,
     form_end_date: String,
     form_limit: String,
+    /// Every available `AuditAction` tag, alphabetised. Powers the Action
+    /// `<select>` so administrators pick from a list rather than recalling
+    /// exact spellings (`org_created` vs `organization_created`).
+    available_actions: Vec<&'static str>,
     flash_message: Option<String>,
     chrome: bool,
     active: &'static str,
@@ -2434,11 +2593,31 @@ pub async fn admin_audit_list(
 
     match state.audit.query(&query) {
         Ok(events) => {
+            // Per-request resolution caches so the same actor / resource
+            // doesn't hit the identity engine N times when an event burst
+            // touches one user repeatedly (the typical pattern).
+            let mut actor_cache: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            let mut resource_cache: std::collections::HashMap<(String, String), String> =
+                std::collections::HashMap::new();
             let rows: Vec<AuditRow> = events
                 .into_iter()
-                .map(|e| AuditRow {
-                    timestamp_display: format_ts(e.timestamp),
-                    event: e,
+                .map(|e| {
+                    let actor_display =
+                        resolve_audit_actor(&state, target.id(), &e.actor, &mut actor_cache);
+                    let resource_display = resolve_audit_resource(
+                        &state,
+                        target.id(),
+                        &e.resource_type,
+                        &e.resource_id,
+                        &mut resource_cache,
+                    );
+                    AuditRow {
+                        timestamp_display: format_ts(e.timestamp),
+                        actor_display,
+                        resource_display,
+                        event: e,
+                    }
                 })
                 .collect();
             if htmx.0 {
@@ -2457,6 +2636,10 @@ pub async fn admin_audit_list(
                     form_start_date: params.start_date.unwrap_or_default(),
                     form_end_date: params.end_date.unwrap_or_default(),
                     form_limit: limit.to_string(),
+                    available_actions: crate::audit::AuditAction::all()
+                        .into_iter()
+                        .map(|a| a.as_str())
+                        .collect(),
                     flash_message: None,
                     chrome: true,
                     active: "audit",
@@ -2493,6 +2676,10 @@ pub async fn admin_audit_verify_integrity(
             form_start_date: String::new(),
             form_end_date: String::new(),
             form_limit: "50".to_string(),
+            available_actions: crate::audit::AuditAction::all()
+                .into_iter()
+                .map(|a| a.as_str())
+                .collect(),
             flash_message: Some("Audit chain integrity verified successfully.".to_string()),
             chrome: true,
             active: "audit",
@@ -2513,6 +2700,10 @@ pub async fn admin_audit_verify_integrity(
             form_start_date: String::new(),
             form_end_date: String::new(),
             form_limit: "50".to_string(),
+            available_actions: crate::audit::AuditAction::all()
+                .into_iter()
+                .map(|a| a.as_str())
+                .collect(),
             flash_message: Some(
                 "Integrity violation detected! The audit chain may have been tampered with."
                     .to_string(),

@@ -50,19 +50,22 @@
       </dd>
     </div>
     {% let config = realm.config() %}
-    {% match config.session_ttl_micros %}
-      {% when Some with (ttl) %}
+    {% match session_ttl_display %}
+      {% when Some with (display) %}
       <div>
         <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Session TTL</dt>
-        <dd class="mt-1 text-sm text-ht-content-secondary">{{ ttl / 1_000_000 }}s</dd>
+        <dd class="mt-1 text-sm text-ht-content-secondary"
+            {% match config.session_ttl_micros %}{% when Some with (ttl) %}title="{{ ttl / 1_000_000 }} seconds"{% when None %}{% endmatch %}>
+          {{ display }}
+        </dd>
       </div>
       {% when None %}
     {% endmatch %}
-    {% match config.password_memory_cost %}
-      {% when Some with (cost) %}
+    {% match password_memory_cost_display %}
+      {% when Some with (display) %}
       <div>
         <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Password Memory Cost</dt>
-        <dd class="mt-1 text-sm text-ht-content-secondary">{{ cost }} KiB</dd>
+        <dd class="mt-1 text-sm text-ht-content-secondary">{{ display }}</dd>
       </div>
       {% when None %}
     {% endmatch %}

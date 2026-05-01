@@ -1,15 +1,21 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} · {{ user.display_name() }}{% endblock %}
 {% block body %}
-<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <div class="flex items-center gap-3">
-    <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ user.display_name() }}</h1>
-    {% if is_user_admin %}
-      <span class="inline-flex items-center rounded-full bg-violet-bg px-2.5 py-0.5 text-xs font-semibold text-violet-fg">Admin</span>
-    {% endif %}
+{# Header. Identity (display name + role chip + email-as-subtitle) on the    #}
+{# left, primary action on the right. The 2026-04-30 UX audit caught the    #}
+{# previous layout placing the email in the middle of the flex row, visually#}
+{# detached from the heading and producing a "label · label · button" feel. #}
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+  <div class="min-w-0">
+    <div class="flex items-center gap-3">
+      <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ user.display_name() }}</h1>
+      {% if is_user_admin %}
+        <span class="inline-flex items-center rounded-full bg-violet-bg px-2.5 py-0.5 text-xs font-semibold text-violet-fg">Admin</span>
+      {% endif %}
+    </div>
+    <p class="mt-0.5 truncate text-sm text-ht-content-muted">{{ user.email() }}</p>
   </div>
-  <p class="mt-1 text-sm text-ht-content-muted">{{ user.email() }}</p>
-  <div class="flex items-center gap-2">
+  <div class="flex shrink-0 items-center gap-2">
     <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
        class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
       Edit
@@ -197,12 +203,14 @@
         <td class="px-3 py-2">
           {% if s.revoked %}
             <span class="inline-flex items-center rounded-full bg-danger/[0.12] px-2 py-0.5 text-xs font-medium text-danger-fg">Revoked</span>
+          {% else if s.expired %}
+            <span class="inline-flex items-center rounded-full bg-ht-surface-base px-2 py-0.5 text-xs font-medium text-ht-content-muted">Expired</span>
           {% else %}
             <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
           {% endif %}
         </td>
         <td class="px-3 py-2 text-right">
-          {% if !s.revoked %}
+          {% if !s.revoked && !s.expired %}
           <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/sessions/{{ s.id }}/revoke">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
             <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>

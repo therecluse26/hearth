@@ -31,12 +31,16 @@
     <div>
       <label for="email" class="block text-sm font-medium text-ht-content-secondary">Email</label>
       <input type="email" id="email" name="email" required autocomplete="email webauthn"
+             value="{{ email }}"
              class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <div>
       <label for="password" class="block text-sm font-medium text-ht-content-secondary">Password</label>
+      {# When the email field is pre-filled (auth retry), focus password so   #}
+      {# the user lands ready to type rather than re-typing the email.        #}
       <input type="password" id="password" name="password" required autocomplete="current-password"
+             {% if !email.is_empty() %}autofocus{% endif %}
              class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 

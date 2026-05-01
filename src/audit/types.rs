@@ -157,6 +157,73 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
+    /// Every variant in declaration order. Used by the admin audit-log
+    /// filter UI to populate the Action `<select>` so administrators
+    /// don't have to remember exact string tags. Keep alphabetised on
+    /// the wire format for stable rendering.
+    #[must_use]
+    pub fn all() -> Vec<Self> {
+        let mut v = vec![
+            Self::UserCreated,
+            Self::UserUpdated,
+            Self::UserDeleted,
+            Self::CredentialSet,
+            Self::CredentialChanged,
+            Self::CredentialVerified,
+            Self::SessionCreated,
+            Self::SessionRevoked,
+            Self::TokenIssued,
+            Self::TokenRefreshed,
+            Self::RealmCreated,
+            Self::RealmUpdated,
+            Self::RealmDeleted,
+            Self::ClientRegistered,
+            Self::ClientUpdated,
+            Self::ClientDeleted,
+            Self::AuthorizationCodeIssued,
+            Self::AuthorizationCodeExchanged,
+            Self::TupleWritten,
+            Self::TupleDeleted,
+            Self::BulkUsersCreated,
+            Self::BulkUsersDisabled,
+            Self::OrgCreated,
+            Self::OrgUpdated,
+            Self::OrgDeleted,
+            Self::ConsentGranted,
+            Self::ConsentDenied,
+            Self::ConsentRevoked,
+            Self::FederationLoginStarted,
+            Self::FederationLoginCompleted,
+            Self::FederationAccountLinked,
+            Self::FederationAccountUnlinked,
+            Self::FederationJitProvisioned,
+            Self::SamlLoginInitiated,
+            Self::SamlLoginCompleted,
+            Self::SamlLoginFailed,
+            Self::SamlIdpAuthnRequestReceived,
+            Self::SamlIdpResponseIssued,
+            Self::SamlIdpInitiatedSso,
+            Self::SamlSloRequested,
+            Self::SamlSloCompleted,
+            Self::ScimUserCreated,
+            Self::ScimUserUpdated,
+            Self::ScimUserDeleted,
+            Self::ScimGroupCreated,
+            Self::ScimGroupUpdated,
+            Self::ScimGroupDeleted,
+            Self::RoleAssigned,
+            Self::RoleRevoked,
+            Self::OrphanedReferenceSkipped,
+            Self::UserPermissionGranted,
+            Self::UserPermissionRevoked,
+            Self::ClientConsentGranted,
+            Self::ClientConsentRevoked,
+            Self::ConsentRequiredOnRefresh,
+        ];
+        v.sort_by_key(|a| a.as_str());
+        v
+    }
+
     /// Returns the string tag for storage key encoding.
     pub fn as_str(&self) -> &'static str {
         match self {

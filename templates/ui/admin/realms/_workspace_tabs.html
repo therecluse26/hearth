@@ -7,7 +7,15 @@
      - target_realm_name: Option<String>
      - target_realm_id_hex: Option<String>
      - active_tab: &'static str   // "overview" | "users" | "organizations"
-                                  // | "applications" | "sessions"
+                                  // | "applications" | "sessions" | "audit"
+                                  // | "rbac_permissions" | "rbac_roles"
+                                  // | "rbac_scopes" | "rbac_debug"
+
+   The 2026-04-30 UX audit caught the mismatch between this tab bar and
+   the per-realm sidebar submenu (which already exposed Audit Log + RBAC
+   pages). Users hunting for those tabs in the workspace nav came up
+   empty. Tabs were extended to mirror the full submenu so the two
+   navigation surfaces agree.
 #}
 {% match target_realm_name %}
   {% when Some with (realm_name) %}
@@ -34,6 +42,21 @@
           <a href="/ui/admin/sessions?realm={{ realm_name }}"
              {% if active_tab == "sessions" %}aria-current="page"{% endif %}
              class="{% if active_tab == "sessions" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Sessions</a>
+          <a href="/ui/admin/audit?realm={{ realm_name }}"
+             {% if active_tab == "audit" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "audit" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Audit log</a>
+          <a href="/ui/admin/rbac/permissions?realm={{ realm_name }}"
+             {% if active_tab == "rbac_permissions" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "rbac_permissions" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Permissions</a>
+          <a href="/ui/admin/rbac/roles?realm={{ realm_name }}"
+             {% if active_tab == "rbac_roles" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "rbac_roles" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Roles</a>
+          <a href="/ui/admin/rbac/scopes?realm={{ realm_name }}"
+             {% if active_tab == "rbac_scopes" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "rbac_scopes" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Scopes</a>
+          <a href="/ui/admin/rbac/debug?realm={{ realm_name }}"
+             {% if active_tab == "rbac_debug" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "rbac_debug" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Permission Check</a>
         </nav>
       {% when None %}
     {% endmatch %}

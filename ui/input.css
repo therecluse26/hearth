@@ -10,6 +10,11 @@
    valid CSS color format: hex, rgb(), hsl(), oklch(), named colors, etc.
    ──────────────────────────────────────────────────────────────────────── */
 :root {
+  /* Hearth UI is dark-mode only (THEME.md). Tell the browser so UA-rendered
+     controls (form widgets, scrollbars) and any iframed content adopt dark
+     chrome by default — without relying on the OS color-scheme preference. */
+  color-scheme: dark;
+
   /* Surfaces */
   --ht-surface-base:     #141418;  /* graphite-900 */
   --ht-surface-raised:   #0e0e12;  /* graphite-950 */

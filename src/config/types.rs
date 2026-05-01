@@ -465,6 +465,13 @@ pub struct RealmWebYaml {
     /// Path to a custom CSS file for this realm's UI sessions.
     #[serde(default)]
     pub custom_css: Option<String>,
+    /// Realm-specific product name shown in titles, logo alt text, and
+    /// email subjects when a request is scoped to this realm. Falls back
+    /// to the global `branding.product_name` when unset. The 2026-04-30
+    /// UX audit caught a realm titled "Test Corp" leaking into every
+    /// other realm's pages because there was no per-realm override.
+    #[serde(default)]
+    pub product_name: Option<String>,
 }
 
 /// First-run onboarding configuration.

@@ -4,12 +4,12 @@
   <td class="px-4 py-3">
     <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ row.event.action }}</code>
   </td>
-  <td class="px-4 py-3">
-    <code class="font-mono text-xs text-ht-content-secondary">{{ row.event.actor }}</code>
+  <td class="px-4 py-3 text-sm text-ht-content-secondary" title="{{ row.event.actor }}">
+    {{ row.actor_display }}
   </td>
-  <td class="px-4 py-3 text-sm text-ht-content-secondary">
-    {{ row.event.resource_type }}
-    <code class="ml-1 rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs">{{ row.event.resource_id }}</code>
+  <td class="px-4 py-3 text-sm text-ht-content-secondary" title="{{ row.event.resource_id }}">
+    <span class="text-ht-content-muted">{{ row.event.resource_type }}</span>
+    <span class="ml-1">{{ row.resource_display }}</span>
   </td>
 </tr>
 {% endfor %}
