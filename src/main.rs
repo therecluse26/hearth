@@ -717,11 +717,7 @@ async fn run_serve(
         std::collections::HashMap::new();
     for (realm_name, realm_yaml) in config.realms.iter().flatten() {
         let web_cfg = match realm_yaml.web.as_ref() {
-            Some(w)
-                if w.theme.is_some() || w.custom_css.is_some() || w.product_name.is_some() =>
-            {
-                w
-            }
+            Some(w) if w.theme.is_some() || w.custom_css.is_some() || w.product_name.is_some() => w,
             _ => continue,
         };
         let realm = match identity_engine.get_realm_by_name(realm_name) {

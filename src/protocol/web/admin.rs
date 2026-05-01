@@ -1513,8 +1513,7 @@ pub async fn admin_realm_detail(
             let refresh_token_ttl_display = cfg.refresh_token_ttl_micros.map(format_micros_human);
             let lockout_duration_display = cfg.lockout_duration_micros.map(format_micros_human);
             let session_ttl_display = cfg.session_ttl_micros.map(format_micros_human);
-            let password_memory_cost_display =
-                cfg.password_memory_cost.map(format_kib_human);
+            let password_memory_cost_display = cfg.password_memory_cost.map(format_kib_human);
             let admins = resolve_realm_admins(&state, realm.id());
             let product_name = state.product_name_for(realm.id());
             render(&RealmDetailTemplate {

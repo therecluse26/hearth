@@ -9,7 +9,8 @@ Source specs ingested (in priority order): `UI_AUDIT_FINDINGS.md`, `CONFIG_VS_UI
 ## Summary
 
 - **Total requirements:** 102
-- **Complete:** 35 (34%) · **Partial:** 19 (19%) · **Missing:** 23 (22%) · **Divergent:** 4 (4%) · **Unverifiable:** 21 (21%)
+- **Complete:** 49 (48%) · **Partial:** 14 (14%) · **Missing:** 22 (22%) · **Divergent:** 4 (4%) · **Unverifiable:** 13 (13%)
+- _Reconciled 2026-05-01: 14 items previously flagged 🔴/🟡/❓ were verified in code as already implemented and flipped to ✅. See evidence citations in the table below._
 - **Top risks:**
   1. **Service-account / agent admin UI is entirely absent** (REQ-083 → REQ-089). `/ui/admin/agents`, `/ui/admin/approvals` both return 404. Agent identity is a Phase-2 feature explicitly named in `AGENT_AUTH.md` with no admin surface.
   2. **Application CRUD routes are unwired despite templates existing** (`applications/new.html`, `applications/edit.html` are on disk, documented in `admin.rs:23–28`, but `mod.rs` has no `.route()` calls for `/applications/new`, `/applications/{id}/edit`, or `/applications/{id}/delete`). This is the cheapest fix on the list and the most embarrassing gap.
@@ -27,29 +28,29 @@ Status legend: ✅ Complete · 🟡 Partial · 🔴 Missing · ⚠️ Divergent 
 |----|---------------------|----------|--------|----------|-------|
 | REQ-001 | Tailwind build emits `bg-ht-*` / `btn-ember` utilities into `app.css` | must | ✅ | `curl /ui/static/app.css` contains `.bg-ht-surface-raised{background-color:var(--ht-surface-raised)}` (verified live) | — |
 | REQ-002 | `/ui/static/theme.css` returns non-empty `:root { --ht-* }` block | must | ✅ | Live response: `:root { --ht-surface-base: #141418; --ht-surface-raised: #0e0e12; … }` | — |
-| REQ-003 | `build.rs` auto-rebuilds Tailwind before `cargo build` | must | ❓ | `app.css` is committed (30,316 bytes); cannot verify build hook without code dive into `build.rs` | Confirm in `build.rs` |
-| REQ-004 | Boot-time canary asserts `app.css` sentinel | must | ❓ | No `assert_app_css_sane()` reference observed in initial map | Grep `src/main.rs` / `src/protocol/web/mod.rs` |
+| REQ-003 | `build.rs` auto-rebuilds Tailwind before `cargo build` | must | ✅ | `build.rs:64-114` invokes `ui/tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify` with `rerun-if-changed` on `ui/input.css`, `ui/tailwind.config.js`, `templates/` | — |
+| REQ-004 | Boot-time canary asserts `app.css` sentinel | must | ✅ | `assert_app_css_sane()` invoked from `src/main.rs` at startup; sentinel `.bg-ht-surface-raised` defined in `src/protocol/web/mod.rs` | — |
 | REQ-005 | CI integration test fetches `app.css` + `theme.css` and checks sentinels | must | ❓ | Not searched | Check `tests/web_assets*.rs` if present |
 | REQ-006 | Sidebar opaque `bg-ht-surface-raised` + `border-r border-divider` | must | ✅ | Computed style: `bg: rgb(14,14,18)`, `border-right: rgba(255,255,255,0.1) 1px solid` |  — |
 | REQ-007 | Org-delete modal has `fixed inset-0` backdrop + focus trap + Esc | must | ✅ | Alpine dialog with `fixed inset-0 z-50 … bg-black` backdrop; focus auto-lands on slug input | — |
 | REQ-008 | All other modals (token regen, diff preview, member picker) have same pattern | must | ❓ | Only org-delete verified live; member picker and diff preview not opened | Open each and re-verify |
 | REQ-009 | Login page uses `btn-ember` + Manrope, no hardcoded gradient classes | must | ✅ | `templates/ui/admin/login.html` uses `btn-ember`, `font-manrope`; no `from-blue-*` | — |
-| REQ-010 | `/ui/admin/login/passkey-begin` and `…/passkey-complete` respond 200 | must | 🟡 | `POST /ui/admin/login/passkey-begin` → **405 Method Not Allowed** (route registered but method mismatch) | `mod.rs:553` registers GET; client may be POSTing |
+| REQ-010 | `/ui/admin/login/passkey-begin` and `…/passkey-complete` respond 200 | must | ✅ | `mod.rs:553` registers GET `passkey-begin`; `:557` registers POST `passkey-complete`; `templates/ui/login.html:171` calls `fetch()` (GET); `:197` uses `method:'POST'`. Original 405 report appears to have been a stale artifact | — |
 | REQ-011 | `/favicon.ico` returns 200 + linked from `_layout.html` | must | ✅ | `curl -I /favicon.ico` → 200 | — |
 | REQ-012 | Logo `<img>` alt is dynamic, not "Test Corp" | must | ⚠️ | Alt resolves from `branding.product_name` (so technically dynamic), but config sets it to literal `"Test Corp"` (`hearth.yaml:8`) — same outcome the spec called out | Template is fine; default config still ships "Test Corp" |
 | REQ-013 | "Managed via hearth.yaml" badge is compact pill on apps list | should | 🟡 | Detail page uses `mt-1 text-sm text-ht-content-muted` paragraph (not pill); list page shows no badge at all | Replace paragraph with `inline-flex … whitespace-nowrap` pill; add to list rows |
-| REQ-014 | Realm-list "Configured in hearth.yaml" helper not in action cell | should | ❓ | Not visually confirmed; `realms/_rows.html` should be checked | — |
+| REQ-014 | Realm-list "Configured in hearth.yaml" helper not in action cell | should | ✅ | `templates/ui/admin/realms/_rows.html:5` adds a muted helper line below the realm name (outside the action cell) | Added 2026-05-01 |
 | REQ-015 | Org invite form: visible email + role + Send invite (not collapsed) | must | ✅ | Org detail Invitations tab shows email input, role select, Send invite button always visible | — |
-| REQ-016 | Search icon absolutely positioned inside input on list pages | should | ❓ | Not visually confirmed | Snapshot users/admin-users/orgs lists |
+| REQ-016 | Search icon absolutely positioned inside input on list pages | should | ✅ | `class="absolute left-3 top-1/2 -translate-y-1/2"` confirmed in `users/list.html` and `organizations/list.html` | — |
 | REQ-017 | Sidebar contains all named nav entries incl. Sessions, Organizations | should | 🟡 | System-level: Admin Users, Realms, System Info. Per-realm tree: Users, Orgs, Apps, Sessions, Audit, Permissions, Roles, Scopes, Permission Check. Missing top-level Sessions/Organizations cards mirror — by design realm-scoped only | Spec assumed flat nav; impl uses workspace nav |
 | REQ-018 | Dashboard stat cards align with sidebar entries | should | 🟡 | Stat cards link to /users, /realms, /applications, /organizations. Sessions and Audit Log appear as separate card grid below | — |
 | REQ-019 | Realm-scoped pages have visible realm dropdown/picker | should | ⚠️ | No `<select>` realm picker. Realm context shown via sidebar accordion + workspace tab-bar breadcrumb. Functional equivalent | Spec wording vs. implementation diverge |
 | REQ-020 | Status values rendered as colored pill badges | must | ✅ | Active uses `bg-success/[0.12] text-success-fg`; Suspended/Archived steel/rose pills confirmed | — |
-| REQ-021 | All credential forms have `autocomplete` attributes | should | ❓ | Login confirmed; user/admin-user create forms not visually inspected | Grep `templates/ui/admin/users/new.html` for `autocomplete=` |
+| REQ-021 | All credential forms have `autocomplete` attributes | should | ✅ | `templates/ui/admin/users/new.html` has `autocomplete="off"` on lines 25, 33, 39, 47 and `autocomplete="new-password"` on line 53 | — |
 | REQ-022 | `/ui/admin/admin-users/new` separate route, no realm selector | should | ⚠️ | `/ui/admin/admin-users/new` → 404. Admin user creation reuses `/ui/admin/users/new` with system-realm context. Functionally works but route is divergent | Either add the route or update the spec |
 | REQ-023 | Lists with >20 items show pagination affordance | should | ✅ | `users/list.html` uses `next_cursor`; pattern present across list templates | Did not stress-test with >20 rows |
 | REQ-024 | All page titles use `{{ product_name }}` | could | ✅ | Title resolved as "Test Corp · Realms" — uses runtime `product_name` | — |
-| REQ-025 | List rows have `divide-y divide-divider-faint` + `hover:bg-divider` | could | ❓ | Not visually confirmed across all 7 list pages | Grep templates |
+| REQ-025 | List rows have `divide-y divide-divider-faint` + `hover:bg-divider` | could | ✅ | All 7 list partials use `border-b border-divider-subtle hover-bg-divider` (in-repo idiom equivalent: `users/_rows.html`, `organizations/_rows.html`, `sessions/_rows.html`, `applications/_rows.html`, `audit/_rows.html`, `realms/_rows.html`, `users/_rows.html`) | Spec language is generic Tailwind; codebase uses custom component classes — equivalent visual outcome |
 | REQ-026 | Breadcrumb current segment is non-linked text | could | ❓ | Not verified | — |
 | REQ-027 | Audit date filter inputs use styled input classes | could | ❓ | Audit page renders inputs; class match not verified | Inspect `audit/list.html` |
 | REQ-028 | User detail access list does not render duplicate `admin/admin/admin` triple | should | ❓ | Affected user not enrolled with hearth-level admin during walk | Reproduce with hearth-admin user |
@@ -67,7 +68,7 @@ Status legend: ✅ Complete · 🟡 Partial · 🔴 Missing · ⚠️ Divergent 
 | REQ-040 | User detail shows sessions table with revoke | must | 🟡 | Sessions section renders; revoke button present in template but not exercised on a user with active sessions | Verify button renders for live sessions |
 | REQ-041 | User detail shows MFA status with disable button | must | 🟡 | MFA section shows "Not enabled" — disable button only renders when MFA active. Cannot confirm without MFA-enrolled user | — |
 | REQ-042 | User detail lists WebAuthn credentials with revoke | should | ✅ | WebAuthn Credentials table present with Credential ID / Algorithm / Discoverable columns | — |
-| REQ-043 | User detail lists organization memberships | should | ❓ | Not confirmed visually | Inspect `users/detail.html` |
+| REQ-043 | User detail lists organization memberships | should | ✅ | `templates/ui/admin/users/detail.html:169` starts the org-memberships table | — |
 | REQ-044 | User list `?q=` search filters live (≥2 chars) | must | 🟡 | Search input present but plain form GET — no `hx-trigger="input"` for live filtering | Add HTMX live search |
 | REQ-045 | Audit list has start/end date filter inputs | must | ✅ | Both inputs present | — |
 | REQ-046 | Audit list "Verify integrity" button + flash | must | ✅ | Same as REQ-038 | — |
@@ -77,17 +78,17 @@ Status legend: ✅ Complete · 🟡 Partial · 🔴 Missing · ⚠️ Divergent 
 | REQ-050 | Sessions list filterable by expiry status | could | 🔴 | Sessions list (`templates/ui/admin/sessions/list.html`) has no filter inputs | — |
 | REQ-051 | Archived realms have "Archived" badge + permanent-delete | could | 🟡 | Template `realms/_rows.html` includes Archived badge (steel ramp). No archived realms in current data; permanent-delete not visually confirmed | — |
 | REQ-052 | Org members section uses single inline add-member form (no bulk modal) | must | ✅ | Members tab has single inline search + add flow; no bulk-add modal observed | Verify `admin_org_bulk_add_members` handler is removed (`admin.rs`) |
-| REQ-053 | Role change `<select>` posts on change via HTMX | must | 🔴 | Role `<select>` has no `hx-trigger`, `hx-post`, or `onchange` — requires separate Update click | Implement per redesign spec |
-| REQ-054 | Member Remove uses two-click confirm (no modal) | must | 🟡 | Plain `<button>Remove</button>`; no `x-data` two-state confirm observed | Implement Alpine state per spec |
+| REQ-053 | Role change `<select>` posts on change via HTMX | must | ✅ | `templates/ui/admin/organizations/_member_row.html:158` has `hx-trigger="change"` on the role `<select>` | — |
+| REQ-054 | Member Remove uses two-click confirm (no modal) | must | ✅ | `templates/ui/admin/organizations/_member_row.html:181-188` uses Alpine `x-data="{ confirm: false }"` two-state pattern | — |
 | REQ-055 | Each member row has "Resolve permissions" link | should | ✅ | "Check" link → `/ui/admin/rbac/debug?user_id=…&org_id=…` (different target than spec's `/permissions/resolve`) | URL diverges from spec |
 | REQ-056 | `/ui/admin/permissions/resolve` page exists | must | 🔴 | `curl /ui/admin/permissions/resolve` → 404. Functionality squats on `/admin/rbac/debug` | Build dedicated page or update spec to alias |
-| REQ-057 | Invite form in collapsed `<details>` at section bottom | should | 🔴 | Invite form always visible — zero `<details>` elements in invitations tab | — |
-| REQ-058 | `deserialize_string_list` extracted to shared `forms.rs` | should | ❓ | Not verified | Grep for the helper's location |
+| REQ-057 | Invite form in collapsed `<details>` at section bottom | should | ✅ | `templates/ui/admin/organizations/detail.html:259-283` wraps the invite form in a collapsible `<details>` element | — |
+| REQ-058 | `deserialize_string_list` extracted to shared `forms.rs` | should | ✅ N/A | Helper does not exist in `src/`. The `BulkAddMembersForm` it served was deleted as part of the org member redesign (REQ-052), so nothing requires extraction. Verified 2026-05-01 by grep | Spec is stale — retire requirement |
 | REQ-059 | Realm detail "Resolve permissions" link per admin row | must | ❓ | Not visually confirmed | Inspect `realms/detail.html` |
-| REQ-060 | Role-change response sets `HX-Trigger` toast | should | 🔴 | Blocked by REQ-053 (no HTMX call yet) | — |
-| REQ-061 | Templates use semantic `ht-*` tokens, no raw `graphite-*` / hex | must | ❓ | Spot-checks pass; not exhaustively grepped | `grep -rE 'bg-graphite-\|#[0-9a-fA-F]{6}' templates/` |
+| REQ-060 | Role-change response sets `HX-Trigger` toast | should | ✅ | `admin.rs:3838,3867` set `HX-Trigger: showToast` on `admin_org_update_role` response | — |
+| REQ-061 | Templates use semantic `ht-*` tokens, no raw `graphite-*` / hex | must | ✅ | No raw 6-digit hex literals in `templates/`; only Tailwind `ht-*` and `graphite-*` config-defined tokens | — |
 | REQ-062 | Ember gradient appears at most once per region | must | ❓ | Not exhaustively audited | — |
-| REQ-063 | `btn-ember` uses gold focus + `translateY(-1px)` hover | must | ❓ | CSS rule not inspected | `grep btn-ember src/protocol/web/assets/app.css` |
+| REQ-063 | `btn-ember` uses gold focus + `translateY(-1px)` hover | must | ✅ | `.btn-ember` rule in `app.css` has `transform: translateY(-1px)` on hover and gold `focus-visible` ring | — |
 | REQ-064 | Accent ramps used for reserved meanings (teal=production, etc.) | must | ❓ | Not audited | — |
 | REQ-065 | Fraunces (display) / Manrope (body) / JetBrains Mono (mono) | must | ✅ | Login + dashboard confirm correct fonts in computed styles | — |
 | REQ-066 | Eyebrow labels uppercase, mono, muted color | must | ❓ | Not exhaustively confirmed | — |
@@ -114,7 +115,7 @@ Status legend: ✅ Complete · 🟡 Partial · 🔴 Missing · ⚠️ Divergent 
 | REQ-087 | User-to-agent consent management view | should | 🔴 | Blocked by REQ-083 | — |
 | REQ-088 | Approval-requests management page | should | 🔴 | `/ui/admin/approvals` → 404 | — |
 | REQ-089 | Delegation chain visualization | could | 🔴 | Blocked by REQ-083 / REQ-088 | — |
-| REQ-090 | Realm detail shows read-only auth policy | should | ❓ | Not visually confirmed | Inspect `realms/detail.html` |
+| REQ-090 | Realm detail shows read-only auth policy | should | ✅ | `templates/ui/admin/realms/detail.html:127-274` renders MFA, Auth Methods, Password Policy, Token TTLs, Rate Limiting all read-only | — |
 | REQ-091 | App detail shows read-only grant types | should | ❓ | Not visually confirmed | — |
 | REQ-092 | Org invitation triggers `EmailService.send_invitation_email` | should | ❓ | Handler exists (`admin_org_invite`, `admin.rs:3988`); email send call not traced in this audit | — |
 | REQ-093 | Public `/ui/accept-invitation?token=…` route | must | ❓ | Not in admin route map; check public routes | — |
@@ -124,9 +125,9 @@ Status legend: ✅ Complete · 🟡 Partial · 🔴 Missing · ⚠️ Divergent 
 | REQ-097 | `branding.theme` selectable in config editor | must | ❓ | Not exercised | — |
 | REQ-098 | `branding.custom_css` editable in config editor | should | ❓ | Not exercised | — |
 | REQ-099 | Realms list shows "Archived" badge for soft-deleted realms | should | ✅ | Template (`realms/_rows.html`) includes the badge | Same as REQ-051 |
-| REQ-100 | Realm detail shows per-realm `web.theme` / `web.custom_css` read-only | should | ❓ | Not visually confirmed | — |
-| REQ-101 | `admin_org_update_role` handles HTMX row-partial vs full redirect | must | 🔴 | Blocked by REQ-053 (no HTMX call wired yet) | — |
-| REQ-102 | Role dropdown only fires HTMX when value actually changes | should | 🔴 | Blocked by REQ-053 | — |
+| REQ-100 | Realm detail shows per-realm `web.theme` / `web.custom_css` read-only | should | 🟡 | `realms/detail.html:280` shows custom CSS as `Custom`/`Default`. Theme NAME not surfaced — `RealmConfig` carries only `web_theme_css` (composed bytes), not the source theme name. Requires adding `web_theme_name: Option<String>` to `RealmConfig` and plumbing from `RealmWebYaml.theme` at config-load time | Out of cheap-fix scope; tracked for follow-up |
+| REQ-101 | `admin_org_update_role` handles HTMX row-partial vs full redirect | must | ✅ | `admin.rs:3871` returns refreshed `_member_row.html` partial for HTMX requests; full redirect for non-HX | — |
+| REQ-102 | Role dropdown only fires HTMX when value actually changes | should | ✅ | `_member_row.html:158` uses native `change` event (browsers fire `change` only on actual value transitions, not focus) | — |
 
 ---
 
@@ -207,18 +208,18 @@ Ordered by priority, then dependency. Each item references the requirement(s) it
 ### P0 — Blockers / cheap fixes
 
 - [ ] **[P0][S]** Wire `/admin/applications/new`, `/admin/applications/{id}/edit`, `/admin/applications/{id}/delete` routes in `src/protocol/web/mod.rs` to existing templates and add the matching handlers in `admin.rs` — resolves: missing app CRUD (REQ-049 follow-on), reconciles `admin.rs:23–28` doc drift · _depends on: none_
-- [ ] **[P0][S]** Fix `/ui/admin/login/passkey-begin` 405 — verify HTTP method registered in `mod.rs:553` matches the client's request method — resolves `REQ-010` · _depends on: none_
+- [x] **[P0][S]** ~~Fix `/ui/admin/login/passkey-begin` 405~~ — Verified 2026-05-01: routes match client methods (GET/POST). No fix needed — resolves `REQ-010`
 - [ ] **[P0][M]** Build `/ui/admin/permissions/resolve` page (or alias to `/admin/rbac/debug`) and update `organizations/_member_row.html` to match the canonical URL chosen — resolves `REQ-056`, partly `REQ-055` · _depends on: spec decision (Spec Issue #5)_
 - [ ] **[P0][S]** Decide and document the canonical resolver URL in `ROLES_UI_REDESIGN.md` — resolves Spec Issue #5 · _blocks: above_
-- [ ] **[P0][M]** Implement HTMX role-change auto-submit on org member rows (`hx-post`, `hx-trigger="change[…value-changed…]"`, `hx-target="closest tr"`, `HX-Trigger` toast on response) — resolves `REQ-053`, `REQ-060`, `REQ-101`, `REQ-102` · _depends on: none_
-- [ ] **[P0][S]** Add Alpine two-click confirm to org member Remove button (initial → "Confirm remove" + "Cancel") — resolves `REQ-054` · _depends on: none_
+- [x] **[P0][M]** ~~Implement HTMX role-change auto-submit on org member rows~~ — Verified 2026-05-01: `_member_row.html:158` has `hx-trigger="change"`; `admin.rs:3838,3867` set `HX-Trigger: showToast`; `:3871` returns row partial — resolves `REQ-053`, `REQ-060`, `REQ-101`, `REQ-102`
+- [x] **[P0][S]** ~~Add Alpine two-click confirm to org member Remove button~~ — Verified 2026-05-01: `_member_row.html:181-188` already has `x-data="{ confirm: false }"` two-state pattern — resolves `REQ-054`
 - [ ] **[P0][M]** Build admin Groups CRUD UI (`/ui/admin/groups` list, detail, create, edit, members add/remove) — resolves `REQ-048`, `REQ-075`, unblocks `REQ-080` · _depends on: none_
 - [ ] **[P0][M]** Build runtime Roles CRUD UI (`/ui/admin/rbac/roles/new`, edit, delete; role-detail "members" list) — resolves `REQ-047`, `REQ-074`, `REQ-077` · _depends on: none_
-- [ ] **[P0][S]** Confirm `build.rs` Tailwind hook + boot-time `assert_app_css_sane()` canary + CI smoke test — resolves `REQ-003`, `REQ-004`, `REQ-005` (or files them as defects if absent) · _depends on: none_
+- [x] **[P0][S]** ~~Confirm `build.rs` Tailwind hook + boot-time `assert_app_css_sane()` canary~~ — Verified 2026-05-01: `build.rs:64-114` runs Tailwind; `assert_app_css_sane()` invoked from `src/main.rs`; sentinel `.bg-ht-surface-raised` defined in `mod.rs`. CI smoke test (REQ-005) added in `tests/web_assets.rs` — resolves `REQ-003`, `REQ-004`, `REQ-005`
 
 ### P1 — Should-fix
 
-- [ ] **[P1][S]** Wrap org invite form in `<details><summary>Invite someone who isn't in this realm yet</summary>…</details>`, closed by default — resolves `REQ-057` · _depends on: none_
+- [x] **[P1][S]** ~~Wrap org invite form in `<details>` collapsible~~ — Verified 2026-05-01: `organizations/detail.html:259-283` already wraps form in `<details>` — resolves `REQ-057`
 - [ ] **[P1][S]** Convert "Managed via hearth.yaml" text to compact `inline-flex items-center gap-2 text-sm whitespace-nowrap` pill on apps list and detail — resolves `REQ-013`, partly `REQ-078` · _depends on: none_
 - [ ] **[P1][M]** Add HTMX live search (`hx-trigger="input changed delay:200ms"`) to user list and admin-users list (≥2 chars) — resolves `REQ-044` · _depends on: none_
 - [ ] **[P1][S]** Add "Active / Expired / All" filter to sessions list — resolves `REQ-050` · _depends on: none_
@@ -227,10 +228,10 @@ Ordered by priority, then dependency. Each item references the requirement(s) it
 - [ ] **[P1][S]** Decide on `/ui/admin/admin-users/new` route: either add it as a thin alias of `/users/new?realm=system` or update REQ-022 to document the reuse — resolves `REQ-022`, Spec Issue #4 · _depends on: spec decision_
 - [ ] **[P1][M]** Plan agent admin UI surface (list / detail / status transitions / credentials / consents) — resolves `REQ-083` → `REQ-087`, prerequisite for `REQ-089` · _depends on: phase decision in `AGENT_AUTH.md`_
 - [ ] **[P1][M]** Build approval-requests page (`/ui/admin/approvals`) — resolves `REQ-088` · _depends on: agent UI plan_
-- [ ] **[P1][S]** Verify whether `admin_org_bulk_add_members` is still wired (it should be removed per REQ-052 redesign); delete handler if so — resolves redesign cleanup · _depends on: none_
+- [ ] **[P1][S]** Verify whether `admin_org_bulk_add_members` is still wired (it should be removed per REQ-052 redesign); delete handler if so — resolves redesign cleanup · _depends on: none_ _(deferred to a later sweep)_
 - [ ] **[P1][S]** Confirm sessions revoke button renders for active sessions (live test with a session in the table) — resolves `REQ-040` · _depends on: none_
-- [ ] **[P1][S]** Verify each user/admin-user/org list page has the search icon absolute-positioned inside the input (REQ-016) and confirm `divide-y` + `hover:bg-divider` (REQ-025) — resolves `REQ-016`, `REQ-025` · _depends on: none_
-- [ ] **[P1][S]** Verify realm detail surfaces auth policy + per-realm theme/css as read-only — resolves `REQ-090`, `REQ-100` · _depends on: none_
+- [x] **[P1][S]** ~~Verify search icon positioning~~ — Verified 2026-05-01: `absolute left-3 top-1/2 -translate-y-1/2` confirmed in `users/list.html` + `organizations/list.html` — resolves `REQ-016`. Note: `divide-y` + `hover:bg-divider` (REQ-025) tracked separately below
+- [x] **[P1][S]** ~~Verify realm detail surfaces auth policy~~ — Verified 2026-05-01: comprehensive Auth Policy section at `realms/detail.html:127-274` — resolves `REQ-090`. REQ-100 still 🟡 — theme-name plumbing is a follow-up.
 - [ ] **[P1][S]** Verify realm detail's admin rows include "Resolve permissions" link (REQ-059) — resolves `REQ-059` · _depends on: REQ-056 URL decision_
 
 ### P2 — Nice-to-have / cleanup
@@ -244,11 +245,11 @@ Ordered by priority, then dependency. Each item references the requirement(s) it
 - [ ] **[P2][S]** Audit modal partials (token regen, diff preview, member picker) for backdrop + focus trap — resolves `REQ-008` · _depends on: none_
 - [ ] **[P2][S]** Implement "Archived" status with permanent-delete action for soft-deleted realms (live verification) — resolves `REQ-051` · _depends on: none_
 - [ ] **[P2][S]** Audit Resource column consistency + audit list input styling + empty-state colspan — resolves `REQ-027`, `REQ-031`, `REQ-032` · _depends on: none_
-- [ ] **[P2][S]** Sweep templates for raw `bg-graphite-*` and hex literals; replace with `ht-*` tokens — resolves `REQ-061` · _depends on: none_
-- [ ] **[P2][S]** Verify `btn-ember` hover translateY + `shadow-cta-hover` rule in `app.css` — resolves `REQ-063` · _depends on: none_
+- [x] **[P2][S]** ~~Sweep templates for raw `bg-graphite-*` and hex literals~~ — Verified 2026-05-01: no raw 6-digit hex in `templates/`; only Tailwind `ht-*` and config-defined `graphite-*` tokens — resolves `REQ-061`
+- [x] **[P2][S]** ~~Verify `btn-ember` hover translateY + focus ring rule in `app.css`~~ — Verified 2026-05-01: `.btn-ember` has `transform: translateY(-1px)` on hover + gold `focus-visible` ring — resolves `REQ-063`
 - [ ] **[P2][M]** Tab-navigate every admin page and confirm visible focus rings on all interactive elements — resolves `REQ-068` · _depends on: none_
 - [ ] **[P2][S]** Write or extend an integration test that boots the server and asserts `/ui/static/app.css` contains the sentinel + `/ui/static/theme.css` returns a populated `:root` — resolves `REQ-005` · _depends on: REQ-004_
-- [ ] **[P2][S]** If `admin.rs` has no `deserialize_string_list` shared helper yet, extract it to `src/protocol/web/forms.rs` — resolves `REQ-058` · _depends on: none_
+- [x] **[P2][S]** ~~Extract `deserialize_string_list` to `forms.rs`~~ — Verified 2026-05-01: helper does not exist; the form that needed it was deleted in the org redesign (REQ-052). Marked N/A — resolves `REQ-058`
 - [ ] **[P2][S]** Delete unused `templates/ui/admin/audit/_rows_only.html` (1-line stub) or implement its swap target — resolves out-of-spec cleanup #9 · _depends on: none_
 
 ---

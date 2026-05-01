@@ -2,7 +2,7 @@
    partial only emits non-empty rows so the bare "No organizations found"
    td is never shown. #}
 {% for o in organizations %}
-<tr class="border-b border-divider-subtle">
+<tr class="border-b border-divider-subtle hover-bg-divider">
   <td class="px-4 py-3">
     <input type="checkbox" value="{{ o.id().as_uuid() }}"
            aria-label="Select {{ o.name() }}"

@@ -1,7 +1,8 @@
 {% for t in realms %}
-<tr class="border-b border-divider-subtle">
+<tr class="border-b border-divider-subtle hover-bg-divider">
   <td class="px-4 py-3">
     <a href="/ui/admin/realms/{{ t.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ t.name() }}</a>
+    <div class="mt-0.5 text-xs text-ht-content-muted">Configured in <code class="font-mono">hearth.yaml</code></div>
   </td>
   <td class="px-4 py-3">
     {% if t.status()|fmt("{:?}") == "Active" %}
