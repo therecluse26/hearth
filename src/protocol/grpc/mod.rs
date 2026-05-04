@@ -19,20 +19,20 @@
 //!
 //! | Service | Auth | Purpose |
 //! |---------|------|---------|
-//! | `IdentityAdminService` | admin bearer + Zanzibar | Users, realms, organizations |
-//! | `ApplicationAdminService` | admin bearer + Zanzibar | OAuth clients |
-//! | `AuthorizationService` | admin bearer + Zanzibar | Check/Expand/WriteTuples/Watch |
-//! | `AuditService` | admin bearer + Zanzibar | List events, verify integrity |
+//! | `IdentityAdminService` | admin bearer + `hearth.admin` claim | Users, realms, organizations |
+//! | `ApplicationAdminService` | admin bearer + `hearth.admin` claim | OAuth clients |
+//! | `RbacAdminService` | admin bearer + `hearth.admin` claim | Roles, groups, assignments |
+//! | `AuditService` | admin bearer + `hearth.admin` claim | List events, verify integrity |
 //! | `OAuthService` | RFC 6749 client auth | Authorize/Token/Revoke/Introspect/... |
 //! | `grpc.health.v1.Health` | unauth | Kubernetes / L4 readiness probes |
 //! | `grpc.reflection.v1.ServerReflection` | unauth | grpcurl / Postman |
 
 pub mod audit;
 pub mod auth;
-pub mod authz;
 pub mod convert;
 pub mod identity;
 pub mod oauth;
+pub mod rbac_admin;
 pub mod server;
 
 pub use server::{build_router, serve, GrpcState};

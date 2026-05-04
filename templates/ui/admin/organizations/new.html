@@ -1,8 +1,16 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} · Create Organization{% endblock %}
 {% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+<div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="/ui/admin/realms/{{ realm_name }}/organizations"
+     class="hover:text-ht-content-primary">Organizations</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">New</span>
+</div>
 <div class="mb-6">
   <h1 class="font-display text-2xl font-medium text-ht-content-primary">Create organization</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">Organizations group members, RBAC roles, and audit history together inside this realm.</p>
 </div>
 
 <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
@@ -12,7 +20,11 @@
     {% when None %}
   {% endmatch %}
 
-  <form method="post" action="/ui/admin/organizations/new" autocomplete="off" class="space-y-4">
+  <form method="post"
+        action="/ui/admin/realms/{{ realm_name }}/organizations/new"
+        autocomplete="off"
+        class="space-y-4"
+        x-data="{ name: '{{ form_name }}', slug: '{{ form_slug }}', slugTouched: {% if form_slug.is_empty() %}false{% else %}true{% endif %} }">
     {% match csrf %}
       {% when Some with (token) %}
         <input type="hidden" name="_csrf" value="{{ token }}">
@@ -21,20 +33,34 @@
 
     <div>
       <label for="name" class="block text-sm font-medium text-ht-content-secondary">Organization name</label>
-      <input type="text" id="name" name="name" required value="{{ form_name }}"
+      <input type="text"
+             id="name"
+             name="name"
+             required
+             autofocus
+             maxlength="80"
+             x-model="name"
+             @input="if (!slugTouched) slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63)"
              class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     </div>
 
     <div>
       <label for="slug" class="block text-sm font-medium text-ht-content-secondary">Slug</label>
-      <input type="text" id="slug" name="slug" required value="{{ form_slug }}" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]" minlength="3" maxlength="63"
-             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
-      <p class="mt-1 text-xs text-ht-content-muted">3-63 characters, lowercase letters, digits, and hyphens only.</p>
+      <input type="text"
+             id="slug"
+             name="slug"
+             required
+             minlength="3"
+             maxlength="63"
+             x-model="slug"
+             @input="slugTouched = true"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      <p class="mt-1 text-xs text-ht-content-muted">3–63 characters, lowercase letters, digits, and hyphens. Auto-fills from the name until you edit it.</p>
     </div>
 
     <div>
       <label for="description" class="block text-sm font-medium text-ht-content-secondary">Description <span class="text-ht-content-muted">(optional)</span></label>
-      <textarea id="description" name="description" rows="3"
+      <textarea id="description" name="description" rows="3" maxlength="500"
                 class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">{{ form_description }}</textarea>
     </div>
 
@@ -51,7 +77,8 @@
               class="btn-ember rounded px-4 py-2 text-sm font-semibold">
         Create organization
       </button>
-      <a href="/ui/admin/organizations" class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations"
+         class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
     </div>
   </form>
 </div>

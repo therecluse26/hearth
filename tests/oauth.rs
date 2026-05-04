@@ -64,6 +64,7 @@ async fn client_credentials_full_flow() {
                 grant_types: vec!["client_credentials".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register confidential client");
@@ -162,6 +163,7 @@ async fn device_authorization_full_flow() {
                 grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register device client");
@@ -248,6 +250,7 @@ async fn refresh_token_rotation_e2e() {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -267,6 +270,7 @@ async fn refresh_token_rotation_e2e() {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize");
@@ -349,6 +353,7 @@ async fn conformance_rfc7662_introspection_response() {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -367,6 +372,7 @@ async fn conformance_rfc7662_introspection_response() {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         )
         .expect("authorize");
@@ -501,6 +507,7 @@ async fn conformance_rfc8628_device_authorization() {
                 grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register device client");

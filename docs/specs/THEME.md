@@ -295,3 +295,49 @@ Operators may append arbitrary CSS via `branding.custom_css: /path/to/brand.css`
 ```sh
 cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify
 ```
+
+### Reloading `app.css` without rebuilding the binary
+
+By default, `app.css` is embedded into the binary at compile time via
+`include_bytes!`. That guarantees a single-binary distribution always serves a
+working admin UI, but it also means a fresh Tailwind build on disk has no
+effect on a running server — the server is still handing out the bytes that
+were embedded when `cargo build` ran.
+
+To opt into restart-to-reload, set `server.assets_dir` in `hearth.yaml` to a
+directory that contains the latest `app.css`:
+
+```yaml
+server:
+  bind_address: 0.0.0.0
+  port: 8420
+  # When set, the server reads `<assets_dir>/app.css` at startup. Restarting
+  # picks up a fresh Tailwind build without recompiling Rust.
+  assets_dir: /etc/hearth/assets
+```
+
+Operator workflow with `assets_dir` configured:
+
+```sh
+# 1. Edit ui/input.css or any template.
+# 2. Rebuild the bundle:
+cd ui && ./tailwindcss -i input.css -o /etc/hearth/assets/app.css --minify
+# 3. Restart the server (no Rust rebuild needed):
+systemctl restart hearth        # or: docker restart hearth
+```
+
+Behavior notes:
+
+- The disk copy is sanity-checked at startup (size floor + presence of the
+  `.bg-ht-surface-raised` sentinel). If it fails, the server logs a warning
+  and falls back to the embedded copy — operators never serve an unstyled UI
+  because of a typo in `assets_dir`.
+- Only `app.css` is loaded this way. `htmx.min.js`, the Hearth SVG marks, and
+  the favicon stay embedded — they're truly immutable for a binary's
+  lifetime.
+- `theme.css` and `realm-theme/{id}` already hot-reloaded at startup via
+  `branding.custom_css` / `realms.<name>.web.custom_css`; this change brings
+  `app.css` in line with that contract.
+
+The `ETag` is recomputed from the new bytes at each restart, so browsers
+revalidate and pick up the new CSS automatically (no need to hard-reload).

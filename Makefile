@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check css css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test docker-up docker-reload
+.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test docker-up docker-reload
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -24,6 +24,18 @@ css:
 ## Watch mode for local development (auto-rebuilds on template change).
 css-watch:
 	cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --watch
+
+## CI gate: rebuild app.css and fail if the working tree drifts.
+## Catches the failure mode where templates reference a utility class
+## but app.css was last rebuilt before that class was introduced.
+css-check: css
+	@if git diff --quiet src/protocol/web/assets/app.css; then \
+		echo "✓ src/protocol/web/assets/app.css is up to date."; \
+	else \
+		echo "ERROR: src/protocol/web/assets/app.css is stale. Run 'make css' and commit the result."; \
+		git diff --stat src/protocol/web/assets/app.css; \
+		exit 1; \
+	fi
 
 ## Download Tailwind standalone CLI (platform-specific).
 tailwind-install:
@@ -98,8 +110,8 @@ sdk-test:
 
 # ── CI Tiers ──────────────────────────────────────────
 
-## CI fast tier: lint + fmt + proto lint (every commit).
-ci-fast: fmt clippy proto-lint
+## CI fast tier: lint + fmt + proto lint + css freshness (every commit).
+ci-fast: fmt clippy proto-lint css-check
 
 ## CI standard tier: fast + tests + SDK tests + proto breaking (merge).
 ci-standard: ci-fast test proto-breaking sdk-test proto-check

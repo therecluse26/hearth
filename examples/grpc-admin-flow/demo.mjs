@@ -53,7 +53,7 @@ function loadProtos() {
       [
         "hearth/identity/v1/identity.proto",
         "hearth/identity/v1/oauth.proto",
-        "hearth/authz/v1/authz.proto",
+        "hearth/rbac/v1/rbac.proto",
         "hearth/events/v1/audit.proto",
       ],
       opts,
@@ -72,7 +72,6 @@ function adminMeta(realmId, token) {
 // --- 3. Health + reflection don't need the proto files. -----------------
 
 async function checkHealth() {
-  // Minimal inline proto for grpc.health.v1
   const healthPkg = loadPackageDefinition(
     loadSync("health.proto", {
       keepCase: true,
@@ -156,65 +155,63 @@ async function main() {
   const page = await listUsers({ limit: 20 }, meta);
   for (const u of page.items) console.log(`  • ${u.email} (${u.status})`);
 
-  // --- AuthorizationService (Watch streaming) ---
-  log(
-    "watch",
-    "Subscribing to AuthorizationService/Watch, then writing a tuple",
-  );
-  const azClient = new proto.authz.v1.AuthorizationService(
+  // --- RbacAdminService ---
+  log("rbac", "Creating a role via RbacAdminService/CreateRole");
+  const rbac = new proto.rbac.v1.RbacAdminService(
     GRPC,
     credentials.createInsecure(),
   );
-  const stream = azClient.Watch({}, meta);
-  const firstEvent = new Promise((res, rej) => {
-    stream.on("data", (msg) => {
-      res(msg);
-      stream.cancel();
-    });
-    stream.on("error", (e) => {
-      // cancel() triggers a CANCELLED error — not a test failure.
-      if (e.code !== 1) rej(e);
-    });
-  });
-
-  // Give the subscription a moment to register before writing.
-  await new Promise((r) => setTimeout(r, 150));
-
-  const write = promisify(azClient.WriteTuples.bind(azClient));
-  const tuple = {
-    object: { object_type: "group", object_id: "eng" },
-    relation: "member",
-    subject: {
-      direct: { object_type: "user", object_id: alice.id },
-    },
-  };
-  const writeResp = await write(
-    { writes: [{ operation: "TUPLE_WRITE_OPERATION_TOUCH", tuple }] },
-    meta,
-  );
-  console.log(`  wrote tuple; consistency_token=${writeResp.token.version}`);
-
-  const evt = await firstEvent;
-  console.log(`  received live event:`);
-  console.log(
-    `    ${evt.event.object_type}:${evt.event.object_id}#${evt.event.relation}@${evt.event.subject}`,
-  );
-  console.log(`    action=${evt.event.action} seq=${evt.token.version}`);
-
-  // --- Check that the tuple we just wrote takes effect ---
-  log("check", "Calling AuthorizationService/Check");
-  const check = promisify(azClient.Check.bind(azClient));
-  const allowed = await check(
+  const createRole = promisify(rbac.CreateRole.bind(rbac));
+  const role = await createRole(
     {
-      object: { object_type: "group", object_id: "eng" },
-      relation: "member",
-      subject: {
-        direct: { object_type: "user", object_id: alice.id },
-      },
+      realm_id: boot.realm_id,
+      name: "docs.editor",
+      description: "Can view and edit documents",
+      permissions: ["docs.view", "docs.edit"],
+      parent_role_ids: [],
     },
     meta,
   );
-  console.log(`  alice ∈ group:eng#member → ${allowed.allowed}`);
+  console.log(`  created role ${role.name} (id=${role.id.slice(0, 12)}…)`);
+
+  log("rbac", "Assigning the role to Alice via AssignUserRole");
+  const assign = promisify(rbac.AssignUserRole.bind(rbac));
+  const assignment = await assign(
+    {
+      realm_id: boot.realm_id,
+      user_id: alice.id,
+      role_id: role.id,
+      scope: { realm: {} },
+    },
+    meta,
+  );
+  console.log(`  assignment.id = ${assignment.id.slice(0, 12)}…`);
+
+  log("rbac", "Resolving Alice's effective permissions");
+  const resolve_ = promisify(rbac.ResolveEffectivePermissions.bind(rbac));
+  const resolved = await resolve_(
+    {
+      realm_id: boot.realm_id,
+      user_id: alice.id,
+      org_id: "",
+      scope: "",
+    },
+    meta,
+  );
+  console.log(`  roles       = ${resolved.roles.join(", ")}`);
+  console.log(`  permissions = ${resolved.permissions.join(", ")}`);
+
+  log("rbac", "Unassigning the role");
+  const unassign = promisify(rbac.UnassignUserRole.bind(rbac));
+  await unassign(
+    {
+      realm_id: boot.realm_id,
+      user_id: alice.id,
+      assignment_id: assignment.id,
+    },
+    meta,
+  );
+  console.log("  unassigned — Alice no longer carries docs.editor");
 
   // --- AuditService ---
   log("audit", "Calling AuditService/ListEvents");

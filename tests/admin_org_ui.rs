@@ -9,10 +9,6 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
-    SubjectRef, TupleWrite,
-};
 use hearth::core::{Clock, RealmId, SessionId, SystemClock};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
@@ -22,6 +18,7 @@ use hearth::identity::{
     UpdateUserRequest, UserStatus,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -70,10 +67,10 @@ fn build_rig() -> Rig {
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn RbacEngine>;
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
@@ -81,7 +78,7 @@ fn build_rig() -> Rig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -112,6 +109,7 @@ fn build_rig() -> Rig {
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate admin");
@@ -123,12 +121,22 @@ fn build_rig() -> Rig {
         )
         .expect("create admin session");
 
-    let obj = ObjectRef::new("hearth", "admin").expect("obj");
-    let sub = SubjectRef::direct("user", &admin_user.id().as_uuid().to_string()).expect("sub");
-    let tuple = RelationshipTuple::new(obj, "admin", sub).expect("tuple");
+    authz.seed_realm(&admin_realm_id).expect("seed");
+    let _admin_role = authz
+        .get_role_by_name(&admin_realm_id, "realm.admin")
+        .expect("lookup")
+        .expect("seed role");
     authz
-        .write_tuples(&admin_realm_id, &[TupleWrite::Touch(tuple)])
-        .expect("write admin tuple");
+        .assign_role(
+            &admin_realm_id,
+            &hearth::rbac::AssignRoleRequest {
+                subject: hearth::rbac::Subject::User(admin_user.id().clone()),
+                role_id: _admin_role.id.clone(),
+                scope: hearth::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign admin role");
 
     // Member user lives in the Acme realm. We'll make them a member of the
     // org so the update-role / remove tests have a real membership record.
@@ -224,7 +232,7 @@ async fn update_role_htmx_returns_row_partial_and_show_toast_trigger() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/{}/role",
+                    "/ui/admin/realms/acme/organizations/{}/members/{}/role",
                     rig.org_id.as_uuid(),
                     rig.member_user_id.as_uuid()
                 ))
@@ -285,7 +293,7 @@ async fn update_role_non_htmx_returns_303_redirect() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/{}/role",
+                    "/ui/admin/realms/acme/organizations/{}/members/{}/role",
                     rig.org_id.as_uuid(),
                     rig.member_user_id.as_uuid()
                 ))
@@ -304,7 +312,10 @@ async fn update_role_non_htmx_returns_303_redirect() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
-        location.starts_with(&format!("/ui/admin/organizations/{}", rig.org_id.as_uuid())),
+        location.starts_with(&format!(
+            "/ui/admin/realms/acme/organizations/{}",
+            rig.org_id.as_uuid()
+        )),
         "expected redirect to org detail, got: {location}"
     );
 }
@@ -326,7 +337,7 @@ async fn remove_member_htmx_returns_empty_body_and_toast_trigger() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/{}/remove",
+                    "/ui/admin/realms/acme/organizations/{}/members/{}/remove",
                     rig.org_id.as_uuid(),
                     rig.member_user_id.as_uuid()
                 ))
@@ -367,7 +378,7 @@ async fn bulk_add_route_is_gone() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/bulk",
+                    "/ui/admin/realms/acme/organizations/{}/members/bulk",
                     rig.org_id.as_uuid()
                 ))
                 .header(header::COOKIE, cookie)
@@ -385,5 +396,88 @@ async fn bulk_add_route_is_gone() {
             || response.status() == StatusCode::METHOD_NOT_ALLOWED,
         "expected 404 or 405, got {}",
         response.status()
+    );
+}
+
+/// Regression: the create-org form must accept an empty `max_members`
+/// field (the browser always posts `max_members=` for an empty
+/// `<input type="number">`). Before the fix, `Option<u32>` with the
+/// default `serde_urlencoded` mapping rejected `""` with
+/// `cannot parse integer from empty string` and replaced the page with a
+/// raw error string, losing the user's input. The fix routes those
+/// fields through `empty_string_as_none`.
+#[tokio::test]
+async fn create_org_accepts_empty_max_members() {
+    let rig = build_rig();
+    let csrf = "csrf-empty-max";
+    let cookie = admin_cookie(&rig, csrf);
+    let body =
+        format!("name=New+Customer&slug=new-customer&description=&max_members=&_csrf={csrf}");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/admin/realms/acme/organizations/new")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "create-org with empty max_members must redirect to detail, \
+         not return a form-deserialization error"
+    );
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        location.starts_with("/ui/admin/realms/acme/organizations/"),
+        "expected redirect to org detail, got: {location}"
+    );
+}
+
+/// Regression: the edit-org form must also accept clearing
+/// `max_members` (browser posts the empty string). Same root cause /
+/// same fix as `create_org_accepts_empty_max_members`.
+#[tokio::test]
+async fn edit_org_accepts_empty_max_members() {
+    let rig = build_rig();
+    let csrf = "csrf-edit-empty";
+    let cookie = admin_cookie(&rig, csrf);
+    let body = format!("name=Customer+One&description=&status=Active&max_members=&_csrf={csrf}");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/ui/admin/realms/acme/organizations/{}/edit",
+                    rig.org_id.as_uuid()
+                ))
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "edit-org with empty max_members must redirect to detail, \
+         not return a form-deserialization error"
     );
 }

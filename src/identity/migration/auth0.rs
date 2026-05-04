@@ -45,7 +45,6 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
 use crate::core::{ClientId, OrganizationId, RealmId, UserId};
 use crate::identity::migration::auth0_credentials::parse_auth0_credential;
 use crate::identity::migration::error::MigrationError;
@@ -53,6 +52,8 @@ use crate::identity::{
     CreateOrganizationRequest, CreateRealmRequest, IdentityEngine, ImportClientRequest,
     ImportUserRequest, MigrationReport, OrganizationRole, RawCredential, UserStatus,
 };
+use crate::rbac::{AssignRoleRequest, CreateRoleRequest, RbacEngine, RoleId, Scope, Subject};
+use std::collections::HashMap as StdHashMap;
 
 // ===== Bundle deserialization types =====
 
@@ -195,7 +196,7 @@ pub struct Auth0Role {
     /// Opaque Auth0 role id.
     #[serde(default)]
     pub id: Option<String>,
-    /// Role name (becomes the Zanzibar relation name).
+    /// Role name (becomes the RBAC role name).
     pub name: String,
     /// Human-readable description.
     #[serde(default)]
@@ -219,13 +220,13 @@ pub struct Auth0ImportOptions {
 /// Orchestrates an Auth0 bundle import against a pair of engines.
 pub struct Auth0Importer {
     identity: Arc<dyn IdentityEngine>,
-    authz: Arc<dyn AuthorizationEngine>,
+    rbac: Arc<dyn RbacEngine>,
 }
 
 impl Auth0Importer {
     /// Creates a new importer bound to the given engines.
-    pub fn new(identity: Arc<dyn IdentityEngine>, authz: Arc<dyn AuthorizationEngine>) -> Self {
-        Self { identity, authz }
+    pub fn new(identity: Arc<dyn IdentityEngine>, rbac: Arc<dyn RbacEngine>) -> Self {
+        Self { identity, rbac }
     }
 
     /// Parses a bundle from JSON bytes.
@@ -239,7 +240,7 @@ impl Auth0Importer {
     /// non-fatal warnings (e.g. users whose credentials used an
     /// unsupported algorithm). Per-item failures are recorded as warnings
     /// and the import continues; engine-level failures (I/O, storage,
-    /// authz write) abort with `Err`.
+    /// RBAC write) abort with `Err`.
     pub fn import_bundle(
         &self,
         bundle: &Auth0Bundle,
@@ -261,7 +262,8 @@ impl Auth0Importer {
             report.realm_id = realm_id_hint;
             report.users_imported = bundle.users.len();
             report.clients_imported = bundle.clients.len();
-            report.tuples_written = bundle.roles.iter().map(|r| r.assignments.len()).sum();
+            report.role_assignments_written =
+                bundle.roles.iter().map(|r| r.assignments.len()).sum();
             report.warnings.push(format!(
                 "dry-run: no changes written to storage (tenant='{}')",
                 bundle.tenant.name
@@ -324,8 +326,8 @@ impl Auth0Importer {
             }
         }
 
-        // 5. Realm-level role tuples.
-        self.emit_role_tuples(&realm_id, &bundle.roles, &user_map, &mut report)?;
+        // 5. Realm-level role assignments.
+        self.emit_role_assignments(&realm_id, &bundle.roles, &user_map, &mut report)?;
 
         Ok(report)
     }
@@ -432,6 +434,10 @@ impl Auth0Importer {
             redirect_uris: ac.callbacks.clone(),
             client_secret,
             grant_types,
+            slug: None,
+            trust_level: crate::identity::ClientTrustLevel::FirstParty,
+            declared_scopes: Vec::new(),
+            consent_spans_orgs: false,
         };
         self.identity.import_client(realm_id, &request)?;
         Ok(())
@@ -494,18 +500,42 @@ impl Auth0Importer {
         Ok(())
     }
 
-    fn emit_role_tuples(
+    fn emit_role_assignments(
         &self,
         realm_id: &RealmId,
         roles: &[Auth0Role],
         user_map: &HashMap<String, UserId>,
         report: &mut MigrationReport,
     ) -> Result<(), MigrationError> {
-        let realm_object_id = realm_id.as_uuid().to_string();
-        let mut tuple_writes: Vec<TupleWrite> = Vec::new();
+        // Ensure every role exists in RBAC, caching IDs.
+        let mut role_ids: StdHashMap<String, RoleId> = StdHashMap::new();
+        for role in roles {
+            let id = match self.rbac.get_role_by_name(realm_id, &role.name)? {
+                Some(r) => r.id,
+                None => {
+                    let created = self.rbac.create_role(
+                        realm_id,
+                        &CreateRoleRequest {
+                            name: role.name.clone(),
+                            description: role.description.clone(),
+                            permissions: Vec::new(),
+                            parent_roles: Vec::new(),
+                            scope_kind: crate::rbac::RoleScopeKind::Realm,
+                        },
+                    )?;
+                    created.id
+                }
+            };
+            role_ids.insert(role.name.clone(), id);
+        }
+
         let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut written = 0usize;
 
         for role in roles {
+            let Some(role_id) = role_ids.get(&role.name) else {
+                continue;
+            };
             for assignment in &role.assignments {
                 let Some(user_id) = user_map.get(assignment) else {
                     report.warnings.push(format!(
@@ -518,21 +548,26 @@ impl Auth0Importer {
                 if !seen.insert(dedup) {
                     continue;
                 }
-                match build_role_tuple(&realm_object_id, &role.name, user_id) {
-                    Ok(w) => tuple_writes.push(w),
+                match self.rbac.assign_role(
+                    realm_id,
+                    &AssignRoleRequest {
+                        subject: Subject::User(user_id.clone()),
+                        role_id: role_id.clone(),
+                        scope: Scope::Realm,
+                        assigned_by: None,
+                    },
+                ) {
+                    Ok(_) => written += 1,
                     Err(e) => {
-                        report
-                            .warnings
-                            .push(format!("skipped role tuple {}@{user_id}: {e}", role.name));
+                        report.warnings.push(format!(
+                            "failed to assign role '{}' to user {user_id}: {e}",
+                            role.name
+                        ));
                     }
                 }
             }
         }
-
-        if !tuple_writes.is_empty() {
-            self.authz.write_tuples(realm_id, &tuple_writes)?;
-            report.tuples_written = tuple_writes.len();
-        }
+        report.role_assignments_written = written;
         Ok(())
     }
 }
@@ -677,18 +712,6 @@ fn map_org_role(roles: &[String]) -> Option<OrganizationRole> {
         return Some(OrganizationRole::Member);
     }
     None
-}
-
-/// Builds a `realm:<rid> <role> user:<uid>` Zanzibar tuple.
-fn build_role_tuple(
-    realm_id: &str,
-    role_name: &str,
-    user_id: &UserId,
-) -> Result<TupleWrite, MigrationError> {
-    let object = ObjectRef::new("realm", realm_id)?;
-    let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string())?;
-    let tuple = RelationshipTuple::new(object, role_name, subject)?;
-    Ok(TupleWrite::Touch(tuple))
 }
 
 #[cfg(test)]
@@ -875,15 +898,5 @@ mod tests {
         assert_eq!(f, "");
         assert_eq!(l, "");
         assert_eq!(d, "alice");
-    }
-
-    #[test]
-    fn build_role_tuple_rejects_empty_role_name() {
-        let res = build_role_tuple(
-            "00000000-0000-0000-0000-000000000001",
-            "",
-            &UserId::generate(),
-        );
-        assert!(res.is_err());
     }
 }

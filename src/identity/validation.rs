@@ -299,6 +299,77 @@ pub(crate) fn validate_slug(slug: &str) -> Result<String, IdentityError> {
     Ok(slug.to_string())
 }
 
+/// Sub-resource path keywords reserved under `/ui/admin/realms/{name}/...`.
+///
+/// A realm name MUST NOT match any of these because they would shadow a
+/// route segment, making the realm unaddressable. See `docs/specs/UI_ROUTING.md`
+/// rule R-4. Adding a new sub-resource keyword to the route map MUST also
+/// add it here.
+const RESERVED_REALM_NAMES: &[&str] = &[
+    "admins",
+    "api",
+    "applications",
+    "audit",
+    "claims",
+    "delete",
+    "groups",
+    "new",
+    "organizations",
+    "permissions",
+    "rbac",
+    "sessions",
+    "settings",
+    "status",
+    "test-email",
+    "users",
+];
+
+/// Maximum length for a realm name.
+const MAX_REALM_NAME_LENGTH: usize = 63;
+
+/// Validates a realm name. Realm names ride in URL paths, so they must
+/// be URL-safe AND must not collide with any admin sub-resource keyword
+/// (R-4 of `docs/specs/UI_ROUTING.md`).
+///
+/// Allowed characters: ASCII alphanumeric, hyphen, and underscore. This
+/// is intentionally looser than `validate_slug` (which forbids
+/// underscores and uppercase) — realm names predate slugs in the
+/// codebase and many tenants use snake_case. The constraints are exactly
+/// those needed for unambiguous URL routing.
+///
+/// The system realm name (`system`) is rejected by `create_realm`
+/// directly with a distinct error variant; this validator does not
+/// reject it again.
+pub(crate) fn validate_realm_name(name: &str) -> Result<String, IdentityError> {
+    if name.is_empty() {
+        return Err(IdentityError::InvalidInput {
+            reason: "realm name must not be empty".to_string(),
+        });
+    }
+    if name.len() > MAX_REALM_NAME_LENGTH {
+        return Err(IdentityError::InvalidInput {
+            reason: format!("realm name must not exceed {MAX_REALM_NAME_LENGTH} characters"),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(IdentityError::InvalidInput {
+            reason: "realm name must contain only ASCII letters, digits, hyphens, and underscores"
+                .to_string(),
+        });
+    }
+    if RESERVED_REALM_NAMES.contains(&name) {
+        return Err(IdentityError::InvalidInput {
+            reason: format!(
+                "realm name '{name}' collides with an admin URL keyword and is reserved"
+            ),
+        });
+    }
+    Ok(name.to_string())
+}
+
 /// Returns `true` if the string contains null bytes or ASCII control characters.
 fn contains_null_or_control(s: &str) -> bool {
     s.chars()

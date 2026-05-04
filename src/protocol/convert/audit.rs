@@ -63,6 +63,20 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::ScimGroupDeleted => pb::AuditAction::ScimGroupDeleted,
         domain::AuditAction::RoleAssigned => pb::AuditAction::RoleAssigned,
         domain::AuditAction::RoleRevoked => pb::AuditAction::RoleRevoked,
+        // These variants have no proto equivalents yet (proto RPC work deferred).
+        // Serialize as Unspecified so existing gRPC clients see them as an
+        // unknown action rather than a decode error.
+        domain::AuditAction::OrphanedReferenceSkipped
+        | domain::AuditAction::UserPermissionGranted
+        | domain::AuditAction::UserPermissionRevoked
+        | domain::AuditAction::ClientConsentGranted
+        | domain::AuditAction::ClientConsentRevoked
+        | domain::AuditAction::ConsentRequiredOnRefresh
+        | domain::AuditAction::GroupCreated
+        | domain::AuditAction::GroupUpdated
+        | domain::AuditAction::GroupDeleted
+        | domain::AuditAction::GroupMemberAdded
+        | domain::AuditAction::GroupMemberRemoved => pb::AuditAction::Unspecified,
     }
 }
 
@@ -166,6 +180,12 @@ mod tests {
             domain::AuditAction::ScimGroupDeleted,
             domain::AuditAction::RoleAssigned,
             domain::AuditAction::RoleRevoked,
+            domain::AuditAction::OrphanedReferenceSkipped,
+            domain::AuditAction::UserPermissionGranted,
+            domain::AuditAction::UserPermissionRevoked,
+            domain::AuditAction::ClientConsentGranted,
+            domain::AuditAction::ClientConsentRevoked,
+            domain::AuditAction::ConsentRequiredOnRefresh,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

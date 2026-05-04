@@ -3,11 +3,15 @@
 {% block body %}
 {% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="text-2xl font-semibold text-ht-content-primary">Applications</h1>
-  <span class="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-divider-subtle bg-ht-surface-elevated px-3 py-1.5 text-xs font-medium text-ht-content-muted">
-    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-    Managed via hearth.yaml
-  </span>
+  <div class="flex items-center gap-3">
+    <h1 class="text-2xl font-semibold text-ht-content-primary">Applications</h1>
+    {% include "ui/admin/_components/_yaml_badge.html" %}
+  </div>
+  <a href="/ui/admin/settings/editor?section=oidc"
+     class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
+    Edit in Config Editor
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+  </a>
 </div>
 
 <div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
@@ -29,7 +33,7 @@
 {% match next_cursor %}
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
-      <a href="/ui/admin/applications?cursor={{ cursor }}"
+      <a href="/ui/admin/realms/{{ realm_name }}/applications?cursor={{ cursor }}"
          class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

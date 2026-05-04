@@ -259,13 +259,13 @@ Pure `<textarea>`. Reasonable MVP, but given there's already a Monaco-style diff
 
 They look like cards but have no link. Either make them `<a>`s to the respective list pages, or reduce their visual weight so they don't invite a click.
 
-### P2-14 · On the Permission Check form, the `Relation` select only has "— select —" and doesn't populate options until an Object type is chosen, with no HTMX loader or `[disabled]` state while loading
+### P2-14 · ~~Permission Check form `Relation` select~~ — RETIRED 2026-05-04
 
-Add `disabled` on the Relation select until an Object type is picked, and populate the options via HTMX from the schema endpoint. Show a spinner while loading.
+**Status: retired — refers to obsolete Zanzibar Object/Relation UI.** The Zanzibar→RBAC migration (2026-04-24, see `MIGRATE_TO_RBAC.md`) removed the Object/Relation picker entirely. The replacement screen is `/ui/admin/rbac/debug`, which takes a `user_id` directly. No Object type or Relation select exists. Removed from the active-defects list.
 
-### P2-15 · "Find user" button next to Subject ID has no visible dropdown/result affordance
+### P2-15 · `user_id` autocomplete on `/ui/admin/rbac/debug` (rewritten 2026-05-04)
 
-Clicking it must do something (open a picker?), but the markup gives no hint of what happens. Label it `"Search by email…"` and make it open a typeahead.
+Replace the plain `<input type="text" name="user_id">` on the RBAC debug page with an HTMX autocomplete tied to the existing `/admin/api/users/search` endpoint. Reuse the org member-picker pattern from `templates/ui/admin/organizations/detail.html:131-143`. (Originally framed in pre-migration Zanzibar terms.)
 
 ### P2-16 · "Verify integrity" button on Audit page gives no visible feedback on success
 

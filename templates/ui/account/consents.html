@@ -1,5 +1,5 @@
 {% extends "ui/_layout.html" %}
-{% block title %}{{ product_name }} · My consents{% endblock %}
+{% block title %}{{ product_name }} · Connected apps{% endblock %}
 {% block body %}
 <div class="mb-8 flex items-start justify-between gap-6">
   <div>
@@ -13,7 +13,7 @@
   <div class="mb-4 flex items-center justify-between">
     <h2 class="text-base font-semibold text-ht-content-primary">Active consents</h2>
     {% if consents.len() > 1 %}
-    <form method="post" action="/ui/account/consents/revoke-all" data-testid="revoke-all-consents-form">
+    <form method="post" action="/ui/account/applications/revoke-all" data-testid="revoke-all-consents-form">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
       <button type="submit"
               class="rounded border border-divider px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover:border-danger-fg hover:text-danger-fg">
@@ -43,7 +43,7 @@
       <div class="flex-1">
         <div class="flex items-center justify-between gap-3">
           <h3 class="text-sm font-semibold text-ht-content-primary">{{ c.client_name }}</h3>
-          <form method="post" action="/ui/account/consents/{{ c.client_id }}/revoke" data-testid="revoke-consent-form">
+          <form method="post" action="/ui/account/applications/{{ c.client_id }}/revoke" data-testid="revoke-consent-form">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
             <button type="submit"
                     class="text-xs font-medium text-danger-fg hover:text-red-300">

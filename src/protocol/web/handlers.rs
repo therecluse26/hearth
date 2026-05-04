@@ -162,6 +162,11 @@ pub(super) struct FederationButton {
 struct LoginTemplate {
     error: Option<String>,
     return_to: Option<String>,
+    /// Submitted email, echoed back into the form on auth failure so the
+    /// user doesn't have to retype it. Empty on the initial GET.
+    /// Carries no enumeration risk: we always show the same generic error,
+    /// so the field is preserved whether or not the address matches a user.
+    email: String,
     /// URL the form POSTs to — empty for bare `/ui/login`, or
     /// `/ui/realms/<name>/login` for a realm-scoped form.
     form_action: String,
@@ -203,6 +208,7 @@ impl LoginTemplate {
         Self {
             error,
             return_to,
+            email: String::new(),
             form_action: format!("{action_prefix}/login"),
             forgot_url: format!("{action_prefix}/forgot-password"),
             register_url: format!("{action_prefix}/register"),
@@ -288,6 +294,10 @@ struct DashboardTemplate {
     realm_count: usize,
     app_count: usize,
     org_count: usize,
+    /// Friendly greeting name — first non-empty of display name, given
+    /// name, or local part of the email. Surfaced in the "Welcome, X"
+    /// heading so admins are not greeted by a raw email address.
+    greeting_name: String,
 }
 
 /// Invalid / expired / malformed verification link page.
@@ -794,6 +804,7 @@ fn login_submit_impl(
         let action_prefix = action_prefix.clone();
         let return_to = return_to.clone();
         let realm_theme = realm_theme.clone();
+        let submitted_email = email.to_string();
         move || {
             let mut tmpl = LoginTemplate::new(
                 Some("Sign-in failed. Check your credentials and try again.".to_string()),
@@ -803,6 +814,11 @@ fn login_submit_impl(
                 product_name.clone(),
                 logo_url.clone(),
             );
+            // Echo the submitted email back into the form so the user
+            // doesn't have to retype it. The error message is constant
+            // regardless of whether the address matches a real account
+            // (enumeration resistance), so this leaks nothing.
+            tmpl.email.clone_from(&submitted_email);
             tmpl.theme_css.clone_from(&theme_css);
             tmpl.realm_theme_css.clone_from(&realm_theme);
             render_status(&tmpl, StatusCode::UNAUTHORIZED)
@@ -883,6 +899,7 @@ fn login_submit_impl(
                 state.product_name.clone(),
                 state.logo_url.clone(),
             );
+            tmpl.email = email.to_string();
             tmpl.theme_css.clone_from(&state.theme_css);
             tmpl.realm_theme_css = realm_theme;
             render_status(&tmpl, StatusCode::FORBIDDEN)
@@ -1410,32 +1427,61 @@ pub async fn dashboard(
         Vec::new()
     };
 
-    // Count entities for admin stats. Non-fatal — defaults to 0.
+    // Aggregate entity counts across the system realm + every tenant
+    // realm so the dashboard cards reflect the operator's full scope —
+    // not just the realm the admin happens to be signed into.
+    //
+    // The 2026-04-29 UX audit caught the legacy single-realm count
+    // showing "Organizations 0" while a tenant realm clearly held one;
+    // the cards are global by definition (they link to global list
+    // pages), so the counts must be too. Failures fall through silently
+    // — partial counts are better than a 500 on a stat card.
     let (user_count, realm_count, app_count, org_count) = if is_admin {
-        let uc = state
-            .identity
-            .list_users(&session.realm_id, None, 10_000)
-            .map(|p| p.items.len())
-            .unwrap_or(0);
-        let tc = state
+        let realm_count = state
             .identity
             .list_realms(None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
-        let ac = state
+
+        let system_id = crate::identity::keys::system_realm_id();
+        let mut user_count = 0;
+        let mut app_count = 0;
+        let mut org_count = 0;
+
+        // System realm — operators only.
+        user_count += state
             .identity
-            .list_clients(&session.realm_id, None, 10_000)
+            .list_users(&system_id, None, 10_000)
             .map(|p| p.items.len())
             .unwrap_or(0);
-        let oc = state
-            .identity
-            .list_organizations(&session.realm_id, None, 10_000)
-            .map(|p| p.items.len())
-            .unwrap_or(0);
-        (uc, tc, ac, oc)
+
+        // Tenant realms — sum users / clients / orgs from each.
+        if let Ok(realms_page) = state.identity.list_realms(None, 10_000) {
+            for realm in realms_page.items {
+                user_count += state
+                    .identity
+                    .list_users(realm.id(), None, 10_000)
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+                app_count += state
+                    .identity
+                    .list_clients(realm.id(), None, 10_000)
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+                org_count += state
+                    .identity
+                    .list_organizations(realm.id(), None, 10_000)
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+            }
+        }
+
+        (user_count, realm_count, app_count, org_count)
     } else {
         (0, 0, 0, 0)
     };
+
+    let greeting_name = greeting_name_for(&session);
 
     render(&DashboardTemplate {
         chrome: true,
@@ -1454,24 +1500,42 @@ pub async fn dashboard(
         realm_count,
         app_count,
         org_count,
+        greeting_name,
     })
 }
 
-/// Returns `true` iff the signed-in user has the `hearth#admin`
-/// relation. Non-fatal on authz errors — the caller treats those as
-/// "not admin" so the UI degrades gracefully.
+/// Picks the friendliest available name for the dashboard greeting:
+/// a non-empty display name, otherwise the local part of the email.
+/// Falls back to the literal email address when the local part is also
+/// empty (which validation should prevent, but we are defensive).
+fn greeting_name_for(session: &super::auth::UiSession) -> String {
+    let display = session.user_display_name.trim();
+    if !display.is_empty() && display != session.user_email {
+        return display.to_string();
+    }
+    session
+        .user_email
+        .split_once('@')
+        .map(|(local, _)| local)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&session.user_email)
+        .to_string()
+}
+
+/// Returns `true` iff the signed-in user has the `hearth.admin` permission.
+/// Non-fatal on RBAC errors — the caller treats those as "not admin" so
+/// the UI degrades gracefully.
 pub(crate) fn is_admin(state: &WebState, session: &super::auth::UiSession) -> bool {
-    // INVARIANT: "hearth"/"admin" and "user"/<uuid> are valid ObjectRef /
-    // SubjectRef components (ASCII + UUID respectively).
-    #[allow(clippy::unwrap_used)]
-    let object = crate::authz::ObjectRef::new("hearth", "admin").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subject =
-        crate::authz::SubjectRef::direct("user", &session.user_id.as_uuid().to_string()).unwrap();
-    state
-        .authz
-        .check(&session.realm_id, &object, "admin", &subject, None)
-        .unwrap_or(false)
+    match state
+        .rbac
+        .resolve_permissions(&session.user_id, &session.realm_id, None, None)
+    {
+        Ok(resolved) => resolved
+            .permissions
+            .iter()
+            .any(|p| p.as_str() == "hearth.admin"),
+        Err(_) => false,
+    }
 }
 
 // ============================================================================

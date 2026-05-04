@@ -3,7 +3,7 @@
 //! Mirrors the `extract_admin_auth` flow from `src/protocol/http.rs`: the
 //! caller must supply a bearer token in the `authorization` metadata header
 //! and a realm id in the `x-realm-id` metadata header. The token is validated,
-//! the caller's admin-tuple is checked via Zanzibar, and the shared
+//! the caller's `hearth.admin` permission claim is checked, and the shared
 //! [`AdminRateLimiter`] is consulted.
 //!
 //! The helper runs per-RPC (inside each handler) rather than as a tonic
@@ -15,7 +15,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tonic::{metadata::MetadataMap, Code, Status};
 
-use crate::authz::{ObjectRef, SubjectRef};
 use crate::core::{RealmId, UserId};
 use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
 
@@ -34,7 +33,7 @@ pub struct AdminAuth {
 ///
 /// Fails with:
 /// - `UNAUTHENTICATED` — missing/invalid bearer token or realm header.
-/// - `PERMISSION_DENIED` — valid token but no `hearth#admin` tuple.
+/// - `PERMISSION_DENIED` — valid token but missing `hearth.admin` claim.
 /// - `RESOURCE_EXHAUSTED` — rate-limit exceeded.
 pub fn authenticate_admin(md: &MetadataMap, state: &GrpcState) -> Result<AdminAuth, Status> {
     let realm_id = super::convert::extract_realm_id(md)?;
@@ -51,16 +50,7 @@ pub fn authenticate_admin(md: &MetadataMap, state: &GrpcState) -> Result<AdminAu
         .map_err(|_| Status::new(Code::Unauthenticated, "invalid token"))?;
     let user_id = UserId::new(user_uuid);
 
-    // INVARIANT: "hearth"/"admin"/"user" are valid ObjectRef / SubjectRef
-    // fields (short ASCII strings) — unwrap is safe.
-    #[allow(clippy::unwrap_used)]
-    let object = ObjectRef::new("hearth", "admin").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
-    let is_admin = state
-        .authz
-        .check(&realm_id, &object, "admin", &subject, None)
-        .unwrap_or(false);
+    let is_admin = claims.permissions.iter().any(|p| p == "hearth.admin");
     if !is_admin {
         return Err(Status::new(Code::PermissionDenied, "forbidden"));
     }

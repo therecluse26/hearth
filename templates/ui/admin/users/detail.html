@@ -1,16 +1,22 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} · {{ user.display_name() }}{% endblock %}
 {% block body %}
-<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <div class="flex items-center gap-3">
-    <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ user.display_name() }}</h1>
-    {% if is_user_admin %}
-      <span class="inline-flex items-center rounded-full bg-violet-bg px-2.5 py-0.5 text-xs font-semibold text-violet-fg">Admin</span>
-    {% endif %}
+{# Header. Identity (display name + role chip + email-as-subtitle) on the    #}
+{# left, primary action on the right. The 2026-04-30 UX audit caught the    #}
+{# previous layout placing the email in the middle of the flex row, visually#}
+{# detached from the heading and producing a "label · label · button" feel. #}
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+  <div class="min-w-0">
+    <div class="flex items-center gap-3">
+      <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ user.display_name() }}</h1>
+      {% if is_user_admin %}
+        <span class="inline-flex items-center rounded-full bg-violet-bg px-2.5 py-0.5 text-xs font-semibold text-violet-fg">Admin</span>
+      {% endif %}
+    </div>
+    <p class="mt-0.5 truncate text-sm text-ht-content-muted">{{ user.email() }}</p>
   </div>
-  <p class="mt-1 text-sm text-ht-content-muted">{{ user.email() }}</p>
-  <div class="flex items-center gap-2">
-    <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
+  <div class="flex shrink-0 items-center gap-2">
+    <a href="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/edit"
        class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
       Edit
     </a>
@@ -61,14 +67,18 @@
 {# Actions bar #}
 <div class="mt-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
   <div class="flex flex-wrap items-center gap-3">
-    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/reset-password">
+    <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/reset-password"
+          x-data="{ confirm: false, timer: null }"
+          @reset-confirm.window="clearTimeout(timer); confirm = false">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-      <button type="submit" class="rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-        Send password reset
+      <button @click.prevent="confirm ? $el.form.submit() : (confirm = true, timer = setTimeout(() => confirm = false, 4000))" type="button"
+              :class="confirm ? 'btn-ember' : 'border border-strong bg-ht-surface-elevated text-ht-content-secondary hover-bg-divider'"
+              class="rounded px-3 py-1.5 text-sm font-medium">
+        <span x-text="confirm ? 'Confirm: send reset email to {{ user.email() }}' : 'Send password reset'"></span>
       </button>
     </form>
     {% if mfa_enabled %}
-    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/disable-mfa" x-data="{ confirm: false }">
+    <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/disable-mfa" x-data="{ confirm: false }">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
       <button @click.prevent="confirm ? $el.form.submit() : (confirm = true)" type="button"
               :class="confirm ? 'btn-danger' : 'border border-strong bg-ht-surface-elevated text-ht-content-secondary hover-bg-divider'"
@@ -80,52 +90,97 @@
   </div>
 </div>
 
-{# Access across this realm #}
-<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
-  <div class="mb-4 flex items-center justify-between">
-    <h2 class="text-lg font-semibold text-ht-content-primary">Access</h2>
-    <p class="text-sm text-ht-content-muted">Direct grants in this realm. Group-inherited access is not shown.</p>
+{# Access across this realm — tabbed card #}
+<div class="mt-6 rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle" x-data="{ tab: 'roles' }">
+  {# Card header #}
+  <div class="flex flex-col gap-3 border-b border-divider-subtle px-6 pt-5 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <h2 class="text-lg font-semibold text-ht-content-primary">Access</h2>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Realm administrator:
+        {% if is_user_admin %}
+          <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Yes</span>
+        {% else %}
+          <span class="text-ht-content-secondary">No</span>
+        {% endif %}
+      </p>
+    </div>
+    {# Tab buttons #}
+    <div class="flex gap-1 self-end sm:self-auto">
+      <button @click="tab = 'roles'" type="button"
+              :class="tab === 'roles' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Roles
+      </button>
+      <button @click="tab = 'extra'" type="button"
+              :class="tab === 'extra' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Extra Permissions
+      </button>
+      <button @click="tab = 'effective'" type="button"
+              :class="tab === 'effective' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Effective
+      </button>
+      <button @click="tab = 'attrs'" type="button"
+              :class="tab === 'attrs' ? 'bg-ht-divider/[0.10] text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary hover:bg-ht-divider/[0.07]'"
+              class="rounded px-3 py-1.5 text-xs font-medium transition-colors">
+        Attributes
+      </button>
+    </div>
   </div>
 
-  <div class="mb-4 flex items-center gap-2">
-    <span class="font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Realm administrator</span>
-    {% if is_user_admin %}
-      <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Yes</span>
+  {# Roles tab #}
+  <div x-show="tab === 'roles'" class="p-6">
+    <div id="roles-tab-content">
+      {% include "ui/admin/users/_roles_tab.html" %}
+    </div>
+  </div>
+
+  {# Extra Permissions tab #}
+  <div x-show="tab === 'extra'" class="p-6">
+    <div id="permissions-tab-content">
+      {% include "ui/admin/users/_permissions_tab.html" %}
+    </div>
+  </div>
+
+  {# Effective Permissions tab #}
+  <div x-show="tab === 'effective'" class="p-6">
+    {% if effective_permissions.is_empty() %}
+      <p class="py-4 text-center text-sm text-ht-content-muted">No effective permissions resolved for this user.</p>
     {% else %}
-      <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-secondary">No</span>
-    {% endif %}
-  </div>
-
-  {% if access_groups.is_empty() %}
-    <p class="py-6 text-center text-sm text-ht-content-muted">No direct role grants in this realm.</p>
-  {% else %}
-    {% for g in access_groups %}
-    <div class="mt-4">
-      <h3 class="mb-2 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">{{ g.object_type }}</h3>
-      <ul class="divide-y divide-divider-faint">
-        {% for e in g.entries %}
-        <li class="flex items-center justify-between gap-3 py-2">
-          <div class="min-w-0 flex-1">
-            {% match e.detail_url %}
-              {% when Some with (url) %}
-                <a href="{{ url }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ e.label }}</a>
-              {% when None %}
-                <span class="text-sm text-ht-content-primary">{{ e.label }}</span>
-            {% endmatch %}
-            {# Hide the object_id row when it's identical to the human label —
-               otherwise hearth-level grants (where label/object_id/relation all
-               collapse to "admin") render as three duplicate "admin" cells. #}
-            {% if e.object_id != e.label %}
-              <div class="text-xs text-ht-content-muted font-mono">{{ e.object_id }}</div>
-            {% endif %}
-          </div>
-          <span class="inline-flex shrink-0 items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">{{ e.relation }}</span>
+      <ul class="flex flex-wrap gap-1.5">
+        {% for perm in effective_permissions %}
+        <li>
+          <code class="inline-flex items-center rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ perm }}</code>
         </li>
         {% endfor %}
       </ul>
-    </div>
-    {% endfor %}
-  {% endif %}
+    {% endif %}
+  </div>
+
+  {# Attributes tab #}
+  <div x-show="tab === 'attrs'" class="p-6">
+    {% if attributes.is_empty() %}
+      <p class="py-4 text-center text-sm text-ht-content-muted">No attributes set on this user.</p>
+    {% else %}
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-divider-subtle">
+            <th class="pb-2 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Key</th>
+            <th class="pb-2 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Value</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-divider-faint">
+          {% for (key, val) in attributes %}
+          <tr>
+            <td class="py-2 pr-4"><code class="font-mono text-xs text-ht-content-secondary">{{ key }}</code></td>
+            <td class="py-2 text-ht-content-primary">{{ val }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
 </div>
 
 {# Sessions section #}
@@ -152,13 +207,15 @@
         <td class="px-3 py-2">
           {% if s.revoked %}
             <span class="inline-flex items-center rounded-full bg-danger/[0.12] px-2 py-0.5 text-xs font-medium text-danger-fg">Revoked</span>
+          {% else if s.expired %}
+            <span class="inline-flex items-center rounded-full bg-ht-surface-base px-2 py-0.5 text-xs font-medium text-ht-content-muted">Expired</span>
           {% else %}
             <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
           {% endif %}
         </td>
         <td class="px-3 py-2 text-right">
-          {% if !s.revoked %}
-          <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/sessions/{{ s.id }}/revoke">
+          {% if !s.revoked && !s.expired %}
+          <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/sessions/{{ s.id }}/revoke">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
             <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
           </form>
@@ -212,7 +269,7 @@
           {% endif %}
         </td>
         <td class="px-3 py-2 text-right">
-          <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/webauthn/{{ c.id_b64url }}/revoke">
+          <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/webauthn/{{ c.id_b64url }}/revoke">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
             <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
           </form>
@@ -240,7 +297,7 @@
       {% for m in org_memberships %}
       <tr class="border-b border-divider-faint">
         <td class="px-3 py-2">
-          <a href="/ui/admin/organizations/{{ m.org_id }}" class="group">
+          <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ m.org_id }}" class="group">
             <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.org_name }}</div>
             <div class="text-xs text-ht-content-muted">{{ m.org_slug }}</div>
           </a>
@@ -282,7 +339,7 @@
                 class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
-        <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/delete">
+        <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/delete">
           {% match csrf %}
             {% when Some with (token) %}
               <input type="hidden" name="_csrf" value="{{ token }}">

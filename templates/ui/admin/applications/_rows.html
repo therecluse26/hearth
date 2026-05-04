@@ -1,7 +1,10 @@
 {% for app in applications %}
-<tr class="border-b border-divider-subtle">
+<tr class="border-b border-divider-subtle hover-bg-divider">
   <td class="px-4 py-3">
-    <a href="/ui/admin/applications/{{ app.client_id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ app.client_name() }}</a>
+    <div class="flex items-center gap-2">
+      <a href="/ui/admin/realms/{{ realm_name }}/applications/{{ app.client_id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ app.client_name() }}</a>
+      {% include "ui/admin/_components/_yaml_badge.html" %}
+    </div>
   </td>
   <td class="px-4 py-3">
     <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ app.client_id().as_uuid() }}</code>

@@ -1,9 +1,67 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} · Sessions{% endblock %}
 {% block body %}
+{% if !is_global %}
 {% include "ui/admin/realms/_workspace_tabs.html" %}
+{% endif %}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold text-ht-content-primary">Sessions</h1>
+  <h1 class="text-2xl font-semibold text-ht-content-primary">
+    {% if is_global %}All sessions{% else %}Sessions{% endif %}
+  </h1>
+  {% if is_global %}
+  <p class="mt-1 text-sm text-ht-content-secondary">
+    Sessions across the system realm and every tenant realm. Use the Realm column to identify each session's origin.
+  </p>
+  {% endif %}
+</div>
+
+{# Active / Expired / All filter pills. Realm scope is in the URL path. #}
+<div class="mb-4 flex items-center gap-1" role="tablist" aria-label="Session expiry filter">
+  {% if is_global %}
+  <a href="/ui/admin/sessions?status=active"
+     role="tab"
+     aria-selected="{% if status_filter == "active" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "active" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    Active <span class="ml-1 text-ht-content-muted">{{ count_active }}</span>
+  </a>
+  <a href="/ui/admin/sessions?status=expired"
+     role="tab"
+     aria-selected="{% if status_filter == "expired" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "expired" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    Expired <span class="ml-1 text-ht-content-muted">{{ count_expired }}</span>
+  </a>
+  <a href="/ui/admin/sessions?status=all"
+     role="tab"
+     aria-selected="{% if status_filter == "all" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "all" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    All <span class="ml-1 text-ht-content-muted">{{ count_active + count_expired }}</span>
+  </a>
+  {% else %}
+  <a href="/ui/admin/realms/{{ realm_name }}/sessions?status=active"
+     role="tab"
+     aria-selected="{% if status_filter == "active" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "active" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    Active <span class="ml-1 text-ht-content-muted">{{ count_active }}</span>
+  </a>
+  <a href="/ui/admin/realms/{{ realm_name }}/sessions?status=expired"
+     role="tab"
+     aria-selected="{% if status_filter == "expired" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "expired" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    Expired <span class="ml-1 text-ht-content-muted">{{ count_expired }}</span>
+  </a>
+  <a href="/ui/admin/realms/{{ realm_name }}/sessions?status=all"
+     role="tab"
+     aria-selected="{% if status_filter == "all" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "all" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    All <span class="ml-1 text-ht-content-muted">{{ count_active + count_expired }}</span>
+  </a>
+  {% endif %}
 </div>
 
 <div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
@@ -12,6 +70,9 @@
       <thead>
         <tr class="border-b border-divider bg-ht-surface-elevated">
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">User</th>
+          {% if is_global %}
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Realm</th>
+          {% endif %}
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Device</th>
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">IP</th>
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Created</th>
@@ -29,7 +90,7 @@
 {% match next_cursor %}
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
-      <a href="/ui/admin/sessions?cursor={{ cursor }}"
+      <a href="{% if is_global %}/ui/admin/sessions?cursor={{ cursor }}{% else %}/ui/admin/realms/{{ realm_name }}/sessions?cursor={{ cursor }}{% endif %}"
          class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

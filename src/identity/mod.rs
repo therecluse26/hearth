@@ -4,6 +4,7 @@
 //! Depends on `storage` (for persistence) and `core` (for shared types).
 //! May call `authz` (lateral dependency). Never the reverse.
 
+pub mod claims_config;
 pub(crate) mod credentials;
 pub mod email;
 mod engine;
@@ -27,12 +28,14 @@ pub use email::{
     MailgunEmailSender, MailtrapEmailSender, PostmarkEmailSender, SendgridEmailSender,
     SharedEmailSender, StubHttpTransport,
 };
-pub use engine::{EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig};
+pub use engine::{
+    EmbeddedIdentityEngine, IdentityConfig, RateLimitConfig, SessionConfig, TokenIssuanceContext,
+};
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
 pub use oidc::{
     AuthorizationRequest, AuthorizationResponse, ClientCredentialsRequest,
-    ClientCredentialsResponse, CodeChallengeMethod, DeviceAuthorizationRequest,
+    ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod, DeviceAuthorizationRequest,
     DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
     OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
     TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest, UserInfoResponse,
@@ -124,9 +127,9 @@ pub trait IdentityEngine: Send + Sync {
     /// Creates a new user record in the reserved system realm.
     ///
     /// This is the only public entry point that writes into the system
-    /// realm. It does *not* grant the `hearth#admin` authz relation —
+    /// realm. It does *not* grant the `realm.admin` RBAC role —
     /// callers (onboarding, admin UI) must issue the corresponding
-    /// `write_tuples` call themselves so the two writes sit next to each
+    /// `assign_role` call themselves so the two writes sit next to each
     /// other at the call site rather than hidden inside the engine.
     fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError>;
 
@@ -280,6 +283,25 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         user_id: &UserId,
         session_id: &SessionId,
+    ) -> Result<TokenPair, IdentityError>;
+
+    /// Issues a token pair with explicit OAuth / org context.
+    ///
+    /// Compared to the plain `issue_tokens`, this method additionally:
+    /// - Looks up the `OAuthClient` identified by `ctx.client_id` (if any)
+    ///   and uses it as the client context for claim-profile gate evaluation.
+    /// - Passes `ctx.granted_scopes` to the claim-profile resolver so
+    ///   scope-gated claim mappings are evaluated correctly.
+    /// - Embeds `ctx.oid` as the `oid` (org context) claim.
+    ///
+    /// The existing `issue_tokens` is a thin wrapper that calls this method
+    /// with `TokenIssuanceContext::default()`.
+    fn issue_tokens_with_context(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        session_id: &SessionId,
+        ctx: &TokenIssuanceContext,
     ) -> Result<TokenPair, IdentityError>;
 
     /// Validates a token via session lookup (internal hot path).
@@ -779,8 +801,8 @@ pub trait IdentityEngine: Send + Sync {
     /// Deletes an organization and all associated data.
     ///
     /// Cascading deletion removes all memberships (forward + reverse indexes),
-    /// invitations (primary + token + email dedup + list indexes), Zanzibar
-    /// tuples, slug index, and the org record. Idempotent.
+    /// invitations (primary + token + email dedup + list indexes), RBAC
+    /// role assignments, slug index, and the org record. Idempotent.
     fn delete_organization(
         &self,
         realm_id: &RealmId,
@@ -799,7 +821,7 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// Creates bidirectional membership indexes (org→user and user→org).
     /// If an authorization engine is configured, writes the corresponding
-    /// Zanzibar tuples atomically.
+    /// RBAC role assignments atomically.
     fn add_member(
         &self,
         realm_id: &RealmId,
@@ -812,7 +834,7 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// Enforces last-owner protection: if the user is the sole Owner,
     /// returns `Err(LastOwner)`. Deletes both membership indexes and
-    /// any Zanzibar tuples.
+    /// any RBAC role assignments.
     fn remove_member(
         &self,
         realm_id: &RealmId,
@@ -823,7 +845,7 @@ pub trait IdentityEngine: Send + Sync {
     /// Updates a member's role within an organization.
     ///
     /// Enforces last-owner protection when downgrading from Owner.
-    /// Updates both membership indexes and Zanzibar tuples atomically.
+    /// Updates both membership indexes and RBAC role assignments atomically.
     fn update_member_role(
         &self,
         realm_id: &RealmId,

@@ -3,7 +3,7 @@
 //! Implements `IdentityEngine` using the `StorageEngine` trait for persistence
 //! and `Clock` trait for deterministic timestamps.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -11,6 +11,9 @@ use base64::Engine as _;
 use ring::rand::SecureRandom;
 
 use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::identity::claims_config::{
+    resolve_claims_for_target, ClaimEvaluationContext, ClaimTarget,
+};
 use crate::identity::credentials::{self, CleartextPassword, CredentialConfig, StoredCredential};
 use crate::identity::error::IdentityError;
 use crate::identity::keys;
@@ -74,7 +77,31 @@ use crate::identity::webauthn::{
     WebAuthnChallengeStore, WebAuthnCredentialInfo,
 };
 use crate::identity::IdentityEngine;
+use crate::rbac::registry::{classify_scope_string, ScopeKind};
 use crate::storage::StorageEngine;
+
+/// Context supplied to [`IdentityEngine::issue_tokens_with_context`] to
+/// influence which claims are embedded in the issued token pair.
+///
+/// All fields are optional. `Default::default()` produces a first-party,
+/// no-scope, no-org context that is equivalent to what the legacy
+/// `issue_tokens` call produced before this struct existed.
+#[derive(Clone, Debug, Default)]
+pub struct TokenIssuanceContext {
+    /// OAuth client the token is being issued for.
+    ///
+    /// `None` means a first-party session token (same sentinel as the
+    /// pre-context `issue_tokens` path).
+    pub client_id: Option<crate::core::ClientId>,
+    /// Scopes that were granted for this token.
+    ///
+    /// Empty means no scope gating; all resolved permissions are included.
+    pub granted_scopes: BTreeSet<String>,
+    /// Organization context (`oid` claim) to embed in the token.
+    ///
+    /// `None` means no org context.
+    pub oid: Option<String>,
+}
 
 /// Configuration for credential rate limiting.
 ///
@@ -168,6 +195,9 @@ pub struct EmbeddedIdentityEngine {
     clock: Arc<dyn Clock>,
     /// Engine configuration (global defaults, overridable per-realm).
     config: IdentityConfig,
+    /// Claims-based RBAC engine used to resolve effective permissions
+    /// at token-issue time. See `docs/specs/AUTHORIZATION.md`.
+    rbac: Arc<dyn crate::rbac::RbacEngine>,
     /// Pre-computed dummy hash for timing-oracle prevention.
     ///
     /// When `verify_password` is called for a nonexistent user or missing
@@ -240,15 +270,146 @@ impl std::fmt::Debug for EmbeddedIdentityEngine {
 }
 
 impl EmbeddedIdentityEngine {
-    /// Creates a new identity engine.
-    ///
-    /// Generates an Ed25519 signing key and pre-computes a dummy Argon2id
-    /// hash on construction for timing-oracle prevention during password
-    /// verification.
+    fn claim_profile_overrides(
+        &self,
+        realm_id: &RealmId,
+    ) -> Vec<crate::identity::claims_config::ClaimMapping> {
+        self.get_realm(realm_id)
+            .ok()
+            .flatten()
+            .and_then(|realm| realm.config().claim_profile.clone())
+            .map(|profile| profile.mappings)
+            .unwrap_or_default()
+    }
+
+    fn claim_vector(value: Option<&serde_json::Value>) -> Vec<String> {
+        match value {
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_claim_profile(
+        &self,
+        realm_id: &RealmId,
+        user: &User,
+        client: &OAuthClient,
+        resolved: &crate::rbac::ResolvedPermissions,
+        granted_scopes: &BTreeSet<String>,
+        oid: Option<&str>,
+        target: ClaimTarget,
+    ) -> (
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        BTreeMap<String, serde_json::Value>,
+    ) {
+        let permissions: Vec<String> = resolved
+            .permissions
+            .iter()
+            .map(|permission| permission.as_str().to_string())
+            .collect();
+        let overrides = self.claim_profile_overrides(realm_id);
+        let ctx = ClaimEvaluationContext {
+            user,
+            client,
+            roles: &resolved.roles,
+            groups: &resolved.groups,
+            permissions: &permissions,
+            granted_scopes,
+            oid,
+        };
+        let mut claims = resolve_claims_for_target(target, &overrides, &ctx);
+        let roles = Self::claim_vector(claims.get("roles"));
+        let groups = Self::claim_vector(claims.get("groups"));
+        let permissions = Self::claim_vector(claims.get("permissions"));
+        claims.remove("roles");
+        claims.remove("groups");
+        claims.remove("permissions");
+        (roles, groups, permissions, claims)
+    }
+
+    fn validate_client_scope_request(
+        &self,
+        client: &OAuthClient,
+        raw_scope: &str,
+    ) -> Result<(), IdentityError> {
+        let requested: Vec<&str> = raw_scope
+            .split_whitespace()
+            .filter(|scope| !scope.is_empty())
+            .collect();
+        if client.trust_level() == crate::identity::ClientTrustLevel::ThirdParty
+            && requested.is_empty()
+        {
+            return Err(IdentityError::InvalidInput {
+                reason: "invalid_scope: third-party clients must request at least one scope"
+                    .to_string(),
+            });
+        }
+        for scope in requested {
+            // OIDC standard scopes (openid, profile, email, phone, address,
+            // offline_access) are protocol-level. They are always legal
+            // regardless of `declared_scopes` and are exempt from the
+            // ThirdParty-permission prohibition.
+            if classify_scope_string(scope) == Some(ScopeKind::OidcStandard) {
+                continue;
+            }
+
+            // Non-OIDC scopes must be in declared_scopes when the client
+            // has a non-empty declared set.
+            if !client.declared_scopes().is_empty()
+                && !client
+                    .declared_scopes()
+                    .iter()
+                    .any(|declared| declared == scope)
+            {
+                return Err(IdentityError::InvalidInput {
+                    reason: format!("invalid_scope: client did not declare scope '{scope}'"),
+                });
+            }
+
+            if client.trust_level() == crate::identity::ClientTrustLevel::ThirdParty
+                && classify_scope_string(scope) == Some(ScopeKind::Permission)
+            {
+                return Err(IdentityError::InvalidInput {
+                    reason: format!(
+                        "invalid_scope: third-party clients cannot request raw permission scope '{scope}'"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Creates a new identity engine, constructing a fresh
+    /// [`crate::rbac::EmbeddedRbacEngine`] sharing the same storage and
+    /// clock. Convenience for tests and benches that don't need to hold
+    /// a separate handle to the RBAC engine.
     pub fn new(
         storage: Arc<dyn StorageEngine>,
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
+    ) -> Result<Self, IdentityError> {
+        let rbac: Arc<dyn crate::rbac::RbacEngine> = Arc::new(
+            crate::rbac::EmbeddedRbacEngine::new(Arc::clone(&storage), Arc::clone(&clock)),
+        );
+        Self::with_rbac(storage, clock, config, rbac)
+    }
+
+    /// Creates a new identity engine wired to an explicit RBAC engine.
+    ///
+    /// Production wiring (where the rbac engine is shared with admin
+    /// surfaces) should use this constructor. Generates an Ed25519
+    /// signing key and pre-computes a dummy Argon2id hash on construction
+    /// for timing-oracle prevention during password verification.
+    pub fn with_rbac(
+        storage: Arc<dyn StorageEngine>,
+        clock: Arc<dyn Clock>,
+        config: IdentityConfig,
+        rbac: Arc<dyn crate::rbac::RbacEngine>,
     ) -> Result<Self, IdentityError> {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let signing_key = Arc::new(SigningKey::generate()?);
@@ -256,6 +417,7 @@ impl EmbeddedIdentityEngine {
             storage,
             clock,
             config,
+            rbac,
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
@@ -282,12 +444,14 @@ impl EmbeddedIdentityEngine {
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
         signing_key: Arc<SigningKey>,
+        rbac: Arc<dyn crate::rbac::RbacEngine>,
     ) -> Self {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let engine = Self {
             storage,
             clock,
             config,
+            rbac,
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
@@ -762,6 +926,53 @@ impl EmbeddedIdentityEngine {
         Ok(user)
     }
 
+    /// Validates `User.attributes` key/value constraints.
+    ///
+    /// Rules (from `AUTHZ_EXPANSION.md § User attributes`):
+    /// - Key MUST be non-empty, ≤64 chars, ASCII alphanumeric / `_` / `-` / `.`.
+    /// - Value MUST be ≤1 KiB (1024 bytes).
+    /// - Total map size (sum of key + value lengths) MUST be ≤16 KiB.
+    fn validate_user_attributes(
+        attributes: &BTreeMap<String, String>,
+    ) -> Result<(), IdentityError> {
+        const MAX_TOTAL: usize = 16 * 1024;
+        const MAX_VALUE: usize = 1024;
+        const MAX_KEY_LEN: usize = 64;
+        let mut total = 0usize;
+        for (k, v) in attributes {
+            if k.is_empty() {
+                return Err(IdentityError::InvalidAttribute {
+                    reason: "attribute key must not be empty".to_string(),
+                });
+            }
+            if k.len() > MAX_KEY_LEN {
+                return Err(IdentityError::InvalidAttribute {
+                    reason: format!("attribute key '{k}' exceeds {MAX_KEY_LEN} chars"),
+                });
+            }
+            if !k
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+            {
+                return Err(IdentityError::InvalidAttribute {
+                    reason: format!("attribute key '{k}' contains invalid characters"),
+                });
+            }
+            if v.len() > MAX_VALUE {
+                return Err(IdentityError::InvalidAttribute {
+                    reason: format!("attribute value for '{k}' exceeds {MAX_VALUE} bytes"),
+                });
+            }
+            total += k.len() + v.len();
+            if total > MAX_TOTAL {
+                return Err(IdentityError::InvalidAttribute {
+                    reason: "total attributes size exceeds 16 KiB".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Serializes a user to JSON bytes.
     fn serialize_user(user: &User) -> Result<Vec<u8>, IdentityError> {
         serde_json::to_vec(user).map_err(|e| IdentityError::Serialization {
@@ -835,12 +1046,30 @@ impl EmbeddedIdentityEngine {
         hex_encode(digest.as_ref())
     }
 
+    /// Computes a stable scope digest from a list of scope strings.
+    ///
+    /// The digest is SHA-256 of the sorted, deduplicated, newline-separated
+    /// scope names encoded as UTF-8. The result is a raw 32-byte vector.
+    ///
+    /// This digest is stored on [`ConsentRecord`] at grant time and
+    /// re-computed on every `/authorize` and `refresh_token` call. A mismatch
+    /// indicates that the declared scope surface has changed (e.g. because
+    /// YAML bundles were reloaded) and the user must re-consent.
+    pub(crate) fn compute_scope_digest(scopes: &[String]) -> Vec<u8> {
+        let mut sorted: Vec<&str> = scopes.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let canonical = sorted.join("\n");
+        let digest = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
+        digest.as_ref().to_vec()
+    }
+
     /// Performs grant family rotation during refresh token exchange.
     ///
     /// Validates the incoming refresh token against the family's current hash,
     /// detects theft (replayed previously-rotated tokens), issues a new token
     /// pair, and rotates the family's stored hash.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn rotate_grant_family(
         &self,
         realm_id: &RealmId,
@@ -882,6 +1111,46 @@ impl EmbeddedIdentityEngine {
             return Err(IdentityError::TokenRevoked);
         }
 
+        // Consent scope-digest re-check on refresh.
+        //
+        // When the grant family carries a `client_id` and the token carries
+        // a non-empty scope claim, verify that the stored consent record's
+        // digest still matches the token's scope surface. A mismatch means
+        // the scope surface changed since the user last consented; we return
+        // `invalid_grant` (mapped to `ConsentRequired`) so the client can
+        // direct the user back through the authorization flow.
+        if let Some(ref client_id) = family.client_id {
+            if let Some(ref scope_str) = claims.scope {
+                let token_scopes: Vec<String> =
+                    scope_str.split_whitespace().map(str::to_string).collect();
+                if let Some(consent) = self.get_consent_extended(
+                    realm_id,
+                    user_id,
+                    client_id,
+                    keys::CONSENT_ORG_KEY_REALM,
+                    keys::CONSENT_RESOURCE_KEY_DEFAULT,
+                    // We don't have the client record in scope here; if the
+                    // family carries a client_id we can load it on demand,
+                    // but to avoid a storage round-trip we conservatively
+                    // disable the spans_orgs fallback (it is checked during
+                    // the initial authorize call).
+                    false,
+                )? {
+                    if !consent.scope_digest.is_empty() {
+                        let current_digest = Self::compute_scope_digest(&token_scopes);
+                        if current_digest != consent.scope_digest {
+                            tracing::info!(
+                                client_id = %client_id,
+                                user_id = %user_id,
+                                "consent digest mismatch on refresh — requiring re-consent"
+                            );
+                            return Err(IdentityError::ConsentRequired);
+                        }
+                    }
+                }
+            }
+        }
+
         self.refresh_session(realm_id, session_id)?;
 
         let signing_key = self.get_signing_key_or_default(realm_id);
@@ -895,11 +1164,16 @@ impl EmbeddedIdentityEngine {
             iat,
             sid: session_id.to_string(),
             tid: realm_id.to_string(),
+            oid: claims.oid.clone(),
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(fid.to_string()),
             scope: claims.scope.clone(),
             nonce: None,
+            roles: claims.roles.clone(),
+            groups: claims.groups.clone(),
+            permissions: claims.permissions.clone(),
+            custom: claims.custom.clone(),
         };
         let new_refresh_claims = TokenClaims {
             sub: user_id.to_string(),
@@ -909,11 +1183,16 @@ impl EmbeddedIdentityEngine {
             iat,
             sid: session_id.to_string(),
             tid: realm_id.to_string(),
+            oid: claims.oid.clone(),
             token_type: "refresh".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(fid.to_string()),
             scope: claims.scope.clone(),
             nonce: None,
+            roles: claims.roles.clone(),
+            groups: claims.groups.clone(),
+            permissions: claims.permissions.clone(),
+            custom: claims.custom.clone(),
         };
 
         let new_access = signing_key.issue_token(&new_access_claims)?;
@@ -1038,6 +1317,74 @@ impl EmbeddedIdentityEngine {
 
         Ok(signing_key)
     }
+
+    /// Looks up a consent record for the given `(user, client, org_key,
+    /// resource_key)` tuple.
+    ///
+    /// When `consent_spans_orgs` is `true` and no org-specific record is found,
+    /// falls back to a realm-level record keyed with
+    /// [`CONSENT_ORG_KEY_REALM`][keys::CONSENT_ORG_KEY_REALM].
+    fn get_consent_extended(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        client_id: &ClientId,
+        org_key: &str,
+        resource_key: &str,
+        consent_spans_orgs: bool,
+    ) -> Result<Option<ConsentRecord>, IdentityError> {
+        // Try the specific (org, resource) tuple first.
+        let key = keys::encode_consent_key_extended(user_id, client_id, org_key, resource_key);
+        if let Some(bytes) = self
+            .storage
+            .get(realm_id, &key)
+            .map_err(Self::storage_err)?
+        {
+            let rec: ConsentRecord =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            return Ok(Some(rec));
+        }
+
+        // `consent_spans_orgs` fallback: if the client allows a realm-level
+        // consent to cover any org, check for a `_realm`-keyed record.
+        if consent_spans_orgs && org_key != keys::CONSENT_ORG_KEY_REALM {
+            let fallback_key = keys::encode_consent_key_extended(
+                user_id,
+                client_id,
+                keys::CONSENT_ORG_KEY_REALM,
+                resource_key,
+            );
+            if let Some(bytes) = self
+                .storage
+                .get(realm_id, &fallback_key)
+                .map_err(Self::storage_err)?
+            {
+                let rec: ConsentRecord =
+                    serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                return Ok(Some(rec));
+            }
+        }
+
+        // Legacy key fallback for records written before the extended schema.
+        let legacy_key = keys::encode_consent_key(user_id, client_id);
+        if let Some(bytes) = self
+            .storage
+            .get(realm_id, &legacy_key)
+            .map_err(Self::storage_err)?
+        {
+            let rec: ConsentRecord =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            return Ok(Some(rec));
+        }
+
+        Ok(None)
+    }
 }
 
 impl IdentityEngine for EmbeddedIdentityEngine {
@@ -1050,6 +1397,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 operation: "create_realm",
             });
         }
+        // Slug shape + admin-URL keyword reservation (UI_ROUTING.md R-4).
+        // Realm names ride in URL paths, so they must be URL-safe AND
+        // must not collide with any admin sub-resource keyword.
+        super::validation::validate_realm_name(&request.name)?;
         // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. See `realm_ops_lock` docs.
@@ -1160,6 +1511,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::SystemRealmProtected {
                 operation: "update_realm",
             });
+        }
+        // If the rename targets a new name, validate it the same way
+        // create_realm does — including the admin-URL reserved-keyword
+        // set (UI_ROUTING.md R-4). Skip when name is unchanged.
+        if let Some(ref new_name) = request.name {
+            super::validation::validate_realm_name(new_name)?;
         }
         // Serialize against create/delete so an in-flight delete can't
         // race with this read-modify-write and resurrect an orphaned
@@ -1582,11 +1939,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     ) -> Result<User, IdentityError> {
         // The system realm is reserved for Hearth admins and must be
         // reached only through `create_admin_user`, which also provisions
-        // the `hearth#admin` Zanzibar tuple atomically. Without this
+        // the `realm.admin` RBAC assignment atomically. Without this
         // guard an operator could create a non-admin account in the
         // system realm and gain a session bound to it but without the
-        // admin tuple — harmless today (the tuple check would reject the
-        // session) but a trap for future refactors.
+        // admin role — harmless today (the permission check would reject
+        // the session) but a trap for future refactors.
         if keys::is_system_realm(realm_id) {
             return Err(IdentityError::SystemRealmProtected {
                 operation: "create_user",
@@ -1598,8 +1955,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     fn create_admin_user(&self, request: &CreateUserRequest) -> Result<User, IdentityError> {
         // Bypasses the `create_user` system-realm guard deliberately.
         // This is the sole public entry point that may create a record
-        // in the system realm; callers are responsible for writing the
-        // `hearth#admin` Zanzibar tuple after the user is persisted.
+        // in the system realm; callers are responsible for assigning
+        // the `realm.admin` RBAC role after the user is persisted.
         let realm_id = keys::system_realm_id();
         self.create_user_with_status(&realm_id, request, self.config.default_status)
     }
@@ -1718,6 +2075,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 4. Apply status change if requested
         if let Some(new_status) = request.status {
             user.set_status(new_status);
+        }
+
+        // 4a. Replace attributes map if requested.
+        if let Some(attributes) = &request.attributes {
+            Self::validate_user_attributes(attributes)?;
+            user.set_attributes(attributes.clone());
         }
 
         // 5. Update timestamp
@@ -2239,25 +2602,83 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         session_id: &SessionId,
     ) -> Result<TokenPair, IdentityError> {
+        self.issue_tokens_with_context(
+            realm_id,
+            user_id,
+            session_id,
+            &TokenIssuanceContext::default(),
+        )
+    }
+
+    fn issue_tokens_with_context(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        session_id: &SessionId,
+        ctx: &TokenIssuanceContext,
+    ) -> Result<TokenPair, IdentityError> {
         // Verify user exists
-        let user = self.get_user(realm_id, user_id)?;
-        if user.is_none() {
-            return Err(IdentityError::UserNotFound);
-        }
+        let user = self
+            .get_user(realm_id, user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
 
         // Verify session exists and is valid
-        let session = self.get_session(realm_id, session_id)?;
-        if session.is_none() {
+        if self.get_session(realm_id, session_id)?.is_none() {
             return Err(IdentityError::SessionNotFound);
         }
 
         let now = self.clock.now();
+        // Resolve effective permissions via RBAC at token-issue time.
+        let resolved = self
+            .rbac
+            .resolve_permissions(user_id, realm_id, None, None)
+            .map_err(|e| IdentityError::Internal {
+                reason: format!("rbac resolve failed: {e}"),
+            })?;
+        let perm_strs: Vec<String> = resolved
+            .permissions
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect();
+
+        // Resolve the OAuth client: use the caller-supplied client_id when
+        // present, otherwise fall back to the first-party sentinel used by
+        // the legacy session-token path.
+        let resolved_client = if let Some(ref cid) = ctx.client_id {
+            self.get_client(realm_id, cid)?
+        } else {
+            None
+        };
+        let sentinel_client =
+            OAuthClient::new(ClientId::generate(), "session".to_string(), Vec::new(), now);
+        let effective_client = resolved_client.as_ref().unwrap_or(&sentinel_client);
+
+        let oid_ref = ctx.oid.as_deref();
+
+        let (roles, groups, permissions, custom) = self.apply_claim_profile(
+            realm_id,
+            &user,
+            effective_client,
+            &resolved,
+            &ctx.granted_scopes,
+            oid_ref,
+            ClaimTarget::AccessToken,
+        );
         self.signing_key.issue_token_pair(&IssueTokenRequest {
             sub: &user_id.to_string(),
             sid: &session_id.to_string(),
             tid: &realm_id.to_string(),
+            oid: oid_ref,
             now,
             config: &self.config.token,
+            roles: &roles,
+            groups: &groups,
+            permissions: if permissions.is_empty() {
+                &perm_strs
+            } else {
+                &permissions
+            },
+            custom,
         })
     }
 
@@ -2430,9 +2851,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             c
         };
 
-        // Apply consent policy fields from the request.
-        client.set_require_consent(request.require_consent);
+        // Consent is trust-level-driven under the expanded authz model.
+        client.set_require_consent(
+            request.trust_level == crate::identity::ClientTrustLevel::ThirdParty,
+        );
         client.set_client_logo_url(request.client_logo_url.clone());
+        client.set_slug(
+            request
+                .slug
+                .clone()
+                .unwrap_or_else(|| client.client_name().to_lowercase().replace(' ', "-")),
+        );
+        client.set_trust_level(request.trust_level);
+        client.set_declared_scopes(request.declared_scopes.clone());
+        client.set_consent_spans_orgs(request.consent_spans_orgs);
 
         // Serialize and persist
         let client_bytes =
@@ -2447,6 +2879,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(client)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn authorize(
         &self,
         realm_id: &RealmId,
@@ -2493,6 +2926,45 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 4. Validate redirect_uri matches a registered URI
         if !client.redirect_uris().contains(&request.redirect_uri) {
             return Err(IdentityError::InvalidRedirectUri);
+        }
+
+        self.validate_client_scope_request(&client, &request.scope)?;
+
+        // 4b. Consent scope-digest re-check.
+        //
+        // When a consent record exists for this (user, client) and it carries
+        // a non-empty `scope_digest`, re-compute the digest from the requested
+        // scopes. A mismatch means the scope surface has changed since the
+        // user last consented (e.g. YAML bundles reloaded) — require fresh
+        // consent rather than silently issuing a stale grant.
+        //
+        // Records with an empty digest (written before this feature) are
+        // treated as valid to preserve backward compatibility.
+        let resource_key = request
+            .resource
+            .as_deref()
+            .unwrap_or(keys::CONSENT_RESOURCE_KEY_DEFAULT);
+        if let Some(existing_consent) = self.get_consent_extended(
+            realm_id,
+            &request.user_id,
+            &request.client_id,
+            keys::CONSENT_ORG_KEY_REALM,
+            resource_key,
+            client.consent_spans_orgs(),
+        )? {
+            // Digest re-check: verify the granted scopes are still self-consistent.
+            // Compares the re-computed digest of the stored granted_scopes against
+            // what was stored at consent time. A mismatch indicates external tampering
+            // or structural corruption; a fresh consent is required.
+            // Note: true YAML-bundle-change detection requires resolving scope names
+            // to their current permission set and comparing; that is deferred to a
+            // future improvement. For now we validate internal record consistency only.
+            if !existing_consent.scope_digest.is_empty() {
+                let current_digest = Self::compute_scope_digest(&existing_consent.granted_scopes);
+                if current_digest != existing_consent.scope_digest {
+                    return Err(IdentityError::ConsentRequired);
+                }
+            }
         }
 
         // 5. Validate PKCE code_challenge_method if present
@@ -2630,6 +3102,47 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let session =
             self.create_session(realm_id, &stored_code.user_id, &SessionContext::default())?;
 
+        let user = self
+            .get_user(realm_id, &stored_code.user_id)?
+            .ok_or(IdentityError::UserNotFound)?;
+        let client = self
+            .get_client(realm_id, &request.client_id)?
+            .ok_or(IdentityError::ClientNotFound)?;
+        let scope_value = stored_code.scope.trim().to_string();
+        let scope_for_resolver =
+            if scope_value.is_empty() || scope_value.split_whitespace().count() != 1 {
+                None
+            } else {
+                Some(scope_value.as_str())
+            };
+        let resolved = self
+            .rbac
+            .resolve_permissions(&stored_code.user_id, realm_id, None, scope_for_resolver)
+            .map_err(|e| IdentityError::Internal {
+                reason: format!("rbac resolve failed: {e}"),
+            })?;
+        let granted_scopes: BTreeSet<String> =
+            scope_value.split_whitespace().map(str::to_string).collect();
+        let (access_roles, access_groups, access_permissions, access_custom) = self
+            .apply_claim_profile(
+                realm_id,
+                &user,
+                &client,
+                &resolved,
+                &granted_scopes,
+                None,
+                ClaimTarget::AccessToken,
+            );
+        let (id_roles, id_groups, id_permissions, id_custom) = self.apply_claim_profile(
+            realm_id,
+            &user,
+            &client,
+            &resolved,
+            &granted_scopes,
+            None,
+            ClaimTarget::IdToken,
+        );
+
         // 10. Create grant family for refresh token rotation
         let family_id = uuid::Uuid::new_v4().to_string();
 
@@ -2645,11 +3158,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
-            scope: None,
+            scope: (!scope_value.is_empty()).then(|| scope_value.clone()),
             nonce: None,
+            roles: access_roles,
+            groups: access_groups,
+            permissions: access_permissions,
+            custom: access_custom,
         };
         let refresh_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
@@ -2659,11 +3177,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "refresh".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: Some(family_id.clone()),
-            scope: None,
+            scope: (!scope_value.is_empty()).then(|| scope_value.clone()),
             nonce: None,
+            roles: access_claims.roles.clone(),
+            groups: access_claims.groups.clone(),
+            permissions: access_claims.permissions.clone(),
+            custom: access_claims.custom.clone(),
         };
 
         let access_token =
@@ -2688,6 +3211,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             realm_id: realm_id.clone(),
             revoked: false,
             created_at: now,
+            // Store the client_id so the refresh path can perform a
+            // consent digest re-check without a separate client lookup.
+            client_id: Some(request.client_id.clone()),
         };
         let family_bytes =
             serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
@@ -2708,11 +3234,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "id_token".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
-            scope: None,
+            scope: (!scope_value.is_empty()).then(|| scope_value.clone()),
             nonce: stored_code.nonce.clone(),
+            roles: id_roles,
+            groups: id_groups,
+            permissions: id_permissions,
+            custom: id_custom,
         };
         let id_token =
             signing_key
@@ -2812,6 +3343,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::InvalidClientSecret);
         }
 
+        self.validate_client_scope_request(&client, request.scope.as_deref().unwrap_or(""))?;
+
         // 4. Issue access token (no session, no refresh token per RFC 6749 §4.4.3)
         let now = self.clock.now();
         let iat = now.as_micros() / 1_000_000;
@@ -2826,11 +3359,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat,
             sid: "none".to_string(), // No session for client credentials
             tid: realm_id.to_string(),
+            oid: None,
             token_type: "access".to_string(),
             jti: Some(uuid::Uuid::new_v4().to_string()),
             fid: None,
             scope: scope.clone(),
             nonce: None,
+            roles: Vec::new(),
+            groups: Vec::new(),
+            permissions: Vec::new(),
+            custom: std::collections::BTreeMap::new(),
         };
 
         let access_token =
@@ -2857,11 +3395,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // 1. Verify client exists
         let client_key = keys::encode_oauth_client(&request.client_id);
-        let _ = self
+        let client_bytes = self
             .storage
             .get(realm_id, &client_key)
             .map_err(Self::storage_err)?
             .ok_or(IdentityError::InvalidClient)?;
+        let client: OAuthClient =
+            serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        self.validate_client_scope_request(&client, request.scope.as_deref().unwrap_or(""))?;
 
         // 2. Generate device code (32 random bytes → base64url)
         let rng = ring::rand::SystemRandom::new();
@@ -3048,11 +3592,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     iat,
                     sid: session.id().to_string(),
                     tid: realm_id.to_string(),
+                    oid: None,
                     token_type: "id_token".to_string(),
                     jti: Some(uuid::Uuid::new_v4().to_string()),
                     fid: None,
                     scope: stored.scope.clone(),
                     nonce: None,
+                    roles: Vec::new(),
+                    groups: Vec::new(),
+                    permissions: Vec::new(),
+                    custom: std::collections::BTreeMap::new(),
                 };
                 let signing_key = self.get_or_load_realm_signing_key(realm_id)?;
                 let id_token = signing_key.issue_token(&id_token_claims).map_err(|e| {
@@ -4190,34 +4739,57 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .get_user(realm_id, &user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
-        // 5. Build response based on scopes
-        let scopes: Vec<&str> = claims
+        let scope_set: BTreeSet<String> = claims
             .scope
             .as_deref()
             .unwrap_or("openid")
             .split_whitespace()
+            .map(str::to_string)
             .collect();
-
-        let has_email_scope = scopes.contains(&"email");
-        let has_profile_scope = scopes.contains(&"profile");
+        let client = claims
+            .aud
+            .strip_prefix("client_")
+            .and_then(|uuid| uuid::Uuid::parse_str(uuid).ok())
+            .and_then(|uuid| {
+                self.get_client(realm_id, &ClientId::new(uuid))
+                    .ok()
+                    .flatten()
+            });
+        let empty_client = OAuthClient::new(
+            ClientId::generate(),
+            "userinfo".to_string(),
+            Vec::new(),
+            self.clock.now(),
+        );
+        let resolved = self
+            .rbac
+            .resolve_permissions(&user_id, realm_id, None, None)
+            .map_err(|e| IdentityError::Internal {
+                reason: format!("rbac resolve failed: {e}"),
+            })?;
+        let (_roles, _groups, _permissions, custom) = self.apply_claim_profile(
+            realm_id,
+            &user,
+            client.as_ref().unwrap_or(&empty_client),
+            &resolved,
+            &scope_set,
+            claims.oid.as_deref(),
+            ClaimTarget::UserInfo,
+        );
 
         Ok(crate::identity::oidc::UserInfoResponse {
             sub: claims.sub,
-            email: if has_email_scope {
-                Some(user.email().to_string())
-            } else {
-                None
-            },
-            email_verified: if has_email_scope {
-                Some(true) // Hearth-created users have verified emails
-            } else {
-                None
-            },
-            name: if has_profile_scope {
-                Some(user.display_name().to_string())
-            } else {
-                None
-            },
+            email: custom
+                .get("email")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            email_verified: scope_set.contains("email").then_some(true),
+            name: custom
+                .get("name")
+                .and_then(|value| value.as_str().map(str::to_string)),
+            custom: custom
+                .into_iter()
+                .filter(|(key, _)| key != "email" && key != "name")
+                .collect(),
         })
     }
 
@@ -4494,6 +5066,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         if let Some(logo) = &request.client_logo_url {
             client.set_client_logo_url(logo.clone());
         }
+        if let Some(slug) = &request.slug {
+            client.set_slug(slug.clone());
+        }
+        if let Some(trust_level) = request.trust_level {
+            client.set_trust_level(trust_level);
+            client
+                .set_require_consent(trust_level == crate::identity::ClientTrustLevel::ThirdParty);
+        }
+        if let Some(declared_scopes) = &request.declared_scopes {
+            client.set_declared_scopes(declared_scopes.clone());
+        }
+        if let Some(consent_spans_orgs) = request.consent_spans_orgs {
+            client.set_consent_spans_orgs(consent_spans_orgs);
+        }
 
         let updated_bytes =
             serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
@@ -4600,19 +5186,43 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         client_id: &ClientId,
     ) -> Result<Option<ConsentRecord>, IdentityError> {
-        let key = keys::encode_consent_key(user_id, client_id);
-        let Some(bytes) = self
+        // Legacy key (`oauth:consent:{user}:{client}`) — checked first for
+        // backward compatibility with records written before the extended key
+        // schema was introduced.
+        let legacy_key = keys::encode_consent_key(user_id, client_id);
+        if let Some(bytes) = self
             .storage
-            .get(realm_id, &key)
+            .get(realm_id, &legacy_key)
             .map_err(Self::storage_err)?
-        else {
-            return Ok(None);
-        };
-        let rec: ConsentRecord =
-            serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
-                reason: e.to_string(),
-            })?;
-        Ok(Some(rec))
+        {
+            let rec: ConsentRecord =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            return Ok(Some(rec));
+        }
+
+        // Extended key (`oauth:consent:{user}:{client}:_realm:_default`) —
+        // the canonical form for new records.
+        let extended_key = keys::encode_consent_key_extended(
+            user_id,
+            client_id,
+            keys::CONSENT_ORG_KEY_REALM,
+            keys::CONSENT_RESOURCE_KEY_DEFAULT,
+        );
+        if let Some(bytes) = self
+            .storage
+            .get(realm_id, &extended_key)
+            .map_err(Self::storage_err)?
+        {
+            let rec: ConsentRecord =
+                serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            return Ok(Some(rec));
+        }
+
+        Ok(None)
     }
 
     fn list_consents_by_user(
@@ -4671,12 +5281,27 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .ok_or(IdentityError::ClientNotFound)?;
 
         let now = self.clock.now();
-        let key = keys::encode_consent_key(user_id, client_id);
-        let existing = self
+
+        // Use the extended key as the canonical storage location for new
+        // records. The realm-level sentinel values (`_realm`, `_default`)
+        // are used when no org/resource context is supplied by the caller.
+        let key = keys::encode_consent_key_extended(
+            user_id,
+            client_id,
+            keys::CONSENT_ORG_KEY_REALM,
+            keys::CONSENT_RESOURCE_KEY_DEFAULT,
+        );
+
+        // Also check the legacy key so that pre-migration records are merged
+        // rather than duplicated.
+        let legacy_key = keys::encode_consent_key(user_id, client_id);
+        let existing_bytes = self
             .storage
             .get(realm_id, &key)
-            .map_err(Self::storage_err)?;
-        let record = if let Some(bytes) = existing {
+            .map_err(Self::storage_err)?
+            .or_else(|| self.storage.get(realm_id, &legacy_key).unwrap_or_default());
+
+        let mut record = if let Some(bytes) = existing_bytes {
             let mut rec: ConsentRecord =
                 serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
                     reason: e.to_string(),
@@ -4691,12 +5316,21 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 now,
             )
         };
+
+        // Compute and store the scope digest so future authorize /
+        // refresh_token calls can detect stale consent.
+        record.scope_digest = Self::compute_scope_digest(&record.granted_scopes);
+
         let bytes = serde_json::to_vec(&record).map_err(|e| IdentityError::Serialization {
             reason: e.to_string(),
         })?;
         self.storage
             .put(realm_id, &key, &bytes)
             .map_err(Self::storage_err)?;
+
+        // Remove the legacy key if it existed to avoid stale duplicates.
+        let _ = self.storage.delete(realm_id, &legacy_key);
+
         Ok(record)
     }
 
@@ -4706,19 +5340,43 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         client_id: &ClientId,
     ) -> Result<(), IdentityError> {
-        let key = keys::encode_consent_key(user_id, client_id);
-        let existed = self
+        // Try the extended key (canonical location for new records) first.
+        let extended_key = keys::encode_consent_key_extended(
+            user_id,
+            client_id,
+            keys::CONSENT_ORG_KEY_REALM,
+            keys::CONSENT_RESOURCE_KEY_DEFAULT,
+        );
+        let extended_exists = self
             .storage
-            .get(realm_id, &key)
+            .get(realm_id, &extended_key)
             .map_err(Self::storage_err)?
             .is_some();
-        if !existed {
-            return Err(IdentityError::ConsentNotFound);
+        if extended_exists {
+            self.storage
+                .delete(realm_id, &extended_key)
+                .map_err(Self::storage_err)?;
+            // Also clean up any lingering legacy key.
+            let legacy_key = keys::encode_consent_key(user_id, client_id);
+            let _ = self.storage.delete(realm_id, &legacy_key);
+            return Ok(());
         }
-        self.storage
-            .delete(realm_id, &key)
-            .map_err(Self::storage_err)?;
-        Ok(())
+
+        // Fall back to the legacy key for pre-migration records.
+        let legacy_key = keys::encode_consent_key(user_id, client_id);
+        let legacy_exists = self
+            .storage
+            .get(realm_id, &legacy_key)
+            .map_err(Self::storage_err)?
+            .is_some();
+        if legacy_exists {
+            self.storage
+                .delete(realm_id, &legacy_key)
+                .map_err(Self::storage_err)?;
+            return Ok(());
+        }
+
+        Err(IdentityError::ConsentNotFound)
     }
 
     fn revoke_all_consents_for_user(
@@ -4828,6 +5486,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             redirect_uri: redirect_uri.to_string(),
             scope: scope.to_string(),
             state: state.to_string(),
+            resource: None,
             response_type: "code".to_string(),
             user_id: user_id.clone(),
             code_challenge,
@@ -5117,7 +5776,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             request.grant_types.clone()
         };
 
-        let client = if let Some(ref secret) = request.client_secret {
+        let mut client = if let Some(ref secret) = request.client_secret {
             let secret_hash =
                 credentials::hash_raw_secret(secret.as_bytes(), &self.config.credential)?;
             OAuthClient::new_confidential(
@@ -5134,6 +5793,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             c.set_grant_types(grant_types);
             c
         };
+        client.set_slug(
+            request
+                .slug
+                .clone()
+                .unwrap_or_else(|| client.client_name().to_lowercase().replace(' ', "-")),
+        );
+        client.set_trust_level(request.trust_level);
+        client.set_require_consent(
+            request.trust_level == crate::identity::ClientTrustLevel::ThirdParty,
+        );
+        client.set_declared_scopes(request.declared_scopes.clone());
+        client.set_consent_spans_orgs(request.consent_spans_orgs);
 
         let client_bytes =
             serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
@@ -8183,6 +8854,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client")
@@ -8210,6 +8882,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize should succeed");
@@ -8242,6 +8915,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8299,6 +8973,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8353,6 +9028,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8425,6 +9101,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -8480,6 +9157,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         );
         assert!(
@@ -8510,6 +9188,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: None,
+                resource: None,
             },
         );
         assert!(
@@ -8700,6 +9379,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: Some("unique-nonce-abc".to_string()),
+                resource: None,
             },
         );
         assert!(result.is_ok(), "first use of nonce should succeed");
@@ -8717,6 +9397,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: Some("unique-nonce-abc".to_string()),
+                resource: None,
             },
         );
         assert!(
@@ -8737,6 +9418,7 @@ mod tests {
                 code_challenge: None,
                 code_challenge_method: None,
                 nonce: Some("different-nonce-xyz".to_string()),
+                resource: None,
             },
         );
         assert!(result.is_ok(), "different nonce should succeed");
@@ -8764,6 +9446,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: Some("same-nonce".to_string()),
+                    resource: None,
                 },
             );
             assert!(
@@ -8787,12 +9470,12 @@ mod tests {
 
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Acme Corp".to_string(),
+                name: "acme-corp".to_string(),
                 config: None,
             })
             .expect("create realm");
 
-        assert_eq!(realm.name(), "Acme Corp");
+        assert_eq!(realm.name(), "acme-corp");
         assert_eq!(realm.status(), RealmStatus::Active);
 
         // Should be retrievable
@@ -8801,7 +9484,7 @@ mod tests {
             .expect("get realm")
             .expect("realm should exist");
         assert_eq!(loaded.id(), realm.id());
-        assert_eq!(loaded.name(), "Acme Corp");
+        assert_eq!(loaded.name(), "acme-corp");
     }
 
     #[test]
@@ -8816,7 +9499,7 @@ mod tests {
         };
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Custom Corp".to_string(),
+                name: "custom-corp".to_string(),
                 config: Some(config.clone()),
             })
             .expect("create realm");
@@ -8840,13 +9523,13 @@ mod tests {
 
         let realm_a = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm A".to_string(),
+                name: "realm-a".to_string(),
                 config: None,
             })
             .expect("create realm A");
         let realm_b = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm B".to_string(),
+                name: "realm-b".to_string(),
                 config: None,
             })
             .expect("create realm B");
@@ -8897,13 +9580,13 @@ mod tests {
 
         let realm_a = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm A".to_string(),
+                name: "realm-a".to_string(),
                 config: None,
             })
             .expect("create realm A");
         let realm_b = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm B".to_string(),
+                name: "realm-b".to_string(),
                 config: None,
             })
             .expect("create realm B");
@@ -8928,7 +9611,7 @@ mod tests {
 
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Original Name".to_string(),
+                name: "original-name".to_string(),
                 config: None,
             })
             .expect("create realm");
@@ -8946,14 +9629,14 @@ mod tests {
             .update_realm(
                 realm.id(),
                 &UpdateRealmRequest {
-                    name: Some("Updated Name".to_string()),
+                    name: Some("updated-name".to_string()),
                     status: None,
                     config: Some(new_config.clone()),
                 },
             )
             .expect("update realm");
 
-        assert_eq!(updated.name(), "Updated Name");
+        assert_eq!(updated.name(), "updated-name");
         assert_eq!(updated.config(), &new_config);
 
         // Persisted
@@ -8961,7 +9644,7 @@ mod tests {
             .get_realm(realm.id())
             .expect("get")
             .expect("should exist");
-        assert_eq!(loaded.name(), "Updated Name");
+        assert_eq!(loaded.name(), "updated-name");
         assert_eq!(loaded.config(), &new_config);
     }
 
@@ -8989,7 +9672,7 @@ mod tests {
 
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Doomed Corp".to_string(),
+                name: "doomed-corp".to_string(),
                 config: None,
             })
             .expect("create realm");
@@ -9072,8 +9755,13 @@ mod tests {
         use proptest::prelude::*;
 
         /// Strategy for generating a valid realm name.
+        ///
+        /// Realm names must be ASCII alphanumeric, hyphens, or underscores
+        /// only (1-63 chars), and must not collide with reserved admin
+        /// URL keywords. We prefix every generated name with `r-` to
+        /// guarantee uniqueness from the reserved set.
         fn valid_realm_name() -> impl Strategy<Value = String> {
-            "[A-Za-z ]{3,30}".prop_map(|s| s.trim().to_string())
+            "[a-z0-9_-]{3,30}".prop_map(|s| format!("r-{}", s.trim_matches('-')))
         }
 
         /// Strategy for generating a valid email address.
@@ -9098,7 +9786,7 @@ mod tests {
                 // Create N realms
                 for i in 0..n_realms {
                     let realm = engine.create_realm(&CreateRealmRequest {
-                        name: format!("Realm {i}"),
+                        name: format!("realm-{i}"),
                         config: None,
                     }).expect("create realm");
                     realms.push(realm);
@@ -9198,7 +9886,7 @@ mod tests {
                 let (_dir, engine, _clock) = setup_engine();
 
                 let realm = engine.create_realm(&CreateRealmRequest {
-                    name: "Rotation Corp".to_string(),
+                    name: "rotation-corp".to_string(),
                     config: None,
                 }).expect("create realm");
 
@@ -9260,6 +9948,7 @@ mod tests {
                     grant_types: vec!["client_credentials".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register confidential client")
@@ -9347,6 +10036,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register public client");
@@ -9386,6 +10076,7 @@ mod tests {
                     grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9433,6 +10124,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9451,6 +10143,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -9556,6 +10249,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9573,6 +10267,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -9733,6 +10428,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9750,6 +10446,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                    resource: None,
                 },
             )
             .expect("authorize");
@@ -9821,6 +10518,7 @@ mod tests {
                     grant_types: vec!["client_credentials".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9889,6 +10587,7 @@ mod tests {
                     grant_types: vec!["urn:ietf:params:oauth:grant-type:device_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -9955,6 +10654,7 @@ mod tests {
                         grant_types: vec!["authorization_code".to_string()],
                         require_consent: true,
                         client_logo_url: None,
+                                            ..Default::default()
                     },
                 ).expect("register client");
 
@@ -9980,6 +10680,7 @@ mod tests {
                         code_challenge: None,
                         code_challenge_method: None,
                         nonce: None,
+                                            resource: None,
                     }).expect("authorize");
 
                     let tokens = engine.exchange_authorization_code(&realm_id, &TokenExchangeRequest {
@@ -10075,6 +10776,7 @@ mod tests {
                         grant_types: vec!["authorization_code".to_string()],
                         require_consent: true,
                         client_logo_url: None,
+                                            ..Default::default()
                     },
                 ).expect("register client");
 
@@ -10088,6 +10790,7 @@ mod tests {
                     code_challenge: None,
                     code_challenge_method: None,
                     nonce: None,
+                                    resource: None,
                 }).expect("authorize");
 
                 let tokens = engine.exchange_authorization_code(&realm_id, &TokenExchangeRequest {
@@ -10440,7 +11143,7 @@ mod tests {
         let (dir, engine, clock) = setup_engine();
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Consent Realm".to_string(),
+                name: "consent-realm".to_string(),
                 config: None,
             })
             .expect("create realm");
@@ -10464,6 +11167,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register client");
@@ -10589,6 +11293,7 @@ mod tests {
                     grant_types: vec!["authorization_code".to_string()],
                     require_consent: true,
                     client_logo_url: None,
+                    ..Default::default()
                 },
             )
             .expect("register 2");

@@ -4,9 +4,9 @@
 //! - First-run detection toggles when the first realm is created.
 //! - Setup-token lifecycle: generated once, consumed on success, removed
 //!   automatically when the deployment becomes configured.
-//! - Full setup flow: admin (`PendingVerification`) + Zanzibar admin
-//!   tuple + verification token + verification email (realm comes from
-//!   YAML reconciliation, pre-created in tests via `seed_realm`).
+//! - Full setup flow: admin (`PendingVerification`) + realm.admin RBAC
+//!   assignment + verification token + verification email (realm comes
+//!   from YAML reconciliation, pre-created in tests via `seed_realm`).
 //! - Session creation is gated on `UserStatus::Active`; a
 //!   `PendingVerification` user cannot create sessions.
 //! - Verification-token reuse, expiry, and enumeration-resistance.
@@ -17,7 +17,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, SubjectRef};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::email::{EmailBranding, EmailError, EmailMessage, EmailSender, EmailService};
 use hearth::identity::onboarding::{
@@ -28,6 +27,7 @@ use hearth::identity::{
     CleartextPassword, CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine,
     IdentityConfig, IdentityEngine, Realm, UserStatus,
 };
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Test-only email sender that records every sent [`EmailMessage`].
@@ -68,7 +68,7 @@ impl EmailSender for FailingEmailSender {
 /// Bundles everything a test needs: engines, data dir, email recorder.
 struct TestEnv {
     identity: Arc<dyn IdentityEngine>,
-    authz: Arc<dyn AuthorizationEngine>,
+    authz: Arc<dyn RbacEngine>,
     email: Arc<RecordingEmailSender>,
     #[allow(dead_code)]
     email_service: Arc<EmailService>,
@@ -86,11 +86,11 @@ impl TestEnv {
         let storage_cfg = StorageConfig::dev(temp.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(storage_cfg).expect("open storage"));
         let storage_dyn: Arc<dyn StorageEngine> = Arc::clone(&storage) as _;
-        let authz: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
-            Arc::clone(&storage_dyn),
-            AuthzConfig::default(),
-        ));
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let authz: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
+            Arc::clone(&storage_dyn),
+            Arc::clone(&clock),
+        ));
         let identity_cfg = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
@@ -315,7 +315,7 @@ fn complete_setup_creates_admin_and_sends_email() {
     // Seeding an application realm is no longer required — admins live
     // in the auto-seeded system realm. We still create one to verify it
     // is *not* picked (regression test on the old behavior).
-    let _ignored = env.seed_realm("Hearth Prod");
+    let _ignored = env.seed_realm("hearth-prod");
 
     let pw = CleartextPassword::new(b"correct-horse-battery-staple".to_vec());
     let outcome = env
@@ -360,21 +360,18 @@ fn complete_setup_creates_admin_and_sends_email() {
         outcome.verification_url
     );
 
-    // Zanzibar admin tuple was written.
-    let admin_object = ObjectRef::new("hearth", "admin").expect("object");
-    let admin_subject =
-        SubjectRef::direct("user", &outcome.admin_user_id.as_uuid().to_string()).expect("subject");
-    let allowed = env
+    // realm.admin RBAC assignment was written.
+    let resolved = env
         .authz
-        .check(
-            &outcome.realm_id,
-            &admin_object,
-            "admin",
-            &admin_subject,
-            None,
-        )
-        .expect("check");
-    assert!(allowed, "new admin should pass hearth#admin check");
+        .resolve_permissions(&outcome.admin_user_id, &outcome.realm_id, None, None)
+        .expect("resolve permissions");
+    assert!(
+        resolved
+            .permissions
+            .iter()
+            .any(|p| p.as_str() == "hearth.admin"),
+        "new admin should carry hearth.admin permission"
+    );
 
     // Setup token is gone so the flow cannot be re-triggered.
     assert!(!env.setup_token_path().exists());
@@ -581,11 +578,11 @@ fn complete_setup_surfaces_email_delivery_failure() {
     let storage_cfg = StorageConfig::dev(temp.path().to_path_buf());
     let storage = Arc::new(EmbeddedStorageEngine::open(storage_cfg).expect("open storage"));
     let storage_dyn: Arc<dyn StorageEngine> = Arc::clone(&storage) as _;
-    let authz: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
-        Arc::clone(&storage_dyn),
-        AuthzConfig::default(),
-    ));
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let authz: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
+        Arc::clone(&storage_dyn),
+        Arc::clone(&clock),
+    ));
     let identity_cfg = IdentityConfig {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
@@ -633,7 +630,7 @@ fn complete_setup_surfaces_email_delivery_failure() {
         "expected Email(_), got {err:?}"
     );
     // The setup token is removed before email delivery because all critical
-    // state (user, password, Zanzibar tuple, verification token) is persisted
+    // state (user, password, RBAC role assignment, verification token) is persisted
     // and the verification URL is logged. This prevents the "first-run setup
     // required" warning from firing on every restart.
     assert!(

@@ -1,14 +1,14 @@
 //! Errors for migration from external identity providers.
 //!
 //! The migration layer can fail for reasons distinct from the identity or
-//! authorization engines (malformed export files, unsupported KDF
-//! parameters, etc.). Callers observe a single unified error type that
-//! transparently wraps lower-layer failures via `From`.
+//! RBAC engines (malformed export files, unsupported KDF parameters, etc.).
+//! Callers observe a single unified error type that transparently wraps
+//! lower-layer failures via `From`.
 
 use std::fmt;
 
-use crate::authz::AuthzError;
 use crate::identity::error::IdentityError;
+use crate::rbac::RbacError;
 
 /// Error produced by any migration operation.
 #[derive(Debug)]
@@ -31,8 +31,8 @@ pub enum MigrationError {
     /// Underlying identity-engine error while writing a realm, user, or
     /// client.
     Identity(IdentityError),
-    /// Underlying authorization-engine error while writing role tuples.
-    Authz(AuthzError),
+    /// Underlying RBAC-engine error while creating roles or assignments.
+    Rbac(RbacError),
     /// Filesystem error while reading an export file.
     Io(std::io::Error),
 }
@@ -47,7 +47,7 @@ impl fmt::Display for MigrationError {
                  (use `--reset-credentials` to import without credentials)"
             ),
             Self::Identity(e) => write!(f, "identity engine error: {e}"),
-            Self::Authz(e) => write!(f, "authorization engine error: {e}"),
+            Self::Rbac(e) => write!(f, "RBAC engine error: {e}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
         }
     }
@@ -57,7 +57,7 @@ impl std::error::Error for MigrationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Identity(e) => Some(e),
-            Self::Authz(e) => Some(e),
+            Self::Rbac(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::ParseError { .. } | Self::UnsupportedAlgorithm { .. } => None,
         }
@@ -70,9 +70,9 @@ impl From<IdentityError> for MigrationError {
     }
 }
 
-impl From<AuthzError> for MigrationError {
-    fn from(e: AuthzError) -> Self {
-        Self::Authz(e)
+impl From<RbacError> for MigrationError {
+    fn from(e: RbacError) -> Self {
+        Self::Rbac(e)
     }
 }
 

@@ -4,30 +4,27 @@
 {% include "ui/admin/realms/_workspace_tabs.html" %}
 
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="text-2xl font-semibold text-ht-content-primary">
-    {% match target_realm_name %}
-      {% when Some with (_) %}Users in this realm
-      {% when None %}Admin users
-    {% endmatch %}
-  </h1>
-  <a href="{% match target_realm_name %}{% when Some with (name) %}/ui/admin/users/new?realm={{ name }}{% when None %}/ui/admin/users/new{% endmatch %}"
+  <h1 class="text-2xl font-semibold text-ht-content-primary">Users in this realm</h1>
+  <a href="/ui/admin/realms/{{ realm_name }}/users/new"
      class="btn-ember inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    {% match target_realm_name %}
-      {% when Some with (_) %}Create user
-      {% when None %}Create admin
-    {% endmatch %}
+    Create user
   </a>
 </div>
 
-{# Search bar #}
-<form method="get" action="{% match target_realm_name %}{% when Some with (_) %}/ui/admin/users{% when None %}/ui/admin/admin-users{% endmatch %}" class="mb-4">
-  {% match target_realm_name %}
-    {% when Some with (name) %}<input type="hidden" name="realm" value="{{ name }}">
-    {% when None %}
-  {% endmatch %}
+{# Search bar — HTMX live search after 200ms idle, ≥2 chars. Server falls back
+   to full list when q is empty or shorter; both branches return the rows partial
+   when HX-Request is set. Plain GET still works (no JS, slow link, etc.). #}
+<form method="get" action="{{ list_url }}" class="mb-4"
+      hx-get="{{ list_url }}"
+      hx-trigger="input changed delay:200ms from:input[name=q], search from:input[name=q]"
+      hx-target="#users-tbody"
+      hx-select="#users-tbody"
+      hx-swap="outerHTML"
+      hx-push-url="true">
   <div class="relative">
     <input type="search" name="q" value="{{ search_query }}" placeholder="Search by email or name…"
+           autocomplete="off"
            class="block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 pl-9 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
     <svg class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
   </div>
@@ -43,7 +40,7 @@
         <th class="px-4 py-3"></th>
       </tr>
     </thead>
-    <tbody id="table-body">
+    <tbody id="users-tbody">
       {% include "ui/admin/users/_rows.html" %}
     </tbody>
   </table>
@@ -53,7 +50,7 @@
 {% match next_cursor %}
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
-      <a href="/ui/admin/users?cursor={{ cursor }}"
+      <a href="/ui/admin/realms/{{ realm_name }}/users?cursor={{ cursor }}"
          class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

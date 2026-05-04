@@ -1,0 +1,132 @@
+<div x-data="{ grantOpen: false, scopeType: 'realm', selectedOrg: '' }">
+
+  {# Permissions inherited from role assignments, grouped by source role (read-only) #}
+  {% if !role_inherited_groups.is_empty() %}
+  <div class="mb-4 space-y-3">
+    <p class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Inherited via Roles</p>
+    {% for group in role_inherited_groups %}
+    <div>
+      <p class="mb-1.5 text-xs text-ht-content-muted">
+        From <span class="font-medium text-ht-content-secondary">{{ group.role_name }}</span>
+        <span class="text-ht-content-muted">·</span>
+        <span class="font-mono">{{ group.scope_label }}</span>
+      </p>
+      <div class="flex flex-wrap gap-2">
+        {% for perm in group.permissions %}
+        <span class="inline-flex items-center rounded-full border border-white/[0.06] bg-ht-surface-base px-2.5 py-1 font-mono text-xs text-ht-content-muted">{{ perm }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="mb-4 border-t border-divider-faint"></div>
+  {% endif %}
+
+  {# Current direct grants as dismissible chips #}
+  {% if extra_permissions.is_empty() %}
+    <p class="py-4 text-center text-sm text-ht-content-muted">No directly-granted permissions for this user.</p>
+  {% else %}
+    <p class="mb-2 font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Directly Granted</p>
+    <div class="flex flex-wrap gap-2">
+      {% for row in extra_permissions %}
+      <span class="inline-flex items-center gap-1.5 rounded-full border border-white/[0.10] bg-ht-surface-base px-2.5 py-1 font-mono text-xs text-ht-content-secondary">
+        {{ row.permission }}
+        <span class="text-ht-content-muted">·</span>
+        <span class="text-ht-content-muted">{{ row.scope_label }}</span>
+        <form method="post"
+              action="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/revoke"
+              hx-post="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/revoke"
+              hx-target="#permissions-tab-content"
+              hx-swap="innerHTML"
+              class="contents">
+          {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+          <input type="hidden" name="permission" value="{{ row.permission }}">
+          <input type="hidden" name="scope" value="{{ row.scope_raw }}">
+          <button type="submit"
+                  class="ml-0.5 rounded-full p-0.5 text-ht-content-muted transition-colors hover:bg-danger/[0.15] hover:text-danger-fg"
+                  title="Revoke permission">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor" class="h-3 w-3">
+              <path d="M6 .75a5.25 5.25 0 1 0 0 10.5A5.25 5.25 0 0 0 6 .75Zm-.53 5.72L3.72 4.72a.75.75 0 0 1 1.06-1.06L6 4.94l1.22-1.22a.75.75 0 1 1 1.06 1.06L7.06 6l1.22 1.22a.75.75 0 1 1-1.06 1.06L6 7.06 4.78 8.28a.75.75 0 0 1-1.06-1.06L4.94 6Z"/>
+            </svg>
+          </button>
+        </form>
+      </span>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {# Grant Permission form #}
+  <div class="mt-5 border-t border-divider-faint pt-4">
+    <button @click="grantOpen = !grantOpen" type="button"
+            class="inline-flex items-center gap-1.5 text-sm font-medium text-teal-fg transition-colors hover:text-teal-fg/80">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4">
+        <path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z" />
+      </svg>
+      <span x-text="grantOpen ? 'Cancel' : 'Grant Permission'"></span>
+    </button>
+
+    <div x-show="grantOpen" x-cloak class="mt-4 rounded-lg border border-white/[0.10] bg-ht-surface-base p-4">
+      <form method="post"
+            action="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/grant"
+            hx-post="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/grant"
+            hx-target="#permissions-tab-content"
+            hx-swap="innerHTML"
+            @submit="grantOpen = false">
+        {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+
+        {# Hidden scope field — kept in sync by Alpine #}
+        <input type="hidden" name="scope" :value="scopeType === 'org' && selectedOrg ? 'org:' + selectedOrg : 'realm'">
+
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="mb-1.5 block font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Permission</label>
+            <input type="text"
+                   name="permission"
+                   list="perm-datalist"
+                   required
+                   placeholder="e.g. documents.read"
+                   class="w-full rounded-sm border border-white/[0.10] bg-ht-surface-input px-3 py-2 font-mono text-sm text-ht-content-primary placeholder-ht-content-muted focus:border-teal-fg/50 focus:outline-none focus:ring-1 focus:ring-teal-fg/30">
+            <datalist id="perm-datalist">
+              {% for perm in available_permissions %}
+              <option value="{{ perm }}"></option>
+              {% endfor %}
+            </datalist>
+            <p class="mt-1 text-xs text-ht-content-muted">Dot-separated segments, e.g. <code class="font-mono">billing.read</code></p>
+          </div>
+
+          <div>
+            <label class="mb-1.5 block font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Scope</label>
+            <div class="flex flex-col gap-2">
+              <label class="flex cursor-pointer items-center gap-2 text-sm text-ht-content-secondary">
+                <input type="radio" value="realm" x-model="scopeType" class="accent-teal-fg">
+                Realm-wide
+              </label>
+              {% if !available_orgs.is_empty() %}
+              <label class="flex cursor-pointer items-center gap-2 text-sm text-ht-content-secondary">
+                <input type="radio" value="org" x-model="scopeType" class="accent-teal-fg">
+                Organization
+              </label>
+              <div x-show="scopeType === 'org'" x-cloak class="ml-6">
+                <select x-model="selectedOrg"
+                        class="w-full rounded-sm border border-white/[0.10] bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-teal-fg/50 focus:outline-none focus:ring-1 focus:ring-teal-fg/30">
+                  <option value="">— pick an org —</option>
+                  {% for org in available_orgs %}
+                  <option value="{{ org.id }}">{{ org.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 flex justify-end">
+          <button type="submit"
+                  class="btn-ember inline-flex items-center rounded px-4 py-2 text-sm font-semibold text-graphite-950 shadow-cta-hover transition-opacity hover:opacity-90">
+            Grant Permission
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

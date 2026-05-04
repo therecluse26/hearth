@@ -9,7 +9,7 @@
       <span class="font-mono text-ht-content-secondary">{{ realm_name }}</span>.
     </p>
   </div>
-  <a href="/ui/admin/users/{{ target_user_id }}" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Back to user</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/users/{{ target_user_id }}" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Back to user</a>
 </div>
 
 <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
@@ -36,7 +36,7 @@
             <h3 class="text-sm font-semibold text-ht-content-primary">{{ c.client_name }}</h3>
             <p class="font-mono text-[11px] text-ht-content-muted">{{ c.client_id }}</p>
           </div>
-          <form method="post" action="/ui/admin/users/{{ target_user_id }}/consents/{{ c.client_id }}/revoke">
+          <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ target_user_id }}/consents/{{ c.client_id }}/revoke">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
             <button type="submit"
                     class="text-xs font-medium text-danger-fg hover:text-red-300">

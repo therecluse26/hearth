@@ -224,6 +224,63 @@ email:
 #         client_secret: "${INTERNAL_API_SECRET}"
 #         grant_types:
 #           - client_credentials
+#
+#     # --- RBAC: permissions, roles, and scope bundles ---------------------
+#     # Hearth seeds a baseline set on every realm: permissions
+#     # (hearth.admin, realm.{read,write,admin}, org.{read,write,admin,billing},
+#     # user.{read,write,impersonate}) and roles (realm.admin, realm.member,
+#     # org.member → org.admin → org.owner, with org.* scoped to organizations).
+#     # The blocks below ADD to the seed set; declared names that collide with
+#     # seed names override the seed metadata for that realm.
+#     #
+#     # Every permission referenced by a role MUST be declared in the
+#     # `permissions:` list (or be a seed permission); this is enforced at
+#     # startup. Each permission needs a unique `name` and a `display_name`.
+#
+#     permissions:
+#       - name: billing.read
+#         display_name: "Read billing"
+#         description: "View invoices, plan, and payment history."
+#         category: billing
+#       - name: billing.write
+#         display_name: "Manage billing"
+#         description: "Update payment methods, plan, and tax info."
+#         category: billing
+#       - name: reports.export
+#         display_name: "Export reports"
+#         description: "Download CSV / PDF exports of analytics reports."
+#         category: analytics
+#
+#     roles:
+#       # Realm-scoped role: granted directly on the realm.
+#       - name: support.agent
+#         description: "Read-only access for customer support staff."
+#         scope_kind: realm           # realm | organization | any (default: realm)
+#         permissions:
+#           - user.read
+#           - org.read
+#           - reports.export
+#
+#       # Organization-scoped role: assignable to a user within a single org.
+#       - name: org.billing_admin
+#         description: "Manages billing for one organization."
+#         scope_kind: organization
+#         permissions:
+#           - billing.read
+#           - billing.write
+#         parents:
+#           - org.admin               # inherits org.write + org.admin (seed role)
+#
+#     # Scope bundles map an OAuth scope string to a set of permissions.
+#     # Bundle names use ':' separators (no '.'). The seed scope map already
+#     # provides `openid`, `profile`, `email`, `admin`, and `org`.
+#     scopes:
+#       - name: billing:manage
+#         display_name: "Billing management"
+#         description: "Read and write billing data."
+#         permissions:
+#           - billing.read
+#           - billing.write
 
 onboarding:
   # enabled: true  # set to false to permanently disable the /ui/setup flow

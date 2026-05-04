@@ -42,6 +42,11 @@ module.exports = {
     "font-mono",
     // Shape tokens commonly composed in Rust/HTMX responses
     { pattern: /^rounded(-sm|-lg|-xl|-full|-md)?$/ },
+    // Small icon size utilities (h-2..h-6, w-2..w-6) — guardrail so a new
+    // template using e.g. `h-3 w-3` for a chevron doesn't fall back to the
+    // SVG default 200×200 if its source file isn't picked up by the content
+    // scan. Discovered by the 2026-04-29 UX audit (giant sidebar chevrons).
+    { pattern: /^[hw]-([2-6])$/ },
   ],
   theme: {
     // ── Shape tokens (THEME.md § Shape) ──────────────────────────

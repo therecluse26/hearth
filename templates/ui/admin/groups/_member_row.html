@@ -1,0 +1,38 @@
+{# Single member row for group detail.
+   Expects: group_id (String), m (GroupMemberView), csrf.
+   `m.member_kind` is "user" or "group"; rendering branches accordingly. #}
+<tr id="member-{{ m.member_kind }}-{{ m.member_id_uuid }}"
+    class="border-b border-divider-faint hover-bg-divider">
+  <td class="px-3 py-3">
+    {% if m.member_kind == "user" %}
+      <a href="/ui/admin/realms/{{ realm_name }}/users/{{ m.member_id_uuid }}" class="group">
+        <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.display_name }}</div>
+        <div class="text-xs text-ht-content-muted">{{ m.subtitle }}</div>
+      </a>
+    {% else %}
+      <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ m.member_id_uuid }}" class="group">
+        <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.display_name }}</div>
+        <div class="text-xs text-ht-content-muted">{{ m.subtitle }}</div>
+      </a>
+    {% endif %}
+  </td>
+  <td class="px-3 py-3">
+    <span class="inline-flex items-center rounded-full {% if m.member_kind == "user" %}bg-teal-bg text-teal-fg{% else %}bg-violet-bg text-violet-fg{% endif %} px-2 py-0.5 text-xs font-medium">
+      {% if m.member_kind == "user" %}User{% else %}Nested group{% endif %}
+    </span>
+  </td>
+  <td class="px-3 py-3 text-right">
+    <form hx-post="/ui/admin/realms/{{ realm_name }}/groups/{{ group_id }}/members/{{ m.member_kind }}/{{ m.member_id_uuid }}/remove"
+          hx-target="#member-{{ m.member_kind }}-{{ m.member_id_uuid }}"
+          hx-swap="outerHTML"
+          x-data="{ confirm: false }"
+          class="inline-block">
+      {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+      <button :type="confirm ? 'submit' : 'button'"
+              @click="!confirm && (confirm = true)"
+              :class="confirm ? 'btn-danger' : 'border border-strong bg-ht-surface-elevated text-ht-content-secondary hover-bg-divider'"
+              class="rounded px-2 py-1 text-xs font-medium"
+              x-text="confirm ? 'Confirm' : 'Remove'"></button>
+    </form>
+  </td>
+</tr>

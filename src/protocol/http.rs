@@ -2,7 +2,7 @@
 //!
 //! Builds an [`axum::Router`] with health, OIDC discovery, JWKS, OAuth 2.0,
 //! and Admin API endpoints. The server is configured with shared application
-//! state containing the identity, authorization, and audit engines.
+//! state containing the identity, RBAC, and audit engines.
 //!
 //! The protocol layer is a thin, stateless adapter: it translates HTTP requests
 //! into domain calls on `IdentityEngine` and maps `IdentityError` to HTTP
@@ -21,9 +21,6 @@ use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
-use crate::authz::{
-    AuthorizationEngine, ConsistencyToken, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite,
-};
 use crate::core::{ClientId, RealmId, UserId};
 use crate::identity::IdentityEngine;
 use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
@@ -36,6 +33,10 @@ use crate::protocol::convert::oauth::{
     proto_token_exchange_to_domain,
 };
 use crate::protocol::proto::identity::v1 as pb;
+use crate::rbac::{
+    AssignRoleRequest, CreateGroupRequest, CreateRoleRequest, GroupId, GroupMember, Permission,
+    RbacEngine, RbacError, RoleId, Scope, Subject, UpdateGroupRequest, UpdateRoleRequest,
+};
 
 /// Default maximum request body size (1 MiB).
 ///
@@ -52,41 +53,12 @@ const BODY_LIMIT_DEFAULT: usize = 1024 * 1024;
 /// of resource-exhaustion attempts.
 const BODY_LIMIT_SMALL: usize = 64 * 1024;
 
-/// A named capability page: maps a page key to the list of
-/// `(object_template, relations)` pairs to check for `GET /v1/me/capabilities`.
-///
-/// Object templates may contain `{var}` placeholders that are substituted
-/// from the request's query string at lookup time.
-#[derive(Debug, Clone)]
-pub struct CapabilityPage {
-    /// The list of `(object_template, relations)` entries to check.
-    ///
-    /// Each entry expands to `relations.len()` check results in the response,
-    /// keyed by `"resolved_object#relation"`.
-    pub entries: Vec<CapabilityPageEntry>,
-}
-
-/// One entry inside a [`CapabilityPage`].
-#[derive(Debug, Clone)]
-pub struct CapabilityPageEntry {
-    /// Object template (e.g. `org:{org_id}` or `doc:{id}`).
-    ///
-    /// `{var}` segments are substituted from the request's query string.
-    pub object_template: String,
-    /// Relations to check against the resolved object.
-    pub relations: Vec<String>,
-}
-
-/// Map from page key (e.g. `"org.settings"`) to its [`CapabilityPage`]
-/// definition. Shared via `Arc` so route handlers can read without cloning.
-pub type CapabilityPages = std::collections::HashMap<String, CapabilityPage>;
-
 /// Shared application state passed to all route handlers.
 pub struct AppState {
     /// The identity engine for all domain operations.
     pub identity: Arc<dyn IdentityEngine>,
-    /// The authorization engine for permission checks.
-    pub authz: Arc<dyn AuthorizationEngine>,
+    /// The RBAC engine for role / group / assignment management.
+    pub rbac: Arc<dyn RbacEngine>,
     /// The audit engine for mutation logging.
     pub audit: Arc<dyn AuditEngine>,
     /// Whether the server is running in development mode.
@@ -98,25 +70,21 @@ pub struct AppState {
     /// admin surfaces so a caller cannot evade the limit by switching
     /// protocols.
     pub admin_rate_limiter: Arc<AdminRateLimiter>,
-    /// Named capability-page bundles for `GET /v1/me/capabilities`.
-    /// Empty by default. Populated from config at startup.
-    pub capability_pages: Arc<CapabilityPages>,
 }
 
 impl AppState {
     /// Creates a new `AppState` with all three engines.
     pub fn new(
         identity: Arc<dyn IdentityEngine>,
-        authz: Arc<dyn AuthorizationEngine>,
+        rbac: Arc<dyn RbacEngine>,
         audit: Arc<dyn AuditEngine>,
     ) -> Self {
         Self {
             identity,
-            authz,
+            rbac,
             audit,
             dev_mode: false,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
-            capability_pages: Arc::new(CapabilityPages::new()),
         }
     }
 
@@ -125,16 +93,15 @@ impl AppState {
     /// Enables the `POST /admin/bootstrap` endpoint.
     pub fn new_dev(
         identity: Arc<dyn IdentityEngine>,
-        authz: Arc<dyn AuthorizationEngine>,
+        rbac: Arc<dyn RbacEngine>,
         audit: Arc<dyn AuditEngine>,
     ) -> Self {
         Self {
             identity,
-            authz,
+            rbac,
             audit,
             dev_mode: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
-            capability_pages: Arc::new(CapabilityPages::new()),
         }
     }
 
@@ -144,17 +111,16 @@ impl AppState {
     /// per-user counts as the HTTP handlers.
     pub fn with_shared_rate_limiter(
         identity: Arc<dyn IdentityEngine>,
-        authz: Arc<dyn AuthorizationEngine>,
+        rbac: Arc<dyn RbacEngine>,
         audit: Arc<dyn AuditEngine>,
         admin_rate_limiter: Arc<AdminRateLimiter>,
     ) -> Self {
         Self {
             identity,
-            authz,
+            rbac,
             audit,
             dev_mode: false,
             admin_rate_limiter,
-            capability_pages: Arc::new(CapabilityPages::new()),
         }
     }
 }
@@ -162,7 +128,7 @@ impl AppState {
 /// Authenticated admin context extracted from request headers.
 ///
 /// Contains the realm and user that passed both token validation
-/// and Zanzibar admin role check.
+/// and the `hearth.admin` permission check.
 #[derive(Debug, Clone)]
 pub(crate) struct AdminAuth {
     pub(crate) realm_id: RealmId,
@@ -173,7 +139,7 @@ pub(crate) struct AdminAuth {
 ///
 /// 1. Extracts `Authorization: Bearer <token>` and `X-Realm-ID`
 /// 2. Validates the token via `identity.validate_token()`
-/// 3. Checks admin role via `authz.check(hearth#admin@user:uuid)`
+/// 3. Checks `hearth.admin` appears in the token's `permissions` claim
 /// 4. Checks rate limit (100 req/min per admin user)
 pub(crate) fn extract_admin_auth(
     headers: &HeaderMap,
@@ -226,17 +192,8 @@ pub(crate) fn extract_admin_auth(
     })?;
     let user_id = UserId::new(user_uuid);
 
-    // Check admin role via Zanzibar
-    // INVARIANT: "hearth"/"admin"/"user" are valid ObjectRef fields (short ASCII strings)
-    #[allow(clippy::unwrap_used)]
-    let object = ObjectRef::new("hearth", "admin").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
-    let is_admin = state
-        .authz
-        .check(&realm_id, &object, "admin", &subject, None)
-        .unwrap_or(false);
-
+    // Check admin role via the token's `permissions` claim (§ 5.2).
+    let is_admin = claims.permissions.iter().any(|p| p == "hearth.admin");
     if !is_admin {
         return Err((
             StatusCode::FORBIDDEN,
@@ -317,7 +274,43 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/users/{id}/consents/{client_id}",
             axum::routing::delete(admin_revoke_user_consent),
         )
-        .route("/audit", axum::routing::get(admin_list_audit));
+        .route("/audit", axum::routing::get(admin_list_audit))
+        .route(
+            "/roles",
+            axum::routing::get(admin_list_roles).post(admin_create_role),
+        )
+        .route(
+            "/roles/{id}",
+            axum::routing::get(admin_get_role)
+                .put(admin_update_role)
+                .delete(admin_delete_role),
+        )
+        .route(
+            "/groups",
+            axum::routing::get(admin_list_groups).post(admin_create_group),
+        )
+        .route(
+            "/groups/{id}",
+            axum::routing::get(admin_get_group)
+                .put(admin_update_group)
+                .delete(admin_delete_group),
+        )
+        .route(
+            "/groups/{id}/members",
+            axum::routing::get(admin_list_group_members).post(admin_add_group_member),
+        )
+        .route(
+            "/groups/{id}/members/{member_id}",
+            axum::routing::delete(admin_remove_group_member),
+        )
+        .route(
+            "/users/{id}/roles",
+            axum::routing::get(admin_list_user_assignments).post(admin_assign_role),
+        )
+        .route(
+            "/assignments/{id}",
+            axum::routing::delete(admin_unassign_role),
+        );
 
     Router::new()
         .route("/health", axum::routing::get(health))
@@ -345,8 +338,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(device_authorization),
         )
         .route("/userinfo", axum::routing::get(userinfo))
-        .route("/v1/authz/check", axum::routing::post(authz_check))
-        .route("/v1/me/capabilities", axum::routing::get(me_capabilities))
+        .route("/v1/me/permissions", axum::routing::get(me_permissions))
         .route("/oauth/consents", axum::routing::get(self_list_consents))
         .route(
             "/oauth/consents/{client_id}",
@@ -836,9 +828,13 @@ fn identity_error_to_response(
         }
         IdentityError::SigningError { .. }
         | IdentityError::Storage(_)
-        | IdentityError::Serialization { .. } => {
+        | IdentityError::Serialization { .. }
+        | IdentityError::Internal { .. }
+        | IdentityError::ConfigInvalid { .. } => {
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
+        IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
+        IdentityError::InvalidAttribute { .. } => (StatusCode::BAD_REQUEST, "invalid attribute"),
     };
 
     (status, Json(serde_json::json!({"error": message})))
@@ -1193,242 +1189,26 @@ async fn userinfo(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
     }
 }
 
-// === Authz check endpoint (SPA / BFF facing) ===
+// === Claims-based permissions endpoint ===
 
-/// Maximum permission checks allowed in a single `POST /v1/authz/check`
-/// request. Batching more than this at once is almost always a sign the
-/// caller should be using `/v1/me/capabilities` with a page key instead.
-const AUTHZ_CHECK_BATCH_MAX: usize = 64;
-
-/// One entry in a batch authz check request.
-#[derive(Debug, Deserialize)]
-struct AuthzCheckItem {
-    /// `type:id` object reference, e.g. `doc:readme`.
-    object: String,
-    /// Relation name, e.g. `viewer`.
-    relation: String,
-}
-
-/// Request body for `POST /v1/authz/check`. The subject is ALWAYS the
-/// authenticated user derived from the bearer token — callers cannot
-/// ask "is someone else allowed to X".
-#[derive(Debug, Deserialize)]
-struct AuthzCheckRequest {
-    checks: Vec<AuthzCheckItem>,
-    /// Optional zookie: guarantees each check sees at least this version.
-    at_least_as_fresh_as: Option<u64>,
-}
-
-/// One result in the response, positionally paired with the request's
-/// `checks` array.
+/// Response body for `GET /v1/me/permissions`.
 #[derive(Debug, Serialize)]
-struct AuthzCheckItemResult {
-    allowed: bool,
+struct MePermissionsResponse {
+    /// The effective role names granted to the caller.
+    roles: Vec<String>,
+    /// The effective group slugs the caller belongs to.
+    groups: Vec<String>,
+    /// The effective permissions (sorted, de-duplicated).
+    permissions: Vec<String>,
+    /// Echoes the scope the caller requested, if any.
+    scope: Option<String>,
 }
 
-/// Response body for `POST /v1/authz/check`.
-#[derive(Debug, Serialize)]
-struct AuthzCheckResponse {
-    results: Vec<AuthzCheckItemResult>,
-    /// Echoed zookie for SDK cache bookkeeping. Currently echoes the
-    /// input `at_least_as_fresh_as` or `0` — `check()` itself does not
-    /// expose the engine's current version. Clients only use this field
-    /// for monotonicity, not for "latest known state".
-    token: u64,
-}
-
-/// Parses an `"object_type:object_id"` string into its two parts.
-fn parse_object_pair(s: &str) -> Option<(&str, &str)> {
-    let mut parts = s.splitn(2, ':');
-    let t = parts.next()?;
-    let i = parts.next()?;
-    if t.is_empty() || i.is_empty() {
-        return None;
-    }
-    Some((t, i))
-}
-
-/// `POST /v1/authz/check` — batch permission check for the authenticated user.
+/// `GET /v1/me/permissions` — resolves and returns the authenticated user's
+/// effective roles, groups, and permissions FRESHLY (not from the JWT).
 ///
-/// Subject is derived from the bearer token (`user:<sub>`). Clients supply
-/// only `(object, relation)` pairs. Results are positionally paired with the
-/// request's `checks` array; a `token` field is echoed back for SDK zookie
-/// bookkeeping.
-async fn authz_check(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<AuthzCheckRequest>,
-) -> axum::response::Response {
-    let realm_id = match extract_realm_id(&headers) {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
-
-    let Some(token) = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "invalid_token"})),
-        )
-            .into_response();
-    };
-
-    let claims = match state.identity.validate_token(&realm_id, token) {
-        Ok(c) => c,
-        Err(_) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid_token"})),
-            )
-                .into_response();
-        }
-    };
-
-    // `sub` is `user_<uuid>` — strip the prefix and parse.
-    let uuid_str = claims.sub.strip_prefix("user_").unwrap_or(&claims.sub);
-    let user_uuid: uuid::Uuid = match uuid_str.parse() {
-        Ok(u) => u,
-        Err(_) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid_token"})),
-            )
-                .into_response();
-        }
-    };
-
-    if body.checks.is_empty() || body.checks.len() > AUTHZ_CHECK_BATCH_MAX {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "error_description": format!(
-                    "checks must contain between 1 and {AUTHZ_CHECK_BATCH_MAX} entries"
-                ),
-            })),
-        )
-            .into_response();
-    }
-
-    let subject = match SubjectRef::direct("user", &user_uuid.to_string()) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal_error"})),
-            )
-                .into_response();
-        }
-    };
-    let at_least = body.at_least_as_fresh_as.map(ConsistencyToken::new);
-
-    let mut results = Vec::with_capacity(body.checks.len());
-    for item in &body.checks {
-        let Some((ot, oi)) = parse_object_pair(&item.object) else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_request",
-                    "error_description": "object must be formatted as 'type:id'",
-                })),
-            )
-                .into_response();
-        };
-        let object = match ObjectRef::new(ot, oi) {
-            Ok(o) => o,
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "invalid_request",
-                        "error_description": "invalid object reference",
-                    })),
-                )
-                    .into_response();
-            }
-        };
-        let allowed = match state.authz.check(
-            &realm_id,
-            &object,
-            &item.relation,
-            &subject,
-            at_least.as_ref(),
-        ) {
-            Ok(b) => b,
-            Err(crate::authz::AuthzError::InvalidReference { .. })
-            | Err(crate::authz::AuthzError::InvalidTuple { .. }) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "invalid_request",
-                        "error_description": "invalid relation or reference",
-                    })),
-                )
-                    .into_response();
-            }
-            Err(_) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "internal_error"})),
-                )
-                    .into_response();
-            }
-        };
-        results.push(AuthzCheckItemResult { allowed });
-    }
-
-    (
-        StatusCode::OK,
-        Json(AuthzCheckResponse {
-            results,
-            token: at_least.map_or(0, |t| t.version()),
-        }),
-    )
-        .into_response()
-}
-
-/// Response body for `GET /v1/me/capabilities`.
-#[derive(Debug, Serialize)]
-struct MeCapabilitiesResponse {
-    /// Map of `"object#relation"` → `bool`, one entry per
-    /// `(resolved_object, relation)` pair defined by the page.
-    capabilities: std::collections::BTreeMap<String, bool>,
-    /// Echoed zookie; see [`AuthzCheckResponse::token`].
-    token: u64,
-}
-
-/// Substitutes `{var}` placeholders in `template` using `params`.
-///
-/// Returns `Err(var_name)` if a placeholder has no matching param.
-/// Returns `Err("__malformed__")` on an unterminated brace.
-fn resolve_template(
-    template: &str,
-    params: &std::collections::HashMap<String, String>,
-) -> Result<String, String> {
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        rest = &rest[open + 1..];
-        let Some(close) = rest.find('}') else {
-            return Err("__malformed__".to_string());
-        };
-        let var = &rest[..close];
-        let val = params.get(var).ok_or_else(|| var.to_string())?;
-        out.push_str(val);
-        rest = &rest[close + 1..];
-    }
-    out.push_str(rest);
-    Ok(out)
-}
-
-/// `GET /v1/me/capabilities?page=<key>&<var>=<val>...` — returns the
-/// capability bundle for the named page, resolved against the authenticated
-/// user.
-async fn me_capabilities(
+/// Accepts optional `org_id` and `scope` query parameters.
+async fn me_permissions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -1472,107 +1252,72 @@ async fn me_capabilities(
                 .into_response();
         }
     };
+    let user_id = UserId::new(user_uuid);
 
-    let Some(page_key) = params.get("page") else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "error_description": "missing 'page' query parameter",
-            })),
-        )
-            .into_response();
-    };
+    let org_id = params.get("org_id").and_then(|s| {
+        uuid::Uuid::parse_str(s)
+            .ok()
+            .map(crate::core::OrganizationId::new)
+    });
+    let scope = params.get("scope").cloned();
 
-    let Some(page) = state.capability_pages.get(page_key) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "unknown_page",
-                "error_description": format!("no capability page configured for '{page_key}'"),
-            })),
-        )
-            .into_response();
-    };
-
-    let subject = match SubjectRef::direct("user", &user_uuid.to_string()) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal_error"})),
-            )
-                .into_response();
-        }
-    };
-
-    let mut capabilities = std::collections::BTreeMap::new();
-    for entry in &page.entries {
-        let resolved = match resolve_template(&entry.object_template, &params) {
-            Ok(s) => s,
-            Err(var) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "invalid_request",
-                        "error_description": format!("missing template variable: {var}"),
-                    })),
-                )
-                    .into_response();
-            }
+    let resolved =
+        match state
+            .rbac
+            .resolve_permissions(&user_id, &realm_id, org_id.as_ref(), scope.as_deref())
+        {
+            Ok(r) => r,
+            Err(e) => return rbac_error_to_response(&e).into_response(),
         };
-        let Some((ot, oi)) = parse_object_pair(&resolved) else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_request",
-                    "error_description": "resolved object must be 'type:id'",
-                })),
-            )
-                .into_response();
-        };
-        let object = match ObjectRef::new(ot, oi) {
-            Ok(o) => o,
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "invalid_request",
-                        "error_description": "invalid resolved object reference",
-                    })),
-                )
-                    .into_response();
-            }
-        };
-        for relation in &entry.relations {
-            let allowed = match state
-                .authz
-                .check(&realm_id, &object, relation, &subject, None)
-            {
-                Ok(b) => b,
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "internal_error"})),
-                    )
-                        .into_response();
-                }
-            };
-            capabilities.insert(format!("{resolved}#{relation}"), allowed);
-        }
-    }
 
     (
         StatusCode::OK,
-        Json(MeCapabilitiesResponse {
-            capabilities,
-            token: 0,
+        Json(MePermissionsResponse {
+            roles: resolved.roles,
+            groups: resolved.groups,
+            permissions: resolved
+                .permissions
+                .into_iter()
+                .map(|p| p.into_string())
+                .collect(),
+            scope,
         }),
     )
         .into_response()
 }
 
-// === Admin API endpoints ===
+/// Maps [`RbacError`] values to HTTP responses.
+fn rbac_error_to_response(err: &RbacError) -> (StatusCode, Json<serde_json::Value>) {
+    let (status, code) = match err {
+        RbacError::RoleNotFound | RbacError::GroupNotFound | RbacError::AssignmentNotFound => {
+            (StatusCode::NOT_FOUND, "not_found")
+        }
+        RbacError::DuplicateRoleName | RbacError::DuplicateGroupSlug => {
+            (StatusCode::CONFLICT, "already_exists")
+        }
+        RbacError::InvalidPermission { .. }
+        | RbacError::InvalidRoleName { .. }
+        | RbacError::InvalidGroupSlug { .. } => (StatusCode::BAD_REQUEST, "invalid_request"),
+        RbacError::CycleDetected { .. } => (StatusCode::BAD_REQUEST, "cycle_detected"),
+        RbacError::DepthExceeded { .. }
+        | RbacError::BreadthExceeded { .. }
+        | RbacError::TokenSizeExceeded { .. } => {
+            (StatusCode::PAYLOAD_TOO_LARGE, "resource_exhausted")
+        }
+        RbacError::ReservedNamespace { .. } => (StatusCode::FORBIDDEN, "reserved_namespace"),
+        RbacError::InvalidScope { .. } => (StatusCode::BAD_REQUEST, "invalid_scope"),
+        RbacError::Storage(_) | RbacError::Serialization { .. } => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+        }
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "error": code,
+            "error_description": err.to_string(),
+        })),
+    )
+}
 
 /// Pagination query parameters.
 #[derive(Debug, Deserialize)]
@@ -2490,8 +2235,8 @@ async fn admin_revoke_user_consent(
 
 // === Dev Bootstrap Endpoint ===
 
-/// POST /admin/bootstrap — creates a realm, admin user, session, Zanzibar
-/// admin tuple, and issues tokens. Returns everything needed for SDK tests.
+/// POST /admin/bootstrap — creates a realm, admin user, session, assigns
+/// the admin role, and issues tokens. Returns everything needed for SDK tests.
 ///
 /// Only available when `AppState.dev_mode` is `true` (i.e., `--dev` flag).
 /// Returns 404 in production mode.
@@ -2517,11 +2262,11 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     let realm_id = realm.id().clone();
 
-    // Install the Roles & Permissions preset namespace. Logged-only on
-    // failure so the dev bootstrap doesn't brick on a storage blip — the
-    // realm record already exists and the preset install is recoverable.
-    if let Err(e) = crate::authz::ensure_preset_namespace(state.authz.as_ref(), &realm_id) {
-        tracing::warn!(error = %e, "dev bootstrap: preset namespace install failed");
+    // Seed RBAC defaults on the new realm. Logged-only on failure so the
+    // dev bootstrap doesn't brick on a storage blip — the realm record
+    // already exists and seeding is idempotent.
+    if let Err(e) = state.rbac.seed_realm(&realm_id) {
+        tracing::warn!(error = %e, "dev bootstrap: RBAC seed failed");
     }
 
     // Create admin user
@@ -2539,6 +2284,32 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     let user_id = user.id().clone();
 
+    // Grant the realm.admin role to the admin user BEFORE issuing tokens so
+    // the access-token `permissions` claim contains `hearth.admin` — otherwise
+    // the returned token would be unable to call any admin endpoint.
+    let admin_role = match state.rbac.get_role_by_name(&realm_id, "realm.admin") {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "seed role realm.admin missing"})),
+            )
+                .into_response();
+        }
+        Err(e) => return rbac_error_to_response(&e).into_response(),
+    };
+    if let Err(e) = state.rbac.assign_role(
+        &realm_id,
+        &AssignRoleRequest {
+            subject: Subject::User(user_id.clone()),
+            role_id: admin_role.id.clone(),
+            scope: Scope::Realm,
+            assigned_by: None,
+        },
+    ) {
+        return rbac_error_to_response(&e).into_response();
+    }
+
     // Create session (API-initiated — no browser context)
     let session = match state.identity.create_session(
         &realm_id,
@@ -2549,7 +2320,8 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
         Err(e) => return identity_error_to_response(&e).into_response(),
     };
 
-    // Issue tokens
+    // Issue tokens — now resolves `realm.admin` role's permissions into
+    // the JWT claim set.
     let tokens = match state
         .identity
         .issue_tokens(&realm_id, &user_id, session.id())
@@ -2557,26 +2329,6 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
         Ok(t) => t,
         Err(e) => return identity_error_to_response(&e).into_response(),
     };
-
-    // Write Zanzibar admin tuple: hearth#admin@user:<uuid>
-    // INVARIANT: "hearth", "admin", "user" are valid field names (short ASCII)
-    #[allow(clippy::unwrap_used)]
-    let object = ObjectRef::new("hearth", "admin").unwrap();
-    #[allow(clippy::unwrap_used)]
-    let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string()).unwrap();
-    #[allow(clippy::unwrap_used)]
-    let tuple = RelationshipTuple::new(object, "admin", subject).unwrap();
-
-    if let Err(e) = state
-        .authz
-        .write_tuples(&realm_id, &[TupleWrite::Touch(tuple)])
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("failed to write admin tuple: {e}")})),
-        )
-            .into_response();
-    }
 
     (
         StatusCode::OK,
@@ -2590,13 +2342,603 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
         .into_response()
 }
 
+// =======================================================================
+// RBAC admin endpoints (AUTHORIZATION.md § 8.2)
+// =======================================================================
+
+#[derive(Debug, Deserialize)]
+struct CreateRoleBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    permissions: Vec<String>,
+    #[serde(default)]
+    parent_roles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRoleBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<Option<String>>,
+    #[serde(default)]
+    permissions: Option<Vec<String>>,
+    #[serde(default)]
+    parent_roles: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateGroupBody {
+    name: String,
+    slug: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateGroupBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    description: Option<Option<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddGroupMemberBody {
+    /// `"user"` or `"group"`.
+    #[serde(rename = "type")]
+    member_type: String,
+    /// UUID of the member entity.
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssignRoleBody {
+    role_id: String,
+    /// Optional org ID for org-scoped assignments; omit for realm scope.
+    #[serde(default)]
+    org_id: Option<String>,
+}
+
+fn parse_role_id(raw: &str) -> Result<RoleId, (StatusCode, Json<serde_json::Value>)> {
+    let stripped = raw.strip_prefix("role_").unwrap_or(raw);
+    uuid::Uuid::parse_str(stripped)
+        .map(RoleId::new)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid role id"})),
+            )
+        })
+}
+
+fn parse_group_id(raw: &str) -> Result<GroupId, (StatusCode, Json<serde_json::Value>)> {
+    let stripped = raw.strip_prefix("group_").unwrap_or(raw);
+    uuid::Uuid::parse_str(stripped)
+        .map(GroupId::new)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid group id"})),
+            )
+        })
+}
+
+fn parse_assignment_id(
+    raw: &str,
+) -> Result<crate::rbac::AssignmentId, (StatusCode, Json<serde_json::Value>)> {
+    let stripped = raw.strip_prefix("assign_").unwrap_or(raw);
+    uuid::Uuid::parse_str(stripped)
+        .map(crate::rbac::AssignmentId::new)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid assignment id"})),
+            )
+        })
+}
+
+fn parse_user_id_path(raw: &str) -> Result<UserId, (StatusCode, Json<serde_json::Value>)> {
+    let stripped = raw.strip_prefix("user_").unwrap_or(raw);
+    uuid::Uuid::parse_str(stripped)
+        .map(UserId::new)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid user id"})),
+            )
+        })
+}
+
+fn permissions_from_strings(raw: Vec<String>) -> Result<Vec<Permission>, RbacError> {
+    raw.into_iter()
+        .map(|s| Permission::new(s).map_err(|reason| RbacError::InvalidPermission { reason }))
+        .collect()
+}
+
+async fn admin_list_roles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(pagination): Query<PaginationParams>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.list_roles(
+        &auth.realm_id,
+        pagination.cursor.as_deref(),
+        pagination.effective_limit(),
+    ) {
+        Ok(page) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "items": page.items,
+                "next_cursor": page.next_cursor,
+            })),
+        )
+            .into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_create_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CreateRoleBody>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let permissions = match permissions_from_strings(body.permissions) {
+        Ok(p) => p,
+        Err(e) => return rbac_error_to_response(&e).into_response(),
+    };
+    let parent_roles: Result<Vec<RoleId>, _> = body
+        .parent_roles
+        .into_iter()
+        .map(|s| parse_role_id(&s))
+        .collect();
+    let parent_roles = match parent_roles {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.create_role(
+        &auth.realm_id,
+        &CreateRoleRequest {
+            name: body.name,
+            description: body.description,
+            permissions,
+            parent_roles,
+            scope_kind: crate::rbac::RoleScopeKind::Realm,
+        },
+    ) {
+        Ok(role) => (StatusCode::CREATED, Json(role)).into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_get_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let role_id = match parse_role_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.get_role(&auth.realm_id, &role_id) {
+        Ok(Some(role)) => (StatusCode::OK, Json(role)).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_update_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateRoleBody>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let role_id = match parse_role_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let permissions = match body.permissions {
+        Some(raw) => match permissions_from_strings(raw) {
+            Ok(p) => Some(p),
+            Err(e) => return rbac_error_to_response(&e).into_response(),
+        },
+        None => None,
+    };
+    let parent_roles = match body.parent_roles {
+        Some(raw) => {
+            let parsed: Result<Vec<RoleId>, _> =
+                raw.into_iter().map(|s| parse_role_id(&s)).collect();
+            match parsed {
+                Ok(v) => Some(v),
+                Err(e) => return e.into_response(),
+            }
+        }
+        None => None,
+    };
+    match state.rbac.update_role(
+        &auth.realm_id,
+        &role_id,
+        &UpdateRoleRequest {
+            name: body.name,
+            description: body.description,
+            permissions,
+            parent_roles,
+            scope_kind: None,
+        },
+    ) {
+        Ok(role) => (StatusCode::OK, Json(role)).into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_delete_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let role_id = match parse_role_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.delete_role(&auth.realm_id, &role_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_list_groups(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(pagination): Query<PaginationParams>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.list_groups(
+        &auth.realm_id,
+        pagination.cursor.as_deref(),
+        pagination.effective_limit(),
+    ) {
+        Ok(page) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "items": page.items,
+                "next_cursor": page.next_cursor,
+            })),
+        )
+            .into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_create_group(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CreateGroupBody>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.create_group(
+        &auth.realm_id,
+        &CreateGroupRequest {
+            name: body.name,
+            slug: body.slug,
+            description: body.description,
+        },
+    ) {
+        Ok(g) => (StatusCode::CREATED, Json(g)).into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_get_group(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let group_id = match parse_group_id(&id) {
+        Ok(g) => g,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.get_group(&auth.realm_id, &group_id) {
+        Ok(Some(g)) => (StatusCode::OK, Json(g)).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_update_group(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateGroupBody>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let group_id = match parse_group_id(&id) {
+        Ok(g) => g,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.update_group(
+        &auth.realm_id,
+        &group_id,
+        &UpdateGroupRequest {
+            name: body.name,
+            slug: body.slug,
+            description: body.description,
+        },
+    ) {
+        Ok(g) => (StatusCode::OK, Json(g)).into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_delete_group(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let group_id = match parse_group_id(&id) {
+        Ok(g) => g,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.delete_group(&auth.realm_id, &group_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_list_group_members(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(pagination): Query<PaginationParams>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let group_id = match parse_group_id(&id) {
+        Ok(g) => g,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.list_group_members(
+        &auth.realm_id,
+        &group_id,
+        pagination.cursor.as_deref(),
+        pagination.effective_limit(),
+    ) {
+        Ok(page) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "items": page.items,
+                "next_cursor": page.next_cursor,
+            })),
+        )
+            .into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_add_group_member(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AddGroupMemberBody>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let group_id = match parse_group_id(&id) {
+        Ok(g) => g,
+        Err(e) => return e.into_response(),
+    };
+    let member = match body.member_type.as_str() {
+        "user" => match parse_user_id_path(&body.id) {
+            Ok(u) => GroupMember::User(u),
+            Err(e) => return e.into_response(),
+        },
+        "group" => match parse_group_id(&body.id) {
+            Ok(g) => GroupMember::Group(g),
+            Err(e) => return e.into_response(),
+        },
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid member type"})),
+            )
+                .into_response();
+        }
+    };
+    match state
+        .rbac
+        .add_group_member(&auth.realm_id, &group_id, &member)
+    {
+        Ok(m) => (StatusCode::CREATED, Json(m)).into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_remove_group_member(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, member_id)): Path<(String, String)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let group_id = match parse_group_id(&id) {
+        Ok(g) => g,
+        Err(e) => return e.into_response(),
+    };
+    let member_type = params.get("type").map_or("user", String::as_str);
+    let member = match member_type {
+        "user" => match parse_user_id_path(&member_id) {
+            Ok(u) => GroupMember::User(u),
+            Err(e) => return e.into_response(),
+        },
+        "group" => match parse_group_id(&member_id) {
+            Ok(g) => GroupMember::Group(g),
+            Err(e) => return e.into_response(),
+        },
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid member type"})),
+            )
+                .into_response();
+        }
+    };
+    match state
+        .rbac
+        .remove_group_member(&auth.realm_id, &group_id, &member)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_list_user_assignments(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let user_id = match parse_user_id_path(&id) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.list_user_assignments(&auth.realm_id, &user_id) {
+        Ok(items) => (StatusCode::OK, Json(serde_json::json!({"items": items}))).into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_assign_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AssignRoleBody>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let user_id = match parse_user_id_path(&id) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    let role_id = match parse_role_id(&body.role_id) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let scope = match body.org_id {
+        Some(s) => {
+            let stripped = s.strip_prefix("org_").unwrap_or(&s);
+            match uuid::Uuid::parse_str(stripped).map(crate::core::OrganizationId::new) {
+                Ok(oid) => Scope::Org { org_id: oid },
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "invalid org id"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        None => Scope::Realm,
+    };
+    match state.rbac.assign_role(
+        &auth.realm_id,
+        &AssignRoleRequest {
+            subject: Subject::User(user_id),
+            role_id,
+            scope,
+            assigned_by: Some(auth.user_id.clone()),
+        },
+    ) {
+        Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
+async fn admin_unassign_role(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let aid = match parse_assignment_id(&id) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    match state.rbac.unassign_role(&auth.realm_id, &aid) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => rbac_error_to_response(&e).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audit::EmbeddedAuditEngine;
-    use crate::authz::{AuthzConfig, EmbeddedAuthzEngine};
     use crate::core::SystemClock;
     use crate::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
+    use crate::rbac::EmbeddedRbacEngine;
     use crate::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
     use tower::ServiceExt as _;
 
@@ -2609,22 +2951,23 @@ mod tests {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
-        let identity_engine = EmbeddedIdentityEngine::new(
+        let rbac_engine: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        ));
+        let identity_engine = EmbeddedIdentityEngine::with_rbac(
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
             identity_config,
+            Arc::clone(&rbac_engine),
         )
         .expect("identity engine");
-        let authz_engine = EmbeddedAuthzEngine::new(
-            Arc::clone(&engine) as Arc<dyn StorageEngine>,
-            AuthzConfig::default(),
-        );
         let audit_engine =
             EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
 
         Arc::new(AppState::new(
             Arc::new(identity_engine),
-            Arc::new(authz_engine),
+            rbac_engine,
             Arc::new(audit_engine),
         ))
     }
@@ -2638,22 +2981,23 @@ mod tests {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
-        let identity_engine = EmbeddedIdentityEngine::new(
+        let rbac_engine: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        ));
+        let identity_engine = EmbeddedIdentityEngine::with_rbac(
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
             identity_config,
+            Arc::clone(&rbac_engine),
         )
         .expect("identity engine");
-        let authz_engine = EmbeddedAuthzEngine::new(
-            Arc::clone(&engine) as Arc<dyn StorageEngine>,
-            AuthzConfig::default(),
-        );
         let audit_engine =
             EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
 
         Arc::new(AppState::new_dev(
             Arc::new(identity_engine),
-            Arc::new(authz_engine),
+            rbac_engine,
             Arc::new(audit_engine),
         ))
     }

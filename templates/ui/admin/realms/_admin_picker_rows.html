@@ -13,7 +13,7 @@
       <div class="truncate text-sm font-medium text-ht-content-primary">{{ u.display_name() }}</div>
       <div class="truncate text-xs text-ht-content-muted">{{ u.email() }}</div>
     </div>
-    <form method="post" action="/ui/admin/realms/{{ realm_id }}/admins/grant" class="shrink-0">
+    <form method="post" action="/ui/admin/realms/{{ realm_name }}/admins/grant" class="shrink-0">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
       <input type="hidden" name="user_id" value="{{ u.id().as_uuid() }}">
       <button type="submit" class="rounded border border-strong bg-ht-surface-elevated px-2.5 py-1 text-xs font-medium text-ht-content-secondary hover-bg-divider">

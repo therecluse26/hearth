@@ -1,0 +1,58 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} &middot; Scope Bundles{% endblock %}
+{% block body %}
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+  <div class="flex items-center gap-3">
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">Scope Bundles</h1>
+    {% include "ui/admin/_components/_yaml_badge.html" %}
+  </div>
+  <a href="/ui/admin/settings/editor?section=auth"
+     class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
+    Edit in Config Editor
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+  </a>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle overflow-hidden">
+  {% if scopes.is_empty() %}
+  <p class="px-6 py-10 text-center text-sm text-ht-content-muted">
+    No scope bundles registered. Add them under
+    <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs">realms.&lt;id&gt;.scopes</code>
+    in <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs">hearth.yaml</code>.
+  </p>
+  {% else %}
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Bundle Name</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Permissions</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Description</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-divider-subtle">
+      {% for scope in scopes %}
+      <tr class="hover:bg-ht-surface-base">
+        <td class="px-4 py-3">
+          <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ scope.name }}</code>
+        </td>
+        <td class="px-4 py-3 text-ht-content-secondary">
+          {% if scope.permissions.is_empty() %}
+            <span class="text-ht-content-muted">&mdash;</span>
+          {% else %}
+            <code class="font-mono text-xs text-ht-content-muted">{{ scope.permissions }}</code>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-ht-content-secondary">
+          {% if scope.description.is_empty() %}
+            <span class="text-ht-content-muted">&mdash;</span>
+          {% else %}
+            {{ scope.description }}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

@@ -11,13 +11,14 @@ pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
 pub use types::parse_duration_to_micros;
 pub use types::{
-    ApplicationYamlConfig, AuthConfig, BrandingConfig, EmailConfig, EmailTransport,
-    FederationProviderYaml, FederationYamlConfig, LinkModeYaml, MailgunConfig, MailgunRegion,
-    MailtrapConfig, ObservabilityConfig, OidcYamlConfig, OnboardingConfig, OperationalConfig,
-    OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml, PostmarkConfig, RateLimitYaml,
-    RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig,
-    SamlServiceProviderYaml, SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption,
-    StorageSection, TokenYamlConfig,
+    ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, EmailConfig,
+    EmailTransport, FederationProviderYaml, FederationYamlConfig, LinkModeYaml, MailgunConfig,
+    MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig, OnboardingConfig,
+    OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
+    PermissionYamlConfig, PostmarkConfig, ProtectedResourceYamlConfig, RateLimitYaml,
+    RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig, RoleYamlConfig,
+    SamlServiceProviderYaml, ScopeBundleYamlConfig, SendgridConfig, ServerConfig, SmtpConfig,
+    SmtpEncryption, StorageSection, TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -153,6 +154,7 @@ impl Config {
                 default_realm: None,
                 grpc_port: None,
                 grpc_bind_address: None,
+                assets_dir: None,
             },
             storage: StorageSection {
                 data_dir: String::new(),
@@ -687,7 +689,7 @@ fn validate_realm_applications(
         return Ok(());
     };
     for (realm_name, cfg) in realms {
-        let Some(apps) = &cfg.applications else {
+        let Some(apps) = cfg.oauth_clients.as_ref().or(cfg.applications.as_ref()) else {
             continue;
         };
         for (app_key, app) in apps {

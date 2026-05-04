@@ -61,6 +61,18 @@ pub enum AuditAction {
     OrgUpdated,
     /// An organization was deleted.
     OrgDeleted,
+    /// An RBAC group was created (admin UI / API, not SCIM).
+    GroupCreated,
+    /// An RBAC group was updated (name / slug / description).
+    GroupUpdated,
+    /// An RBAC group was deleted.
+    GroupDeleted,
+    /// A member (user or nested group) was added to a group.
+    /// Metadata carries `member_type` (`"user"` / `"group"`) + `member_id`.
+    GroupMemberAdded,
+    /// A member was removed from a group.
+    /// Metadata carries `member_type` + `member_id`.
+    GroupMemberRemoved,
     /// A role was assigned to a subject (user) on an object (realm / organization / application).
     ///
     /// Metadata carries `object_type`, `object_id`, `role`, and the previous
@@ -121,9 +133,114 @@ pub enum AuditAction {
     ScimGroupUpdated,
     /// A group was deleted via SCIM.
     ScimGroupDeleted,
+    /// A dangling role-ID or registry reference was silently skipped
+    /// during permission resolution.
+    ///
+    /// Emitted at most once per `(realm, reference)` per hour so operators
+    /// are notified of YAML-storage drift without flooding the audit log.
+    /// The `resource_id` field carries the opaque reference (e.g. a
+    /// `role_<uuid>` string) that could not be resolved; `metadata` may
+    /// carry `ref_kind` for disambiguation. See `AUTHZ_EXPANSION.md`
+    /// §"Dangling references".
+    OrphanedReferenceSkipped,
+    /// A direct permission was granted to a user outside any role.
+    ///
+    /// Metadata may carry `scope_type` (`"realm"` or `"org"`) and
+    /// `permission`. See `AUTHZ_EXPANSION.md` gap #6.
+    UserPermissionGranted,
+    /// A direct permission previously granted to a user was revoked.
+    ///
+    /// Metadata may carry `scope_type` and `permission`.
+    UserPermissionRevoked,
+    /// OAuth consent was granted (new grant or scope update).
+    ///
+    /// Metadata carries `client_id` and `scopes` (space-separated).
+    ClientConsentGranted,
+    /// OAuth consent was revoked — either by the user or an admin.
+    ///
+    /// Metadata carries `client_id` and the actor type (`"self"` or `"admin"`).
+    ClientConsentRevoked,
+    /// A refresh token was rejected because the stored consent digest no
+    /// longer matches the current scope surface (e.g. bundle YAML was
+    /// updated). Equivalent to `invalid_grant consent_required`.
+    ///
+    /// Metadata carries `client_id`.
+    ConsentRequiredOnRefresh,
 }
 
 impl AuditAction {
+    /// Every variant in declaration order. Used by the admin audit-log
+    /// filter UI to populate the Action `<select>` so administrators
+    /// don't have to remember exact string tags. Keep alphabetised on
+    /// the wire format for stable rendering.
+    #[must_use]
+    pub fn all() -> Vec<Self> {
+        let mut v = vec![
+            Self::UserCreated,
+            Self::UserUpdated,
+            Self::UserDeleted,
+            Self::CredentialSet,
+            Self::CredentialChanged,
+            Self::CredentialVerified,
+            Self::SessionCreated,
+            Self::SessionRevoked,
+            Self::TokenIssued,
+            Self::TokenRefreshed,
+            Self::RealmCreated,
+            Self::RealmUpdated,
+            Self::RealmDeleted,
+            Self::ClientRegistered,
+            Self::ClientUpdated,
+            Self::ClientDeleted,
+            Self::AuthorizationCodeIssued,
+            Self::AuthorizationCodeExchanged,
+            Self::TupleWritten,
+            Self::TupleDeleted,
+            Self::BulkUsersCreated,
+            Self::BulkUsersDisabled,
+            Self::OrgCreated,
+            Self::OrgUpdated,
+            Self::OrgDeleted,
+            Self::ConsentGranted,
+            Self::ConsentDenied,
+            Self::ConsentRevoked,
+            Self::FederationLoginStarted,
+            Self::FederationLoginCompleted,
+            Self::FederationAccountLinked,
+            Self::FederationAccountUnlinked,
+            Self::FederationJitProvisioned,
+            Self::SamlLoginInitiated,
+            Self::SamlLoginCompleted,
+            Self::SamlLoginFailed,
+            Self::SamlIdpAuthnRequestReceived,
+            Self::SamlIdpResponseIssued,
+            Self::SamlIdpInitiatedSso,
+            Self::SamlSloRequested,
+            Self::SamlSloCompleted,
+            Self::ScimUserCreated,
+            Self::ScimUserUpdated,
+            Self::ScimUserDeleted,
+            Self::ScimGroupCreated,
+            Self::ScimGroupUpdated,
+            Self::ScimGroupDeleted,
+            Self::GroupCreated,
+            Self::GroupUpdated,
+            Self::GroupDeleted,
+            Self::GroupMemberAdded,
+            Self::GroupMemberRemoved,
+            Self::RoleAssigned,
+            Self::RoleRevoked,
+            Self::OrphanedReferenceSkipped,
+            Self::UserPermissionGranted,
+            Self::UserPermissionRevoked,
+            Self::ClientConsentGranted,
+            Self::ClientConsentRevoked,
+            Self::ConsentRequiredOnRefresh,
+        ];
+        v.sort_by_key(|a| a.as_str());
+        v
+    }
+
     /// Returns the string tag for storage key encoding.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -152,6 +269,11 @@ impl AuditAction {
             Self::OrgCreated => "org_created",
             Self::OrgUpdated => "org_updated",
             Self::OrgDeleted => "org_deleted",
+            Self::GroupCreated => "group_created",
+            Self::GroupUpdated => "group_updated",
+            Self::GroupDeleted => "group_deleted",
+            Self::GroupMemberAdded => "group_member_added",
+            Self::GroupMemberRemoved => "group_member_removed",
             Self::ConsentGranted => "consent_granted",
             Self::ConsentDenied => "consent_denied",
             Self::ConsentRevoked => "consent_revoked",
@@ -176,6 +298,12 @@ impl AuditAction {
             Self::ScimGroupDeleted => "scim_group_deleted",
             Self::RoleAssigned => "role_assigned",
             Self::RoleRevoked => "role_revoked",
+            Self::OrphanedReferenceSkipped => "orphaned_reference_skipped",
+            Self::UserPermissionGranted => "user_permission_granted",
+            Self::UserPermissionRevoked => "user_permission_revoked",
+            Self::ClientConsentGranted => "client_consent_granted",
+            Self::ClientConsentRevoked => "client_consent_revoked",
+            Self::ConsentRequiredOnRefresh => "consent_required_on_refresh",
         }
     }
 }
@@ -210,6 +338,11 @@ impl std::str::FromStr for AuditAction {
             "org_created" => Ok(Self::OrgCreated),
             "org_updated" => Ok(Self::OrgUpdated),
             "org_deleted" => Ok(Self::OrgDeleted),
+            "group_created" => Ok(Self::GroupCreated),
+            "group_updated" => Ok(Self::GroupUpdated),
+            "group_deleted" => Ok(Self::GroupDeleted),
+            "group_member_added" => Ok(Self::GroupMemberAdded),
+            "group_member_removed" => Ok(Self::GroupMemberRemoved),
             "consent_granted" => Ok(Self::ConsentGranted),
             "consent_denied" => Ok(Self::ConsentDenied),
             "consent_revoked" => Ok(Self::ConsentRevoked),
@@ -234,6 +367,12 @@ impl std::str::FromStr for AuditAction {
             "scim_group_deleted" => Ok(Self::ScimGroupDeleted),
             "role_assigned" => Ok(Self::RoleAssigned),
             "role_revoked" => Ok(Self::RoleRevoked),
+            "orphaned_reference_skipped" => Ok(Self::OrphanedReferenceSkipped),
+            "user_permission_granted" => Ok(Self::UserPermissionGranted),
+            "user_permission_revoked" => Ok(Self::UserPermissionRevoked),
+            "client_consent_granted" => Ok(Self::ClientConsentGranted),
+            "client_consent_revoked" => Ok(Self::ClientConsentRevoked),
+            "consent_required_on_refresh" => Ok(Self::ConsentRequiredOnRefresh),
             other => Err(format!("unknown audit action: {other}")),
         }
     }

@@ -83,8 +83,7 @@ zeroize = { version = "1", features = ["derive"] }
 form_urlencoded = "1.2.2"
 
 [features]
-# Exposes internal test probes (e.g., backend call counters on the authz
-# engine) for use by the simulation crate. Never enable in production.
+# Exposes internal test probes for use by the simulation crate. Never enable in production.
 test-hooks = []
 
 [build-dependencies]
@@ -98,10 +97,6 @@ proptest = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
-
-[[bench]]
-name = "permission_check"
-harness = false
 
 [[bench]]
 name = "user_lookup"
@@ -136,7 +131,7 @@ name = "audit"
 harness = false
 
 [[bench]]
-name = "zanzibar_watch"
+name = "rbac_check"
 harness = false
 
 [lints.clippy]

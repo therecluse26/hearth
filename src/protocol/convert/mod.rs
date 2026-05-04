@@ -6,6 +6,5 @@
 //! conversions live — neither domain nor proto types know about each other.
 
 pub mod audit;
-pub mod authz;
 pub mod identity;
 pub mod oauth;

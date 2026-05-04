@@ -84,7 +84,7 @@ The purpose-built identity database was not feasible five years ago. Several con
 
 **The TigerBeetle precedent.** TigerBeetle proved that the "purpose-built database for a specific domain" thesis works — not just technically, but as a product and a business. They identified that financial ledgers were being badly served by generic databases, built a purpose-built alternative with extreme performance characteristics, and created a new category. The identity domain has the same structural characteristics: high frequency access patterns, strict consistency requirements, well-defined data model, and an existing ecosystem of generic tools doing the job poorly.
 
-**Claims-based authorization is how every modern identity product works.** Auth0, Clerk, Keycloak, Okta, and Firebase Auth all resolve a user's roles and permissions at token-issue time and embed them in JWT claims. Clients and resource servers check permissions synchronously from the token — no network hop per authorization decision. This pattern wins on operational simplicity, latency, and DX; Hearth follows it. Teams that need graph-structured authorization (Google-Drive-style delegated sharing) pair Hearth with a dedicated Zanzibar service (SpiceDB, OpenFGA) — that's the industry-standard integration pattern.
+**Claims-based authorization is how every modern identity product works.** Auth0, Clerk, Keycloak, Okta, and Firebase Auth all resolve a user's roles and permissions at token-issue time and embed them in JWT claims. Clients and resource servers check permissions synchronously from the token — no network hop per authorization decision. This pattern wins on operational simplicity, latency, and DX; Hearth follows it. Teams that need graph-structured authorization (Google-Drive-style delegated sharing) pair Hearth with a dedicated ReBAC service (SpiceDB, OpenFGA, Cerbos) — that's the industry-standard integration pattern.
 
 **Passkeys and WebAuthn are reaching critical mass.** The industry is finally, genuinely moving beyond passwords. Apple, Google, and Microsoft have shipped passkey support in their platforms. But implementing passkeys requires tight integration between the auth system and the credential store — exactly the kind of integration that's awkward when auth is an application layer and credentials are in a separate database.
 
@@ -346,8 +346,8 @@ These are design targets, not guarantees. They represent the performance that a 
 |-----------|-----------|-----------|----------------------|-------------------|
 | Token validation (JWT verify + session lookup) | < 50 μs | < 500 μs | < 5 ms | Redis GET: ~100 μs p99 |
 | Session lookup by ID | < 10 μs | < 100 μs | N/A (sessions always hot while active) | Redis GET: ~100 μs p99 |
-| Permission check (direct relationship) | < 20 μs | < 200 μs | < 5 ms | SpiceDB: ~1–5ms p99 |
-| Permission check (3-hop graph traversal) | < 100 μs | < 1 ms | < 10 ms | SpiceDB: ~5–20ms p99 |
+| Permission check (in-process claim lookup from verified JWT) | < 1 μs | < 5 μs | N/A (no I/O) | SpiceDB: ~1–5ms p99 |
+| Permission resolution at token-issue time (RBAC graph traversal) | < 100 μs | < 1 ms | < 10 ms | Run once per token, not per request |
 | User lookup by email/ID | < 50 μs | < 500 μs | < 5 ms | Postgres indexed lookup: ~1–5ms |
 | Token issuance (full OAuth2 flow) | < 1 ms | < 5 ms | < 10 ms | Keycloak: 5–50ms p50 |
 | User creation (with credential hashing) | < 50 ms | < 100 ms | N/A (write path) | Dominated by Argon2id cost |
@@ -358,7 +358,7 @@ These are design targets, not guarantees. They represent the performance that a 
 |----------|----------------------|------------------------|
 | Token validation (read-heavy) | 200,000+ | 3,000,000+ |
 | Mixed read/write (95/5 read/write) | 100,000+ | 1,500,000+ |
-| Permission checks | 150,000+ | 2,000,000+ |
+| Permission checks (JWT claim lookup) | 1,000,000+ | 15,000,000+ |
 | Session creation | 50,000+ | 500,000+ |
 
 ### 7.3 Capacity Targets (Single Node)
@@ -715,7 +715,7 @@ The following items are not part of the core vision but represent areas where fu
 
 1. **Policy-as-code integration points**: Hearth's built-in RBAC handles coarse-grained authorization and is deliberately not a policy engine. Teams with genuine policy-as-code needs (Cedar, OPA, Rego) will want to layer those on top of Hearth's JWT claims. The open question is whether Hearth should ship an optional adapter or example showing idiomatic integration with one or two of the major policy engines, or leave that entirely to the community.
 
-2. **Dedicated-Zanzibar integration examples**: For the narrow segment of users who do need graph-structured authorization (delegated sharing, Google-Drive-shaped ACLs), the standard pattern is to pair Hearth with SpiceDB, OpenFGA, or Cerbos. Whether Hearth should publish a canonical integration example (SDK helper that threads Hearth identity into a Zanzibar check call) is an open call.
+2. **Dedicated ReBAC integration examples**: For the narrow segment of users who do need graph-structured authorization (delegated sharing, Google-Drive-shaped ACLs), the standard pattern is to pair Hearth with SpiceDB, OpenFGA, or Cerbos. Whether Hearth should publish a canonical integration example (SDK helper that threads Hearth identity into an external ReBAC check call) is an open call.
 
 3. **Event streaming / webhooks**: Should Hearth provide a built-in event system (user created, session revoked, role assigned, role revoked) for downstream consumers? This is common in auth systems but adds scope. A webhook-based approach would be simpler than a full event streaming system.
 

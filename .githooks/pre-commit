@@ -1,29 +1,28 @@
 #!/usr/bin/env bash
-# Pre-commit hook: auto-regenerate SDK types when proto files are staged.
+# Pre-commit hook: auto-regenerate derived artifacts.
 #
 # Enabled by `make setup`, which sets:
 #   git config core.hooksPath .githooks
 #
-# Why: `build.rs` already regenerates Rust types from `proto/` on every
-# `cargo build`, but the TS/Go SDK generated files are committed source
-# (not in `OUT_DIR`), so they need a separate trigger. This hook keeps
-# them in sync at commit time so CI's `make proto-check` never sees drift.
+# Two regenerations happen here:
+#   1. SDK types from staged proto/*.proto changes (TS + Go).
+#   2. Tailwind app.css from staged template/CSS/config changes.
+#
+# Both produce checked-in artifacts that CI verifies via `make ci-fast`
+# (proto-lint + css-check). Regenerating here keeps the commit atomic.
 
 set -euo pipefail
 
-# Collect staged .proto changes (Added / Copied / Modified / Renamed).
-# `|| true` prevents `set -e` from aborting when grep finds no matches
-# (the common case — most commits don't touch proto/).
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+# ── Proto: regenerate SDK types when proto files are staged ──────────────
 staged_proto=$(git diff --cached --name-only --diff-filter=ACMR \
   | grep -E '^proto/.*\.proto$' || true)
 
-if [ -z "$staged_proto" ]; then
-  # No proto changes — nothing to regenerate.
-  exit 0
-fi
-
-if ! command -v buf >/dev/null 2>&1; then
-  cat >&2 <<'EOF'
+if [ -n "$staged_proto" ]; then
+  if ! command -v buf >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
 error: pre-commit hook needs 'buf' on PATH to regenerate SDK types.
 
 Install buf:  https://buf.build/docs/installation
@@ -32,15 +31,43 @@ Then retry the commit.
 To bypass (discouraged — CI will fail via 'make proto-check'):
   git commit --no-verify
 EOF
-  exit 1
+    exit 1
+  fi
+
+  echo "proto changes staged; regenerating SDK types via 'buf generate'..."
+  (cd proto && buf generate)
+
+  # Re-stage regenerated output. No-op when output is unchanged.
+  git add sdks/typescript/src/generated sdks/go/generated
 fi
 
-echo "proto changes staged; regenerating SDK types via 'buf generate'..."
-(cd proto && buf generate)
+# ── CSS: regenerate Tailwind output when templates / CSS / config change ──
+#
+# Why: app.css is a checked-in build artifact embedded into the binary via
+# include_bytes!. Templates may reference a utility class that wasn't yet
+# in the compiled bundle — only a fresh tailwind run picks them up. CI's
+# `make css-check` enforces freshness; this hook avoids the round-trip.
+staged_css_inputs=$(git diff --cached --name-only --diff-filter=ACMR \
+  | grep -E '^(templates/|ui/input\.css$|ui/tailwind\.config\.js$)' || true)
 
-# Re-stage regenerated output so it lands in the same commit.
-# If `buf generate` produced no changes (e.g. comment-only edits),
-# `git add` is a no-op and the commit proceeds unchanged.
-git add sdks/typescript/src/generated sdks/go/generated
+if [ -n "$staged_css_inputs" ]; then
+  if [ ! -x ui/tailwindcss ] && ! [ -L ui/tailwindcss ]; then
+    cat >&2 <<'EOF'
+error: pre-commit hook needs ui/tailwindcss to rebuild app.css.
+
+Install the standalone CLI:  make tailwind-install
+Then retry the commit.
+
+To bypass (discouraged — CI will fail via 'make css-check'):
+  git commit --no-verify
+EOF
+    exit 1
+  fi
+
+  echo "template/CSS changes staged; rebuilding Tailwind app.css..."
+  (cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify 2>&1 | grep -v -E '^(zoxide|Browserslist|Please|If the|https://|npx |  Why|Disable|$)' || true)
+
+  git add src/protocol/web/assets/app.css
+fi
 
 exit 0

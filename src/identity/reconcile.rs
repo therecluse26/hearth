@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::authz::AuthorizationEngine;
 use crate::config::{
     ApplicationYamlConfig, AuthConfig, Config, FederationProviderYaml, FederationYamlConfig,
     OrganizationYamlConfig, RealmYamlConfig,
@@ -30,6 +29,7 @@ use crate::identity::{
     CreateOrganizationRequest, CreateRealmRequest, IdentityEngine, ImportClientRequest,
     OrganizationConfig, RealmConfig, RealmStatus, UpdateOrganizationRequest, UpdateRealmRequest,
 };
+use crate::rbac::RbacEngine;
 
 /// Report of what realm reconciliation did.
 #[derive(Debug, Default)]
@@ -99,7 +99,7 @@ pub enum OrgReconcileAction {
 /// caller should retry on next startup.
 pub fn reconcile_realms(
     engine: &dyn IdentityEngine,
-    authz: &dyn AuthorizationEngine,
+    rbac: &dyn RbacEngine,
     config: &Config,
 ) -> Result<ReconcileReport, IdentityError> {
     let mut report = ReconcileReport::default();
@@ -115,38 +115,115 @@ pub fn reconcile_realms(
                     name: "default".to_string(),
                     config: Some(realm_config),
                 })?;
-                install_preset_or_log(authz, realm.id(), "default");
+                seed_realm_or_log(rbac, realm.id(), "default");
                 report.created.push("default".to_string());
             }
             // If realms exist, skip reconciliation (backward compat)
         }
         Some(yaml_realms) => {
-            reconcile_declared_realms(engine, authz, yaml_realms, config, &mut report)?;
+            reconcile_declared_realms(engine, rbac, yaml_realms, config, &mut report)?;
         }
     }
 
     Ok(report)
 }
 
-/// Installs the Roles & Permissions preset namespace on a freshly created
-/// realm, logging (but not failing) if the install errors. The realm record
-/// is already durable at this point; a missing namespace is recoverable
-/// (the next visit to the Roles UI would install it), so we prefer a log
-/// over aborting reconciliation mid-run.
-fn install_preset_or_log(authz: &dyn AuthorizationEngine, realm_id: &RealmId, realm_name: &str) {
-    if let Err(e) = crate::authz::ensure_preset_namespace(authz, realm_id) {
+/// Seeds default roles, permissions, and scopes on a freshly created realm,
+/// logging (but not failing) if the seed errors. The realm record is already
+/// durable at this point; a missing seed is recoverable (seed_realm is
+/// idempotent), so we prefer a log over aborting reconciliation mid-run.
+fn seed_realm_or_log(rbac: &dyn RbacEngine, realm_id: &RealmId, realm_name: &str) {
+    if let Err(e) = rbac.seed_realm(realm_id) {
         tracing::warn!(
             realm = realm_name,
             error = %e,
-            "failed to install preset authz namespace on new realm"
+            "failed to seed RBAC defaults on new realm"
         );
+    }
+}
+
+/// Persists YAML-declared permissions, roles, and scope bundles into the
+/// realm's RBAC storage. Idempotent: each underlying engine method upserts
+/// by name. Logs (does not raise) on individual failures so one bad block
+/// doesn't abort reconciliation of subsequent realms or other concerns
+/// (organizations, federation, etc.).
+fn reconcile_rbac_for_realm(
+    rbac: &dyn RbacEngine,
+    realm_id: &RealmId,
+    realm_name: &str,
+    yaml_cfg: &RealmYamlConfig,
+) {
+    let perm_count = yaml_cfg.permissions.as_ref().map_or(0, Vec::len);
+    let role_count = yaml_cfg.roles.as_ref().map_or(0, Vec::len);
+    let scope_count = yaml_cfg.scopes.as_ref().map_or(0, Vec::len);
+    tracing::info!(
+        realm = realm_name,
+        permissions = perm_count,
+        roles = role_count,
+        scopes = scope_count,
+        "reconciling YAML RBAC"
+    );
+
+    if let Some(perms) = yaml_cfg.permissions.as_ref() {
+        let names: Vec<String> = perms.iter().map(|p| p.name.clone()).collect();
+        if let Err(e) = rbac.reconcile_permissions(realm_id, &names) {
+            tracing::warn!(
+                realm = realm_name,
+                error = %e,
+                "failed to reconcile YAML permissions"
+            );
+        }
+    }
+
+    if let Some(roles) = yaml_cfg.roles.as_ref() {
+        let specs: Vec<crate::rbac::RoleSpec> = roles
+            .iter()
+            .map(|r| crate::rbac::RoleSpec {
+                name: r.name.clone(),
+                description: r.description.clone(),
+                permissions: r.permissions.clone(),
+                parent_names: r.parents.clone(),
+                scope_kind: match r.scope_kind.as_deref() {
+                    Some("organization") => crate::rbac::RoleScopeKind::Organization,
+                    Some("any") => crate::rbac::RoleScopeKind::Any,
+                    _ => crate::rbac::RoleScopeKind::Realm,
+                },
+            })
+            .collect();
+        for spec in &specs {
+            if let Err(e) = rbac.reconcile_roles(realm_id, std::slice::from_ref(spec)) {
+                tracing::warn!(
+                    realm = realm_name,
+                    role = %spec.name,
+                    error = %e,
+                    "failed to reconcile YAML role"
+                );
+            }
+        }
+    }
+
+    if let Some(scopes) = yaml_cfg.scopes.as_ref() {
+        let specs: Vec<crate::rbac::ScopeSpec> = scopes
+            .iter()
+            .map(|s| crate::rbac::ScopeSpec {
+                name: s.name.clone(),
+                permissions: Some(s.permissions.clone()),
+            })
+            .collect();
+        if let Err(e) = rbac.reconcile_scopes(realm_id, &specs) {
+            tracing::warn!(
+                realm = realm_name,
+                error = %e,
+                "failed to reconcile YAML scope bundles"
+            );
+        }
     }
 }
 
 /// Reconciles a declared `realms:` map.
 fn reconcile_declared_realms(
     engine: &dyn IdentityEngine,
-    authz: &dyn AuthorizationEngine,
+    rbac: &dyn RbacEngine,
     yaml_realms: &HashMap<String, RealmYamlConfig>,
     config: &Config,
     report: &mut ReconcileReport,
@@ -167,7 +244,12 @@ fn reconcile_declared_realms(
 
     // Process each YAML entry
     for (name, yaml_cfg) in yaml_realms {
-        let realm_config = yaml_cfg.to_realm_config(&config.auth, config.email.branding.as_ref());
+        let realm_config = yaml_cfg
+            .to_realm_config(&config.auth, config.email.branding.as_ref())
+            .map_err(|errors| IdentityError::ConfigInvalid {
+                realm_name: name.clone(),
+                errors,
+            })?;
 
         let realm_id = match engine.get_realm_by_name(name)? {
             None => {
@@ -176,7 +258,7 @@ fn reconcile_declared_realms(
                     name: name.clone(),
                     config: Some(realm_config),
                 })?;
-                install_preset_or_log(authz, realm.id(), name);
+                seed_realm_or_log(rbac, realm.id(), name);
                 report.created.push(name.clone());
                 realm.id().clone()
             }
@@ -199,12 +281,28 @@ fn reconcile_declared_realms(
                         report.updated.push(name.clone());
                     }
                 }
+                // Re-run seed on existing realms too. `seed_realm` is
+                // idempotent: it skips already-correct records and rewrites
+                // only roles whose `scope_kind` drifted from the spec (e.g.
+                // legacy `org.*` roles seeded before the field existed, which
+                // deserialize as `Realm` by default).
+                seed_realm_or_log(rbac, existing.id(), name);
                 existing.id().clone()
             }
         };
 
-        // Reconcile applications declared under this realm
-        if let Some(apps) = &yaml_cfg.applications {
+        // Reconcile YAML-declared RBAC: permissions before roles before
+        // scopes, mirroring the seed order so name references resolve.
+        // Errors are logged (not fatal) so a bad RBAC block doesn't abort
+        // reconciliation of other realms.
+        reconcile_rbac_for_realm(rbac, &realm_id, name, yaml_cfg);
+
+        // Reconcile managed OAuth clients declared under this realm.
+        if let Some(apps) = yaml_cfg
+            .oauth_clients
+            .as_ref()
+            .or(yaml_cfg.applications.as_ref())
+        {
             reconcile_applications(engine, &realm_id, name, apps, report)?;
         }
 
@@ -250,9 +348,12 @@ fn reconcile_declared_realms(
 }
 
 /// Builds a `RealmConfig` from global auth defaults (used for the auto-created "default" realm).
+///
+/// Uses a default (empty) `RealmYamlConfig`, so validation always succeeds.
 fn default_realm_config(auth: &AuthConfig, config: &Config) -> RealmConfig {
     let yaml = RealmYamlConfig::default();
     yaml.to_realm_config(auth, config.email.branding.as_ref())
+        .expect("default RealmYamlConfig must always pass validation")
 }
 
 /// UUID v5 namespace for deterministic application client IDs.
@@ -347,6 +448,10 @@ pub(crate) fn reconcile_applications(
                             } else {
                                 None
                             },
+                            slug: app_cfg.slug.clone(),
+                            trust_level: app_cfg.trust_level,
+                            declared_scopes: app_cfg.declared_scopes.clone(),
+                            consent_spans_orgs: app_cfg.consent_spans_orgs,
                         },
                     )?;
                     info!(
@@ -377,6 +482,12 @@ pub(crate) fn reconcile_applications(
                         redirect_uris,
                         client_secret: secret,
                         grant_types,
+                        slug: app_cfg.slug.clone(),
+                        trust_level: app_cfg
+                            .trust_level
+                            .unwrap_or(crate::identity::ClientTrustLevel::FirstParty),
+                        declared_scopes: app_cfg.declared_scopes.clone().unwrap_or_default(),
+                        consent_spans_orgs: app_cfg.consent_spans_orgs.unwrap_or(false),
                     },
                 )?;
                 // Apply consent-policy fields: the import path doesn't
@@ -392,6 +503,10 @@ pub(crate) fn reconcile_applications(
                             grant_types: None,
                             require_consent: Some(cfg_require_consent),
                             client_logo_url: Some(cfg_logo.clone()),
+                            slug: app_cfg.slug.clone(),
+                            trust_level: app_cfg.trust_level,
+                            declared_scopes: app_cfg.declared_scopes.clone(),
+                            consent_spans_orgs: app_cfg.consent_spans_orgs,
                         },
                     )?;
                 }

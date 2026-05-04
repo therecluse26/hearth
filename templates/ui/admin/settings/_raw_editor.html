@@ -16,19 +16,33 @@
     {% endif %}
   </div>
 
-  {# Editor area — sunken background for code feel #}
-  <div class="border-y border-divider-subtle bg-ht-surface-raised">
+  {# Editor area — sunken background for code feel.
+     Syntax highlighting via textarea-overlay: a transparent <textarea> sits on
+     top of a <pre> mirror; `yamlHighlight()` (defined in editor.html scripts)
+     copies the textarea content into the mirror after each keystroke and
+     applies regex-based YAML coloring. Native textarea handles all input;
+     mirror handles all visual color. No vendor JS deps. #}
+  <div class="relative border-y border-divider-subtle bg-ht-surface-raised">
     <form id="apply-form" method="post" action="/ui/admin/settings/editor/apply">
       {% match csrf %}
         {% when Some with (token) %}
           <input type="hidden" name="_csrf" value="{{ token }}">
         {% when None %}
       {% endmatch %}
+      {# Mirror: receives highlighted HTML, sits BEHIND the textarea.
+         Padding/font/line-height MUST exactly match the textarea so the
+         caret aligns. aria-hidden because it's purely decorative. #}
+      <pre id="yaml-mirror" aria-hidden="true"
+           class="yaml-mirror pointer-events-none absolute inset-0 m-0 overflow-hidden whitespace-pre px-6 py-4 font-mono text-sm leading-relaxed"
+           style="tab-size: 2; -moz-tab-size: 2;"></pre>
       <textarea id="yaml-editor" name="yaml"
                 {% if read_only %}readonly{% endif %}
                 spellcheck="false"
                 wrap="off"
-                class="yaml-editor block w-full resize-y border-0 bg-transparent px-6 py-4 font-mono text-sm leading-relaxed text-ht-content-primary placeholder:text-ht-content-muted focus:outline-none"
+                @input="syncMirror()"
+                @scroll="syncMirrorScroll()"
+                x-init="$nextTick(() => { syncMirror(); syncMirrorScroll(); })"
+                class="yaml-editor relative block w-full resize-y border-0 bg-transparent px-6 py-4 font-mono text-sm leading-relaxed text-transparent caret-ht-content-primary placeholder:text-ht-content-muted focus:outline-none"
                 style="tab-size: 2; -moz-tab-size: 2;"
                 rows="32">{{ yaml_content }}</textarea>
     </form>

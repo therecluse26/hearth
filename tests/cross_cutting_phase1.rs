@@ -14,13 +14,13 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthzConfig, AuthzError, EmbeddedAuthzEngine};
 use hearth::core::{Clock, RealmId, SystemClock, UserId};
 use hearth::identity::{
     CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
     EmbeddedIdentityEngine, IdentityConfig, IdentityError, RecoveryCodes,
 };
 use hearth::protocol::http::{router, AppState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -183,18 +183,16 @@ async fn phase1_error_responses_leak_no_internal_state() {
         assert_no_leaks("IdentityError Phase 1 variant", msg);
     }
 
-    // AuthzError::Unauthorized — admin access denied for non-admins.
-    let authz_unauthorized = format!(
+    // RbacError variants carry validation reasons but never secrets.
+    let rbac_role_not_found = format!("{}", hearth::rbac::RbacError::RoleNotFound);
+    assert_no_leaks("RbacError::RoleNotFound", &rbac_role_not_found);
+    let rbac_invalid_perm = format!(
         "{}",
-        AuthzError::Unauthorized {
-            reason: "requires admin role".to_string(),
+        hearth::rbac::RbacError::InvalidPermission {
+            reason: "uppercase not allowed".to_string(),
         }
     );
-    assert_no_leaks("AuthzError::Unauthorized", &authz_unauthorized);
-    assert!(
-        authz_unauthorized.contains("unauthorized"),
-        "admin denial should be a generic unauthorized error: {authz_unauthorized}"
-    );
+    assert_no_leaks("RbacError::InvalidPermission", &rbac_invalid_perm);
 
     // Cross-realm enumeration: get_user for a foreign realm returns
     // Ok(None), not a realm-specific error.
@@ -291,9 +289,9 @@ fn build_router() -> axum::Router {
         identity_config,
     )
     .expect("identity engine");
-    let authz_engine = EmbeddedAuthzEngine::new(
+    let authz_engine = EmbeddedRbacEngine::new(
         Arc::clone(&engine) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
+        Arc::clone(&clock),
     );
     let audit_engine =
         EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);

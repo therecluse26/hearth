@@ -13,7 +13,7 @@ import type {
  * Admin API client for Hearth.
  *
  * Requires a valid admin access token. All operations go through
- * the /admin/* endpoints which enforce Zanzibar admin role checks.
+ * the /admin/* endpoints which enforce RBAC admin role checks.
  */
 export class AdminClient {
   constructor(

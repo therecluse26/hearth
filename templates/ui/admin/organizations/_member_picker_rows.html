@@ -15,7 +15,7 @@
 <div class="divide-y divide-divider-faint rounded-sm border border-divider-subtle">
   {% for u in users %}
   <form method="post"
-        action="/ui/admin/organizations/{{ org_id }}/members"
+        action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members"
         class="flex items-center gap-3 px-3 py-2 hover-bg-divider">
     {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
     <input type="hidden" name="user_id" value="{{ u.id().as_uuid() }}">
@@ -50,7 +50,7 @@
   {% when Some with (cursor) %}
   <div class="mt-2 text-center">
     <button type="button"
-            hx-get="/ui/admin/organizations/{{ org_id }}/members/picker?cursor={{ cursor }}{% if !query.is_empty() %}&q={{ query }}{% endif %}"
+            hx-get="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/picker?cursor={{ cursor }}{% if !query.is_empty() %}&q={{ query }}{% endif %}"
             hx-target="#member-picker-results"
             hx-swap="innerHTML"
             class="text-xs font-medium text-ht-content-brand hover:text-ht-brand-deep">

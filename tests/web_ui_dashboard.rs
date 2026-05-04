@@ -16,10 +16,6 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
-use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
-    SubjectRef, TupleWrite,
-};
 use hearth::core::Clock;
 use hearth::core::SystemClock;
 use hearth::core::{RealmId, SessionId};
@@ -31,6 +27,7 @@ use hearth::identity::{
 };
 use hearth::protocol::http as hearth_http;
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -58,7 +55,7 @@ const COOKIE_SECRET_BYTES: [u8; 32] = [42u8; 32];
 struct TestRig {
     app: axum::Router,
     identity: Arc<dyn IdentityEngine>,
-    authz: Arc<dyn AuthorizationEngine>,
+    authz: Arc<dyn RbacEngine>,
     audit: Arc<dyn hearth::audit::AuditEngine>,
     realm_id: RealmId,
     session_id: SessionId,
@@ -86,10 +83,10 @@ fn build_rig() -> TestRig {
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn RbacEngine>;
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
@@ -98,7 +95,7 @@ fn build_rig() -> TestRig {
     // Create a realm + active user so we have a real session to hand out.
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -128,6 +125,7 @@ fn build_rig() -> TestRig {
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate user");
@@ -140,13 +138,22 @@ fn build_rig() -> TestRig {
         .expect("create session");
 
     // Grant the user the hearth#admin relation (same as the onboarding flow).
-    let admin_obj = ObjectRef::new("hearth", "admin").expect("valid object");
-    let admin_subj =
-        SubjectRef::direct("user", &user.id().as_uuid().to_string()).expect("valid subject");
-    let admin_tuple = RelationshipTuple::new(admin_obj, "admin", admin_subj).expect("valid tuple");
+    authz.seed_realm(realm.id()).expect("seed");
+    let _admin_role = authz
+        .get_role_by_name(realm.id(), "realm.admin")
+        .expect("lookup")
+        .expect("seed role");
     authz
-        .write_tuples(realm.id(), &[TupleWrite::Touch(admin_tuple)])
-        .expect("write admin tuple");
+        .assign_role(
+            realm.id(),
+            &hearth::rbac::AssignRoleRequest {
+                subject: hearth::rbac::Subject::User(user.id().clone()),
+                role_id: _admin_role.id.clone(),
+                scope: hearth::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign admin role");
 
     let onboarding = Arc::new(OnboardingService::new(
         Arc::clone(&identity),
@@ -256,26 +263,102 @@ async fn dashboard_renders_signed_in_page() {
         "dashboard should render sign-out form"
     );
     // Admin tiles must be visible because the test user has the
-    // hearth#admin relation.
-    assert!(
-        body.contains("/ui/admin/users"),
-        "dashboard should show Users admin link"
-    );
+    // hearth#admin relation. After the path-based routing migration, all
+    // realm-scoped tiles point at the realms picker (R-1 in
+    // UI_ROUTING.md): the operator chooses a realm before drilling in.
     assert!(
         body.contains("/ui/admin/realms"),
         "dashboard should show Realms admin link"
     );
     assert!(
-        body.contains("/ui/admin/applications"),
-        "dashboard should show Applications admin link"
+        body.contains("Users"),
+        "dashboard should show Users tile label"
     );
     assert!(
-        body.contains("/ui/admin/sessions"),
-        "dashboard should show Sessions admin link"
+        body.contains("Applications"),
+        "dashboard should show Applications tile label"
     );
     assert!(
-        body.contains("/ui/admin/audit"),
-        "dashboard should show Audit log admin link"
+        body.contains("Sessions"),
+        "dashboard should show Sessions tile label"
+    );
+    assert!(
+        body.contains("Audit log"),
+        "dashboard should show Audit log tile label"
+    );
+}
+
+/// Regression: dashboard counts (Users / Realms / Applications /
+/// Organizations) must aggregate across the system realm and every
+/// tenant realm — not just the realm the admin happens to be signed
+/// into. The 2026-04-29 audit caught the legacy single-realm count
+/// showing "Organizations 0" while a tenant realm clearly held one,
+/// since the admin signed in via the tenant realm in some flows but
+/// orgs / apps in *other* realms went unsurfaced.
+#[tokio::test]
+async fn dashboard_counts_aggregate_across_realms() {
+    let rig = build_rig();
+
+    // Seed a second tenant realm with an organization. The dashboard
+    // count must include it even though the admin is signed into Acme.
+    let other_realm = rig
+        .identity
+        .create_realm(&CreateRealmRequest {
+            name: "othercorp".to_string(),
+            config: None,
+        })
+        .expect("create OtherCorp");
+    rig.identity
+        .create_organization(
+            other_realm.id(),
+            &hearth::identity::CreateOrganizationRequest {
+                name: "Cross-Realm Org".to_string(),
+                slug: "cross-realm-org".to_string(),
+                description: None,
+                config: None,
+            },
+        )
+        .expect("create org in OtherCorp");
+
+    let cookie = auth_cookie(&rig, "csrf-counts");
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    // The Realms count is global — must include both Acme and OtherCorp.
+    // The cards in dashboard.html render the count next to a label;
+    // both number and label appear in the rendered HTML, so a contains
+    // check on the labelled value pins the realm-aware aggregation.
+    assert!(body.contains("Realms"), "Realms card present");
+    // Org count must be 1 (from OtherCorp), even though the admin
+    // signed in via Acme. The legacy code reading session.realm_id
+    // would have shown 0.
+    assert!(body.contains("Organizations"), "Organizations card present");
+    // The number rendered in the org card. dashboard.html composes the
+    // count + label inside the same anchor, so a substring of both
+    // tokens within a window distinguishes the right card.
+    let snippet = "Organizations";
+    let idx = body.find(snippet).expect("Organizations label");
+    let window = &body[idx..usize::min(idx + 256, body.len())];
+    assert!(
+        window.contains(">1<"),
+        "Organizations count must be 1 (aggregated from OtherCorp). Window: {window}"
     );
 }
 

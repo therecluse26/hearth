@@ -2,7 +2,7 @@
 
 **Identity is a database problem. Hearth is the database.**
 
-Every other identity provider is an application sitting on top of a generic database — Keycloak on Postgres, Ory split across four binaries, Auth0 on its managed stack. That architecture is why auth is slow, operationally heavy, and fragile. Hearth inverts it: the storage engine is specialized for the identity access pattern, and the OAuth/OIDC/Zanzibar surfaces are thin protocol adapters on top. That's why it ships as one process instead of four.
+Every other identity provider is an application sitting on top of a generic database — Keycloak on Postgres, Ory split across four binaries, Auth0 on its managed stack. That architecture is why auth is slow, operationally heavy, and fragile. Hearth inverts it: the storage engine is specialized for the identity access pattern, and the OAuth/OIDC/RBAC surfaces are thin protocol adapters on top. That's why it ships as one process instead of four.
 
 > **Pre-1.0:** APIs and on-disk formats may change before 1.0.
 
@@ -22,14 +22,14 @@ A generic database has to serve every workload; an identity engine only has to s
 
 - **User profiles and credentials** — B-tree-like structures indexed by email, username, external ID, and realm for point lookups.
 - **Sessions** — time-partitioned, tuned for TTL-based expiration and recent-window scans.
-- **Zanzibar relationship tuples** — adjacency-list layout tuned for the exact traversal pattern of `Check` and `Expand`.
+- **Roles, groups, and role assignments** — adjacency-list indexes that resolve in a single pass at token-issue time; effective permissions are baked into the JWT.
 - **Audit log** — append-only with a SHA-256 hash chain per realm.
 
 A **hot/cold tier** serves the working set from memory-mapped, cache-line-aligned structures and transparently demotes inactive records to on-disk SSTs, so a single node can manage datasets far larger than RAM without paying for it on every request.
 
-### In-process authorization, not a network hop
+### In-JWT authorization, not a network hop
 
-Because Zanzibar tuples live in the same storage engine as users, realms, and sessions, **permission checks are in-process function calls, not network requests**. A `check()` does not serialize a payload, does not cross a socket, does not wait on a connection pool — it's a memory read against an adjacency list. This is the structural reason Hearth targets a sub-millisecond hot path: not runtime tuning, but one fewer network hop per permission decision. It's also why creating a user and assigning their initial roles is a single atomic storage write instead of a dual-write across two services.
+Hearth resolves effective permissions at token-issue time and embeds them directly into the JWT `permissions` claim. **Permission checks are local JWT lookups, not network requests**: clients and downstream services decode the signed token and consult a set that fits in CPU cache. The hot path does not call Hearth for authorization at all. Because role and group state lives in the same storage engine as users, realms, and sessions, the resolve step runs in-process against an adjacency-list index with no external calls — which is the structural reason creating a user and assigning their initial roles is a single atomic storage write instead of a dual-write across two services.
 
 ### Your data, your rules
 
@@ -48,13 +48,14 @@ Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home t
 - Social login via external OIDC / OAuth2 providers — Google, Microsoft / Azure AD, Apple, GitHub out of the box; any OIDC Core 1.0 issuer via generic `type: oidc`
 
 **Authorization**
-- Zanzibar-style relationship tuples
-- `check`, `expand`, `write_tuples`, `watch` with consistency tokens
+- Claims-based RBAC: roles, nested groups, per-realm and per-org role assignments
+- Effective permissions resolved at token-issue time and embedded in the JWT (`roles`, `groups`, `permissions`)
+- `GET /v1/me/permissions` for live introspection; SDK helpers for local `hasPermission` / `hasRole` checks
 
 **Multi-tenancy**
 - Realm-isolated keyspace (every key prefixed with `RealmId`)
 - Per-realm Ed25519 signing keys with JWKS rotation
-- Cascading deletion across users, sessions, credentials, OAuth clients, authz tuples, device codes, signing keys
+- Cascading deletion across users, sessions, credentials, OAuth clients, role assignments, device codes, signing keys
 
 **Protocols**
 - OIDC Core 1.0 + Discovery 1.0 + Dynamic Client Registration (RFC 7591 / 7592)
@@ -80,7 +81,7 @@ Identity infrastructure has zero tolerance for data loss and low tolerance for i
 2. **Integration / black box** — a `TestHarness` runs the same suite in embedded *and* HTTP server modes.
 3. **Property** — `proptest`, 256 cases locally, 10,000+ in CI.
 4. **Fuzz** — `cargo-fuzz` against wire parsers (CBOR, protobuf, JWT, authenticator data).
-5. **Deterministic simulation** — `madsim` replays disk faults, WAL-tail corruption, network partitions, and clock skew from fixed seeds: [`realm_crash`](simulation/src/tests/realm_crash.rs), [`audit_crash`](simulation/src/tests/audit_crash.rs), [`watch_partition`](simulation/src/tests/watch_partition.rs), [`cache_stampede`](simulation/src/tests/cache_stampede.rs), [`realm_concurrent_io`](simulation/src/tests/realm_concurrent_io.rs).
+5. **Deterministic simulation** — `madsim` replays disk faults, WAL-tail corruption, and clock skew from fixed seeds: [`realm_crash`](simulation/src/tests/realm_crash.rs), [`audit_crash`](simulation/src/tests/audit_crash.rs), [`realm_concurrent_io`](simulation/src/tests/realm_concurrent_io.rs), [`rbac_concurrent_assignments`](simulation/src/tests/rbac_concurrent_assignments.rs).
 6. **Adversarial** — timing attacks, brute-force lockout, enumeration resistance, TLS downgrade, privilege escalation.
 7. **Conformance** — OIDC Core 1.0, Discovery 1.0, Dynamic Client Registration, WebAuthn Level 2 ceremony.
 8. **Benchmarks** — `criterion`, with regression gating in CI.
@@ -143,7 +144,7 @@ See [`examples/`](examples/) for the full list of runnable demos.
 
 ## Bootstrap an Admin (dev mode only)
 
-Dev mode exposes a convenience endpoint that creates a realm, an admin user, a session, the Zanzibar `hearth#admin` tuple, and issues tokens — everything you need to try the OAuth flow locally:
+Dev mode exposes a convenience endpoint that creates a realm, an admin user, a session, assigns the `realm.admin` role (which carries the `hearth.admin` permission), and issues tokens — everything you need to try the OAuth flow locally:
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:8420/admin/bootstrap
@@ -482,7 +483,7 @@ For the complete feature spec + file map see [`docs/gaps/FEATURE_GAPS.md §5`](d
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/applications/{id}` | CRUD a client |
 | Admin | `POST` | `/admin/bootstrap` | Dev-only bootstrap (404 in prod) |
 
-All `/admin/*` routes require a bearer token whose subject has the Zanzibar tuple `hearth#admin@user:<uuid>` for the target realm.
+All `/admin/*` routes require a bearer token whose `permissions` claim contains `hearth.admin` for the target realm (typically via the seed `realm.admin` role).
 
 ---
 
@@ -610,7 +611,7 @@ Optionally pass `--realm <uuid>` to force a specific Hearth `RealmId` (defaults 
 |------------------------------|------------------------------------------------------------|
 | realm (`id`, `realm`)        | realm                                                     |
 | user (`id`, `email`, …)      | user (Keycloak UUID preserved when valid)                  |
-| user → `realmRoles`          | Zanzibar tuple `realm:<tid>#<role>@user:<uid>`             |
+| user → `realmRoles`          | RBAC role assignment per role name, scoped to the realm     |
 | client + `secret`            | `OAuthClient` (secret re-hashed with Argon2id on import)   |
 | password — PBKDF2-SHA256     | PHC string; verifies natively, no password reset required  |
 | password — PBKDF2-SHA512     | *Skipped* with a warning; user must reset password         |
@@ -628,11 +629,11 @@ Groups, composite roles, client roles, federated identity providers, and require
 | Core | `src/core/` | Shared types and traits only. No logic, no state. |
 | Protocol | `src/protocol/` | Stateless wire adapters (REST, gRPC, OIDC, SAML, SCIM). |
 | Identity | `src/identity/` | Users, credentials, sessions, realms, tokens. |
-| Authorization | `src/authz/` | Zanzibar tuples: `check`, `expand`, `write_tuples`, `watch`. |
+| RBAC | `src/rbac/` | Roles, groups, assignments, permission resolution into JWT claims. |
 | Cluster | `src/cluster/` | Raft consensus (`openraft`). Invisible in single-node mode. |
 | Storage | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |
 
-Dependencies flow strictly downward; `identity/` is the only layer allowed to call `authz/`.
+Dependencies flow strictly downward; `identity/` is the only layer allowed to call `rbac/` (to resolve permissions at token-issue time).
 
 ---
 

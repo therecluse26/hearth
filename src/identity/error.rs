@@ -294,11 +294,49 @@ pub enum IdentityError {
     /// The supplied SCIM `externalId` is already associated with a
     /// different user (or organization) in this realm.
     DuplicateScimExternalId,
+    /// YAML-authored realm configuration failed registry validation.
+    ///
+    /// Emitted at startup or SIGHUP reload when `to_realm_config` detects
+    /// invalid permission names, malformed scope bundle names, undeclared
+    /// permission references, role parent cycles, or Tier 1 claim targets.
+    /// All violations are collected and returned together so operators can
+    /// fix them in a single pass.
+    ConfigInvalid {
+        /// Name of the realm whose config failed validation.
+        realm_name: String,
+        /// Every validation error found in the registry.
+        errors: Vec<crate::rbac::RegistryError>,
+    },
     /// An error from the underlying storage layer.
     Storage(Box<dyn std::error::Error + Send + Sync>),
     /// Serialization or deserialization failed.
     Serialization {
         /// Description of the serialization failure.
+        reason: String,
+    },
+    /// An internal engine-layer failure that does not map to any more
+    /// specific variant. Used e.g. when RBAC resolution reports an
+    /// unexpected error during token issuance.
+    Internal {
+        /// Sanitized description of what went wrong.
+        reason: String,
+    },
+    /// Token issuance aborted because the resolved claim set exceeds a
+    /// configured size bound from `AUTHORIZATION.md § 2.6`.
+    TokenTooLarge {
+        /// Name of the specific limit that was exceeded.
+        limit: String,
+        /// Configured maximum for this limit.
+        limit_value: usize,
+        /// The size actually produced at resolve time.
+        actual: usize,
+    },
+    /// A user attribute key or value failed validation.
+    ///
+    /// Covers: empty key, key exceeds 64 chars, key contains invalid
+    /// characters, value exceeds 1 KiB, or total map exceeds 16 KiB.
+    InvalidAttribute {
+        /// Description of what was invalid.
         reason: String,
     },
 }
@@ -424,8 +462,28 @@ impl fmt::Display for IdentityError {
             Self::SamlInvalidAuthnRequest { reason } => {
                 write!(f, "invalid SAML AuthnRequest: {reason}")
             }
+            Self::ConfigInvalid { realm_name, errors } => write!(
+                f,
+                "realm '{realm_name}' config is invalid ({} error(s)): {}",
+                errors.len(),
+                errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),
+            Self::Internal { reason } => write!(f, "internal error: {reason}"),
+            Self::TokenTooLarge {
+                limit,
+                limit_value,
+                actual,
+            } => write!(
+                f,
+                "resolved claim set exceeds size limit {limit} ({actual} > {limit_value})"
+            ),
+            Self::InvalidAttribute { reason } => write!(f, "invalid attribute: {reason}"),
         }
     }
 }
@@ -512,7 +570,11 @@ impl std::error::Error for IdentityError {
             | Self::SamlInvalidAuthnRequest { .. }
             | Self::SystemRealmProtected { .. }
             | Self::DuplicateScimExternalId
-            | Self::Serialization { .. } => None,
+            | Self::ConfigInvalid { .. }
+            | Self::Serialization { .. }
+            | Self::Internal { .. }
+            | Self::TokenTooLarge { .. }
+            | Self::InvalidAttribute { .. } => None,
         }
     }
 }

@@ -1,14 +1,87 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} · {{ org.name() }}{% endblock %}
 {% block body %}
-<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ org.name() }}</h1>
-  <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}/edit"
-     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-    Edit
-  </a>
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+<div class="mb-4 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="/ui/admin/realms/{{ realm_name }}/organizations"
+     class="hover:text-ht-content-primary">Organizations</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">{{ org.name() }}</span>
 </div>
 
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+  <div>
+    <div class="flex flex-wrap items-center gap-3">
+      <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ org.name() }}</h1>
+      {% if org.status()|fmt("{:?}") == "Active" %}
+        <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
+      {% else %}
+        <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Suspended</span>
+      {% endif %}
+    </div>
+    <p class="mt-1 font-mono text-xs text-ht-content-muted">
+      {{ member_count }} {% if member_count == 1 %}member{% else %}members{% endif %}{% match max_members %}{% when Some with (n) %} · limit {{ n }}{% when None %}{% endmatch %} · {{ org.slug() }}
+    </p>
+  </div>
+  <div class="flex items-center gap-2">
+    <form method="post"
+          action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/status"
+          class="inline">
+      {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+      {% if org.status()|fmt("{:?}") == "Active" %}
+        <input type="hidden" name="status" value="Suspended">
+        <button type="submit"
+                class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+          Suspend
+        </button>
+      {% else %}
+        <input type="hidden" name="status" value="Active">
+        <button type="submit"
+                class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+          Resume
+        </button>
+      {% endif %}
+    </form>
+    <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/edit"
+       class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+      Edit
+    </a>
+  </div>
+</div>
+
+{# Sub-tab strip — selection comes from `?tab=` (server-rendered).
+   Realm context lives in the path, so each link only carries the `tab`
+   query parameter. #}
+<nav class="mb-4 border-b border-divider-subtle">
+  <ul class="flex flex-wrap items-center gap-1 text-sm">
+    <li>
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=overview"
+         class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "overview" %}border-ht-content-brand text-ht-content-primary{% else %}border-transparent text-ht-content-muted hover:text-ht-content-primary{% endif %}">
+        Overview
+      </a>
+    </li>
+    <li>
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=members"
+         class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "members" %}border-ht-content-brand text-ht-content-primary{% else %}border-transparent text-ht-content-muted hover:text-ht-content-primary{% endif %}">
+        Members <span class="ml-1 rounded-full bg-ht-surface-base px-1.5 py-0.5 text-xs text-ht-content-muted">{{ member_count }}</span>
+      </a>
+    </li>
+    <li>
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=invitations"
+         class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "invitations" %}border-ht-content-brand text-ht-content-primary{% else %}border-transparent text-ht-content-muted hover:text-ht-content-primary{% endif %}">
+        Invitations <span class="ml-1 rounded-full bg-ht-surface-base px-1.5 py-0.5 text-xs text-ht-content-muted">{{ invitations.len() }}</span>
+      </a>
+    </li>
+    <li>
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=danger"
+         class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "danger" %}border-ht-content-brand text-danger-fg{% else %}border-transparent text-ht-content-muted hover:text-danger-fg{% endif %}">
+        Danger
+      </a>
+    </li>
+  </ul>
+</nav>
+
+{% if active_subtab == "overview" %}
 {# Organization info card #}
 <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <dl class="grid gap-4 sm:grid-cols-2">
@@ -41,8 +114,11 @@
   </dl>
 </div>
 
+{% endif %}
+
+{% if active_subtab == "members" %}
 {# Members section #}
-<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <div class="mb-4 flex items-center justify-between">
     <h2 class="text-lg font-semibold text-ht-content-primary">Members</h2>
   </div>
@@ -56,11 +132,14 @@
            id="member-search"
            name="q"
            placeholder="Search users by name or email…"
-           hx-get="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/picker"
+           hx-get="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/members/picker"
            hx-trigger="input changed delay:200ms, search"
            hx-target="#member-picker-results"
            hx-swap="innerHTML"
+           hx-indicator="#member-picker-spinner"
            class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+    <p class="mt-1 text-xs text-ht-content-muted">Type at least 2 characters to search this realm's users.</p>
+    <div id="member-picker-spinner" class="htmx-indicator mt-2 text-xs text-ht-content-muted">Searching…</div>
     <div id="member-picker-results" class="mt-3"></div>
   </div>
 
@@ -69,23 +148,36 @@
     <thead>
       <tr class="border-b border-divider-subtle">
         <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">User</th>
-        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Roles</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Permissions</th>
         <th class="px-3 py-2"></th>
       </tr>
     </thead>
+    {% for m in members %}
+    {% include "ui/admin/organizations/_member_row.html" %}
+    {% endfor %}
+    {% if members.is_empty() %}
     <tbody>
-      {% for m in members %}
-      {% include "ui/admin/organizations/_member_row.html" %}
-      {% endfor %}
-      {% if members.is_empty() %}
-      <tr><td colspan="3" class="px-3 py-6 text-center text-sm text-ht-content-muted">No members yet.</td></tr>
-      {% endif %}
+      <tr>
+        <td colspan="4" class="px-3 py-8 text-center">
+          <p class="text-sm text-ht-content-secondary">No members yet.</p>
+          <p class="mt-1 text-xs text-ht-content-muted">
+            Use the search above to add an existing user, or
+            <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=invitations"
+               class="text-ht-content-brand hover:underline">invite by email</a>.
+          </p>
+        </td>
+      </tr>
     </tbody>
+    {% endif %}
   </table>
 </div>
 
+{% endif %}
+
+{% if active_subtab == "invitations" %}
 {# Invitations list — status view for pending invites. #}
-<div class="mt-6 rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   <div class="mb-4 flex items-center justify-between">
     <h2 class="text-lg font-semibold text-ht-content-primary">Invitations</h2>
   </div>
@@ -125,10 +217,28 @@
         </td>
         <td class="px-3 py-2 text-right">
           {% if inv.status()|fmt("{:?}") == "Pending" %}
-          <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/invitations/{{ inv.id().as_uuid() }}/revoke">
-            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-            <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
-          </form>
+          <div class="flex items-center justify-end gap-2">
+            <form method="post"
+                  action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/invitations/{{ inv.id().as_uuid() }}/resend"
+                  class="inline">
+              {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+              <button type="submit"
+                      class="rounded px-2 py-1 text-xs text-ht-content-muted transition-colors hover-bg-divider hover:text-ht-content-secondary">
+                Resend
+              </button>
+            </form>
+            <form method="post"
+                  action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/invitations/{{ inv.id().as_uuid() }}/revoke"
+                  x-data="{ confirm: false }"
+                  class="inline">
+              {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+              <button :type="confirm ? 'submit' : 'button'"
+                      @click="!confirm && (confirm = true)"
+                      :class="confirm ? 'btn-danger text-graphite-950' : 'text-ht-content-muted hover:text-danger-fg'"
+                      class="rounded px-2 py-1 text-xs font-medium transition-colors"
+                      x-text="confirm ? 'Confirm' : 'Revoke'"></button>
+            </form>
+          </div>
           {% endif %}
         </td>
       </tr>
@@ -145,7 +255,10 @@
   <div class="mt-6 border-t border-divider-subtle pt-5">
     <h3 class="text-sm font-semibold text-ht-content-primary">Invite by email</h3>
     <p class="mt-1 text-xs text-ht-content-muted">Sends a link that creates an account on first sign-in if the email isn't registered yet.</p>
-    <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/invite" class="mt-3 flex flex-wrap items-end gap-3">
+    <form method="post"
+          action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/invite"
+          class="mt-3 flex flex-wrap items-end gap-3"
+          x-data="{ role: 'Member' }">
       {% match csrf %}
         {% when Some with (token) %}
           <input type="hidden" name="_csrf" value="{{ token }}">
@@ -160,6 +273,7 @@
       <div>
         <label for="invite_role" class="block text-xs font-medium text-ht-content-secondary">Role</label>
         <select name="role" id="invite_role"
+                x-model="role"
                 class="mt-1 rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
           <option value="Member">Member</option>
           <option value="Admin">Admin</option>
@@ -167,41 +281,73 @@
         </select>
       </div>
       <button type="submit" class="btn-ember rounded px-3 py-1.5 text-sm font-semibold">Send invite</button>
+      <p x-show="role === 'Owner'" x-cloak class="basis-full text-xs text-warning-fg">
+        Owners can delete this organization and remove other owners. Pick this only for trusted leaders.
+      </p>
     </form>
   </div>
 </div>
 
-{# Danger zone #}
-<div class="mt-6 rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false }">
+{% endif %}
+
+{% if active_subtab == "danger" %}
+{# Danger zone — delete is gated by typing the org slug exactly. #}
+<div class="rounded-md border border-danger/30 bg-ht-surface-elevated p-6" x-data="{ showDialog: false, confirmText: '' }">
   <h2 class="text-base font-semibold text-danger-fg">Danger zone</h2>
-  <p class="mt-1 text-sm text-ht-content-secondary">Deleting this organization removes ALL its members and invitations permanently.</p>
-  <button @click="showDialog = true" type="button"
+  <p class="mt-1 text-sm text-ht-content-secondary">
+    Deleting this organization permanently removes
+    <strong class="text-ht-content-primary">{{ member_count }} member{% if member_count != 1 %}s{% endif %}</strong>,
+    <strong class="text-ht-content-primary">{{ invitations.len() }} invitation{% if invitations.len() != 1 %}s{% endif %}</strong>,
+    and all RBAC role assignments scoped to this org. The slug
+    <code class="rounded-sm bg-ht-surface-base px-1 font-mono text-ht-content-primary">{{ org.slug() }}</code>
+    becomes available for re-registration immediately.
+  </p>
+  <button @click="showDialog = true; confirmText = ''; $nextTick(() => $refs.slugInput.focus())" type="button"
           class="mt-4 btn-danger rounded px-4 py-2 text-sm font-semibold">
     Delete organization
   </button>
 
   <div x-show="showDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDialog = false">
-    <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
+    <div class="w-full max-w-md rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDialog = false">
       <h3 class="text-lg font-semibold text-ht-content-primary">Delete organization?</h3>
-      <p class="mt-2 text-sm text-ht-content-muted">This will permanently delete <strong>{{ org.name() }}</strong> and ALL its members and invitations. This action cannot be undone.</p>
-      <div class="mt-6 flex justify-end gap-3">
-        <button @click="showDialog = false" type="button"
-                class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-          Cancel
-        </button>
-        <form method="post" action="/ui/admin/organizations/{{ org.id().as_uuid() }}/delete">
-          {% match csrf %}
-            {% when Some with (token) %}
-              <input type="hidden" name="_csrf" value="{{ token }}">
-            {% when None %}
-          {% endmatch %}
+      <p class="mt-2 text-sm text-ht-content-secondary">
+        This will permanently delete <strong class="text-ht-content-primary">{{ org.name() }}</strong>,
+        its <strong class="text-ht-content-primary">{{ member_count }} member{% if member_count != 1 %}s{% endif %}</strong>,
+        and <strong class="text-ht-content-primary">{{ invitations.len() }} invitation{% if invitations.len() != 1 %}s{% endif %}</strong>.
+        This action cannot be undone.
+      </p>
+      <label class="mt-4 block text-xs font-medium text-ht-content-secondary">
+        Type <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-ht-content-primary">{{ org.slug() }}</code> to confirm:
+      </label>
+      <form method="post"
+            action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/delete"
+            @keydown.enter.prevent="if (confirmText === '{{ org.slug() }}') $el.submit()">
+        {% match csrf %}
+          {% when Some with (token) %}
+            <input type="hidden" name="_csrf" value="{{ token }}">
+          {% when None %}
+        {% endmatch %}
+        <input type="text"
+               x-ref="slugInput"
+               x-model="confirmText"
+               autocomplete="off"
+               aria-label="Confirm by typing the slug"
+               class="mt-2 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-danger focus:outline-none focus:shadow-focus">
+        <div class="mt-6 flex justify-end gap-3">
+          <button @click="showDialog = false" type="button"
+                  class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+            Cancel
+          </button>
           <button type="submit"
-                  class="btn-danger rounded px-4 py-2 text-sm font-semibold">
+                  :disabled="confirmText !== '{{ org.slug() }}'"
+                  :class="confirmText === '{{ org.slug() }}' ? 'btn-danger opacity-100' : 'btn-danger opacity-40 cursor-not-allowed'"
+                  class="rounded px-4 py-2 text-sm font-semibold transition-opacity">
             Delete
           </button>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   </div>
 </div>
+{% endif %}
 {% endblock %}

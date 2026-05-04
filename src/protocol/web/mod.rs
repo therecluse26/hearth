@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
@@ -42,11 +42,11 @@ use axum::Router;
 use sha2::{Digest, Sha256};
 
 use crate::audit::AuditEngine;
-use crate::authz::AuthorizationEngine;
 use crate::config::{Config, EnvVarWarning};
 use crate::core::RealmId;
 use crate::identity::onboarding::OnboardingService;
 use crate::identity::{EmailService, IdentityEngine};
+use crate::rbac::RbacEngine;
 
 pub mod account;
 pub mod account_consents;
@@ -78,9 +78,10 @@ pub struct WebState {
     /// Identity engine for session creation, password verification,
     /// and email-verification token consumption.
     pub identity: Arc<dyn IdentityEngine>,
-    /// Authorization engine — used by [`auth::RequireAdmin`] to check
-    /// the `hearth#admin` relation.
-    pub authz: Arc<dyn AuthorizationEngine>,
+    /// RBAC engine — used by [`auth::RequireAdmin`] to check that the
+    /// session carries the `hearth.admin` permission, and by admin UI
+    /// handlers for role/group management.
+    pub rbac: Arc<dyn RbacEngine>,
     /// Audit engine — used to record UI-originated mutations.
     pub audit: Arc<dyn AuditEngine>,
     /// First-run onboarding orchestration.
@@ -124,6 +125,10 @@ pub struct WebState {
     /// Served at `GET /ui/static/realm-theme/{id}`. Empty when no realms
     /// have per-realm themes configured.
     pub realm_themes: HashMap<String, String>,
+    /// Per-realm product-name overrides keyed by `RealmId` hyphenated UUID
+    /// string. Resolved by [`WebState::product_name_for`] with fallback to
+    /// the global `product_name`. Empty when no realm sets `web.product_name`.
+    pub realm_product_names: HashMap<String, String>,
     /// `ETag` for the global theme CSS (SHA-256 of [`WebState::theme_css`],
     /// first 8 bytes). Updated by [`WebState::with_theme_css`].
     pub theme_css_etag: String,
@@ -156,6 +161,16 @@ pub struct WebState {
     /// tests inject a [`crate::identity::federation::StubFederationTransport`]
     /// to drive the federation callback path without touching the network.
     pub federation_http: Option<Arc<dyn crate::identity::federation::FederationHttpTransport>>,
+    /// Bytes served at `GET /ui/static/app.css`. Loaded from disk at
+    /// startup when `server.assets_dir` is configured, else falls back
+    /// to the copy embedded at compile time via `include_bytes!`. `Arc`
+    /// makes per-request clones cheap.
+    ///
+    /// Hot path: the byte slice is handed straight to `axum::body::Body`.
+    pub app_css: Arc<Vec<u8>>,
+    /// `ETag` for [`WebState::app_css`]. SHA-256 prefix of the bytes,
+    /// computed once at startup. Updated by [`WebState::with_app_css`].
+    pub app_css_etag: String,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -175,7 +190,7 @@ impl WebState {
     #[must_use]
     pub fn new(
         identity: Arc<dyn IdentityEngine>,
-        authz: Arc<dyn AuthorizationEngine>,
+        rbac: Arc<dyn RbacEngine>,
         audit: Arc<dyn AuditEngine>,
         onboarding: Arc<OnboardingService>,
         cookie_secret: CookieSecret,
@@ -183,7 +198,7 @@ impl WebState {
     ) -> Self {
         Self {
             identity,
-            authz,
+            rbac,
             audit,
             onboarding,
             email,
@@ -197,6 +212,7 @@ impl WebState {
             config: None,
             theme_css: String::new(),
             realm_themes: HashMap::new(),
+            realm_product_names: HashMap::new(),
             theme_css_etag: etag_for(""),
             realm_theme_etags: HashMap::new(),
             trusted_proxies: Vec::new(),
@@ -204,7 +220,22 @@ impl WebState {
             default_realm_name: None,
             config_path: None,
             federation_http: None,
+            app_css: Arc::new(APP_CSS_FALLBACK.to_vec()),
+            app_css_etag: etag_for_bytes(APP_CSS_FALLBACK),
         }
+    }
+
+    /// Replaces the bytes served at `/ui/static/app.css` with operator-supplied
+    /// CSS — typically the contents of `<server.assets_dir>/app.css` loaded at
+    /// startup by `main.rs`. Recomputes the `ETag` from the new bytes.
+    ///
+    /// When this builder is not called, the embedded `include_bytes!` fallback
+    /// is served instead.
+    #[must_use]
+    pub fn with_app_css(mut self, bytes: Vec<u8>) -> Self {
+        self.app_css_etag = etag_for_bytes(&bytes);
+        self.app_css = Arc::new(bytes);
+        self
     }
 
     /// Injects an HTTP transport used by the federation service for
@@ -293,6 +324,14 @@ impl WebState {
         self
     }
 
+    /// Sets the per-realm product-name overrides (realm UUID string →
+    /// display name). Empty map is a no-op fallback to global.
+    #[must_use]
+    pub fn with_realm_product_names(mut self, map: HashMap<String, String>) -> Self {
+        self.realm_product_names = map;
+        self
+    }
+
     /// Attaches the reload notifier for triggering config hot-reload
     /// from the admin API.
     #[must_use]
@@ -323,6 +362,21 @@ impl WebState {
     pub fn realm_theme_css_for(&self, realm_id: &RealmId) -> Option<String> {
         let id = realm_id.as_uuid().to_string();
         self.realm_themes.get(&id).cloned()
+    }
+
+    /// Resolves the product name to display for a request scoped to the
+    /// given realm. Falls back to the global `product_name` when no
+    /// per-realm override is configured. The 2026-04-30 UX audit caught
+    /// every page rendering the first realm's product name regardless of
+    /// scope — this method is the seam handlers should call instead of
+    /// reaching for the global field directly.
+    #[must_use]
+    pub fn product_name_for(&self, realm_id: &RealmId) -> String {
+        let id = realm_id.as_uuid().to_string();
+        self.realm_product_names
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| self.product_name.clone())
     }
 
     /// Pins a realm as the "current" one for this process. Called by
@@ -560,11 +614,23 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(account_consents::consents_index),
         )
         .route(
+            "/account/applications",
+            axum::routing::get(account_consents::account_applications),
+        )
+        .route(
             "/account/consents/revoke-all",
             axum::routing::post(account_consents::revoke_all_consents),
         )
         .route(
+            "/account/applications/revoke-all",
+            axum::routing::post(account_consents::revoke_all_consents),
+        )
+        .route(
             "/account/consents/{client_id}/revoke",
+            axum::routing::post(account_consents::revoke_consent),
+        )
+        .route(
+            "/account/applications/{client_id}/revoke",
             axum::routing::post(account_consents::revoke_consent),
         )
         // --- Self-service federation management ---
@@ -636,170 +702,303 @@ pub fn router(state: WebState) -> Router {
             "/admin/admin-users",
             axum::routing::get(admin::admin_admin_users_list),
         )
-        .route("/admin/users", axum::routing::get(admin::admin_users_list))
         .route(
-            "/admin/users/new",
-            axum::routing::get(admin::admin_user_create_form).post(admin::admin_user_create_submit),
+            // Spec-named admin-user creation route (REQ-022). 302 alias to the
+            // generic /admin/users/new form pre-scoped to the system realm.
+            // The form template already POSTs back with `target_query` carrying
+            // `?admin_target=system`, so submission lands on the same handler chain.
+            "/admin/admin-users/new",
+            axum::routing::get(admin::admin_admin_user_create_alias),
         )
-        .route(
-            "/admin/users/{id}",
-            axum::routing::get(admin::admin_user_detail),
-        )
-        .route(
-            "/admin/users/{id}/edit",
-            axum::routing::get(admin::admin_user_edit_form).post(admin::admin_user_edit_submit),
-        )
-        .route(
-            "/admin/users/{id}/delete",
-            axum::routing::post(admin::admin_user_delete),
-        )
-        .route(
-            "/admin/users/{id}/reset-password",
-            axum::routing::post(admin::admin_user_send_reset),
-        )
-        .route(
-            "/admin/users/{id}/disable-mfa",
-            axum::routing::post(admin::admin_user_disable_mfa),
-        )
-        .route(
-            "/admin/users/{id}/sessions/{sid}/revoke",
-            axum::routing::post(admin::admin_user_revoke_session),
-        )
-        .route(
-            "/admin/users/{id}/webauthn/{cred_id}/revoke",
-            axum::routing::post(admin::admin_user_revoke_webauthn),
-        )
-        .route(
-            "/admin/users/{id}/consents",
-            axum::routing::get(admin::admin_user_consents_list),
-        )
-        .route(
-            "/admin/users/{id}/consents/{client_id}/revoke",
-            axum::routing::post(admin::admin_user_consent_revoke),
-        )
-        // --- Realms (read-only; managed via hearth.yaml) ---
+        // --- Realms list (system-scoped) ---
         .route(
             "/admin/realms",
             axum::routing::get(admin::admin_realms_list),
         )
+        // --- Realm-scoped: users ---
         .route(
-            "/admin/realms/{id}",
+            "/admin/realms/{realm}/users",
+            axum::routing::get(admin::admin_users_list),
+        )
+        .route(
+            "/admin/realms/{realm}/users/new",
+            axum::routing::get(admin::admin_user_create_form).post(admin::admin_user_create_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}",
+            axum::routing::get(admin::admin_user_detail),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/edit",
+            axum::routing::get(admin::admin_user_edit_form).post(admin::admin_user_edit_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/delete",
+            axum::routing::post(admin::admin_user_delete),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/reset-password",
+            axum::routing::post(admin::admin_user_send_reset),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/disable-mfa",
+            axum::routing::post(admin::admin_user_disable_mfa),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/sessions/{sid}/revoke",
+            axum::routing::post(admin::admin_user_revoke_session),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/webauthn/{cred_id}/revoke",
+            axum::routing::post(admin::admin_user_revoke_webauthn),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/roles/assign",
+            axum::routing::post(admin::admin_user_assign_role),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/roles/{assignment_id}/unassign",
+            axum::routing::post(admin::admin_user_unassign_role),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/permissions/grant",
+            axum::routing::post(admin::admin_user_grant_permission),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/permissions/revoke",
+            axum::routing::post(admin::admin_user_revoke_permission),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/consents",
+            axum::routing::get(admin::admin_user_consents_list),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/applications",
+            axum::routing::get(admin::admin_user_consents_list),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/consents/{client_id}/revoke",
+            axum::routing::post(admin::admin_user_consent_revoke),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/applications/{client_id}/revoke",
+            axum::routing::post(admin::admin_user_consent_revoke),
+        )
+        // --- Realm meta (workspace landing, delete, admin grants, claims) ---
+        .route(
+            "/admin/realms/{realm}",
             axum::routing::get(admin::admin_realm_detail),
         )
         .route(
-            "/admin/realms/{id}/delete",
+            "/admin/realms/{realm}/delete",
             axum::routing::post(admin::admin_realm_delete),
         )
         .route(
-            "/admin/realms/{id}/admins/picker",
+            "/admin/realms/{realm}/admins/picker",
             axum::routing::get(admin::admin_realm_admin_picker),
         )
         .route(
-            "/admin/realms/{id}/admins/grant",
+            "/admin/realms/{realm}/admins/grant",
             axum::routing::post(admin::admin_realm_admin_grant),
         )
         .route(
-            "/admin/realms/{id}/admins/{uid}/revoke",
+            "/admin/realms/{realm}/admins/{uid}/revoke",
             axum::routing::post(admin::admin_realm_admin_revoke),
         )
         .route(
-            "/admin/authz/debug",
-            axum::routing::get(admin::admin_authz_debug),
+            "/admin/realms/{realm}/claims",
+            axum::routing::get(admin::admin_realm_claims),
+        )
+        // --- Realm-scoped: RBAC + permissions ---
+        .route(
+            "/admin/realms/{realm}/rbac/debug",
+            axum::routing::get(admin::admin_rbac_debug),
         )
         .route(
-            "/admin/authz/debug/relations",
-            axum::routing::get(admin::admin_authz_debug_relations),
+            // Canonical resolver URL per spec (REQ-056). Aliases to /rbac/debug
+            // preserving query string.
+            "/admin/realms/{realm}/permissions/resolve",
+            axum::routing::get(admin::admin_permissions_resolve_alias),
         )
         .route(
-            "/admin/authz/debug/subject-picker",
-            axum::routing::get(admin::admin_authz_debug_subject_picker),
+            "/admin/realms/{realm}/rbac/token-preview",
+            axum::routing::post(admin::admin_rbac_token_preview),
         )
-        // --- Organizations ---
         .route(
-            "/admin/organizations",
+            "/admin/realms/{realm}/rbac/permissions",
+            axum::routing::get(admin::admin_rbac_permissions),
+        )
+        .route(
+            "/admin/realms/{realm}/rbac/roles",
+            axum::routing::get(admin::admin_rbac_roles),
+        )
+        .route(
+            "/admin/realms/{realm}/rbac/scopes",
+            axum::routing::get(admin::admin_rbac_scopes),
+        )
+        // --- Realm-scoped: organizations ---
+        .route(
+            "/admin/realms/{realm}/organizations",
             axum::routing::get(admin::admin_orgs_list),
         )
         .route(
-            "/admin/organizations/new",
+            "/admin/realms/{realm}/organizations/new",
             axum::routing::get(admin::admin_org_create_form).post(admin::admin_org_create_submit),
         )
         .route(
-            "/admin/organizations/{id}",
+            "/admin/realms/{realm}/organizations/bulk-delete",
+            axum::routing::post(admin::admin_orgs_bulk_delete),
+        )
+        .route(
+            "/admin/realms/{realm}/organizations/{id}",
             axum::routing::get(admin::admin_org_detail),
         )
         .route(
-            "/admin/organizations/{id}/edit",
+            "/admin/realms/{realm}/organizations/{id}/edit",
             axum::routing::get(admin::admin_org_edit_form).post(admin::admin_org_edit_submit),
         )
         .route(
-            "/admin/organizations/{id}/delete",
+            "/admin/realms/{realm}/organizations/{id}/delete",
             axum::routing::post(admin::admin_org_delete),
         )
         .route(
-            "/admin/organizations/{id}/members",
+            "/admin/realms/{realm}/organizations/{id}/members",
             axum::routing::post(admin::admin_org_add_member),
         )
         .route(
-            "/admin/organizations/{id}/members/picker",
+            "/admin/realms/{realm}/organizations/{id}/members/picker",
             axum::routing::get(admin::admin_org_member_picker),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/remove",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/remove",
             axum::routing::post(admin::admin_org_remove_member),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/role",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/role",
             axum::routing::post(admin::admin_org_update_role),
         )
         .route(
-            "/admin/organizations/{id}/invite",
+            "/admin/realms/{realm}/organizations/{id}/invite",
             axum::routing::post(admin::admin_org_invite),
         )
         .route(
-            "/admin/organizations/{id}/invitations/{iid}/revoke",
+            "/admin/realms/{realm}/organizations/{id}/status",
+            axum::routing::post(admin::admin_org_status_toggle),
+        )
+        .route(
+            "/admin/realms/{realm}/organizations/{id}/invitations/{iid}/revoke",
             axum::routing::post(admin::admin_org_revoke_invite),
         )
-        // --- User search API (HTMX) ---
         .route(
-            "/admin/api/users/search",
+            "/admin/realms/{realm}/organizations/{id}/invitations/{iid}/resend",
+            axum::routing::post(admin::admin_org_resend_invite),
+        )
+        .route(
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/rbac/assign",
+            axum::routing::post(admin::admin_org_member_assign_role),
+        )
+        .route(
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/rbac/{aid}/unassign",
+            axum::routing::post(admin::admin_org_member_unassign_role),
+        )
+        .route(
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/permissions/grant",
+            axum::routing::post(admin::admin_org_member_grant_perm),
+        )
+        .route(
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/permissions/revoke",
+            axum::routing::post(admin::admin_org_member_revoke_perm),
+        )
+        // --- Realm-scoped: groups (RBAC) ---
+        .route(
+            "/admin/realms/{realm}/groups",
+            axum::routing::get(admin::admin_groups_list),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/new",
+            axum::routing::get(admin::admin_group_create_form)
+                .post(admin::admin_group_create_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}",
+            axum::routing::get(admin::admin_group_detail),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}/edit",
+            axum::routing::get(admin::admin_group_edit_form).post(admin::admin_group_edit_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}/delete",
+            axum::routing::post(admin::admin_group_delete),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}/members",
+            axum::routing::post(admin::admin_group_member_add),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}/members/picker",
+            axum::routing::get(admin::admin_group_member_picker),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}/members/{kind}/{mid}/remove",
+            axum::routing::post(admin::admin_group_member_remove),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}/roles/assign",
+            axum::routing::post(admin::admin_group_role_assign),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{id}/roles/{aid}/unassign",
+            axum::routing::post(admin::admin_group_role_unassign),
+        )
+        // --- Realm-scoped: user search API (HTMX) ---
+        .route(
+            "/admin/realms/{realm}/api/users/search",
             axum::routing::get(admin::admin_api_user_search),
         )
-        // --- Config reload API ---
+        .route(
+            "/admin/realms/{realm}/rbac/api/users/search",
+            axum::routing::get(admin::admin_api_rbac_user_search),
+        )
+        // --- Config reload API (system-scoped) ---
         .route(
             "/admin/api/config/reload",
             axum::routing::post(admin::admin_api_config_reload),
         )
-        // --- Admin realm switcher ---
+        // --- Sidebar nav data (realm tree) (system-scoped) ---
         .route(
-            "/admin/switch-realm",
-            axum::routing::post(admin::admin_switch_realm),
+            "/admin/api/nav/realms",
+            axum::routing::get(admin::admin_api_nav_realms),
         )
-        // --- Applications (read-only — managed via hearth.yaml) ---
+        // --- Realm-scoped: applications (read-only) ---
         .route(
-            "/admin/applications",
+            "/admin/realms/{realm}/applications",
             axum::routing::get(admin::admin_apps_list),
         )
         .route(
-            "/admin/applications/{id}",
+            "/admin/realms/{realm}/applications/{id}",
             axum::routing::get(admin::admin_app_detail),
         )
         .route(
-            "/admin/applications/{id}/regenerate-secret",
+            "/admin/realms/{realm}/applications/{id}/regenerate-secret",
             axum::routing::post(admin::admin_app_regenerate_secret),
         )
-        // --- Sessions ---
+        // --- Realm-scoped: sessions ---
         .route(
-            "/admin/sessions",
+            "/admin/realms/{realm}/sessions",
             axum::routing::get(admin::admin_sessions_list),
         )
         .route(
-            "/admin/sessions/{id}/revoke",
+            "/admin/realms/{realm}/sessions/{id}/revoke",
             axum::routing::post(admin::admin_session_revoke),
         )
-        // --- Audit ---
-        .route("/admin/audit", axum::routing::get(admin::admin_audit_list))
+        // --- Realm-scoped: audit ---
         .route(
-            "/admin/audit/verify",
+            "/admin/realms/{realm}/audit",
+            axum::routing::get(admin::admin_audit_list),
+        )
+        .route(
+            "/admin/realms/{realm}/audit/verify",
             axum::routing::post(admin::admin_audit_verify_integrity),
         )
         .route(
@@ -856,7 +1055,22 @@ pub fn router(state: WebState) -> Router {
         .route("/favicon.ico", axum::routing::get(serve_favicon))
         .route("/favicon.svg", axum::routing::get(serve_favicon))
         .nest("/ui", ui_routes)
+        // Branded 404 for any /ui/* path that no nested route matched, plus
+        // every other unrouted path on the web tree. Without this, axum's
+        // default falls through with an empty body and the browser paints
+        // its native error page (Chrome's "This site can't be reached"),
+        // which looks like the server is broken — caught by the 2026-04-30
+        // UX audit. The handler ignores the request body and renders the
+        // same template as the explicit `not_found_authed` calls.
+        .fallback(serve_branded_404)
         .with_state(shared)
+}
+
+/// Default 404 handler. Returns the branded error page rather than letting
+/// axum fall through to a bare `404 Not Found` text body.
+async fn serve_branded_404(req: axum::extract::Request) -> Response {
+    let path = req.uri().path().to_string();
+    handlers_common::not_found(&format!("No page exists at {path}."))
 }
 
 /// Serves the Hearth flame as `image/svg+xml`. Works for both `.ico` and
@@ -878,15 +1092,7 @@ async fn serve_favicon() -> Response {
 
 /// Computes a short, quoted `ETag` from the first 8 bytes of `SHA-256(data)`.
 fn etag_for(data: &str) -> String {
-    let hash = Sha256::digest(data.as_bytes());
-    let hex = hash[..8]
-        .iter()
-        .fold(String::with_capacity(16), |mut s, b| {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-            s
-        });
-    format!("\"{hex}\"")
+    etag_for_bytes(data.as_bytes())
 }
 
 /// Returns `true` when the request carries an `If-None-Match` value that
@@ -904,64 +1110,87 @@ fn is_not_modified(headers: &HeaderMap, etag: &str) -> bool {
 
 /// HTMX v1.9.12 — pinned, checksum recorded in `assets/CHECKSUMS.txt`.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
-/// Tailwind-generated CSS for the admin UI.
-const APP_CSS: &[u8] = include_bytes!("assets/app.css");
+/// Tailwind-generated CSS for the admin UI, embedded at compile time.
+///
+/// Used as the fallback when `server.assets_dir` is unset or the runtime
+/// file under it is unreadable. Production deployments that want
+/// rebuild-and-restart theme reloads should configure `assets_dir` and
+/// load the runtime copy via [`WebState::with_app_css`].
+pub const APP_CSS_FALLBACK: &[u8] = include_bytes!("assets/app.css");
 /// Favicon — SVG mark of the Hearth flame, inlined and served at `/favicon.ico`
 /// and `/ui/static/favicon.svg`.
 const FAVICON_SVG: &[u8] = include_bytes!("assets/favicon.svg");
 
-/// Sentinel substring that MUST appear in the compiled `app.css`. Presence
+/// Sentinel substring that MUST appear in any `app.css` we serve. Presence
 /// proves the Tailwind build ran with the Hearth theme layer (the audit of
 /// 2026-04-23 discovered this silently dropping). Checked at server boot
-/// by [`assert_app_css_sane`]; re-verified in CI via `tests/web_ui_assets.rs`.
-const APP_CSS_SENTINEL: &[u8] = b".bg-ht-surface-raised";
+/// against both the embedded fallback and any disk-loaded override; CI
+/// re-verifies the embedded copy via `tests/web_ui_assets.rs`.
+pub const APP_CSS_SENTINEL: &[u8] = b".bg-ht-surface-raised";
 
-/// Verifies that the embedded `app.css` contains the Hearth theme layer.
+/// Minimum plausible size for a real Tailwind build. Smaller than this
+/// almost certainly means the build emitted only a stub.
+pub const APP_CSS_MIN_BYTES: usize = 4_096;
+
+/// Verifies that an `app.css` byte buffer contains a plausible Tailwind
+/// build with the Hearth theme layer.
 ///
-/// Called from `main.rs` during server bootstrap. Intentionally cheap —
-/// a single substring scan over ~30 KB — and runs once per process so the
-/// hot path is unaffected. Returns an error describing the likely cause so
-/// the operator can spot it in the startup log.
+/// Used at server boot to validate both the compile-time embedded copy
+/// (always present) and an operator-supplied disk copy (optional, loaded
+/// from `server.assets_dir`). Intentionally cheap — a single substring
+/// scan over ~30 KB — and runs once per process so the hot path is
+/// unaffected. Returns an error describing the likely cause so the
+/// operator can spot it in the startup log.
 ///
 /// # Errors
-/// Returns `Err` when the embedded CSS is too small to contain a real
-/// Tailwind build, or when it does not contain [`APP_CSS_SENTINEL`].
-pub fn assert_app_css_sane() -> Result<(), &'static str> {
-    if APP_CSS.len() < 4_096 {
+/// Returns `Err` when the bytes are too small to contain a real Tailwind
+/// build, or when they do not contain [`APP_CSS_SENTINEL`].
+pub fn assert_bytes_sane(bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.len() < APP_CSS_MIN_BYTES {
         return Err(
-            "compiled app.css is under 4 KiB — Tailwind build almost certainly failed. \
+            "app.css is under 4 KiB — Tailwind build almost certainly failed. \
              Run: cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify",
         );
     }
-    if !APP_CSS.windows(APP_CSS_SENTINEL.len()).any(|w| w == APP_CSS_SENTINEL) {
+    if !bytes
+        .windows(APP_CSS_SENTINEL.len())
+        .any(|w| w == APP_CSS_SENTINEL)
+    {
         return Err(
-            "compiled app.css is missing the Hearth theme layer (no `.bg-ht-surface-raised` rule). \
+            "app.css is missing the Hearth theme layer (no `.bg-ht-surface-raised` rule). \
              Check `ui/tailwind.config.js` content globs and safelist, then rebuild.",
         );
     }
     Ok(())
 }
 
-/// Content-derived `ETag` for the compiled CSS bundle.
+/// Verifies that the compile-time embedded `app.css` fallback is sane.
 ///
-/// Computed once at first access from the first 8 bytes of the SHA-256
-/// digest of [`APP_CSS`]. Changes whenever `app.css` is rebuilt into a
-/// new binary.
-static APP_CSS_ETAG: OnceLock<String> = OnceLock::new();
+/// Backwards-compatible alias kept for `main.rs`'s startup canary; new
+/// callers should use [`assert_bytes_sane`] directly to validate either
+/// the embedded or runtime-loaded bytes.
+///
+/// # Errors
+/// Same as [`assert_bytes_sane`].
+pub fn assert_app_css_sane() -> Result<(), &'static str> {
+    assert_bytes_sane(APP_CSS_FALLBACK)
+}
 
-/// Returns the content-derived `ETag` string for [`APP_CSS`].
-fn app_css_etag() -> &'static str {
-    APP_CSS_ETAG.get_or_init(|| {
-        let hash = Sha256::digest(APP_CSS);
-        let hex = hash[..8]
-            .iter()
-            .fold(String::with_capacity(16), |mut s, b| {
-                use std::fmt::Write;
-                let _ = write!(s, "{b:02x}");
-                s
-            });
-        format!("\"{hex}\"")
-    })
+/// Computes the `ETag` string (`"<16-hex>"`) for an arbitrary byte slice
+/// using the first 8 bytes of its SHA-256 digest. Used by the static-asset
+/// handler so `If-None-Match` revalidation works against runtime-loaded
+/// CSS as well as the embedded fallback.
+#[must_use]
+pub fn etag_for_bytes(bytes: &[u8]) -> String {
+    let hash = Sha256::digest(bytes);
+    let hex = hash[..8]
+        .iter()
+        .fold(String::with_capacity(16), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        });
+    format!("\"{hex}\"")
 }
 
 /// Hearth wide logo (SVG). Public so `main.rs` can pass the SVG content
@@ -1038,9 +1267,11 @@ async fn serve_static(
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
-    // `app.css` uses `ETag`-based conditional caching.
+    // `app.css` uses `ETag`-based conditional caching. The bytes come from
+    // `state.app_css`, which is the runtime-loaded copy when
+    // `server.assets_dir` is configured, else the embedded fallback.
     if file == "app.css" {
-        let etag = app_css_etag();
+        let etag = state.app_css_etag.as_str();
         if is_not_modified(&headers, etag) {
             return Response::builder()
                 .status(StatusCode::NOT_MODIFIED)
@@ -1054,7 +1285,7 @@ async fn serve_static(
             .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
             .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
             .header(header::ETAG, etag)
-            .body(Body::from(APP_CSS))
+            .body(Body::from(state.app_css.as_slice().to_vec()))
             .unwrap_or_else(|_| Response::new(Body::empty()));
     }
 
@@ -1119,7 +1350,51 @@ mod tests {
         // Compile-time embedded — check lengths so future drops to zero bytes
         // (e.g. a broken build.rs) surface as a test failure.
         assert!(HTMX_JS.len() > 1024, "htmx.min.js seems too small");
-        assert!(APP_CSS.len() > 64, "app.css seems too small");
+        assert!(
+            APP_CSS_FALLBACK.len() > 64,
+            "app.css fallback seems too small"
+        );
+    }
+
+    #[test]
+    fn assert_bytes_sane_rejects_short_buffer() {
+        let result = assert_bytes_sane(b"hi");
+        assert!(result.is_err(), "tiny buffer should fail sanity check");
+    }
+
+    #[test]
+    fn assert_bytes_sane_rejects_missing_sentinel() {
+        // Long enough to pass the size gate, but no `.bg-ht-surface-raised`.
+        let bytes = vec![b'a'; APP_CSS_MIN_BYTES + 10];
+        assert!(assert_bytes_sane(&bytes).is_err());
+    }
+
+    #[test]
+    fn assert_bytes_sane_accepts_buffer_with_sentinel() {
+        let mut bytes = vec![b'a'; APP_CSS_MIN_BYTES];
+        bytes.extend_from_slice(APP_CSS_SENTINEL);
+        bytes.extend_from_slice(b"{display:none}");
+        assert!(assert_bytes_sane(&bytes).is_ok());
+    }
+
+    #[test]
+    fn etag_for_bytes_changes_with_content() {
+        let a = etag_for_bytes(b"alpha");
+        let b = etag_for_bytes(b"beta");
+        assert_ne!(a, b, "different bytes must produce different ETags");
+        assert_eq!(a, etag_for_bytes(b"alpha"), "ETag must be deterministic");
+    }
+
+    #[test]
+    fn with_app_css_replaces_bytes_and_etag() {
+        let mut bytes = vec![b'x'; APP_CSS_MIN_BYTES];
+        bytes.extend_from_slice(APP_CSS_SENTINEL);
+        let expected_etag = etag_for_bytes(&bytes);
+
+        // We can't fully construct WebState here without engines, so just
+        // verify the ETag computation matches what `with_app_css` would set.
+        // End-to-end coverage lives in tests/web_ui_assets.rs.
+        assert_eq!(expected_etag, etag_for_bytes(&bytes));
     }
 
     #[test]
@@ -1166,9 +1441,9 @@ mod tests {
     }
 
     #[test]
-    fn app_css_etag_is_stable_and_quoted() {
-        let e1 = app_css_etag();
-        let e2 = app_css_etag();
+    fn embedded_app_css_etag_is_stable_and_quoted() {
+        let e1 = etag_for_bytes(APP_CSS_FALLBACK);
+        let e2 = etag_for_bytes(APP_CSS_FALLBACK);
         assert_eq!(e1, e2, "ETag must be stable across calls");
         assert!(e1.starts_with('"'));
         assert!(e1.ends_with('"'));

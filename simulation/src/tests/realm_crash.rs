@@ -18,15 +18,12 @@
 
 use std::sync::Arc;
 
-use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
-    SubjectRef, TupleWrite,
-};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     CreateRealmRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
     IdentityError,
 };
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Keys for the system realm. Derived from `src/identity/keys.rs` so the
@@ -70,7 +67,7 @@ fn open_engines(
 ) -> (
     Arc<dyn StorageEngine>,
     EmbeddedIdentityEngine,
-    EmbeddedAuthzEngine,
+    EmbeddedRbacEngine,
 ) {
     let config = StorageConfig::dev(dir.to_path_buf());
     let storage =
@@ -82,13 +79,13 @@ fn open_engines(
         IdentityConfig::default(),
     )
     .expect("identity engine");
-    let authz = EmbeddedAuthzEngine::new(Arc::clone(&storage), AuthzConfig::default());
+    let authz = EmbeddedRbacEngine::new(Arc::clone(&storage), Arc::clone(&clock));
     (storage, identity, authz)
 }
 
 /// Seeds N users, a few tuples, and an OAuth client into the realm so the
 /// cascade has real work to do. Returns the realm id.
-fn seed_realm(identity: &EmbeddedIdentityEngine, authz: &EmbeddedAuthzEngine) -> RealmId {
+fn seed_realm(identity: &EmbeddedIdentityEngine, authz: &EmbeddedRbacEngine) -> RealmId {
     let realm = identity
         .create_realm(&CreateRealmRequest {
             name: "crash-sim-realm".to_string(),
@@ -111,13 +108,22 @@ fn seed_realm(identity: &EmbeddedIdentityEngine, authz: &EmbeddedAuthzEngine) ->
             .expect("create user");
     }
 
+    // Seed RBAC defaults + a couple of roles so the cascade has RBAC state
+    // to clean up, mirroring the pre-migration shape of this fixture.
+    authz.seed_realm(&realm_id).expect("seed realm");
     for i in 0..3 {
-        let obj = ObjectRef::new("document", &format!("doc{i}")).expect("object");
-        let subj = SubjectRef::direct("user", &format!("user{i}")).expect("subject");
-        let tuple = RelationshipTuple::new(obj, "viewer", subj).expect("tuple");
         authz
-            .write_tuples(&realm_id, &[TupleWrite::Touch(tuple)])
-            .expect("write tuple");
+            .create_role(
+                &realm_id,
+                &hearth::rbac::CreateRoleRequest {
+                    name: format!("role-{i}"),
+                    description: None,
+                    permissions: Vec::new(),
+                    parent_roles: Vec::new(),
+                    ..Default::default()
+                },
+            )
+            .expect("create role");
     }
 
     realm_id

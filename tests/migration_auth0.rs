@@ -8,20 +8,20 @@
 //! Fixture shape (3 users / 1 client / 1 org / 2 roles) is documented in
 //! `tests/fixtures/auth0/tenant-export.json`.
 //!
-//! Tests intentionally avoid asserting on internal Zanzibar key layouts —
+//! Tests intentionally avoid asserting on internal RBAC key layouts —
 //! observable behaviour (via `authz.check`, `identity.get_user_by_email`,
 //! `identity.list_members`, `identity.verify_password`) is the contract.
 
 use std::sync::Arc;
 
 use hearth::audit::EmbeddedAuditEngine;
-use hearth::authz::{AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, SubjectRef};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::migration::{Auth0ImportOptions, Auth0Importer};
 use hearth::identity::{
     CleartextPassword, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
     OrganizationRole, UserStatus,
 };
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 const BUNDLE_TEMPLATE: &str = include_str!("fixtures/auth0/tenant-export.json");
@@ -37,7 +37,7 @@ fn build_bundle_bytes() -> Vec<u8> {
 
 fn build_engines() -> (
     Arc<dyn IdentityEngine>,
-    Arc<dyn AuthorizationEngine>,
+    Arc<dyn RbacEngine>,
     tempfile::TempDir,
 ) {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -45,11 +45,11 @@ fn build_engines() -> (
         EmbeddedStorageEngine::open(StorageConfig::dev(temp.path().to_path_buf()))
             .expect("storage"),
     );
-    let authz: Arc<dyn AuthorizationEngine> = Arc::new(EmbeddedAuthzEngine::new(
-        Arc::clone(&storage),
-        AuthzConfig::default(),
-    ));
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let authz: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
     let identity_config = IdentityConfig {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
@@ -88,7 +88,7 @@ async fn imports_minimal_bundle_and_reports_correct_counts() {
     assert_eq!(report.clients_imported, 1);
     // Roles: alice→admin, alice→engineer, carol→engineer = 3 tuples.
     // Organization roles live on org objects, not realm objects — counted separately.
-    assert_eq!(report.tuples_written, 3);
+    assert_eq!(report.role_assignments_written, 3);
 
     assert!(
         report
@@ -136,10 +136,10 @@ async fn bcrypt_custom_password_hash_verifies_natively_after_import() {
     assert!(!wrong, "wrong password must not verify");
 }
 
-// ===== 3. Auth0 roles → Zanzibar tuples =====
+// ===== 3. Auth0 roles → RBAC assignments =====
 
 #[tokio::test]
-async fn auth0_role_assignments_become_zanzibar_tuples() {
+async fn auth0_role_assignments_become_rbac_assignments() {
     let (identity, authz, _tmp) = build_engines();
     let importer = Auth0Importer::new(Arc::clone(&identity), Arc::clone(&authz));
     let bundle = Auth0Importer::parse(&build_bundle_bytes()).expect("parse bundle");
@@ -161,33 +161,37 @@ async fn auth0_role_assignments_become_zanzibar_tuples() {
         .expect("lookup")
         .expect("carol exists");
 
-    let realm_obj = ObjectRef::new("realm", &realm_id.as_uuid().to_string()).expect("object");
-    let alice_subj = SubjectRef::direct("user", &alice.id().as_uuid().to_string()).expect("subj");
-    let bob_subj = SubjectRef::direct("user", &bob.id().as_uuid().to_string()).expect("subj");
-    let carol_subj = SubjectRef::direct("user", &carol.id().as_uuid().to_string()).expect("subj");
-
+    let admin_role = authz
+        .get_role_by_name(&realm_id, "admin")
+        .expect("lookup")
+        .expect("admin role");
+    let eng_role = authz
+        .get_role_by_name(&realm_id, "engineer")
+        .expect("lookup")
+        .expect("engineer role");
+    let alice_assignments = authz
+        .list_user_assignments(&realm_id, alice.id())
+        .expect("list alice");
+    let bob_assignments = authz
+        .list_user_assignments(&realm_id, bob.id())
+        .expect("list bob");
+    let carol_assignments = authz
+        .list_user_assignments(&realm_id, carol.id())
+        .expect("list carol");
     assert!(
-        authz
-            .check(&realm_id, &realm_obj, "admin", &alice_subj, None)
-            .expect("check"),
+        alice_assignments.iter().any(|a| a.role_id == admin_role.id),
         "alice should have admin role"
     );
     assert!(
-        !authz
-            .check(&realm_id, &realm_obj, "admin", &bob_subj, None)
-            .expect("check"),
+        !bob_assignments.iter().any(|a| a.role_id == admin_role.id),
         "bob was not assigned admin"
     );
     assert!(
-        authz
-            .check(&realm_id, &realm_obj, "engineer", &alice_subj, None)
-            .expect("check"),
+        alice_assignments.iter().any(|a| a.role_id == eng_role.id),
         "alice should have engineer role"
     );
     assert!(
-        authz
-            .check(&realm_id, &realm_obj, "engineer", &carol_subj, None)
-            .expect("check"),
+        carol_assignments.iter().any(|a| a.role_id == eng_role.id),
         "carol should have engineer role"
     );
 }

@@ -40,18 +40,15 @@ async fn creates_default_realm_when_no_yaml_and_no_storage() {
     assert_eq!(realm.name(), "default");
     assert_eq!(realm.status(), RealmStatus::Active);
 
-    // Reconciliation MUST install the Roles & Permissions preset namespace
-    // on every newly-created realm, so the Roles UI is usable immediately.
-    let ns = harness
-        .authz()
-        .get_namespace(realm.id())
-        .expect("get_namespace")
-        .expect("preset namespace must be installed on the default realm");
-    assert_eq!(
-        ns,
-        hearth::authz::preset_namespace(),
-        "reconciled realm should carry the canonical preset namespace"
-    );
+    // Reconciliation MUST seed RBAC defaults on every newly-created realm,
+    // so the Roles UI is usable immediately. Presence of the `realm.admin`
+    // seed role is the marker.
+    let role = harness
+        .rbac()
+        .get_role_by_name(realm.id(), "realm.admin")
+        .expect("get_role_by_name")
+        .expect("seed role must be installed on the default realm");
+    assert_eq!(role.name, "realm.admin");
 }
 
 // ===== Scenario 2: Backward compat — existing realms preserved =====

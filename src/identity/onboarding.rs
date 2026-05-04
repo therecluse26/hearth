@@ -14,8 +14,8 @@
 //! 2. `/ui/setup` requires the token. Mismatch returns 404 (no leaks).
 //! 3. `complete_setup` finds the first realm (created by YAML
 //!    reconciliation or auto-created "default"), creates the admin user
-//!    (`PendingVerification`) + Zanzibar `hearth#admin@user:<uuid>`
-//!    tuple, issues a verification token, and sends the verification
+//!    (`PendingVerification`) + RBAC `realm.admin` role assignment,
+//!    issues a verification token, and sends the verification
 //!    email. On success the setup-token file is removed.
 //!
 //! The service is completely off the hot path — invoked only at startup
@@ -29,13 +29,13 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use subtle::ConstantTimeEq;
 
-use crate::authz::{AuthorizationEngine, ObjectRef, RelationshipTuple, SubjectRef, TupleWrite};
 use crate::core::RealmId;
 use crate::identity::email::{EmailError, EmailService};
 use crate::identity::{
     CleartextPassword, CreateUserRequest, IdentityEngine, IdentityError, UpdateUserRequest,
     UserStatus,
 };
+use crate::rbac::{AssignRoleRequest, RbacEngine, Scope, Subject};
 
 /// Filename used for the one-time setup token inside `data_dir`.
 pub const SETUP_TOKEN_FILENAME: &str = ".setup_token";
@@ -51,7 +51,7 @@ pub enum OnboardingError {
     /// An identity-layer call failed (realm/user creation, password set,
     /// token issue).
     Identity(IdentityError),
-    /// Writing the Zanzibar admin tuple failed.
+    /// Granting the admin role to the first user failed.
     Authz(String),
     /// Verification email could not be delivered.
     Email(EmailError),
@@ -268,22 +268,32 @@ fn generate_setup_token() -> Result<String, OnboardingError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+/// Converts a `std::io::Error` into a sanitized `OnboardingError::Io`
+/// carrying only the error kind — never the filesystem path that was
+/// being accessed. `io::Error::Display` concatenates the OS message with
+/// the path when the error was produced by a path-taking API, so
+/// forwarding it verbatim would leak `data_dir` into logs surfaced
+/// through `tracing::warn!(error = %e, ...)`.
+fn sanitize_io(err: std::io::Error) -> OnboardingError {
+    OnboardingError::Io(err.kind().to_string())
+}
+
 fn read_setup_token_file(path: &Path) -> Result<String, OnboardingError> {
-    let bytes = std::fs::read(path).map_err(|e| OnboardingError::Io(e.to_string()))?;
+    let bytes = std::fs::read(path).map_err(sanitize_io)?;
     let s = String::from_utf8(bytes)
-        .map_err(|e| OnboardingError::Io(format!("setup token is not valid UTF-8: {e}")))?;
+        .map_err(|_| OnboardingError::Io("setup token is not valid UTF-8".to_string()))?;
     Ok(s.trim().to_string())
 }
 
 fn write_setup_token_file(path: &Path, token: &str) -> Result<(), OnboardingError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| OnboardingError::Io(e.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(sanitize_io)?;
     }
     // Write atomically via a temp file + rename so a crash mid-write
     // cannot leave a partial token that would fail constant-time compare.
     let tmp = path.with_extension("tmp");
     write_file_mode_0600(&tmp, token.as_bytes())?;
-    std::fs::rename(&tmp, path).map_err(|e| OnboardingError::Io(e.to_string()))?;
+    std::fs::rename(&tmp, path).map_err(sanitize_io)?;
     Ok(())
 }
 
@@ -297,11 +307,9 @@ fn write_file_mode_0600(path: &Path, bytes: &[u8]) -> Result<(), OnboardingError
         .write(true)
         .mode(0o600)
         .open(path)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.write_all(bytes)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.sync_all()
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
+        .map_err(sanitize_io)?;
+    file.write_all(bytes).map_err(sanitize_io)?;
+    file.sync_all().map_err(sanitize_io)?;
     Ok(())
 }
 
@@ -313,21 +321,19 @@ fn write_file_mode_0600(path: &Path, bytes: &[u8]) -> Result<(), OnboardingError
         .truncate(true)
         .write(true)
         .open(path)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.write_all(bytes)
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
-    file.sync_all()
-        .map_err(|e| OnboardingError::Io(e.to_string()))?;
+        .map_err(sanitize_io)?;
+    file.write_all(bytes).map_err(sanitize_io)?;
+    file.sync_all().map_err(sanitize_io)?;
     Ok(())
 }
 
 /// Orchestrates first-run setup.
 ///
-/// Composes `IdentityEngine` + `AuthorizationEngine` + `EmailService`
+/// Composes `IdentityEngine` + `RbacEngine` + `EmailService`
 /// without owning any of them. Handler code holds an `Arc<OnboardingService>`.
 pub struct OnboardingService {
     identity: Arc<dyn IdentityEngine>,
-    authz: Arc<dyn AuthorizationEngine>,
+    rbac: Arc<dyn RbacEngine>,
     email: Arc<EmailService>,
     data_dir: PathBuf,
 }
@@ -337,13 +343,13 @@ impl OnboardingService {
     #[must_use]
     pub fn new(
         identity: Arc<dyn IdentityEngine>,
-        authz: Arc<dyn AuthorizationEngine>,
+        rbac: Arc<dyn RbacEngine>,
         email: Arc<EmailService>,
         data_dir: PathBuf,
     ) -> Self {
         Self {
             identity,
-            authz,
+            rbac,
             email,
             data_dir,
         }
@@ -372,7 +378,7 @@ impl OnboardingService {
     /// 1. Create realm.
     /// 2. Create admin user (status = `PendingVerification`).
     /// 3. Set admin password.
-    /// 4. Write Zanzibar `hearth#admin@user:<uuid>` tuple.
+    /// 4. Assign the RBAC `realm.admin` role to the admin user.
     /// 5. Issue email-verification token.
     /// 6. Send verification email.
     /// 7. Delete `.setup_token` so the flow cannot be re-triggered.
@@ -437,21 +443,32 @@ impl OnboardingService {
         self.identity
             .set_password(&realm_id, &user_id, admin_password)?;
 
-        // 5. Zanzibar admin tuple: hearth#admin@user:<uuid>, written
-        //    in the system realm's authz store. The `RequireAdmin`
-        //    extractor checks for this tuple against
-        //    `session.realm_id`, which is always the system realm for
-        //    admin sessions. INVARIANT: "hearth", "admin", "user" are
-        //    valid short-ASCII field names; the user-id string is a
-        //    canonical UUID.
-        let object = ObjectRef::new("hearth", "admin")
-            .map_err(|e| OnboardingError::Authz(format!("failed to build admin object: {e}")))?;
-        let subject = SubjectRef::direct("user", &user_id.as_uuid().to_string())
-            .map_err(|e| OnboardingError::Authz(format!("failed to build admin subject: {e}")))?;
-        let tuple = RelationshipTuple::new(object, "admin", subject)
-            .map_err(|e| OnboardingError::Authz(format!("failed to build admin tuple: {e}")))?;
-        self.authz
-            .write_tuples(&realm_id, &[TupleWrite::Touch(tuple)])
+        // 5. Grant the realm.admin role to the first admin user. We
+        //    seed the system realm's default roles first (idempotent).
+        //    The RBAC engine owns these seed roles; see
+        //    `docs/specs/AUTHORIZATION.md` § 9.
+        self.rbac
+            .seed_realm(&realm_id)
+            .map_err(|e| OnboardingError::Authz(e.to_string()))?;
+        let role = self
+            .rbac
+            .get_role_by_name(&realm_id, "realm.admin")
+            .map_err(|e| OnboardingError::Authz(e.to_string()))?
+            .ok_or_else(|| {
+                OnboardingError::Authz(
+                    "seed role 'realm.admin' missing after seed_realm".to_string(),
+                )
+            })?;
+        self.rbac
+            .assign_role(
+                &realm_id,
+                &AssignRoleRequest {
+                    subject: Subject::User(user_id.clone()),
+                    role_id: role.id.clone(),
+                    scope: Scope::Realm,
+                    assigned_by: None,
+                },
+            )
             .map_err(|e| OnboardingError::Authz(e.to_string()))?;
 
         // 6. Email-verification token. The verification URL targets the
@@ -475,7 +492,7 @@ impl OnboardingService {
         );
 
         // 8. Retire the setup token. All critical state (user, password,
-        //    Zanzibar tuple, verification token) is persisted and the
+        //    RBAC role assignment, verification token) is persisted and the
         //    verification URL is logged above, so the operator can recover
         //    even if email delivery fails below.
         remove_setup_token(&self.data_dir);
@@ -569,6 +586,44 @@ mod tests {
             let s = format!("{err}");
             assert!(!s.is_empty(), "empty display for {err:?}");
         }
+    }
+
+    #[test]
+    fn sanitize_io_emits_only_error_kind() {
+        // Defence in depth: some callers or platforms produce io::Errors
+        // whose Display includes the offending path. `sanitize_io` must
+        // collapse the Display to the kind string so a path fragment
+        // injected into the inner error never reaches log output.
+        let sentinel = "/var/lib/hearth-secret-path/.setup_token";
+        let wrapped = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("open '{sentinel}' failed"),
+        );
+        let sanitized = sanitize_io(wrapped);
+        let rendered = format!("{sanitized}");
+        assert!(
+            !rendered.contains(sentinel),
+            "sanitized error leaks path: {rendered}"
+        );
+        assert!(
+            !rendered.contains("hearth-secret-path"),
+            "sanitized error leaks path fragment: {rendered}"
+        );
+        // Kind-only rendering: "permission denied" (ErrorKind Display).
+        assert_eq!(rendered, "setup token I/O error: permission denied");
+    }
+
+    #[test]
+    fn read_missing_token_file_returns_sanitized_io_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join(".setup_token-absent");
+        let missing_str = missing.to_string_lossy().into_owned();
+        let err = read_setup_token_file(&missing).expect_err("missing file");
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains(&missing_str),
+            "read error leaks path: {rendered}"
+        );
     }
 
     #[test]

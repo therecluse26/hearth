@@ -12,7 +12,7 @@
     {% when None %}
   {% endmatch %}
 
-  <form method="post" action="/ui/admin/users/new" class="space-y-4">
+  <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/new" class="space-y-4">
     {% match csrf %}
       {% when Some with (token) %}
         <input type="hidden" name="_csrf" value="{{ token }}">
@@ -59,7 +59,7 @@
               class="btn-ember rounded px-4 py-2 text-sm font-semibold">
         Create user
       </button>
-      <a href="/ui/admin/users" class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
+      <a href="/ui/admin/realms/{{ realm_name }}/users" class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
     </div>
   </form>
 </div>

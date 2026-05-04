@@ -1,0 +1,21 @@
+{% for g in groups %}
+<tr class="border-b border-divider-subtle hover-bg-divider">
+  <td class="px-4 py-3">
+    <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ g.id.as_uuid() }}"
+       class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ g.name }}</a>
+  </td>
+  <td class="px-4 py-3">
+    <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ g.slug }}</code>
+  </td>
+  <td class="px-4 py-3 text-sm text-ht-content-muted">
+    {% match g.description %}
+      {% when Some with (d) %}{{ d }}
+      {% when None %}<span class="italic">—</span>
+    {% endmatch %}
+  </td>
+  <td class="px-4 py-3 text-right">
+    <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ g.id.as_uuid() }}/edit"
+       class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
+  </td>
+</tr>
+{% endfor %}

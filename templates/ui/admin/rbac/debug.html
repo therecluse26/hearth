@@ -1,0 +1,173 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} &middot; Permission Check{% endblock %}
+{% block body %}
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Permission Check</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">
+    Enter a user UUID (optionally narrowed to an organization or OAuth scope) and see the effective roles, groups, and permissions the RBAC engine resolves for token issuance in the currently selected realm.
+  </p>
+</div>
+
+<div x-data="{ tab: 'check' }">
+
+  {# Tab bar #}
+  <div class="mb-6 flex gap-1 border-b border-divider-subtle">
+    <button @click="tab = 'check'" type="button"
+            :class="tab === 'check' ? 'border-b-2 border-ht-content-brand text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary'"
+            class="px-4 py-2.5 text-sm font-medium transition-colors">
+      Permission Check
+    </button>
+    <button @click="tab = 'token'" type="button"
+            :class="tab === 'token' ? 'border-b-2 border-ht-content-brand text-ht-content-primary' : 'text-ht-content-secondary hover:text-ht-content-primary'"
+            class="px-4 py-2.5 text-sm font-medium transition-colors">
+      Token Preview
+    </button>
+  </div>
+
+  {# ── Permission Check tab ── #}
+  <div x-show="tab === 'check'">
+    <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle"
+         x-data="{ userId: '{{ user_id_input }}', showDropdown: false }"
+         @click.outside="showDropdown = false">
+      <form method="get" action="/ui/admin/realms/{{ realm_name }}/rbac/debug" class="space-y-4">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <label class="relative block">
+            <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">User (search by email/name, or paste UUID)</span>
+            <input type="text" name="user_id" x-model="userId" x-ref="userIdInput"
+                   autocomplete="off"
+                   placeholder="Type to search…"
+                   hx-get="/ui/admin/realms/{{ realm_name }}/rbac/api/users/search"
+                   hx-trigger="input changed delay:200ms, focus"
+                   hx-target="#user-id-options"
+                   hx-swap="innerHTML"
+                   hx-vals='js:{"q": event.target.value}'
+                   @focus="showDropdown = true"
+                   @input="showDropdown = true"
+                   class="mt-1 block w-full rounded-sm bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ht-accent focus:outline-none font-mono" />
+            <div x-show="showDropdown" x-cloak
+                 id="user-id-options"
+                 class="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-divider-subtle bg-ht-surface-elevated shadow-lg empty:hidden"></div>
+          </label>
+          <label class="block">
+            <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">Org ID (optional)</span>
+            <input type="text" name="org_id" value="{{ org_id_input }}"
+                   class="mt-1 block w-full rounded-sm bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ht-accent focus:outline-none font-mono" />
+          </label>
+          <label class="block">
+            <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">OAuth scope (optional)</span>
+            <input type="text" name="scope" value="{{ scope_input }}"
+                   class="mt-1 block w-full rounded-sm bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ht-accent focus:outline-none" />
+          </label>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="submit" class="rounded bg-ht-accent px-4 py-2 text-sm font-medium text-ht-surface-base hover:bg-ht-accent-hover">
+            Resolve permissions
+          </button>
+          <p class="text-xs text-ht-content-muted">Realm: <code class="font-mono">{{ realm_uuid }}</code></p>
+        </div>
+      </form>
+    </div>
+
+    {% match error %}{% when Some with (msg) %}
+      <div class="mt-6 rounded border border-danger/30 bg-danger/[0.10] p-4 text-sm text-danger-fg">
+        {{ msg }}
+      </div>
+    {% when None %}{% endmatch %}
+
+    {% if !permissions.is_empty() || !roles.is_empty() || !groups.is_empty() %}
+      <div class="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
+        <section class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+          <h2 class="text-sm font-medium uppercase tracking-wider text-ht-content-muted">Roles ({{ roles.len() }})</h2>
+          <ul class="mt-2 space-y-1 font-mono text-sm text-ht-content-primary">
+            {% for role in roles %}
+              <li>{{ role }}</li>
+            {% endfor %}
+          </ul>
+        </section>
+        <section class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+          <h2 class="text-sm font-medium uppercase tracking-wider text-ht-content-muted">Groups ({{ groups.len() }})</h2>
+          <ul class="mt-2 space-y-1 font-mono text-sm text-ht-content-primary">
+            {% for group in groups %}
+              <li>{{ group }}</li>
+            {% endfor %}
+          </ul>
+        </section>
+        <section class="rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+          <h2 class="text-sm font-medium uppercase tracking-wider text-ht-content-muted">Permissions ({{ permissions.len() }})</h2>
+          <ul class="mt-2 space-y-1 font-mono text-sm text-ht-content-primary">
+            {% for perm in permissions %}
+              <li>{{ perm }}</li>
+            {% endfor %}
+          </ul>
+        </section>
+      </div>
+    {% endif %}
+  </div>
+
+  {# ── Token Preview tab ── #}
+  <div x-show="tab === 'token'" x-data="tokenPreview()">
+    <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">User ID (UUID or user_&lt;uuid&gt;)</span>
+          <input type="text" x-model="userId"
+                 class="mt-1 block w-full rounded-sm bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:outline-none font-mono"
+                 placeholder="user_00000000-…" />
+        </label>
+      </div>
+      <div class="mt-4 flex items-center gap-3">
+        <button @click="preview()" type="button"
+                class="rounded bg-ht-accent px-4 py-2 text-sm font-medium text-ht-surface-base hover:bg-ht-accent-hover"
+                :disabled="loading">
+          <span x-text="loading ? 'Loading…' : 'Preview token'"></span>
+        </button>
+        <p class="text-xs text-ht-content-muted">Realm: <code class="font-mono">{{ realm_uuid }}</code></p>
+      </div>
+    </div>
+
+    <div x-show="result !== null" class="mt-6">
+      <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle overflow-hidden">
+        <div class="border-b border-divider-subtle px-4 py-2.5">
+          <span class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Claims preview (mock)</span>
+        </div>
+        <pre x-text="result"
+             class="overflow-x-auto p-4 font-mono text-xs leading-relaxed text-ht-content-secondary whitespace-pre"></pre>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  function tokenPreview() {
+    return {
+      userId: '',
+      result: null,
+      loading: false,
+      async preview() {
+        if (!this.userId.trim()) return;
+        this.loading = true;
+        this.result = null;
+        try {
+          const csrf = document.querySelector('meta[name="csrf"]')?.getAttribute('content') || '';
+          const body = new URLSearchParams({ user_id: this.userId.trim() });
+          const resp = await fetch('/ui/admin/realms/{{ realm_name }}/rbac/token-preview', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-CSRF-Token': csrf,
+            },
+            body: body.toString(),
+          });
+          this.result = await resp.text();
+        } catch (e) {
+          this.result = JSON.stringify({ error: String(e) }, null, 2);
+        } finally {
+          this.loading = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

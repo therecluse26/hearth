@@ -2,7 +2,7 @@
 //!
 //! * Browser-facing `GET /ui/oauth/authorize` entry point
 //! * `GET|POST /ui/oauth/consent` interstitial
-//! * Self-service consent listing at `/ui/account/consents`
+//! * Self-service consent listing at `/ui/account/applications`
 //! * Admin consent visibility under `/ui/admin/users/{id}/consents`
 //! * REST/JSON `/oauth/consents` and `/admin/users/{id}/consents`
 //! * RFC 6749 §4.1.2.1 error redirect compliance
@@ -14,10 +14,6 @@ use std::sync::Arc;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use hearth::audit::{AuditAction, AuditEngine, AuditQuery};
-use hearth::authz::{
-    AuthorizationEngine, AuthzConfig, EmbeddedAuthzEngine, ObjectRef, RelationshipTuple,
-    SubjectRef, TupleWrite,
-};
 use hearth::core::{Clock, RealmId, SessionId, SystemClock, UserId};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
 use hearth::identity::onboarding::OnboardingService;
@@ -27,6 +23,7 @@ use hearth::identity::{
     SessionContext, UpdateClientRequest, UpdateUserRequest, UserStatus,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
+use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tower::ServiceExt;
 
@@ -82,10 +79,10 @@ fn build_rig() -> Rig {
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn RbacEngine>;
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
@@ -93,7 +90,7 @@ fn build_rig() -> Rig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -122,6 +119,7 @@ fn build_rig() -> Rig {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: Some("https://app.example.com/logo.png".to_string()),
+                ..Default::default()
             },
         )
         .expect("register untrusted");
@@ -136,6 +134,10 @@ fn build_rig() -> Rig {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: false,
                 client_logo_url: None,
+                // Per AUTHZ_EXPANSION.md the consent gate is driven by
+                // `trust_level`. FirstParty bypasses the consent ceremony.
+                trust_level: hearth::identity::oidc::ClientTrustLevel::FirstParty,
+                ..Default::default()
             },
         )
         .expect("register trusted");
@@ -204,6 +206,7 @@ fn seed_active_user(
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate");
@@ -1085,7 +1088,7 @@ async fn list_consents_returns_only_current_user_consents() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/account/consents")
+                .uri("/ui/account/applications")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .expect("req"),
@@ -1128,7 +1131,7 @@ async fn self_revoke_consent_removes_record_and_reprompts_next_authorize() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/account/consents/{client_id_s}/revoke"))
+                .uri(format!("/ui/account/applications/{client_id_s}/revoke"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1139,7 +1142,7 @@ async fn self_revoke_consent_removes_record_and_reprompts_next_authorize() {
     assert!(resp.status().is_redirection());
     assert_eq!(
         location_header(&resp).as_deref(),
-        Some("/ui/account/consents")
+        Some("/ui/account/applications")
     );
 
     // Next authorize now re-prompts.
@@ -1179,7 +1182,7 @@ async fn self_revoke_consent_emits_audit_with_via_self() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/account/consents/{client_id_s}/revoke"))
+                .uri(format!("/ui/account/applications/{client_id_s}/revoke"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1216,7 +1219,7 @@ async fn self_revoke_nonexistent_consent_returns_404() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/account/consents/{client_id_s}/revoke"))
+                .uri(format!("/ui/account/applications/{client_id_s}/revoke"))
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1254,7 +1257,7 @@ async fn self_revoke_all_consents() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ui/account/consents/revoke-all")
+                .uri("/ui/account/applications/revoke-all")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("_csrf={csrf}")))
@@ -1309,10 +1312,10 @@ fn build_admin_rig() -> AdminRig {
         )
         .expect("identity"),
     ) as Arc<dyn IdentityEngine>;
-    let authz = Arc::new(EmbeddedAuthzEngine::new(
+    let authz = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        AuthzConfig::default(),
-    )) as Arc<dyn AuthorizationEngine>;
+        Arc::clone(&clock),
+    )) as Arc<dyn RbacEngine>;
     let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
@@ -1321,7 +1324,7 @@ fn build_admin_rig() -> AdminRig {
     // Target (tenant) realm + a regular user + an OAuth client.
     let target_realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -1336,6 +1339,7 @@ fn build_admin_rig() -> AdminRig {
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -1348,7 +1352,7 @@ fn build_admin_rig() -> AdminRig {
         )
         .expect("grant consent");
 
-    // Admin user in the SYSTEM realm + `hearth#admin` zanzibar tuple.
+    // Admin user in the SYSTEM realm + `hearth.admin` claim-based assignment.
     let admin_realm_id = hearth::core::RealmId::new(uuid::Uuid::nil());
     let admin_user = identity
         .create_admin_user(&CreateUserRequest {
@@ -1375,6 +1379,7 @@ fn build_admin_rig() -> AdminRig {
                 status: Some(UserStatus::Active),
                 first_name: None,
                 last_name: None,
+                ..Default::default()
             },
         )
         .expect("activate");
@@ -1383,12 +1388,22 @@ fn build_admin_rig() -> AdminRig {
         .expect("admin session")
         .id()
         .clone();
-    let obj = ObjectRef::new("hearth", "admin").expect("obj");
-    let sub = SubjectRef::direct("user", &admin_user.id().as_uuid().to_string()).expect("sub");
-    let tuple = RelationshipTuple::new(obj, "admin", sub).expect("tuple");
+    authz.seed_realm(&admin_realm_id).expect("seed");
+    let _admin_role = authz
+        .get_role_by_name(&admin_realm_id, "realm.admin")
+        .expect("lookup")
+        .expect("seed role");
     authz
-        .write_tuples(&admin_realm_id, &[TupleWrite::Touch(tuple)])
-        .expect("write admin tuple");
+        .assign_role(
+            &admin_realm_id,
+            &hearth::rbac::AssignRoleRequest {
+                subject: hearth::rbac::Subject::User(admin_user.id().clone()),
+                role_id: _admin_role.id.clone(),
+                scope: hearth::rbac::Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign admin role");
 
     // Non-admin user lives in the target realm (no admin privilege).
     let non_admin = seed_active_user(&*identity, target_realm.id(), "bob@acme.test", "Bob");
@@ -1441,9 +1456,9 @@ async fn admin_can_list_any_users_consents_in_target_realm() {
     let rig = build_admin_rig();
     let cookie = admin_auth_cookie(&rig.admin_session, "x");
     let url = format!(
-        "/ui/admin/users/{}/consents?realm={}",
-        rig.target_user.as_uuid(),
+        "/ui/admin/realms/{}/users/{}/consents",
         rig.target_realm_name,
+        rig.target_user.as_uuid(),
     );
     let resp = rig
         .app
@@ -1477,10 +1492,10 @@ async fn admin_revoke_on_behalf_emits_audit_with_via_admin() {
     let csrf = "x";
     let cookie = admin_auth_cookie(&rig.admin_session, csrf);
     let url = format!(
-        "/ui/admin/users/{}/consents/{}/revoke?realm={}",
+        "/ui/admin/realms/{}/users/{}/consents/{}/revoke",
+        rig.target_realm_name,
         rig.target_user.as_uuid(),
         rig.client.client_id().as_uuid(),
-        rig.target_realm_name,
     );
     let resp = rig
         .app
@@ -1531,9 +1546,9 @@ async fn non_admin_cannot_access_admin_consent_page() {
     let rig = build_admin_rig();
     let cookie = auth_cookie(&rig.target_realm_id, &rig.non_admin_session, "x");
     let url = format!(
-        "/ui/admin/users/{}/consents?realm={}",
-        rig.target_user.as_uuid(),
+        "/ui/admin/realms/{}/users/{}/consents",
         rig.target_realm_name,
+        rig.target_user.as_uuid(),
     );
     let resp = rig
         .app
@@ -1565,6 +1580,7 @@ async fn toggling_require_consent_via_update_client_reinstates_prompt() {
                 grant_types: None,
                 require_consent: Some(true),
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("update");

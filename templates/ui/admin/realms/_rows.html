@@ -1,7 +1,10 @@
 {% for t in realms %}
-<tr class="border-b border-divider-subtle">
+<tr class="border-b border-divider-subtle hover-bg-divider">
   <td class="px-4 py-3">
-    <a href="/ui/admin/realms/{{ t.id().as_uuid() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ t.name() }}</a>
+    <div class="flex items-center gap-2">
+      <a href="/ui/admin/realms/{{ t.name() }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ t.name() }}</a>
+      {% include "ui/admin/_components/_yaml_badge.html" %}
+    </div>
   </td>
   <td class="px-4 py-3">
     {% if t.status()|fmt("{:?}") == "Active" %}
@@ -15,17 +18,26 @@
   <td class="px-4 py-3 text-right">
     <div class="flex items-center justify-end gap-3">
       {% if t.status()|fmt("{:?}") == "Active" %}
-        <form method="post" action="/ui/admin/switch-realm" class="inline">
+        {# Realm switching is a navigation, not a state change (UI_ROUTING.md R-6).
+           Hard-link straight into the workspace at /ui/admin/realms/{name}. #}
+        <a href="/ui/admin/realms/{{ t.name() }}"
+           class="text-xs font-medium text-ht-content-brand hover:text-ht-brand-deep">
+          Open workspace →
+        </a>
+      {% else if t.status()|fmt("{:?}") == "Archived" %}
+        {# Two-click permanent delete. Backend (admin_realm_delete) gates on
+           Archived status; the second click triggers the actual destructive call. #}
+        <form method="post" action="/ui/admin/realms/{{ t.name() }}/delete"
+              x-data="{ confirm: false, timer: null }">
           {% match csrf %}
             {% when Some with (tok) %}
               <input type="hidden" name="_csrf" value="{{ tok }}">
             {% when None %}
           {% endmatch %}
-          <input type="hidden" name="realm" value="{{ t.name() }}">
-          <input type="hidden" name="return_to" value="/ui/admin/realms/{{ t.id().as_uuid() }}">
-          <button type="submit"
-                  class="text-xs font-medium text-ht-content-brand hover:text-ht-brand-deep">
-            Open workspace →
+          <button @click.prevent="confirm ? $el.form.submit() : (confirm = true, timer = setTimeout(() => confirm = false, 4000))" type="button"
+                  :class="confirm ? 'bg-danger/[0.20] text-danger-fg' : 'text-ht-content-muted hover:text-danger-fg'"
+                  class="rounded-md px-2 py-1 text-xs font-medium">
+            <span x-text="confirm ? 'Confirm: delete permanently' : 'Delete permanently'"></span>
           </button>
         </form>
       {% endif %}

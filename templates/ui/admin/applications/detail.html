@@ -3,10 +3,12 @@
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <div>
-    <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ app.client_name() }}</h1>
-    <p class="mt-1 text-sm text-ht-content-muted">Managed via <code class="text-xs">hearth.yaml</code> — edit the configuration file to change this application.</p>
+    <div class="flex items-center gap-3">
+      <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ app.client_name() }}</h1>
+      {% include "ui/admin/_components/_yaml_badge.html" %}
+    </div>
   </div>
-  <a href="/ui/admin/applications"
+  <a href="/ui/admin/realms/{{ realm_name }}/applications"
      class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
     Back to list
@@ -54,6 +56,26 @@
       <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Grant types</dt>
       <dd class="mt-1 text-sm text-ht-content-secondary">{{ app.grant_types().join(", ") }}</dd>
     </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Trust level</dt>
+      <dd class="mt-1">
+        {% if app.trust_level()|fmt("{:?}") == "FirstParty" %}
+          <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">First Party</span>
+        {% else %}
+          <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Third Party</span>
+        {% endif %}
+      </dd>
+    </div>
+    {% if !app.declared_scopes().is_empty() %}
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Declared scopes</dt>
+      <dd class="mt-2 flex flex-wrap gap-1.5">
+        {% for s in app.declared_scopes() %}
+          <span class="rounded-full bg-ht-surface-elevated px-2 py-0.5 font-mono text-[11px] text-ht-content-secondary ring-1 ring-divider-subtle">{{ s }}</span>
+        {% endfor %}
+      </dd>
+    </div>
+    {% endif %}
   </dl>
 </div>
 
@@ -76,7 +98,7 @@
                 class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
-        <form method="post" action="/ui/admin/applications/{{ app.client_id().as_uuid() }}/regenerate-secret">
+        <form method="post" action="/ui/admin/realms/{{ realm_name }}/applications/{{ app.client_id().as_uuid() }}/regenerate-secret">
           {% match csrf %}
             {% when Some with (token) %}
               <input type="hidden" name="_csrf" value="{{ token }}">

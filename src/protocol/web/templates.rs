@@ -33,9 +33,88 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use tracing::error;
+
+/// Cookie name carrying a one-shot flash banner across a
+/// post-redirect-get cycle.
+///
+/// Replaces the previous `?flash=…&flash_kind=…` query-string scheme,
+/// which polluted shareable URLs, replayed on refresh, and exposed a
+/// reflected-content surface. The cookie is HttpOnly + SameSite=Strict
+/// + Path=/ui and lives at most [`FLASH_COOKIE_TTL_SECS`] seconds.
+pub const FLASH_COOKIE: &str = "hearth_ui_flash";
+
+/// Maximum lifetime of a flash cookie. Long enough to survive a 303
+/// redirect + one render cycle, short enough that an unread flash
+/// disappears before the next user action.
+pub const FLASH_COOKIE_TTL_SECS: u64 = 10;
+
+/// Builds a `Set-Cookie` value that stores a one-shot flash banner.
+///
+/// Encoding: `<base64url(message)>.<kind>`. The kind is restricted to
+/// `success` or `error` at construction time so the cookie cannot be
+/// used to inject arbitrary text into the rendered page beyond the
+/// allowed CSS classes.
+#[must_use]
+pub fn set_flash_cookie(message: &str, kind: &str) -> String {
+    use data_encoding::BASE64URL_NOPAD;
+    let kind = if kind == "error" { "error" } else { "success" };
+    let encoded = BASE64URL_NOPAD.encode(message.as_bytes());
+    format!(
+        "{FLASH_COOKIE}={encoded}.{kind}; HttpOnly; Path=/ui; SameSite=Strict; Max-Age={FLASH_COOKIE_TTL_SECS}"
+    )
+}
+
+/// Builds a `Set-Cookie` value that clears the flash cookie. Emitted
+/// alongside the rendered page so the next refresh starts clean.
+#[must_use]
+pub fn clear_flash_cookie() -> String {
+    format!("{FLASH_COOKIE}=; HttpOnly; Path=/ui; SameSite=Strict; Max-Age=0")
+}
+
+/// Reads a flash banner from the request cookies.
+///
+/// Returns `None` when the cookie is missing, malformed, or carries an
+/// unrecognised kind. Callers should also emit [`clear_flash_cookie`]
+/// in their response so the same flash does not show up on refresh.
+#[must_use]
+pub fn take_flash_cookie(headers: &HeaderMap) -> Option<Flash> {
+    use data_encoding::BASE64URL_NOPAD;
+    let raw = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
+    let value = raw.split(';').map(str::trim).find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        if k == FLASH_COOKIE {
+            Some(v)
+        } else {
+            None
+        }
+    })?;
+    let (msg_b64, kind) = value.rsplit_once('.')?;
+    let kind = match kind {
+        "error" => "error",
+        "success" => "success",
+        _ => return None,
+    };
+    let bytes = BASE64URL_NOPAD.decode(msg_b64.as_bytes()).ok()?;
+    let message = String::from_utf8(bytes).ok()?;
+    Some(Flash { kind, message })
+}
+
+/// Returns a 303 redirect to `url` with a flash cookie set.
+///
+/// The redirect URL itself MUST NOT contain `?flash=` query params —
+/// callers that compose URLs with realm context should keep only the
+/// realm param.
+#[must_use]
+pub fn redirect_with_flash(url: &str, message: &str, kind: &str) -> Response {
+    let mut response = Redirect::to(url).into_response();
+    if let Ok(value) = HeaderValue::from_str(&set_flash_cookie(message, kind)) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+}
 
 /// A flash message shown at the top of the content area.
 ///

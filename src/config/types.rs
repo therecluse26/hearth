@@ -7,7 +7,12 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::identity::claims_config::ClaimMapping;
 use crate::identity::email::EmailBranding;
+use crate::identity::ClientTrustLevel;
+use crate::rbac::{
+    Permission, PermissionDefinition, ProtectedResource, Role, RoleId, RoleScopeKind, ScopeBundle,
+};
 
 /// Server network configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +62,23 @@ pub struct ServerConfig {
     /// `bind_address` when unset.
     #[serde(default)]
     pub grpc_bind_address: Option<String>,
+    /// Filesystem directory containing the admin UI's mutable static
+    /// assets — currently only `app.css` (the Tailwind build output).
+    ///
+    /// When set, [`crate::protocol::web::serve_static`] reads
+    /// `<assets_dir>/app.css` once at server startup; restarting the
+    /// server picks up a fresh Tailwind build without recompiling Rust.
+    /// When `None` (the default) the binary serves the copy embedded by
+    /// `include_bytes!` at compile time.
+    ///
+    /// Path resolution: relative paths are interpreted relative to the
+    /// process working directory. A typical container layout exposes
+    /// `/etc/hearth/assets/` and points this at it.
+    ///
+    /// Other static assets (`htmx.min.js`, the Hearth SVG marks) remain
+    /// truly immutable for a binary's lifetime and stay embedded.
+    #[serde(default)]
+    pub assets_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -82,6 +104,7 @@ impl Default for ServerConfig {
             default_realm: None,
             grpc_port: None,
             grpc_bind_address: None,
+            assets_dir: None,
         }
     }
 }
@@ -442,6 +465,13 @@ pub struct RealmWebYaml {
     /// Path to a custom CSS file for this realm's UI sessions.
     #[serde(default)]
     pub custom_css: Option<String>,
+    /// Realm-specific product name shown in titles, logo alt text, and
+    /// email subjects when a request is scoped to this realm. Falls back
+    /// to the global `branding.product_name` when unset. The 2026-04-30
+    /// UX audit caught a realm titled "Test Corp" leaking into every
+    /// other realm's pages because there was no per-realm override.
+    #[serde(default)]
+    pub product_name: Option<String>,
 }
 
 /// First-run onboarding configuration.
@@ -738,6 +768,70 @@ pub struct ApplicationYamlConfig {
     /// URL to a logo displayed on the consent screen. Optional.
     #[serde(default)]
     pub client_logo_url: Option<String>,
+    /// Stable slug used by YAML references and mapper gates.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Authz trust posture for this client.
+    #[serde(default)]
+    pub trust_level: Option<ClientTrustLevel>,
+    /// Scopes this client may request.
+    #[serde(default)]
+    pub declared_scopes: Option<Vec<String>>,
+    /// Whether a realm-level consent row covers all org contexts.
+    #[serde(default)]
+    pub consent_spans_orgs: Option<bool>,
+}
+
+/// YAML permission definition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionYamlConfig {
+    pub name: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
+/// YAML role definition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoleYamlConfig {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub parents: Vec<String>,
+    #[serde(default)]
+    pub scope_kind: Option<String>,
+}
+
+/// YAML scope-bundle definition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScopeBundleYamlConfig {
+    pub name: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+/// YAML protected-resource registration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProtectedResourceYamlConfig {
+    pub resource_uri: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub scopes: Vec<ScopeBundleYamlConfig>,
+}
+
+/// YAML claim-profile wrapper.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ClaimsYamlConfig {
+    #[serde(default)]
+    pub mappings: Vec<ClaimMapping>,
 }
 
 /// Per-realm email branding overrides in YAML.
@@ -788,6 +882,24 @@ pub struct RealmYamlConfig {
     /// Reconciled at startup; runtime SPs not represented here are removed.
     #[serde(default)]
     pub saml_service_providers: Option<std::collections::HashMap<String, SamlServiceProviderYaml>>,
+    /// YAML-authored permission registry.
+    #[serde(default)]
+    pub permissions: Option<Vec<PermissionYamlConfig>>,
+    /// YAML-authored RBAC roles.
+    #[serde(default)]
+    pub roles: Option<Vec<RoleYamlConfig>>,
+    /// Optional realm-level scope bundles.
+    #[serde(default)]
+    pub scopes: Option<Vec<ScopeBundleYamlConfig>>,
+    /// Optional protected-resource registrations with resource-local scopes.
+    #[serde(default)]
+    pub protected_resources: Option<Vec<ProtectedResourceYamlConfig>>,
+    /// Optional claim-profile overrides.
+    #[serde(default)]
+    pub claims: Option<ClaimsYamlConfig>,
+    /// Alias for `applications` matching AUTHZ_EXPANSION terminology.
+    #[serde(default)]
+    pub oauth_clients: Option<std::collections::HashMap<String, ApplicationYamlConfig>>,
 }
 
 /// YAML for a single SAML SP registration (Hearth as IdP issues to this SP).
@@ -957,13 +1069,23 @@ impl RealmYamlConfig {
     /// Merges this per-realm config with global auth defaults to produce a
     /// `RealmConfig` suitable for storage.
     ///
+    /// Returns `Err(errors)` if any permission names are grammatically
+    /// invalid, scope bundle names are malformed, role parent references
+    /// are undeclared, cycles exist in the role parent graph, or claim
+    /// mappings target Tier 1 (reserved) claim names. All violations are
+    /// collected before returning so the caller can surface them at once.
+    ///
     /// `web_theme_css` is populated by the caller (main.rs) after reading
     /// the optional CSS file from disk; it is `None` here.
     pub fn to_realm_config(
         &self,
         global: &AuthConfig,
         global_branding: Option<&EmailBranding>,
-    ) -> crate::identity::RealmConfig {
+    ) -> Result<crate::identity::RealmConfig, Vec<crate::rbac::RegistryError>> {
+        use crate::rbac::registry::RegistryError;
+        use std::collections::HashMap;
+        use uuid::Uuid;
+
         let session_ttl_micros = self
             .session_ttl
             .as_deref()
@@ -1021,13 +1143,214 @@ impl RealmYamlConfig {
             .and_then(|a| a.registration.as_ref())
             .map(RegistrationPolicyYaml::to_domain);
 
-        crate::identity::RealmConfig {
+        // Accumulate all validation errors upfront so callers see the full
+        // set of problems in one pass rather than stopping at the first error.
+        let mut errors: Vec<RegistryError> = Vec::new();
+
+        // --- Permissions: grammar-validate each name -----------------------
+
+        let permissions: Vec<PermissionDefinition> = self
+            .permissions
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(
+                |permission| match Permission::new(permission.name.clone()) {
+                    Ok(name) => Some(PermissionDefinition {
+                        name,
+                        display_name: permission.display_name,
+                        description: permission.description,
+                        category: permission.category,
+                    }),
+                    Err(reason) => {
+                        errors.push(RegistryError::InvalidPermissionName {
+                            name: permission.name,
+                            reason,
+                        });
+                        None
+                    }
+                },
+            )
+            .collect();
+
+        // --- Scope bundles: grammar-validate permission names --------------
+
+        let scopes: Vec<ScopeBundle> = self
+            .scopes
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|bundle| ScopeBundle {
+                name: bundle.name,
+                display_name: bundle.display_name,
+                description: bundle.description,
+                permissions: bundle
+                    .permissions
+                    .into_iter()
+                    .filter_map(|permission| match Permission::new(permission.clone()) {
+                        Ok(p) => Some(p),
+                        Err(reason) => {
+                            errors.push(RegistryError::InvalidPermissionName {
+                                name: permission,
+                                reason,
+                            });
+                            None
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        // --- Roles: two-pass to wire up parent_roles by name → ID ---------
+        //
+        // Pass 1: assign a stable RoleId to each role name.
+        // Pass 2: resolve `parents: Vec<String>` to Vec<RoleId>.
+        //
+        // Roles in the in-memory registry use the nil UUID as the realm_id
+        // sentinel — the actual RealmId is applied by the seeding / reconcile
+        // path that writes roles into the RBAC engine's storage.
+
+        let yaml_roles = self.roles.clone().unwrap_or_default();
+        // Build name → RoleId map first (owned keys avoid a borrow-move conflict
+        // when we consume yaml_roles via into_iter() immediately after).
+        let name_to_id: HashMap<String, RoleId> = yaml_roles
+            .iter()
+            .map(|r| (r.name.clone(), RoleId::generate()))
+            .collect();
+
+        let roles: Vec<Role> = yaml_roles
+            .into_iter()
+            .map(|role| {
+                let scope_kind = match role.scope_kind.as_deref() {
+                    Some("organization") => RoleScopeKind::Organization,
+                    Some("any") => RoleScopeKind::Any,
+                    _ => RoleScopeKind::Realm,
+                };
+
+                let id = name_to_id[role.name.as_str()].clone();
+
+                let role_permissions: Vec<Permission> = role
+                    .permissions
+                    .into_iter()
+                    .filter_map(|permission| match Permission::new(permission.clone()) {
+                        Ok(p) => Some(p),
+                        Err(reason) => {
+                            errors.push(RegistryError::InvalidPermissionName {
+                                name: permission,
+                                reason,
+                            });
+                            None
+                        }
+                    })
+                    .collect();
+
+                // Resolve parent names to IDs; unknown names surface as
+                // UndeclaredParentRole errors during registry.validate().
+                // We store whatever IDs we can resolve here so the
+                // structural cycle-detector can run on what's available.
+                let parent_roles: Vec<RoleId> = role
+                    .parents
+                    .into_iter()
+                    .filter_map(|parent_name| name_to_id.get(parent_name.as_str()).cloned())
+                    .collect();
+
+                Role {
+                    id,
+                    // Nil UUID sentinel: actual realm ID is injected at
+                    // seed/reconcile time, not at YAML parse time.
+                    realm_id: crate::core::RealmId::new(Uuid::nil()),
+                    name: role.name,
+                    description: role.description,
+                    permissions: role_permissions,
+                    parent_roles,
+                    scope_kind,
+                    created_at: crate::core::Timestamp::from_micros(0),
+                    updated_at: crate::core::Timestamp::from_micros(0),
+                }
+            })
+            .collect();
+
+        // --- Protected resources: grammar-validate bundle perm names -------
+
+        let protected_resources: Vec<ProtectedResource> = self
+            .protected_resources
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|resource| ProtectedResource {
+                resource_uri: resource.resource_uri,
+                display_name: resource.display_name,
+                scopes: resource
+                    .scopes
+                    .into_iter()
+                    .map(|bundle| ScopeBundle {
+                        name: bundle.name,
+                        display_name: bundle.display_name,
+                        description: bundle.description,
+                        permissions: bundle
+                            .permissions
+                            .into_iter()
+                            .filter_map(|permission| match Permission::new(permission.clone()) {
+                                Ok(p) => Some(p),
+                                Err(reason) => {
+                                    errors.push(RegistryError::InvalidPermissionName {
+                                        name: permission,
+                                        reason,
+                                    });
+                                    None
+                                }
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        // --- Claim profile -------------------------------------------------
+
+        let claim_profile =
+            self.claims
+                .clone()
+                .map(|claims| crate::identity::claims_config::ClaimProfile {
+                    mappings: claims.mappings,
+                    updated_at: None,
+                });
+
+        // --- Structural validation (cross-references, cycles, Tier 1) ------
+        //
+        // Bail early on grammar errors before running the structural checks
+        // to avoid cascading noise (e.g. an undeclared perm in a role would
+        // generate both an InvalidPermissionName AND an UndeclaredPermission
+        // error for the same typo).
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        let registry = crate::rbac::registry::RealmPermissionRegistry {
+            permissions: permissions.clone(),
+            roles: roles.clone(),
+            scopes: scopes.clone(),
+            protected_resources: protected_resources.clone(),
+            claim_profile: claim_profile.clone(),
+        };
+        registry.validate()?;
+
+        Ok(crate::identity::RealmConfig {
             session_ttl_micros,
             password_memory_cost,
             password_time_cost,
             email_branding,
             // Populated by main.rs after reading the CSS file from disk.
             web_theme_css: None,
+            // Mirrors the realm's YAML `web.theme`. Doesn't require disk
+            // reads (unlike the CSS body) so we populate it here directly
+            // off the parsed YAML rather than deferring to main.rs.
+            web_theme_name: self
+                .web
+                .as_ref()
+                .and_then(|w| w.theme.as_ref())
+                .map(|t| t.trim().to_string())
+                .filter(|s| !s.is_empty()),
             mfa_required,
             mfa_methods,
             allowed_auth_methods,
@@ -1046,7 +1369,12 @@ impl RealmYamlConfig {
                 .as_ref()
                 .and_then(|f| f.link_existing_accounts)
                 .map(LinkModeYaml::to_domain),
-        }
+            permissions,
+            roles,
+            scopes,
+            protected_resources,
+            claim_profile,
+        })
     }
 }
 
@@ -1061,6 +1389,56 @@ mod tests {
         assert_eq!(cfg.port, 8420);
         assert!(cfg.tls_cert_path.is_none());
         assert!(cfg.tls_key_path.is_none());
+    }
+
+    /// Pins REQ-100: `to_realm_config` mirrors `web.theme` from the
+    /// realm YAML into `RealmConfig.web_theme_name` so the realm detail
+    /// page can show the source theme name without inspecting CSS bytes.
+    #[test]
+    fn to_realm_config_populates_web_theme_name_from_yaml() {
+        let yaml = RealmYamlConfig {
+            web: Some(RealmWebYaml {
+                theme: Some("ocean".to_string()),
+                custom_css: None,
+                product_name: None,
+            }),
+            ..RealmYamlConfig::default()
+        };
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert_eq!(cfg.web_theme_name.as_deref(), Some("ocean"));
+        // The CSS body is populated separately by main.rs from disk.
+        assert!(cfg.web_theme_css.is_none());
+    }
+
+    /// Whitespace-only or empty `web.theme` values must NOT surface as
+    /// `Some("")` — the detail page would render an empty pill, which
+    /// is worse than the "Inherits global default" fallback.
+    #[test]
+    fn to_realm_config_treats_blank_theme_as_unset() {
+        let yaml = RealmYamlConfig {
+            web: Some(RealmWebYaml {
+                theme: Some("   ".to_string()),
+                custom_css: None,
+                product_name: None,
+            }),
+            ..RealmYamlConfig::default()
+        };
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert!(cfg.web_theme_name.is_none());
+    }
+
+    /// When the realm has no `web` block at all, `web_theme_name` is `None`.
+    #[test]
+    fn to_realm_config_no_web_block_yields_none_theme_name() {
+        let yaml = RealmYamlConfig::default();
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert!(cfg.web_theme_name.is_none());
     }
 
     #[test]
@@ -1154,7 +1532,9 @@ mod tests {
             session_ttl: Some("12h".to_string()),
             ..RealmYamlConfig::default()
         };
-        let merged = realm_cfg.to_realm_config(&global, None);
+        let merged = realm_cfg
+            .to_realm_config(&global, None)
+            .expect("default realm config must be valid");
         // Per-realm TTL overrides global
         assert_eq!(merged.session_ttl_micros, Some(43_200_000_000));
         // Inherited from global

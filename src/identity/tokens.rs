@@ -12,6 +12,7 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{self, Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use zeroize::Zeroize;
 
 use crate::core::Timestamp;
@@ -82,6 +83,11 @@ pub struct TokenClaims {
     pub sid: String,
     /// Realm ID — binds this token to a realm.
     pub tid: String,
+    /// Organization ID — present only when the token was issued in an
+    /// organization context. Enables org-scoped role assignments per
+    /// `AUTHORIZATION.md § 2.4`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oid: Option<String>,
     /// Token type: `"access"` or `"refresh"`.
     pub token_type: String,
     /// JWT ID — unique identifier for this token (RFC 7519 §4.1.7).
@@ -108,6 +114,23 @@ pub struct TokenClaims {
     /// authorization request, the ID token MUST include it unmodified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// Role names the subject holds in this realm (and, if `oid` is
+    /// present, in that organization). Informational; authoritative
+    /// authorization reads exclusively from `permissions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    /// Group slugs the subject belongs to (transitively resolved).
+    /// Informational; see `permissions` for the authoritative set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    /// Flat, de-duplicated, sorted permission set resolved at token-issue
+    /// time. Client and server authorization checks read exclusively from
+    /// this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<String>,
+    /// Declaratively-mapped custom claims emitted at the top level.
+    #[serde(default, flatten)]
+    pub custom: BTreeMap<String, serde_json::Value>,
 }
 
 /// A pair of access and refresh tokens.
@@ -318,11 +341,16 @@ impl SigningKey {
             iat,
             sid: request.sid.to_string(),
             tid: request.tid.to_string(),
+            oid: request.oid.map(str::to_string),
             token_type: "access".to_string(),
             jti: None,
             fid: None,
             scope: None,
             nonce: None,
+            roles: request.roles.to_vec(),
+            groups: request.groups.to_vec(),
+            permissions: request.permissions.to_vec(),
+            custom: request.custom.clone(),
         };
 
         let refresh_claims = TokenClaims {
@@ -333,11 +361,16 @@ impl SigningKey {
             iat,
             sid: request.sid.to_string(),
             tid: request.tid.to_string(),
+            oid: request.oid.map(str::to_string),
             token_type: "refresh".to_string(),
             jti: None,
             fid: None,
             scope: None,
             nonce: None,
+            roles: Vec::new(),
+            groups: Vec::new(),
+            permissions: Vec::new(),
+            custom: BTreeMap::new(),
         };
 
         let access_token = self.issue_token(&access_claims)?;
@@ -359,10 +392,23 @@ pub struct IssueTokenRequest<'a> {
     pub sid: &'a str,
     /// Realm ID string.
     pub tid: &'a str,
+    /// Optional organization ID. When set, the token is scoped to this
+    /// organization and org-scoped role assignments matching this `oid`
+    /// are resolved into `permissions`.
+    pub oid: Option<&'a str>,
     /// Current timestamp.
     pub now: Timestamp,
     /// Token configuration (issuer, audience, TTLs).
     pub config: &'a TokenConfig,
+    /// Resolved role names to embed. Empty Vec is legal.
+    pub roles: &'a [String],
+    /// Resolved group slugs to embed. Empty Vec is legal.
+    pub groups: &'a [String],
+    /// Resolved flat permission set. Empty Vec is legal. Caller is
+    /// responsible for enforcing size caps per `AUTHORIZATION.md § 2.6`.
+    pub permissions: &'a [String],
+    /// Additional top-level custom claims.
+    pub custom: BTreeMap<String, serde_json::Value>,
 }
 
 /// Validates a JWT's signature and returns the decoded claims.
@@ -635,11 +681,16 @@ mod tests {
             iat: now_secs,
             sid: "session_660e8400-e29b-41d4-a716-446655440000".to_string(),
             tid: "realm_770e8400-e29b-41d4-a716-446655440000".to_string(),
+            oid: None,
             token_type: "access".to_string(),
             jti: None,
             fid: None,
             scope: None,
             nonce: None,
+            roles: Vec::new(),
+            groups: Vec::new(),
+            permissions: Vec::new(),
+            custom: BTreeMap::new(),
         }
     }
 
@@ -776,8 +827,13 @@ mod tests {
                 sub: "user_abc",
                 sid: "session_xyz",
                 tid: "realm_123",
+                oid: None,
                 now,
                 config: &config,
+                roles: &[],
+                groups: &[],
+                permissions: &[],
+                custom: BTreeMap::new(),
             })
             .expect("issue pair");
 
@@ -807,8 +863,13 @@ mod tests {
                 sub: "user_abc",
                 sid: "session_xyz",
                 tid: "realm_123",
+                oid: None,
                 now: later,
                 config: &config,
+                roles: &[],
+                groups: &[],
+                permissions: &[],
+                custom: BTreeMap::new(),
             })
             .expect("reissue pair");
 

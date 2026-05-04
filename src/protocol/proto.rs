@@ -25,9 +25,9 @@ pub mod identity {
     }
 }
 
-/// Authorization (Zanzibar) types.
-pub mod authz {
-    /// Version 1 of the authorization API.
+/// Claims-based RBAC admin types.
+pub mod rbac {
+    /// Version 1 of the RBAC admin API.
     #[allow(
         clippy::needless_lifetimes,
         clippy::return_self_not_must_use,
@@ -39,8 +39,8 @@ pub mod authz {
         mismatched_lifetime_syntaxes
     )]
     pub mod v1 {
-        include!("generated/hearth.authz.v1.rs");
-        include!("generated/hearth.authz.v1.serde.rs");
+        include!("generated/hearth.rbac.v1.rs");
+        include!("generated/hearth.rbac.v1.serde.rs");
     }
 }
 

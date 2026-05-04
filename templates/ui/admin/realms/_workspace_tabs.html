@@ -4,38 +4,53 @@
    (set by the including template) decides which tab gets the highlight.
 
    Required struct fields on the caller:
-     - target_realm_name: Option<String>
-     - target_realm_id_hex: Option<String>
-     - active_tab: &'static str   // "overview" | "users" | "organizations"
-                                  // | "applications" | "sessions"
+     - realm_name: String           // realm slug, used in path-based URLs
+     - active_tab: &'static str     // "overview" | "users" | "organizations"
+                                    // | "groups" | "applications" | "sessions"
+                                    // | "audit" | "rbac_permissions"
+                                    // | "rbac_roles" | "rbac_scopes" | "rbac_debug"
+
+   Per UI_ROUTING.md R-1, every realm-scoped URL is built as
+   `/ui/admin/realms/{realm_name}/...` — there is no `?realm=` query
+   parameter and no `target_realm_name: Option<...>` matching.
 #}
-{% match target_realm_name %}
-  {% when Some with (realm_name) %}
-    {% match target_realm_id_hex %}
-      {% when Some with (realm_hex) %}
-        <div class="mb-4 flex flex-wrap items-center gap-2 text-sm">
-          <a href="/ui/admin/realms" class="text-ht-content-muted hover:text-ht-content-primary">Realms</a>
-          <span class="text-ht-content-muted">›</span>
-          <a href="/ui/admin/realms/{{ realm_hex }}" class="font-medium text-ht-content-secondary hover:text-ht-content-primary">{{ realm_name }}</a>
-        </div>
-        <nav class="mb-6 flex flex-wrap gap-1 border-b border-divider" aria-label="Realm workspace">
-          <a href="/ui/admin/realms/{{ realm_hex }}"
-             {% if active_tab == "overview" %}aria-current="page"{% endif %}
-             class="{% if active_tab == "overview" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Overview</a>
-          <a href="/ui/admin/users?realm={{ realm_name }}"
-             {% if active_tab == "users" %}aria-current="page"{% endif %}
-             class="{% if active_tab == "users" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Users</a>
-          <a href="/ui/admin/organizations?realm={{ realm_name }}"
-             {% if active_tab == "organizations" %}aria-current="page"{% endif %}
-             class="{% if active_tab == "organizations" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Organizations</a>
-          <a href="/ui/admin/applications?realm={{ realm_name }}"
-             {% if active_tab == "applications" %}aria-current="page"{% endif %}
-             class="{% if active_tab == "applications" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Applications</a>
-          <a href="/ui/admin/sessions?realm={{ realm_name }}"
-             {% if active_tab == "sessions" %}aria-current="page"{% endif %}
-             class="{% if active_tab == "sessions" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Sessions</a>
-        </nav>
-      {% when None %}
-    {% endmatch %}
-  {% when None %}
-{% endmatch %}
+<div class="mb-4 flex flex-wrap items-center gap-2 text-sm">
+  <a href="/ui/admin/realms" class="text-ht-content-muted hover:text-ht-content-primary">Realms</a>
+  <span class="text-ht-content-muted">›</span>
+  <a href="/ui/admin/realms/{{ realm_name }}" class="font-medium text-ht-content-secondary hover:text-ht-content-primary">{{ realm_name }}</a>
+</div>
+<nav class="mb-6 flex flex-wrap gap-1 border-b border-divider" aria-label="Realm workspace">
+  <a href="/ui/admin/realms/{{ realm_name }}"
+     {% if active_tab == "overview" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "overview" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Overview</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/users"
+     {% if active_tab == "users" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "users" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Users</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/organizations"
+     {% if active_tab == "organizations" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "organizations" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Organizations</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/groups"
+     {% if active_tab == "groups" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "groups" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Groups</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/applications"
+     {% if active_tab == "applications" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "applications" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Applications</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/sessions"
+     {% if active_tab == "sessions" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "sessions" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Sessions</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/audit"
+     {% if active_tab == "audit" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "audit" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Audit log</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/rbac/permissions"
+     {% if active_tab == "rbac_permissions" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "rbac_permissions" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Permissions</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles"
+     {% if active_tab == "rbac_roles" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "rbac_roles" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Roles</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/rbac/scopes"
+     {% if active_tab == "rbac_scopes" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "rbac_scopes" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Scopes</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/rbac/debug"
+     {% if active_tab == "rbac_debug" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "rbac_debug" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Permission Check</a>
+</nav>

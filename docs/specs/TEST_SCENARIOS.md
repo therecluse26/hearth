@@ -433,7 +433,7 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | Phase 1 Cross-Cutting | -- | -- | -- | -- | -- | 3/3 | -- | 2/2 | **5/5** |
 | **Column Total** | **40/44** | **34/36** | **10/10** | **1/1** | **4/4** | **22/24** | **8/8** | **6/6** | **133/133** |
 
-> **Note:** Counts reflect the post-RBAC-migration plan. Simulation scenarios related to the removed Zanzibar watch/cache surfaces (`cache_stampede`, `watch_partition`) are dropped; RBAC resolution is synchronous with no equivalent simulation surface. Consider re-adding one concurrent-role-assignment property test during implementation.
+> **Note:** Counts reflect the post-RBAC-migration plan. Simulation scenarios related to the removed pre-migration watch/cache surfaces (`cache_stampede`, `watch_partition`) are dropped; RBAC resolution is synchronous with no equivalent simulation surface. A concurrent-role-assignment property test covers the remaining concurrency surface (`simulation/src/tests/rbac_concurrent_assignments.rs`).
 
 ---
 
