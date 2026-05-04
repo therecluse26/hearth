@@ -1,0 +1,53 @@
+{# HTMX partial: a chunk of the member picker.
+   - On initial load: full innerHTML swap into #member-picker-results.
+   - On infinite-scroll: outerHTML swap on the trailing sentinel (replaces
+     itself with the next chunk, which contains its own sentinel if more
+     remain). When `next_cursor` is `None` no sentinel is rendered, so the
+     list naturally terminates.
+   - On filter change: full innerHTML swap (resets pagination). Search
+     queries (>= 2 chars) return up to 20 substring matches with
+     `next_cursor: None` — refining the query is the path past 20.
+#}
+
+{% if users.is_empty() %}
+<div class="py-6 text-center text-sm text-ht-content-muted">
+  {% if !query.is_empty() %}
+    No users found matching "{{ query }}"
+  {% else %}
+    All realm users are already members of this group.
+  {% endif %}
+</div>
+{% else %}
+<div>
+  {% for u in users %}
+  {# Per-row border-b matches the in-repo list-row idiom — divide-y was
+     falling back to a bright Tailwind default because the
+     divider-faint divideColor isn't declared in the Tailwind config. #}
+  <form method="post"
+        action="/ui/admin/groups/{{ group_id }}/members{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+        class="flex items-center gap-3 border-b border-divider-faint px-3 py-1.5 last:border-b-0 hover-bg-divider">
+    {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+    <input type="hidden" name="member_kind" value="user">
+    <input type="hidden" name="member_id" value="{{ u.id().as_uuid() }}">
+    <div class="min-w-0 flex-1">
+      <div class="truncate text-sm font-medium text-ht-content-primary leading-tight">{{ u.display_name() }}</div>
+      <div class="truncate text-xs text-ht-content-muted leading-tight">{{ u.email() }}</div>
+    </div>
+    <button type="submit" class="btn-ember rounded px-3 py-1 text-xs font-semibold">Add</button>
+  </form>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% match next_cursor %}
+  {% when Some with (cursor) %}
+    {# Infinite-scroll sentinel. Replaces itself with the next page when
+       scrolled into view. The realm context is included in the URL —
+       without it, `TargetRealm` falls back to the admin-target cookie on
+       HTMX requests, which silently misroutes the pagination request. #}
+    <div hx-get="/ui/admin/groups/{{ group_id }}/members/picker?cursor={{ cursor }}{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}{% if !query.is_empty() %}&q={{ query }}{% endif %}"
+         hx-trigger="revealed"
+         hx-swap="outerHTML"
+         class="py-3 text-center text-xs text-ht-content-muted">Loading more…</div>
+  {% when None %}
+{% endmatch %}

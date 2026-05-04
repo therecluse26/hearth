@@ -702,6 +702,14 @@ pub fn router(state: WebState) -> Router {
             "/admin/admin-users",
             axum::routing::get(admin::admin_admin_users_list),
         )
+        .route(
+            // Spec-named admin-user creation route (REQ-022). 302 alias to the
+            // generic /admin/users/new form pre-scoped to the system realm.
+            // The form template already POSTs back with `target_query` carrying
+            // `?admin_target=system`, so submission lands on the same handler chain.
+            "/admin/admin-users/new",
+            axum::routing::get(admin::admin_admin_user_create_alias),
+        )
         .route("/admin/users", axum::routing::get(admin::admin_users_list))
         .route(
             "/admin/users/new",
@@ -801,6 +809,13 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(admin::admin_rbac_debug),
         )
         .route(
+            // Canonical resolver URL per spec (REQ-056). Aliases to /admin/rbac/debug
+            // preserving query string. The two surfaces share an implementation; this
+            // route just gives the spec-named URL a 302 home.
+            "/admin/permissions/resolve",
+            axum::routing::get(admin::admin_permissions_resolve_alias),
+        )
+        .route(
             "/admin/rbac/token-preview",
             axum::routing::post(admin::admin_rbac_token_preview),
         )
@@ -888,6 +903,48 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/organizations/{id}/members/{uid}/permissions/revoke",
             axum::routing::post(admin::admin_org_member_revoke_perm),
+        )
+        // --- Groups (RBAC) ---
+        .route(
+            "/admin/groups",
+            axum::routing::get(admin::admin_groups_list),
+        )
+        .route(
+            "/admin/groups/new",
+            axum::routing::get(admin::admin_group_create_form)
+                .post(admin::admin_group_create_submit),
+        )
+        .route(
+            "/admin/groups/{id}",
+            axum::routing::get(admin::admin_group_detail),
+        )
+        .route(
+            "/admin/groups/{id}/edit",
+            axum::routing::get(admin::admin_group_edit_form).post(admin::admin_group_edit_submit),
+        )
+        .route(
+            "/admin/groups/{id}/delete",
+            axum::routing::post(admin::admin_group_delete),
+        )
+        .route(
+            "/admin/groups/{id}/members",
+            axum::routing::post(admin::admin_group_member_add),
+        )
+        .route(
+            "/admin/groups/{id}/members/picker",
+            axum::routing::get(admin::admin_group_member_picker),
+        )
+        .route(
+            "/admin/groups/{id}/members/{kind}/{mid}/remove",
+            axum::routing::post(admin::admin_group_member_remove),
+        )
+        .route(
+            "/admin/groups/{id}/roles/assign",
+            axum::routing::post(admin::admin_group_role_assign),
+        )
+        .route(
+            "/admin/groups/{id}/roles/{aid}/unassign",
+            axum::routing::post(admin::admin_group_role_unassign),
         )
         // --- User search API (HTMX) ---
         .route(

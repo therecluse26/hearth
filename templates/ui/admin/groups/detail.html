@@ -1,0 +1,266 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · {{ group.name }}{% endblock %}
+{% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+
+<div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="/ui/admin/groups{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+     class="hover:text-ht-content-primary">Groups</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">{{ group.name }}</span>
+</div>
+
+<div class="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+  <div>
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ group.name }}</h1>
+    <div class="mt-1 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+      <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ group.slug }}</code>
+      <span>·</span>
+      <span>{{ member_count }} member{% if member_count != 1 %}s{% endif %}</span>
+    </div>
+  </div>
+  <a href="/ui/admin/groups/{{ group.id.as_uuid() }}/edit{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+     class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+    Edit details
+  </a>
+</div>
+
+{# Sub-tab navigation #}
+<nav class="mb-6 flex flex-wrap gap-1 border-b border-divider" aria-label="Group sections">
+  <a href="/ui/admin/groups/{{ group.id.as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}&tab=overview{% when None %}?tab=overview{% endmatch %}"
+     {% if active_subtab == "overview" %}aria-current="page"{% endif %}
+     class="{% if active_subtab == "overview" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Overview</a>
+  <a href="/ui/admin/groups/{{ group.id.as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}&tab=members{% when None %}?tab=members{% endmatch %}"
+     {% if active_subtab == "members" %}aria-current="page"{% endif %}
+     class="{% if active_subtab == "members" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Members</a>
+  <a href="/ui/admin/groups/{{ group.id.as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}&tab=roles{% when None %}?tab=roles{% endmatch %}"
+     {% if active_subtab == "roles" %}aria-current="page"{% endif %}
+     class="{% if active_subtab == "roles" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Roles</a>
+  <a href="/ui/admin/groups/{{ group.id.as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}&tab=danger{% when None %}?tab=danger{% endmatch %}"
+     {% if active_subtab == "danger" %}aria-current="page"{% endif %}
+     class="{% if active_subtab == "danger" %}border-brand text-ht-content-primary{% else %}border-transparent text-danger-fg hover:text-danger-fg{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Danger</a>
+</nav>
+
+{% if active_subtab == "overview" %}
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <dl class="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Group ID</dt>
+      <dd class="mt-1 font-mono text-xs text-ht-content-secondary">{{ group.id.as_uuid() }}</dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Slug</dt>
+      <dd class="mt-1 font-mono text-sm text-ht-content-primary">{{ group.slug }}</dd>
+    </div>
+    <div class="sm:col-span-2">
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Description</dt>
+      <dd class="mt-1 text-sm text-ht-content-primary">
+        {% match group.description %}
+          {% when Some with (d) %}{{ d }}
+          {% when None %}<span class="italic text-ht-content-muted">No description</span>
+        {% endmatch %}
+      </dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Members</dt>
+      <dd class="mt-1 text-sm text-ht-content-primary">{{ member_count }}</dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Roles assigned</dt>
+      <dd class="mt-1 text-sm text-ht-content-primary">{{ role_count }}</dd>
+    </div>
+  </dl>
+</div>
+{% endif %}
+
+{% if active_subtab == "members" %}
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <div class="mb-4 flex items-center justify-between">
+    <h2 class="text-lg font-semibold text-ht-content-primary">Members</h2>
+    <p class="text-sm text-ht-content-muted">{{ member_count }} direct member{% if member_count != 1 %}s{% endif %}. Nested-group members inherit transitively.</p>
+  </div>
+
+  <div class="mb-6">
+    <label for="member_search" class="block text-xs font-medium text-ht-content-secondary">Add user to group</label>
+    {# Filter input — typing triggers a fresh innerHTML swap, dropping any
+       in-progress infinite-scroll pagination. Empty queries return the
+       cursor-paginated user list; non-empty queries trigger a case-insensitive
+       substring filter over a bounded window in the picker handler.
+       The `?realm=…` query param is essential — without it, HTMX merges only
+       `?q=…` into the URL and `TargetRealm` falls back to the cookie, which
+       silently routes the search at a different realm. #}
+    <input type="search" id="member_search" name="q" placeholder="Filter by name or email…"
+           class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus"
+           hx-get="/ui/admin/groups/{{ group.id.as_uuid() }}/members/picker{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+           hx-trigger="input changed delay:300ms, search"
+           hx-target="#member-picker-results"
+           hx-swap="innerHTML">
+    {# Container is server-side-populated with the first page of users on
+       render (see admin_group_detail handler). This guarantees the list
+       is visible immediately on tab open without depending on a client
+       roundtrip. Subsequent pages append via the `hx-trigger="revealed"`
+       sentinel at the bottom of the rendered chunk (see
+       _member_picker_rows.html). Filter input above swaps innerHTML
+       to reset pagination on search. #}
+    <div id="member-picker-results"
+         class="mt-2 max-h-72 overflow-y-auto rounded-sm border border-divider bg-ht-surface-elevated">
+      {% include "ui/admin/groups/_member_picker_rows.html" %}
+    </div>
+  </div>
+
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Member</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Type</th>
+        <th class="px-3 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if members.is_empty() %}
+      <tr><td colspan="3" class="px-3 py-8 text-center text-sm text-ht-content-muted">No members yet. Use the search above to add users.</td></tr>
+      {% else %}
+        {% for m in members %}
+          {% include "ui/admin/groups/_member_row.html" %}
+        {% endfor %}
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if active_subtab == "roles" %}
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <div class="mb-4">
+    <h2 class="text-lg font-semibold text-ht-content-primary">Roles assigned to this group</h2>
+    <p class="mt-1 text-sm text-ht-content-muted">All members of this group inherit the permissions of these roles. Role definitions are managed via <code class="font-mono">hearth.yaml</code>; assignments are runtime.</p>
+  </div>
+
+  {# Assign-role inline form. Posts to /admin/groups/{id}/roles/assign with
+     role_id + scope ("realm" or "org:UUID") + _csrf. Org dropdown is shown
+     conditionally via Alpine state. #}
+  {% if available_roles.is_empty() %}
+  <div class="mb-6 rounded-sm border border-divider-subtle bg-ht-surface-base px-4 py-3 text-sm text-ht-content-muted">
+    No roles defined in this realm yet. Add roles to <code class="font-mono">hearth.yaml</code> and reload the configuration to make them available for assignment.
+  </div>
+  {% else %}
+  <form method="post"
+        action="/ui/admin/groups/{{ group_id }}/roles/assign{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+        class="mb-6 flex flex-wrap items-end gap-3 rounded-sm border border-divider-subtle bg-ht-surface-base p-4"
+        x-data="{ scope: 'realm' }">
+    {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+    <div class="min-w-[200px] flex-1">
+      <label for="assign_role_id" class="block text-xs font-medium text-ht-content-secondary">Role</label>
+      <select id="assign_role_id" name="role_id" required
+              class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        {% for role in available_roles %}
+        <option value="{{ role.id }}">{{ role.name }}{% if !role.description.is_empty() %} — {{ role.description }}{% endif %} ({{ role.scope_kind }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="assign_scope_kind" class="block text-xs font-medium text-ht-content-secondary">Scope</label>
+      <select id="assign_scope_kind" x-model="scope"
+              class="mt-1 block rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        <option value="realm">Realm-wide</option>
+        <option value="org" {% if available_orgs.is_empty() %}disabled{% endif %}>Org-scoped</option>
+      </select>
+    </div>
+    <div x-show="scope === 'org'" x-cloak class="min-w-[180px]">
+      <label for="assign_org_id" class="block text-xs font-medium text-ht-content-secondary">Organization</label>
+      <select id="assign_org_id" name="org_id"
+              class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-2 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        {% for org in available_orgs %}
+        <option value="{{ org.id }}">{{ org.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {# Hidden field carrying the composed scope string consumed by
+       parse_rbac_scope: "realm" or "org:<uuid>". #}
+    <input type="hidden" name="scope"
+           :value="scope === 'org' ? ('org:' + (document.getElementById('assign_org_id')?.value || '')) : 'realm'">
+    <div>
+      <button type="submit" class="btn-ember rounded px-3 py-1.5 text-sm font-semibold">Assign role</button>
+    </div>
+  </form>
+  {% endif %}
+
+  {% if role_assignments.is_empty() %}
+  <div class="rounded-sm border border-divider-subtle bg-ht-surface-base px-4 py-6 text-center">
+    <p class="text-sm text-ht-content-muted">No roles assigned to this group yet.</p>
+  </div>
+  {% else %}
+  <table class="w-full">
+    <thead>
+      <tr class="border-b border-divider-subtle">
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Role</th>
+        <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Scope</th>
+        <th class="px-3 py-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ra in role_assignments %}
+      <tr class="border-b border-divider-faint hover-bg-divider">
+        <td class="px-3 py-2 text-sm text-ht-content-primary">{{ ra.role_label }}</td>
+        <td class="px-3 py-2 font-mono text-xs text-ht-content-secondary">{{ ra.scope_label }}</td>
+        <td class="px-3 py-2 text-right">
+          <form method="post"
+                action="/ui/admin/groups/{{ group_id }}/roles/{{ ra.assignment_id }}/unassign{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+                x-data="{ confirm: false }"
+                class="inline-block">
+            {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+            <button :type="confirm ? 'submit' : 'button'"
+                    @click="!confirm && (confirm = true)"
+                    :class="confirm ? 'btn-danger' : 'border border-strong bg-ht-surface-elevated text-ht-content-secondary hover-bg-divider'"
+                    class="rounded px-2 py-1 text-xs font-medium"
+                    x-text="confirm ? 'Confirm' : 'Remove'"></button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if active_subtab == "danger" %}
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle"
+     x-data="{ open: false, slugTyped: '' }">
+  <h2 class="text-lg font-semibold text-danger-fg">Delete group</h2>
+  <p class="mt-1 text-sm text-ht-content-muted">Permanently removes the group, all member entries, and any role assignments targeting it. Members keep their direct role assignments.</p>
+  <button type="button"
+          @click="open = true"
+          class="mt-4 inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-danger-fg hover-bg-divider">
+    Delete group…
+  </button>
+
+  <div x-show="open" x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+       role="dialog"
+       aria-modal="true"
+       @keydown.escape.window="open = false"
+       @click.self="open = false">
+    <div class="w-full max-w-md rounded-lg bg-ht-surface-elevated p-6 ring-1 ring-divider">
+      <h3 class="font-display text-lg font-medium text-ht-content-primary">Delete {{ group.name }}?</h3>
+      <p class="mt-2 text-sm text-ht-content-muted">Type the slug <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ group.slug }}</code> to confirm.</p>
+      <input type="text"
+             x-model="slugTyped"
+             autofocus
+             class="mt-3 block w-full rounded-sm border border-divider bg-ht-surface-base px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-danger focus:outline-none">
+      <form method="post"
+            action="/ui/admin/groups/{{ group.id.as_uuid() }}/delete{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+            class="mt-4 flex items-center justify-end gap-3">
+        {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+        <button type="button" @click="open = false" class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</button>
+        <button type="submit"
+                :disabled="slugTyped !== '{{ group.slug }}'"
+                :class="slugTyped === '{{ group.slug }}' ? 'btn-danger' : 'border border-strong bg-ht-surface-elevated text-ht-content-muted opacity-50 cursor-not-allowed'"
+                class="rounded px-3 py-1.5 text-sm font-semibold">Delete permanently</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

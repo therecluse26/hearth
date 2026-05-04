@@ -61,6 +61,18 @@ pub enum AuditAction {
     OrgUpdated,
     /// An organization was deleted.
     OrgDeleted,
+    /// An RBAC group was created (admin UI / API, not SCIM).
+    GroupCreated,
+    /// An RBAC group was updated (name / slug / description).
+    GroupUpdated,
+    /// An RBAC group was deleted.
+    GroupDeleted,
+    /// A member (user or nested group) was added to a group.
+    /// Metadata carries `member_type` (`"user"` / `"group"`) + `member_id`.
+    GroupMemberAdded,
+    /// A member was removed from a group.
+    /// Metadata carries `member_type` + `member_id`.
+    GroupMemberRemoved,
     /// A role was assigned to a subject (user) on an object (realm / organization / application).
     ///
     /// Metadata carries `object_type`, `object_id`, `role`, and the previous
@@ -211,6 +223,11 @@ impl AuditAction {
             Self::ScimGroupCreated,
             Self::ScimGroupUpdated,
             Self::ScimGroupDeleted,
+            Self::GroupCreated,
+            Self::GroupUpdated,
+            Self::GroupDeleted,
+            Self::GroupMemberAdded,
+            Self::GroupMemberRemoved,
             Self::RoleAssigned,
             Self::RoleRevoked,
             Self::OrphanedReferenceSkipped,
@@ -252,6 +269,11 @@ impl AuditAction {
             Self::OrgCreated => "org_created",
             Self::OrgUpdated => "org_updated",
             Self::OrgDeleted => "org_deleted",
+            Self::GroupCreated => "group_created",
+            Self::GroupUpdated => "group_updated",
+            Self::GroupDeleted => "group_deleted",
+            Self::GroupMemberAdded => "group_member_added",
+            Self::GroupMemberRemoved => "group_member_removed",
             Self::ConsentGranted => "consent_granted",
             Self::ConsentDenied => "consent_denied",
             Self::ConsentRevoked => "consent_revoked",
@@ -316,6 +338,11 @@ impl std::str::FromStr for AuditAction {
             "org_created" => Ok(Self::OrgCreated),
             "org_updated" => Ok(Self::OrgUpdated),
             "org_deleted" => Ok(Self::OrgDeleted),
+            "group_created" => Ok(Self::GroupCreated),
+            "group_updated" => Ok(Self::GroupUpdated),
+            "group_deleted" => Ok(Self::GroupDeleted),
+            "group_member_added" => Ok(Self::GroupMemberAdded),
+            "group_member_removed" => Ok(Self::GroupMemberRemoved),
             "consent_granted" => Ok(Self::ConsentGranted),
             "consent_denied" => Ok(Self::ConsentDenied),
             "consent_revoked" => Ok(Self::ConsentRevoked),

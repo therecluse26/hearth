@@ -7,9 +7,9 @@
      - target_realm_name: Option<String>
      - target_realm_id_hex: Option<String>
      - active_tab: &'static str   // "overview" | "users" | "organizations"
-                                  // | "applications" | "sessions" | "audit"
-                                  // | "rbac_permissions" | "rbac_roles"
-                                  // | "rbac_scopes" | "rbac_debug"
+                                  // | "groups" | "applications" | "sessions"
+                                  // | "audit" | "rbac_permissions"
+                                  // | "rbac_roles" | "rbac_scopes" | "rbac_debug"
 
    The 2026-04-30 UX audit caught the mismatch between this tab bar and
    the per-realm sidebar submenu (which already exposed Audit Log + RBAC
@@ -36,6 +36,9 @@
           <a href="/ui/admin/organizations?realm={{ realm_name }}"
              {% if active_tab == "organizations" %}aria-current="page"{% endif %}
              class="{% if active_tab == "organizations" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Organizations</a>
+          <a href="/ui/admin/groups?realm={{ realm_name }}"
+             {% if active_tab == "groups" %}aria-current="page"{% endif %}
+             class="{% if active_tab == "groups" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Groups</a>
           <a href="/ui/admin/applications?realm={{ realm_name }}"
              {% if active_tab == "applications" %}aria-current="page"{% endif %}
              class="{% if active_tab == "applications" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Applications</a>

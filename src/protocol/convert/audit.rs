@@ -71,7 +71,12 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         | domain::AuditAction::UserPermissionRevoked
         | domain::AuditAction::ClientConsentGranted
         | domain::AuditAction::ClientConsentRevoked
-        | domain::AuditAction::ConsentRequiredOnRefresh => pb::AuditAction::Unspecified,
+        | domain::AuditAction::ConsentRequiredOnRefresh
+        | domain::AuditAction::GroupCreated
+        | domain::AuditAction::GroupUpdated
+        | domain::AuditAction::GroupDeleted
+        | domain::AuditAction::GroupMemberAdded
+        | domain::AuditAction::GroupMemberRemoved => pb::AuditAction::Unspecified,
     }
 }
 
