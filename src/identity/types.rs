@@ -451,6 +451,13 @@ pub struct RealmConfig {
     /// as the realm-specific theme stylesheet. `None` means no per-realm
     /// theme is configured — the global theme applies.
     pub web_theme_css: Option<String>,
+    /// Source theme name (e.g. `"ember"`, `"ocean"`, `"midnight"`,
+    /// `"forest"`, `"cloud"`, `"parchment"`) when the realm overrides
+    /// `branding.theme` via `realms.<id>.web.theme` in `hearth.yaml`.
+    /// Surfaced read-only on the realm detail page so operators can see
+    /// which named theme drives this realm without inspecting the CSS.
+    /// `None` means the global theme applies.
+    pub web_theme_name: Option<String>,
     /// Whether MFA is required for all users in this realm.
     pub mfa_required: Option<bool>,
     /// Allowed MFA methods (e.g. `["totp", "webauthn"]`).

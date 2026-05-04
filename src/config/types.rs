@@ -1342,6 +1342,15 @@ impl RealmYamlConfig {
             email_branding,
             // Populated by main.rs after reading the CSS file from disk.
             web_theme_css: None,
+            // Mirrors the realm's YAML `web.theme`. Doesn't require disk
+            // reads (unlike the CSS body) so we populate it here directly
+            // off the parsed YAML rather than deferring to main.rs.
+            web_theme_name: self
+                .web
+                .as_ref()
+                .and_then(|w| w.theme.as_ref())
+                .map(|t| t.trim().to_string())
+                .filter(|s| !s.is_empty()),
             mfa_required,
             mfa_methods,
             allowed_auth_methods,
@@ -1380,6 +1389,56 @@ mod tests {
         assert_eq!(cfg.port, 8420);
         assert!(cfg.tls_cert_path.is_none());
         assert!(cfg.tls_key_path.is_none());
+    }
+
+    /// Pins REQ-100: `to_realm_config` mirrors `web.theme` from the
+    /// realm YAML into `RealmConfig.web_theme_name` so the realm detail
+    /// page can show the source theme name without inspecting CSS bytes.
+    #[test]
+    fn to_realm_config_populates_web_theme_name_from_yaml() {
+        let yaml = RealmYamlConfig {
+            web: Some(RealmWebYaml {
+                theme: Some("ocean".to_string()),
+                custom_css: None,
+                product_name: None,
+            }),
+            ..RealmYamlConfig::default()
+        };
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert_eq!(cfg.web_theme_name.as_deref(), Some("ocean"));
+        // The CSS body is populated separately by main.rs from disk.
+        assert!(cfg.web_theme_css.is_none());
+    }
+
+    /// Whitespace-only or empty `web.theme` values must NOT surface as
+    /// `Some("")` — the detail page would render an empty pill, which
+    /// is worse than the "Inherits global default" fallback.
+    #[test]
+    fn to_realm_config_treats_blank_theme_as_unset() {
+        let yaml = RealmYamlConfig {
+            web: Some(RealmWebYaml {
+                theme: Some("   ".to_string()),
+                custom_css: None,
+                product_name: None,
+            }),
+            ..RealmYamlConfig::default()
+        };
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert!(cfg.web_theme_name.is_none());
+    }
+
+    /// When the realm has no `web` block at all, `web_theme_name` is `None`.
+    #[test]
+    fn to_realm_config_no_web_block_yields_none_theme_name() {
+        let yaml = RealmYamlConfig::default();
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert!(cfg.web_theme_name.is_none());
     }
 
     #[test]

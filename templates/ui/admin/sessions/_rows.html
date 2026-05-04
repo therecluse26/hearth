@@ -7,8 +7,16 @@
   <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ s.device_label }}</td>
   <td class="px-4 py-3 font-mono text-xs text-ht-content-muted">{{ s.ip_address }}</td>
   <td class="px-4 py-3 text-sm text-ht-content-muted">{{ s.created_at_display }}</td>
-  <td class="px-4 py-3 text-sm text-ht-content-muted">{{ s.expires_at_display }}</td>
+  <td class="px-4 py-3 text-sm text-ht-content-muted">
+    <span class="inline-flex items-center gap-1.5">
+      {{ s.expires_at_display }}
+      {% if !s.is_active %}
+        <span class="inline-flex items-center rounded-full bg-steel-bg px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-steel-fg" title="Session is past its expiry or has been revoked.">Expired</span>
+      {% endif %}
+    </span>
+  </td>
   <td class="px-4 py-3 text-right">
+    {% if s.is_active %}
     <form method="post" action="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke{{ s.realm_target_query }}"
           hx-post="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke{{ s.realm_target_query }}"
           hx-target="#session-{{ s.session.id().as_uuid() }}"
@@ -24,13 +32,14 @@
         Revoke
       </button>
     </form>
+    {% endif %}
   </td>
 </tr>
 {% endfor %}
 {% if sessions.is_empty() %}
 {% if is_global %}
-<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-ht-content-muted">No active sessions in any realm.</td></tr>
+<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-ht-content-muted">No sessions match the current filter.</td></tr>
 {% else %}
-<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-ht-content-muted">No active sessions.</td></tr>
+<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-ht-content-muted">No sessions match the current filter.</td></tr>
 {% endif %}
 {% endif %}

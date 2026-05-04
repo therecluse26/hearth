@@ -639,6 +639,179 @@ async fn admin_sessions_realm_scoped_view_omits_realm_column() {
     );
 }
 
+/// `/ui/admin/users` renders the search input wired with HTMX live-search
+/// attributes (hx-get, hx-trigger, hx-target). Resolves REQ-044.
+#[tokio::test]
+async fn admin_users_list_renders_htmx_live_search_attrs() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-users-htmx");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/users?realm=Acme")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    assert!(
+        body.contains(r#"hx-get="/ui/admin/users""#),
+        "search form must point hx-get at the list URL"
+    );
+    assert!(
+        body.contains(r#"hx-trigger="input changed delay:200ms"#),
+        "search form must debounce input by 200ms"
+    );
+    assert!(
+        body.contains(r##"hx-target="#users-tbody""##),
+        "search form must target the rows tbody"
+    );
+    assert!(
+        body.contains(r#"<tbody id="users-tbody">"#),
+        "the tbody must carry the id the search form targets"
+    );
+}
+
+/// `GET /ui/admin/users` with `HX-Request: true` returns ONLY the rows
+/// partial — no DOCTYPE / html / page chrome. Pins the live-search
+/// payload size and prevents accidental nested-`<html>` regressions.
+#[tokio::test]
+async fn admin_users_list_returns_rows_partial_for_htmx_request() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-users-htmx-partial");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/users?realm=Acme")
+                .header(header::COOKIE, cookie)
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    assert!(
+        !body.to_ascii_lowercase().contains("<!doctype html"),
+        "HTMX response must not include the page <!DOCTYPE>"
+    );
+    assert!(
+        !body.contains("<html"),
+        "HTMX response must not include a <html> tag"
+    );
+    // Should still contain at least one user row marker (the seeded bob).
+    assert!(
+        body.contains("bob@acme.test"),
+        "rows partial must include the seeded user rows"
+    );
+}
+
+/// `/ui/admin/sessions` renders the Active/Expired/All filter pills
+/// and defaults to the Active view. Resolves REQ-050 in the gap doc.
+#[tokio::test]
+async fn admin_sessions_list_renders_status_filter_pills() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-sessions-pills");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/sessions")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    // All three pills present, with their query strings.
+    assert!(body.contains("?status=active"), "Active pill must be wired");
+    assert!(body.contains("?status=expired"), "Expired pill must be wired");
+    assert!(body.contains("?status=all"), "All pill must be wired");
+
+    // Default is Active — only the Active pill carries aria-selected="true".
+    let active_marker = r#"href="/ui/admin/sessions?status=active"
+     role="tab"
+     aria-selected="true""#;
+    assert!(
+        body.contains(active_marker),
+        "Active pill must be the default selected tab"
+    );
+}
+
+/// `/ui/admin/sessions?status=expired` returns the empty-state row when
+/// no sessions are past expiry. Pins the filter wires through end-to-end.
+#[tokio::test]
+async fn admin_sessions_list_expired_filter_empty_when_all_active() {
+    let rig = build_rig();
+    let cookie = admin_cookie(&rig, "csrf-sessions-expired");
+
+    let response = rig
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/admin/sessions?status=expired")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
+
+    // Both seeded sessions are fresh — Expired view is empty.
+    assert!(
+        body.contains("No sessions match the current filter"),
+        "expired view should render the empty-state row when all sessions are active"
+    );
+    // Expired pill is the selected one.
+    let expired_marker = r#"href="/ui/admin/sessions?status=expired"
+     role="tab"
+     aria-selected="true""#;
+    assert!(
+        body.contains(expired_marker),
+        "Expired pill must be the selected tab when ?status=expired"
+    );
+}
+
 /// Regression: a 404 from inside the admin shell renders **with**
 /// chrome (sidebar, user pill, dark theme), not as a stand-alone
 /// unstyled white page. The 2026-04-29 audit caught the legacy

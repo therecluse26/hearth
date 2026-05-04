@@ -3,8 +3,10 @@
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <div>
-    <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ app.client_name() }}</h1>
-    <p class="mt-1 text-sm text-ht-content-muted">Managed via <code class="text-xs">hearth.yaml</code> — edit the configuration file to change this application.</p>
+    <div class="flex items-center gap-3">
+      <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ app.client_name() }}</h1>
+      {% include "ui/admin/_components/_yaml_badge.html" %}
+    </div>
   </div>
   <a href="/ui/admin/applications"
      class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">

@@ -1,0 +1,20 @@
+{# HTMX partial: lightweight user-search dropdown options for the RBAC
+   debug page. Each `<button>` populates the parent Alpine component's
+   `userId` state on click, then closes the dropdown. Self-contained — no
+   parent state assumed besides `userId` and `showDropdown`. #}
+{% if users.is_empty() %}
+  {% if query.len() >= 2 %}
+  <div class="px-3 py-2 text-sm text-ht-content-muted">No users match "{{ query }}".</div>
+  {% endif %}
+{% else %}
+  {% for u in users %}
+  <button type="button"
+          @click="userId = '{{ u.id().as_uuid() }}'; showDropdown = false; $refs.userIdInput && $refs.userIdInput.focus()"
+          class="flex w-full items-start gap-3 px-3 py-2 text-left text-sm hover-bg-divider">
+    <div class="min-w-0 flex-1">
+      <div class="truncate font-medium text-ht-content-primary">{{ u.display_name() }}</div>
+      <div class="truncate text-xs text-ht-content-muted">{{ u.email() }} · <code class="font-mono">{{ u.id().as_uuid() }}</code></div>
+    </div>
+  </button>
+  {% endfor %}
+{% endif %}

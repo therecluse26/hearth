@@ -2,7 +2,10 @@
 {% block title %}{{ product_name }} &middot; Scope Bundles{% endblock %}
 {% block body %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Scope Bundles</h1>
+  <div class="flex items-center gap-3">
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">Scope Bundles</h1>
+    {% include "ui/admin/_components/_yaml_badge.html" %}
+  </div>
   <a href="/ui/admin/settings/editor?section=auth"
      class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
     Edit in Config Editor

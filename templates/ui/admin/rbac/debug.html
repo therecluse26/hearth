@@ -26,13 +26,27 @@
 
   {# ── Permission Check tab ── #}
   <div x-show="tab === 'check'">
-    <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+    <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle"
+         x-data="{ userId: '{{ user_id_input }}', showDropdown: false }"
+         @click.outside="showDropdown = false">
       <form method="get" action="/ui/admin/rbac/debug" class="space-y-4">
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <label class="block">
-            <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">User ID (UUID or user_&lt;uuid&gt;)</span>
-            <input type="text" name="user_id" value="{{ user_id_input }}"
+          <label class="relative block">
+            <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">User (search by email/name, or paste UUID)</span>
+            <input type="text" name="user_id" x-model="userId" x-ref="userIdInput"
+                   autocomplete="off"
+                   placeholder="Type to search…"
+                   hx-get="/ui/admin/rbac/api/users/search"
+                   hx-trigger="input changed delay:200ms, focus"
+                   hx-target="#user-id-options"
+                   hx-swap="innerHTML"
+                   hx-vals='js:{"q": event.target.value}'
+                   @focus="showDropdown = true"
+                   @input="showDropdown = true"
                    class="mt-1 block w-full rounded-sm bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary ring-1 ring-divider-subtle focus:ring-ht-accent focus:outline-none font-mono" />
+            <div x-show="showDropdown" x-cloak
+                 id="user-id-options"
+                 class="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-divider-subtle bg-ht-surface-elevated shadow-lg empty:hidden"></div>
           </label>
           <label class="block">
             <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">Org ID (optional)</span>

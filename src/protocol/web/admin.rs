@@ -19,14 +19,13 @@
 //! * `GET  /ui/admin/realms/:id/edit` — edit-realm form.
 //! * `POST /ui/admin/realms/:id/edit` — submit edit-realm form.
 //! * `POST /ui/admin/realms/:id/delete` — delete realm.
-//! * `GET  /ui/admin/applications` — paginated application list.
-//! * `GET  /ui/admin/applications/new` — register-application form.
-//! * `POST /ui/admin/applications/new` — submit registration form.
-//! * `GET  /ui/admin/applications/:id` — application detail page.
-//! * `GET  /ui/admin/applications/:id/edit` — edit-application form.
-//! * `POST /ui/admin/applications/:id/edit` — submit edit-application
-//!   form.
-//! * `POST /ui/admin/applications/:id/delete` — delete application.
+//! * `GET  /ui/admin/applications` — paginated application list (read-only).
+//! * `GET  /ui/admin/applications/:id` — application detail page (read-only).
+//! * `POST /ui/admin/applications/:id/regenerate-secret` — rotate
+//!   confidential client secret.
+//!
+//! Applications are 100% YAML-managed (see `hearth.yaml`'s `applications`
+//! section). Runtime CRUD is intentionally absent.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -101,6 +100,10 @@ struct UserListTemplate {
     /// `"?admin_target=system"` for the admin-users surface, or empty
     /// when no override is needed.
     target_query: String,
+    /// Base URL the search form submits to, also used as the `hx-get`
+    /// target for live search. `/ui/admin/users` for tenant realms,
+    /// `/ui/admin/admin-users` for the system-realm operator surface.
+    list_url: &'static str,
     active_tab: &'static str,
     // Chrome fields.
     chrome: bool,
@@ -116,11 +119,22 @@ struct UserListTemplate {
     realm_theme_css: Option<String>,
 }
 
+/// Rows-only partial returned when the user list is filtered live via
+/// HTMX. Keeps the response payload to a single `<tbody>` swap so the
+/// page chrome doesn't re-render on every keystroke.
+#[derive(Template)]
+#[template(path = "ui/admin/users/_rows.html")]
+struct UserRowsTemplate {
+    users: Vec<User>,
+    target_query: String,
+}
+
 /// `GET /ui/admin/users`.
 pub async fn admin_users_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    htmx: super::templates::IsHtmx,
     Query(params): Query<UserListParams>,
 ) -> Response {
     let search_query = params.q.clone().unwrap_or_default();
@@ -138,27 +152,38 @@ pub async fn admin_users_list(
             .list_users(target.id(), params.cursor.as_deref(), 20)
     };
 
+    let target_query = format!("?realm={}", target.0.name());
+
     match result {
-        Ok(page) => render(&UserListTemplate {
-            users: page.items,
-            next_cursor: page.next_cursor,
-            search_query,
-            target_realm_name: Some(target.0.name().to_string()),
-            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
-            target_query: format!("?realm={}", target.0.name()),
-            active_tab: "users",
-            chrome: true,
-            active: "realm-workspace",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: false,
-            product_name: state.product_name_for(target.id()),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            realm_theme_css: state.realm_theme_css(),
-        }),
+        Ok(page) => {
+            if htmx.0 {
+                return render(&UserRowsTemplate {
+                    users: page.items,
+                    target_query,
+                });
+            }
+            render(&UserListTemplate {
+                users: page.items,
+                next_cursor: page.next_cursor,
+                search_query,
+                target_realm_name: Some(target.0.name().to_string()),
+                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+                target_query,
+                list_url: "/ui/admin/users",
+                active_tab: "users",
+                chrome: true,
+                active: "realm-workspace",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: false,
+                product_name: state.product_name_for(target.id()),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: state.realm_theme_css(),
+            })
+        }
         Err(e) => {
             tracing::warn!(error = %e, "list_users failed");
             super::handlers_common::server_error()
@@ -187,6 +212,7 @@ pub async fn admin_admin_user_create_alias() -> axum::response::Redirect {
 pub async fn admin_admin_users_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    htmx: super::templates::IsHtmx,
     Query(params): Query<UserListParams>,
 ) -> Response {
     let system_realm = crate::identity::keys::system_realm_id();
@@ -205,19 +231,29 @@ pub async fn admin_admin_users_list(
             .list_users(&system_realm, params.cursor.as_deref(), 20)
     };
 
+    // System realm sentinel — `TargetRealm` resolves this to
+    // the system realm only on `/ui/admin/*` routes (gated by
+    // `RequireAdmin`). Without it, clicking a row would 404
+    // because `?realm=system` is rejected by the standard
+    // resolver and the default falls back to a tenant realm.
+    let target_query = "?admin_target=system".to_string();
+
     match result {
-        Ok(page) => render(&UserListTemplate {
+        Ok(page) => {
+            if htmx.0 {
+                return render(&UserRowsTemplate {
+                    users: page.items,
+                    target_query,
+                });
+            }
+            render(&UserListTemplate {
             users: page.items,
             next_cursor: page.next_cursor,
             search_query,
             target_realm_name: None,
             target_realm_id_hex: None,
-            // System realm sentinel — `TargetRealm` resolves this to
-            // the system realm only on `/ui/admin/*` routes (gated by
-            // `RequireAdmin`). Without it, clicking a row would 404
-            // because `?realm=system` is rejected by the standard
-            // resolver and the default falls back to a tenant realm.
-            target_query: "?admin_target=system".to_string(),
+            target_query,
+            list_url: "/ui/admin/admin-users",
             active_tab: "",
             chrome: true,
             active: "admin-users",
@@ -230,7 +266,8 @@ pub async fn admin_admin_users_list(
             logo_url: state.logo_url.clone(),
             theme_css: state.theme_css.clone(),
             realm_theme_css: state.realm_theme_css(),
-        }),
+            })
+        }
         Err(e) => {
             tracing::warn!(error = %e, "admin_admin_users_list failed");
             super::handlers_common::server_error()
@@ -1878,6 +1915,9 @@ pub struct SessionRow {
     /// `"?admin_target=system"` for the system realm or
     /// `"?realm=<name>"` for a tenant.
     pub realm_target_query: String,
+    /// `true` when the session is neither revoked nor past its
+    /// `expires_at`. Drives the Active/Expired filter and the row badge.
+    pub is_active: bool,
 }
 
 #[derive(Template)]
@@ -1892,6 +1932,19 @@ struct SessionListTemplate {
     /// template uses this to swap the heading and reveal the Realm
     /// column.
     is_global: bool,
+    /// Currently selected expiry filter — `"active"`, `"expired"`, or
+    /// `"all"`. Defaults to `"active"`. Drives the filter pill highlight
+    /// and the per-row classification.
+    status_filter: String,
+    /// Counts before filtering — surfaced in the filter pill labels so
+    /// operators can see the cardinality without flipping tabs.
+    count_active: usize,
+    count_expired: usize,
+    /// Realm-context query prefix the filter pill links append to
+    /// `/ui/admin/sessions`. Empty for the global view; `"&realm=foo"` or
+    /// `"&admin_target=system"` for the scoped views. Allows pill links
+    /// to keep the page in its current realm scope when switching status.
+    realm_query_suffix: String,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -1904,6 +1957,18 @@ struct SessionListTemplate {
     logo_url: String,
     theme_css: String,
     realm_theme_css: Option<String>,
+}
+
+/// Query params for the sessions list page. Extends pagination with an
+/// expiry filter. Default semantics: no `status` → show only Active.
+#[derive(Debug, Deserialize, Default)]
+pub struct SessionsListParams {
+    /// Opaque cursor for the next page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Expiry filter — `"active"` (default), `"expired"`, or `"all"`.
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 /// Formats a `Timestamp` (Unix micros) as `YYYY-MM-DD HH:MM UTC`.
@@ -2116,7 +2181,7 @@ fn resolve_user_email(
 pub async fn admin_sessions_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    Query(params): Query<PaginationParams>,
+    Query(params): Query<SessionsListParams>,
     raw_query: axum::extract::RawQuery,
 ) -> Response {
     // Per-realm cap when aggregating globally. Avoids unbounded fan-out
@@ -2128,6 +2193,15 @@ pub async fn admin_sessions_list(
     let has_realm_param = query_str
         .split('&')
         .any(|p| p.starts_with("realm=") || p.starts_with("admin_target="));
+
+    // Single now-snapshot per request — two rows can't disagree on
+    // whether they're past expiry within the same render.
+    let now_micros = crate::core::Timestamp::now().as_micros();
+    let status_filter = match params.status.as_deref() {
+        Some("expired") => "expired".to_string(),
+        Some("all") => "all".to_string(),
+        _ => "active".to_string(),
+    };
 
     // ---------- Single-realm modes (?realm= / ?admin_target=) ----------
     if has_realm_param {
@@ -2164,18 +2238,39 @@ pub async fn admin_sessions_list(
                 } else {
                     format!("?realm={}", realm.name())
                 };
-                let rows: Vec<SessionRow> = page
+                let all_rows: Vec<SessionRow> = page
                     .items
                     .into_iter()
-                    .map(|s| build_session_row(&state, realm.id(), realm.name(), &target_query, s))
+                    .map(|s| {
+                        build_session_row(
+                            &state,
+                            realm.id(),
+                            realm.name(),
+                            &target_query,
+                            s,
+                            now_micros,
+                        )
+                    })
                     .collect();
+                let count_active = all_rows.iter().filter(|r| r.is_active).count();
+                let count_expired = all_rows.len() - count_active;
+                let rows = filter_session_rows(all_rows, &status_filter);
                 let in_realm_workspace = *realm.id().as_uuid() != uuid::Uuid::nil();
+                let realm_query_suffix = if admin_target == Some("system") {
+                    "&admin_target=system".to_string()
+                } else {
+                    format!("&realm={}", realm.name())
+                };
                 render(&SessionListTemplate {
                     sessions: rows,
                     next_cursor: page.next_cursor,
                     target_realm_name: Some(realm.name().to_string()),
                     target_realm_id_hex: Some(realm.id().as_uuid().to_string()),
                     is_global: false,
+                    status_filter: status_filter.clone(),
+                    count_active,
+                    count_expired,
+                    realm_query_suffix,
                     active_tab: "sessions",
                     chrome: true,
                     active: if in_realm_workspace {
@@ -2218,6 +2313,7 @@ pub async fn admin_sessions_list(
                         system_realm.name(),
                         "?admin_target=system",
                         s,
+                        now_micros,
                     ));
                 }
             }
@@ -2239,6 +2335,7 @@ pub async fn admin_sessions_list(
                             realm.name(),
                             &target_query,
                             s,
+                            now_micros,
                         ));
                     }
                 }
@@ -2248,12 +2345,20 @@ pub async fn admin_sessions_list(
         // Newest first across realms.
         rows.sort_by(|a, b| b.session.created_at().cmp(&a.session.created_at()));
 
+        let count_active = rows.iter().filter(|r| r.is_active).count();
+        let count_expired = rows.len() - count_active;
+        let rows = filter_session_rows(rows, &status_filter);
+
         render(&SessionListTemplate {
             sessions: rows,
             next_cursor: None,
             target_realm_name: None,
             target_realm_id_hex: None,
             is_global: true,
+            status_filter: status_filter.clone(),
+            count_active,
+            count_expired,
+            realm_query_suffix: String::new(),
             active_tab: "",
             chrome: true,
             active: "sessions-global",
@@ -2270,6 +2375,17 @@ pub async fn admin_sessions_list(
     }
 }
 
+/// Applies the `?status=` filter to a freshly-built row collection. Pure
+/// function so the unit test can pin behaviour without spinning up a
+/// `WebState`.
+fn filter_session_rows(rows: Vec<SessionRow>, status: &str) -> Vec<SessionRow> {
+    match status {
+        "expired" => rows.into_iter().filter(|r| !r.is_active).collect(),
+        "all" => rows,
+        _ => rows.into_iter().filter(|r| r.is_active).collect(),
+    }
+}
+
 /// Builds a [`SessionRow`] with display fields and the realm-context
 /// query string used by the revoke form. Centralises the per-row glue
 /// so both single-realm and global views render identical row shapes.
@@ -2279,10 +2395,12 @@ fn build_session_row(
     realm_name: &str,
     target_query: &str,
     s: Session,
+    now_micros: i64,
 ) -> SessionRow {
     let user_email = resolve_user_email(state, realm_id, s.user_id());
     let device_label = s.device_label().unwrap_or("Unknown device").to_string();
     let ip_address = s.ip_address().unwrap_or("\u{2014}").to_string();
+    let is_active = !s.is_revoked() && s.expires_at().as_micros() > now_micros;
     SessionRow {
         created_at_display: format_ts(s.created_at()),
         expires_at_display: format_ts(s.expires_at()),
@@ -2292,6 +2410,7 @@ fn build_session_row(
         ip_address,
         realm_name: realm_name.to_string(),
         realm_target_query: target_query.to_string(),
+        is_active,
     }
 }
 
@@ -2558,14 +2677,9 @@ struct AuditListTemplate {
 
 /// Rows-only partial returned when the audit filter is triggered via HTMX.
 #[derive(Template)]
-#[template(path = "ui/admin/audit/_rows_only.html")]
-#[allow(dead_code)]
+#[template(path = "ui/admin/audit/_rows.html")]
 struct AuditRowsTemplate {
     events: Vec<AuditRow>,
-    product_name: String,
-    logo_url: String,
-    theme_css: String,
-    realm_theme_css: Option<String>,
 }
 
 /// `GET /ui/admin/audit`.
@@ -2635,13 +2749,7 @@ pub async fn admin_audit_list(
                 })
                 .collect();
             if htmx.0 {
-                render(&AuditRowsTemplate {
-                    events: rows,
-                    product_name: String::new(),
-                    logo_url: String::new(),
-                    theme_css: state.theme_css.clone(),
-                    realm_theme_css: None,
-                })
+                render(&AuditRowsTemplate { events: rows })
             } else {
                 render(&AuditListTemplate {
                     events: rows,
@@ -4367,6 +4475,37 @@ pub async fn admin_api_user_search(
         theme_css: state.theme_css.clone(),
         realm_theme_css: None,
     })
+}
+
+/// HTMX partial for the RBAC debug page autocomplete. Same backend
+/// search as [`admin_api_user_search`] but renders a click-to-fill
+/// dropdown instead of the org member-picker variant. Kept separate so
+/// the partial template can be self-contained (no parent Alpine state
+/// assumed beyond `userId` + `showDropdown`).
+#[derive(Template)]
+#[template(path = "ui/admin/rbac/_user_search_options.html")]
+struct RbacUserSearchOptionsTemplate {
+    users: Vec<User>,
+    query: String,
+}
+
+/// `GET /ui/admin/rbac/api/users/search?q=...` — RBAC-debug autocomplete.
+pub async fn admin_api_rbac_user_search(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
+    Query(params): Query<UserSearchParams>,
+) -> Response {
+    let query = params.q.trim().to_string();
+    let users = if query.len() < 2 {
+        Vec::new()
+    } else {
+        state
+            .identity
+            .search_users(target.id(), &query, 10)
+            .unwrap_or_default()
+    };
+    render(&RbacUserSearchOptionsTemplate { users, query })
 }
 
 // ---------------------------------------------------------------------------
@@ -8699,3 +8838,4 @@ pub async fn admin_realm_claims(
         realm_theme_css: state.realm_theme_css(),
     })
 }
+

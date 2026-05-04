@@ -10,9 +10,34 @@
   </h1>
   {% if is_global %}
   <p class="mt-1 text-sm text-ht-content-secondary">
-    Active sessions across the system realm and every tenant realm. Use the Realm column to identify each session's origin.
+    Sessions across the system realm and every tenant realm. Use the Realm column to identify each session's origin.
   </p>
   {% endif %}
+</div>
+
+{# Active / Expired / All filter pills. Preserves realm scope on tab switch. #}
+<div class="mb-4 flex items-center gap-1" role="tablist" aria-label="Session expiry filter">
+  <a href="/ui/admin/sessions?status=active{{ realm_query_suffix }}"
+     role="tab"
+     aria-selected="{% if status_filter == "active" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "active" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    Active <span class="ml-1 text-ht-content-muted">{{ count_active }}</span>
+  </a>
+  <a href="/ui/admin/sessions?status=expired{{ realm_query_suffix }}"
+     role="tab"
+     aria-selected="{% if status_filter == "expired" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "expired" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    Expired <span class="ml-1 text-ht-content-muted">{{ count_expired }}</span>
+  </a>
+  <a href="/ui/admin/sessions?status=all{{ realm_query_suffix }}"
+     role="tab"
+     aria-selected="{% if status_filter == "all" %}true{% else %}false{% endif %}"
+     class="rounded px-3 py-1.5 text-xs font-medium transition-colors
+            {% if status_filter == "all" %}bg-ht-divider/[0.10] text-ht-content-primary{% else %}text-ht-content-secondary hover:bg-ht-divider/[0.07] hover:text-ht-content-primary{% endif %}">
+    All <span class="ml-1 text-ht-content-muted">{{ count_active + count_expired }}</span>
+  </a>
 </div>
 
 <div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">

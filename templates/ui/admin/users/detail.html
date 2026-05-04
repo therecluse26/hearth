@@ -67,10 +67,14 @@
 {# Actions bar #}
 <div class="mt-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
   <div class="flex flex-wrap items-center gap-3">
-    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/reset-password">
+    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/reset-password"
+          x-data="{ confirm: false, timer: null }"
+          @reset-confirm.window="clearTimeout(timer); confirm = false">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
-      <button type="submit" class="rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
-        Send password reset
+      <button @click.prevent="confirm ? $el.form.submit() : (confirm = true, timer = setTimeout(() => confirm = false, 4000))" type="button"
+              :class="confirm ? 'btn-ember' : 'border border-strong bg-ht-surface-elevated text-ht-content-secondary hover-bg-divider'"
+              class="rounded px-3 py-1.5 text-sm font-medium">
+        <span x-text="confirm ? 'Confirm: send reset email to {{ user.email() }}' : 'Send password reset'"></span>
       </button>
     </form>
     {% if mfa_enabled %}

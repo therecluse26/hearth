@@ -951,6 +951,10 @@ pub fn router(state: WebState) -> Router {
             "/admin/api/users/search",
             axum::routing::get(admin::admin_api_user_search),
         )
+        .route(
+            "/admin/rbac/api/users/search",
+            axum::routing::get(admin::admin_api_rbac_user_search),
+        )
         // --- Config reload API ---
         .route(
             "/admin/api/config/reload",
