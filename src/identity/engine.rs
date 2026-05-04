@@ -1397,6 +1397,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 operation: "create_realm",
             });
         }
+        // Slug shape + admin-URL keyword reservation (UI_ROUTING.md R-4).
+        // Realm names ride in URL paths, so they must be URL-safe AND
+        // must not collide with any admin sub-resource keyword.
+        super::validation::validate_realm_name(&request.name)?;
         // Serialize against other realm-record mutations so the atomic
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. See `realm_ops_lock` docs.
@@ -1507,6 +1511,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::SystemRealmProtected {
                 operation: "update_realm",
             });
+        }
+        // If the rename targets a new name, validate it the same way
+        // create_realm does — including the admin-URL reserved-keyword
+        // set (UI_ROUTING.md R-4). Skip when name is unchanged.
+        if let Some(ref new_name) = request.name {
+            super::validation::validate_realm_name(new_name)?;
         }
         // Serialize against create/delete so an in-flight delete can't
         // race with this read-modify-write and resurrect an orphaned
@@ -9460,12 +9470,12 @@ mod tests {
 
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Acme Corp".to_string(),
+                name: "acme-corp".to_string(),
                 config: None,
             })
             .expect("create realm");
 
-        assert_eq!(realm.name(), "Acme Corp");
+        assert_eq!(realm.name(), "acme-corp");
         assert_eq!(realm.status(), RealmStatus::Active);
 
         // Should be retrievable
@@ -9474,7 +9484,7 @@ mod tests {
             .expect("get realm")
             .expect("realm should exist");
         assert_eq!(loaded.id(), realm.id());
-        assert_eq!(loaded.name(), "Acme Corp");
+        assert_eq!(loaded.name(), "acme-corp");
     }
 
     #[test]
@@ -9489,7 +9499,7 @@ mod tests {
         };
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Custom Corp".to_string(),
+                name: "custom-corp".to_string(),
                 config: Some(config.clone()),
             })
             .expect("create realm");
@@ -9513,13 +9523,13 @@ mod tests {
 
         let realm_a = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm A".to_string(),
+                name: "realm-a".to_string(),
                 config: None,
             })
             .expect("create realm A");
         let realm_b = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm B".to_string(),
+                name: "realm-b".to_string(),
                 config: None,
             })
             .expect("create realm B");
@@ -9570,13 +9580,13 @@ mod tests {
 
         let realm_a = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm A".to_string(),
+                name: "realm-a".to_string(),
                 config: None,
             })
             .expect("create realm A");
         let realm_b = engine
             .create_realm(&CreateRealmRequest {
-                name: "Realm B".to_string(),
+                name: "realm-b".to_string(),
                 config: None,
             })
             .expect("create realm B");
@@ -9601,7 +9611,7 @@ mod tests {
 
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Original Name".to_string(),
+                name: "original-name".to_string(),
                 config: None,
             })
             .expect("create realm");
@@ -9619,14 +9629,14 @@ mod tests {
             .update_realm(
                 realm.id(),
                 &UpdateRealmRequest {
-                    name: Some("Updated Name".to_string()),
+                    name: Some("updated-name".to_string()),
                     status: None,
                     config: Some(new_config.clone()),
                 },
             )
             .expect("update realm");
 
-        assert_eq!(updated.name(), "Updated Name");
+        assert_eq!(updated.name(), "updated-name");
         assert_eq!(updated.config(), &new_config);
 
         // Persisted
@@ -9634,7 +9644,7 @@ mod tests {
             .get_realm(realm.id())
             .expect("get")
             .expect("should exist");
-        assert_eq!(loaded.name(), "Updated Name");
+        assert_eq!(loaded.name(), "updated-name");
         assert_eq!(loaded.config(), &new_config);
     }
 
@@ -9662,7 +9672,7 @@ mod tests {
 
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Doomed Corp".to_string(),
+                name: "doomed-corp".to_string(),
                 config: None,
             })
             .expect("create realm");
@@ -9745,8 +9755,13 @@ mod tests {
         use proptest::prelude::*;
 
         /// Strategy for generating a valid realm name.
+        ///
+        /// Realm names must be ASCII alphanumeric, hyphens, or underscores
+        /// only (1-63 chars), and must not collide with reserved admin
+        /// URL keywords. We prefix every generated name with `r-` to
+        /// guarantee uniqueness from the reserved set.
         fn valid_realm_name() -> impl Strategy<Value = String> {
-            "[A-Za-z ]{3,30}".prop_map(|s| s.trim().to_string())
+            "[a-z0-9_-]{3,30}".prop_map(|s| format!("r-{}", s.trim_matches('-')))
         }
 
         /// Strategy for generating a valid email address.
@@ -9771,7 +9786,7 @@ mod tests {
                 // Create N realms
                 for i in 0..n_realms {
                     let realm = engine.create_realm(&CreateRealmRequest {
-                        name: format!("Realm {i}"),
+                        name: format!("realm-{i}"),
                         config: None,
                     }).expect("create realm");
                     realms.push(realm);
@@ -9871,7 +9886,7 @@ mod tests {
                 let (_dir, engine, _clock) = setup_engine();
 
                 let realm = engine.create_realm(&CreateRealmRequest {
-                    name: "Rotation Corp".to_string(),
+                    name: "rotation-corp".to_string(),
                     config: None,
                 }).expect("create realm");
 
@@ -11128,7 +11143,7 @@ mod tests {
         let (dir, engine, clock) = setup_engine();
         let realm = engine
             .create_realm(&CreateRealmRequest {
-                name: "Consent Realm".to_string(),
+                name: "consent-realm".to_string(),
                 config: None,
             })
             .expect("create realm");

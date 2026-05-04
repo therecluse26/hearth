@@ -95,7 +95,7 @@ fn build_rig() -> TestRig {
     // Create a realm + active user so we have a real session to hand out.
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -263,26 +263,28 @@ async fn dashboard_renders_signed_in_page() {
         "dashboard should render sign-out form"
     );
     // Admin tiles must be visible because the test user has the
-    // hearth#admin relation.
-    assert!(
-        body.contains("/ui/admin/users"),
-        "dashboard should show Users admin link"
-    );
+    // hearth#admin relation. After the path-based routing migration, all
+    // realm-scoped tiles point at the realms picker (R-1 in
+    // UI_ROUTING.md): the operator chooses a realm before drilling in.
     assert!(
         body.contains("/ui/admin/realms"),
         "dashboard should show Realms admin link"
     );
     assert!(
-        body.contains("/ui/admin/applications"),
-        "dashboard should show Applications admin link"
+        body.contains("Users"),
+        "dashboard should show Users tile label"
     );
     assert!(
-        body.contains("/ui/admin/sessions"),
-        "dashboard should show Sessions admin link"
+        body.contains("Applications"),
+        "dashboard should show Applications tile label"
     );
     assert!(
-        body.contains("/ui/admin/audit"),
-        "dashboard should show Audit log admin link"
+        body.contains("Sessions"),
+        "dashboard should show Sessions tile label"
+    );
+    assert!(
+        body.contains("Audit log"),
+        "dashboard should show Audit log tile label"
     );
 }
 
@@ -302,7 +304,7 @@ async fn dashboard_counts_aggregate_across_realms() {
     let other_realm = rig
         .identity
         .create_realm(&CreateRealmRequest {
-            name: "OtherCorp".to_string(),
+            name: "othercorp".to_string(),
             config: None,
         })
         .expect("create OtherCorp");

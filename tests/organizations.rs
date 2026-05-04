@@ -16,7 +16,7 @@ use hearth::identity::{
 fn setup_realm(identity: &dyn IdentityEngine) -> hearth::core::RealmId {
     identity
         .create_realm(&CreateRealmRequest {
-            name: "Org Test Realm".to_string(),
+            name: "org-test-realm".to_string(),
             config: None,
         })
         .expect("create realm")

@@ -39,8 +39,8 @@
             {% endif %}
           </div>
           <form method="post"
-                action="/ui/admin/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
-                hx-post="/ui/admin/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
+                action="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
+                hx-post="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/roles/{{ row.assignment_id }}/unassign"
                 hx-target="#roles-tab-content"
                 hx-swap="innerHTML">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
@@ -78,8 +78,8 @@
         <p class="text-sm text-ht-content-muted">No roles are defined in this realm. Define roles in <code class="font-mono text-xs">hearth.yaml</code>.</p>
       {% else %}
         <form method="post"
-              action="/ui/admin/users/{{ user_id }}/roles/assign"
-              hx-post="/ui/admin/users/{{ user_id }}/roles/assign"
+              action="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/roles/assign"
+              hx-post="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/roles/assign"
               hx-target="#roles-tab-content"
               hx-swap="innerHTML"
               @submit="assignOpen = false">

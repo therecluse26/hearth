@@ -85,7 +85,7 @@ fn build_rig() -> TestRig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -588,7 +588,7 @@ async fn mfa_challenge_preserves_return_to() {
         rig.app.clone(),
         "alice@acme.test",
         PASSWORD,
-        Some("/ui/admin/users"),
+        Some("/ui/admin/realms/acme/users"),
     )
     .await;
     let cookies = set_cookies(&login_resp);
@@ -622,7 +622,7 @@ async fn mfa_challenge_preserves_return_to() {
         .and_then(|v| v.to_str().ok())
         .expect("Location header");
     assert_eq!(
-        location, "/ui/admin/users",
+        location, "/ui/admin/realms/acme/users",
         "MFA success should redirect to original return_to"
     );
 }

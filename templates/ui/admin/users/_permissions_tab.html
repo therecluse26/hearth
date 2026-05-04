@@ -34,8 +34,8 @@
         <span class="text-ht-content-muted">·</span>
         <span class="text-ht-content-muted">{{ row.scope_label }}</span>
         <form method="post"
-              action="/ui/admin/users/{{ user_id }}/permissions/revoke"
-              hx-post="/ui/admin/users/{{ user_id }}/permissions/revoke"
+              action="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/revoke"
+              hx-post="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/revoke"
               hx-target="#permissions-tab-content"
               hx-swap="innerHTML"
               class="contents">
@@ -67,8 +67,8 @@
 
     <div x-show="grantOpen" x-cloak class="mt-4 rounded-lg border border-white/[0.10] bg-ht-surface-base p-4">
       <form method="post"
-            action="/ui/admin/users/{{ user_id }}/permissions/grant"
-            hx-post="/ui/admin/users/{{ user_id }}/permissions/grant"
+            action="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/grant"
+            hx-post="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}/permissions/grant"
             hx-target="#permissions-tab-content"
             hx-swap="innerHTML"
             @submit="grantOpen = false">

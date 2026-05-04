@@ -5,12 +5,12 @@
     class="border-b border-divider-faint hover-bg-divider">
   <td class="px-3 py-3">
     {% if m.member_kind == "user" %}
-      <a href="/ui/admin/users/{{ m.member_id_uuid }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}" class="group">
+      <a href="/ui/admin/realms/{{ realm_name }}/users/{{ m.member_id_uuid }}" class="group">
         <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.display_name }}</div>
         <div class="text-xs text-ht-content-muted">{{ m.subtitle }}</div>
       </a>
     {% else %}
-      <a href="/ui/admin/groups/{{ m.member_id_uuid }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}" class="group">
+      <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ m.member_id_uuid }}" class="group">
         <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.display_name }}</div>
         <div class="text-xs text-ht-content-muted">{{ m.subtitle }}</div>
       </a>
@@ -22,7 +22,7 @@
     </span>
   </td>
   <td class="px-3 py-3 text-right">
-    <form hx-post="/ui/admin/groups/{{ group_id }}/members/{{ m.member_kind }}/{{ m.member_id_uuid }}/remove"
+    <form hx-post="/ui/admin/realms/{{ realm_name }}/groups/{{ group_id }}/members/{{ m.member_kind }}/{{ m.member_id_uuid }}/remove"
           hx-target="#member-{{ m.member_kind }}-{{ m.member_id_uuid }}"
           hx-swap="outerHTML"
           x-data="{ confirm: false }"

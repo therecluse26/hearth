@@ -3,7 +3,7 @@
 {% block body %}
 {% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-4 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
-  <a href="/ui/admin/organizations{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+  <a href="/ui/admin/realms/{{ realm_name }}/organizations"
      class="hover:text-ht-content-primary">Organizations</a>
   <span>›</span>
   <span class="text-ht-content-secondary">{{ org.name() }}</span>
@@ -25,7 +25,7 @@
   </div>
   <div class="flex items-center gap-2">
     <form method="post"
-          action="/ui/admin/organizations/{{ org.id().as_uuid() }}/status{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+          action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/status"
           class="inline">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
       {% if org.status()|fmt("{:?}") == "Active" %}
@@ -42,7 +42,7 @@
         </button>
       {% endif %}
     </form>
-    <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}/edit{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+    <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/edit"
        class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
       Edit
     </a>
@@ -50,30 +50,30 @@
 </div>
 
 {# Sub-tab strip — selection comes from `?tab=` (server-rendered).
-   Each link rebuilds the URL with the right `tab` query, preserving the
-   `realm` param so the workspace stays scoped. #}
+   Realm context lives in the path, so each link only carries the `tab`
+   query parameter. #}
 <nav class="mb-4 border-b border-divider-subtle">
   <ul class="flex flex-wrap items-center gap-1 text-sm">
     <li>
-      <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}?tab=overview{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=overview"
          class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "overview" %}border-ht-content-brand text-ht-content-primary{% else %}border-transparent text-ht-content-muted hover:text-ht-content-primary{% endif %}">
         Overview
       </a>
     </li>
     <li>
-      <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}?tab=members{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=members"
          class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "members" %}border-ht-content-brand text-ht-content-primary{% else %}border-transparent text-ht-content-muted hover:text-ht-content-primary{% endif %}">
         Members <span class="ml-1 rounded-full bg-ht-surface-base px-1.5 py-0.5 text-xs text-ht-content-muted">{{ member_count }}</span>
       </a>
     </li>
     <li>
-      <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}?tab=invitations{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=invitations"
          class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "invitations" %}border-ht-content-brand text-ht-content-primary{% else %}border-transparent text-ht-content-muted hover:text-ht-content-primary{% endif %}">
         Invitations <span class="ml-1 rounded-full bg-ht-surface-base px-1.5 py-0.5 text-xs text-ht-content-muted">{{ invitations.len() }}</span>
       </a>
     </li>
     <li>
-      <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}?tab=danger{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=danger"
          class="inline-flex items-center gap-1 rounded-t border-b-2 px-3 py-2 font-medium {% if active_subtab == "danger" %}border-ht-content-brand text-danger-fg{% else %}border-transparent text-ht-content-muted hover:text-danger-fg{% endif %}">
         Danger
       </a>
@@ -132,7 +132,7 @@
            id="member-search"
            name="q"
            placeholder="Search users by name or email…"
-           hx-get="/ui/admin/organizations/{{ org.id().as_uuid() }}/members/picker{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+           hx-get="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/members/picker"
            hx-trigger="input changed delay:200ms, search"
            hx-target="#member-picker-results"
            hx-swap="innerHTML"
@@ -163,7 +163,7 @@
           <p class="text-sm text-ht-content-secondary">No members yet.</p>
           <p class="mt-1 text-xs text-ht-content-muted">
             Use the search above to add an existing user, or
-            <a href="/ui/admin/organizations/{{ org.id().as_uuid() }}?tab=invitations{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+            <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}?tab=invitations"
                class="text-ht-content-brand hover:underline">invite by email</a>.
           </p>
         </td>
@@ -219,7 +219,7 @@
           {% if inv.status()|fmt("{:?}") == "Pending" %}
           <div class="flex items-center justify-end gap-2">
             <form method="post"
-                  action="/ui/admin/organizations/{{ org.id().as_uuid() }}/invitations/{{ inv.id().as_uuid() }}/resend{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+                  action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/invitations/{{ inv.id().as_uuid() }}/resend"
                   class="inline">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
               <button type="submit"
@@ -228,7 +228,7 @@
               </button>
             </form>
             <form method="post"
-                  action="/ui/admin/organizations/{{ org.id().as_uuid() }}/invitations/{{ inv.id().as_uuid() }}/revoke{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+                  action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/invitations/{{ inv.id().as_uuid() }}/revoke"
                   x-data="{ confirm: false }"
                   class="inline">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
@@ -256,7 +256,7 @@
     <h3 class="text-sm font-semibold text-ht-content-primary">Invite by email</h3>
     <p class="mt-1 text-xs text-ht-content-muted">Sends a link that creates an account on first sign-in if the email isn't registered yet.</p>
     <form method="post"
-          action="/ui/admin/organizations/{{ org.id().as_uuid() }}/invite{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+          action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/invite"
           class="mt-3 flex flex-wrap items-end gap-3"
           x-data="{ role: 'Member' }">
       {% match csrf %}
@@ -320,7 +320,7 @@
         Type <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-ht-content-primary">{{ org.slug() }}</code> to confirm:
       </label>
       <form method="post"
-            action="/ui/admin/organizations/{{ org.id().as_uuid() }}/delete{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+            action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org.id().as_uuid() }}/delete"
             @keydown.enter.prevent="if (confirmText === '{{ org.slug() }}') $el.submit()">
         {% match csrf %}
           {% when Some with (token) %}

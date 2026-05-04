@@ -33,7 +33,7 @@
 {% match next_cursor %}
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
-      <a href="/ui/admin/applications?cursor={{ cursor }}"
+      <a href="/ui/admin/realms/{{ realm_name }}/applications?cursor={{ cursor }}"
          class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

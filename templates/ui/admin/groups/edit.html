@@ -3,10 +3,10 @@
 {% block body %}
 {% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
-  <a href="/ui/admin/groups{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+  <a href="/ui/admin/realms/{{ realm_name }}/groups"
      class="hover:text-ht-content-primary">Groups</a>
   <span>›</span>
-  <a href="/ui/admin/groups/{{ group.id.as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+  <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ group.id.as_uuid() }}"
      class="hover:text-ht-content-primary">{{ group.name }}</a>
   <span>›</span>
   <span class="text-ht-content-secondary">Edit</span>
@@ -23,7 +23,7 @@
   {% endmatch %}
 
   <form method="post"
-        action="/ui/admin/groups/{{ group.id.as_uuid() }}/edit{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+        action="/ui/admin/realms/{{ realm_name }}/groups/{{ group.id.as_uuid() }}/edit"
         autocomplete="off"
         class="space-y-4">
     {% match csrf %}
@@ -56,7 +56,7 @@
               class="btn-ember rounded px-4 py-2 text-sm font-semibold">
         Save changes
       </button>
-      <a href="/ui/admin/groups/{{ group.id.as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+      <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ group.id.as_uuid() }}"
          class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
     </div>
   </form>

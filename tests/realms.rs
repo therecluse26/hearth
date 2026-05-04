@@ -22,7 +22,7 @@ async fn full_realm_lifecycle() {
     // 1. Create realm
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Lifecycle Corp".to_string(),
+            name: "lifecycle-corp".to_string(),
             config: Some(RealmConfig {
                 session_ttl_micros: Some(3_600_000_000), // 1 hour
                 ..RealmConfig::default()
@@ -30,7 +30,7 @@ async fn full_realm_lifecycle() {
         })
         .expect("create realm");
 
-    assert_eq!(realm.name(), "Lifecycle Corp");
+    assert_eq!(realm.name(), "lifecycle-corp");
     assert_eq!(realm.status(), RealmStatus::Active);
     assert_eq!(realm.config().session_ttl_micros, Some(3_600_000_000));
 
@@ -39,7 +39,7 @@ async fn full_realm_lifecycle() {
         .update_realm(
             realm.id(),
             &UpdateRealmRequest {
-                name: Some("Updated Corp".to_string()),
+                name: Some("updated-corp".to_string()),
                 config: Some(RealmConfig {
                     session_ttl_micros: Some(7_200_000_000), // 2 hours
                     password_memory_cost: Some(32768),
@@ -49,7 +49,7 @@ async fn full_realm_lifecycle() {
             },
         )
         .expect("update realm");
-    assert_eq!(updated.name(), "Updated Corp");
+    assert_eq!(updated.name(), "updated-corp");
 
     // 3. Create users within the realm
     let user = identity
@@ -109,13 +109,13 @@ async fn multi_realm_token_isolation() {
     // Create two realms
     let realm_a = identity
         .create_realm(&CreateRealmRequest {
-            name: "Realm A".to_string(),
+            name: "realm-a".to_string(),
             config: None,
         })
         .expect("create realm A");
     let realm_b = identity
         .create_realm(&CreateRealmRequest {
-            name: "Realm B".to_string(),
+            name: "realm-b".to_string(),
             config: None,
         })
         .expect("create realm B");
@@ -179,13 +179,13 @@ async fn realm_scoped_oidc_discovery_and_jwks() {
 
     let realm_a = identity
         .create_realm(&CreateRealmRequest {
-            name: "OIDC Realm A".to_string(),
+            name: "oidc-realm-a".to_string(),
             config: None,
         })
         .expect("create realm A");
     let realm_b = identity
         .create_realm(&CreateRealmRequest {
-            name: "OIDC Realm B".to_string(),
+            name: "oidc-realm-b".to_string(),
             config: None,
         })
         .expect("create realm B");
@@ -224,13 +224,13 @@ async fn adversarial_cross_realm_session_injection() {
 
     let realm_a = identity
         .create_realm(&CreateRealmRequest {
-            name: "Realm A".to_string(),
+            name: "realm-a".to_string(),
             config: None,
         })
         .expect("create A");
     let realm_b = identity
         .create_realm(&CreateRealmRequest {
-            name: "Realm B".to_string(),
+            name: "realm-b".to_string(),
             config: None,
         })
         .expect("create B");
@@ -282,7 +282,7 @@ async fn adversarial_realm_id_spoofing() {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Real Realm".to_string(),
+            name: "real-realm".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -349,7 +349,7 @@ async fn adversarial_realm_enumeration_resistance() {
 
     let real_realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Real Corp".to_string(),
+            name: "real-corp".to_string(),
             config: None,
         })
         .expect("create realm");

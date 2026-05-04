@@ -1,7 +1,7 @@
 {% for g in groups %}
 <tr class="border-b border-divider-subtle hover-bg-divider">
   <td class="px-4 py-3">
-    <a href="/ui/admin/groups/{{ g.id.as_uuid() }}{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+    <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ g.id.as_uuid() }}"
        class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ g.name }}</a>
   </td>
   <td class="px-4 py-3">
@@ -14,7 +14,7 @@
     {% endmatch %}
   </td>
   <td class="px-4 py-3 text-right">
-    <a href="/ui/admin/groups/{{ g.id.as_uuid() }}/edit{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+    <a href="/ui/admin/realms/{{ realm_name }}/groups/{{ g.id.as_uuid() }}/edit"
        class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
   </td>
 </tr>

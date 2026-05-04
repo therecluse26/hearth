@@ -29,14 +29,14 @@
     <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle"
          x-data="{ userId: '{{ user_id_input }}', showDropdown: false }"
          @click.outside="showDropdown = false">
-      <form method="get" action="/ui/admin/rbac/debug" class="space-y-4">
+      <form method="get" action="/ui/admin/realms/{{ realm_name }}/rbac/debug" class="space-y-4">
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <label class="relative block">
             <span class="block text-xs font-medium uppercase tracking-wider text-ht-content-muted">User (search by email/name, or paste UUID)</span>
             <input type="text" name="user_id" x-model="userId" x-ref="userIdInput"
                    autocomplete="off"
                    placeholder="Type to search…"
-                   hx-get="/ui/admin/rbac/api/users/search"
+                   hx-get="/ui/admin/realms/{{ realm_name }}/rbac/api/users/search"
                    hx-trigger="input changed delay:200ms, focus"
                    hx-target="#user-id-options"
                    hx-swap="innerHTML"
@@ -152,7 +152,7 @@
         try {
           const csrf = document.querySelector('meta[name="csrf"]')?.getAttribute('content') || '';
           const body = new URLSearchParams({ user_id: this.userId.trim() });
-          const resp = await fetch('/ui/admin/rbac/token-preview', {
+          const resp = await fetch('/ui/admin/realms/{{ realm_name }}/rbac/token-preview', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/x-www-form-urlencoded',

@@ -7,7 +7,7 @@
        x-data="{ addRoleOpen: false, addPermOpen: false, expandedRole: null }">
   <tr class="border-b border-divider-faint">
     <td class="px-3 py-3">
-      <a href="/ui/admin/users/{{ m.view.membership.user_id().as_uuid() }}" class="group">
+      <a href="/ui/admin/realms/{{ realm_name }}/users/{{ m.view.membership.user_id().as_uuid() }}" class="group">
         <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.view.user_name }}</div>
         <div class="text-xs text-ht-content-muted">{{ m.view.user_email }}</div>
       </a>
@@ -25,8 +25,8 @@
             {{ ra.role_name }}
           </button>
           <form method="post"
-                action="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/{{ ra.assignment_id }}/unassign"
-                hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/{{ ra.assignment_id }}/unassign"
+                action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/{{ ra.assignment_id }}/unassign"
+                hx-post="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/{{ ra.assignment_id }}/unassign"
                 hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
                 hx-swap="outerHTML"
                 class="contents">
@@ -69,8 +69,8 @@
       {% if !available_roles.is_empty() %}
       <div x-show="addRoleOpen" x-cloak class="mt-2">
         <form method="post"
-              action="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
-              hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
+              action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
+              hx-post="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/rbac/assign"
               hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
               hx-swap="outerHTML"
               @submit="addRoleOpen = false"
@@ -95,8 +95,8 @@
         <span class="inline-flex items-center gap-1 rounded-full border border-white/[0.10] bg-ht-surface-base px-2 py-0.5 font-mono text-xs text-ht-content-secondary">
           {{ p.permission }}
           <form method="post"
-                action="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/revoke"
-                hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/revoke"
+                action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/revoke"
+                hx-post="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/revoke"
                 hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
                 hx-swap="outerHTML"
                 class="contents">
@@ -122,8 +122,8 @@
       {# Grant permission inline form #}
       <div x-show="addPermOpen" x-cloak class="mt-2">
         <form method="post"
-              action="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/grant"
-              hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/grant"
+              action="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/grant"
+              hx-post="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/permissions/grant"
               hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
               hx-swap="outerHTML"
               @submit="addPermOpen = false"
@@ -152,7 +152,7 @@
            on change; the response is the refreshed `<tbody>` partial.
            The selector is disabled when this row is the only Owner —
            letting it submit would only earn a `LastOwner` engine error. #}
-        <form hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/role"
+        <form hx-post="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/role"
               hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
               hx-swap="outerHTML"
               hx-trigger="change"
@@ -166,7 +166,7 @@
             <option value="Owner" {% if m.view.membership.role()|fmt("{:?}") == "Owner" %}selected{% endif %}>Owner</option>
           </select>
         </form>
-        <a href="/ui/admin/rbac/debug?user_id={{ m.view.membership.user_id().as_uuid() }}&org_id={{ org_id }}"
+        <a href="/ui/admin/realms/{{ realm_name }}/rbac/debug?user_id={{ m.view.membership.user_id().as_uuid() }}&org_id={{ org_id }}"
            class="text-xs text-ht-content-muted hover:text-ht-content-secondary"
            title="Open permission resolver pre-filled for this member">Check</a>
         {% if m.is_last_owner %}
@@ -175,7 +175,7 @@
                 title="Promote another member to Owner before removing this one."
                 class="rounded border border-divider bg-ht-surface-elevated px-2 py-1 text-xs font-medium text-ht-content-muted opacity-50 cursor-not-allowed">Remove</button>
         {% else %}
-        <form hx-post="/ui/admin/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/remove"
+        <form hx-post="/ui/admin/realms/{{ realm_name }}/organizations/{{ org_id }}/members/{{ m.view.membership.user_id().as_uuid() }}/remove"
               hx-target="#member-{{ m.view.membership.user_id().as_uuid() }}"
               hx-swap="outerHTML"
               x-data="{ confirm: false }"

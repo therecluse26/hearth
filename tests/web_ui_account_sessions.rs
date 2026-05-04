@@ -82,7 +82,7 @@ fn build_rig() -> TestRig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");

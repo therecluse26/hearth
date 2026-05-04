@@ -79,7 +79,7 @@ fn build_rig() -> TestRig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -196,7 +196,7 @@ async fn groups_list_renders_empty_state_for_admin() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/ui/admin/groups?realm={}", "Acme"))
+                .uri("/ui/admin/realms/acme/groups")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build"),
@@ -233,7 +233,7 @@ async fn admin_can_create_view_and_delete_a_group() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/groups/new?realm={}", "Acme"))
+                .uri("/ui/admin/realms/acme/groups/new")
                 .header(header::COOKIE, cookie.clone())
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(body))
@@ -253,7 +253,7 @@ async fn admin_can_create_view_and_delete_a_group() {
         .expect("location header")
         .to_string();
     assert!(
-        location.starts_with("/ui/admin/groups/"),
+        location.starts_with("/ui/admin/realms/acme/groups/"),
         "redirect should point at group detail, got {location}",
     );
 
@@ -292,7 +292,7 @@ async fn admin_can_create_view_and_delete_a_group() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/ui/admin/groups?realm={}", "Acme"))
+                .uri("/ui/admin/realms/acme/groups")
                 .header(header::COOKIE, cookie.clone())
                 .body(Body::empty())
                 .expect("build"),
@@ -310,14 +310,9 @@ async fn admin_can_create_view_and_delete_a_group() {
     assert!(list_html.contains("Engineering"));
     assert!(!list_html.contains("No groups yet"));
 
-    // Delete. `location` is `/ui/admin/groups/<uuid>?realm=Acme`; strip
-    // its query before appending `/delete` so we don't construct a path
-    // segment that contains `?realm=…`.
-    let path_only = location
-        .split_once('?')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_else(|| location.clone());
-    let delete_url = format!("{path_only}/delete?realm=Acme");
+    // Delete. `location` is `/ui/admin/realms/acme/groups/<uuid>`; append
+    // `/delete` to construct the deletion endpoint.
+    let delete_url = format!("{location}/delete");
     let delete_body = format!("_csrf={csrf}");
     let delete_response = rig
         .app
@@ -346,7 +341,7 @@ async fn admin_can_create_view_and_delete_a_group() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/ui/admin/groups?realm={}", "Acme"))
+                .uri("/ui/admin/realms/acme/groups")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build"),
@@ -381,7 +376,7 @@ async fn create_with_duplicate_slug_re_renders_form_with_error() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/groups/new?realm={}", "Acme"))
+                .uri("/ui/admin/realms/acme/groups/new")
                 .header(header::COOKIE, cookie.clone())
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(body.clone()))
@@ -399,7 +394,7 @@ async fn create_with_duplicate_slug_re_renders_form_with_error() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/groups/new?realm={}", "Acme"))
+                .uri("/ui/admin/realms/acme/groups/new")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(body))
@@ -443,7 +438,7 @@ async fn admin_can_assign_realm_role_to_group() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/groups/new?realm={}", "Acme"))
+                .uri("/ui/admin/realms/acme/groups/new")
                 .header(header::COOKIE, cookie.clone())
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(create_body))
@@ -452,16 +447,12 @@ async fn admin_can_assign_realm_role_to_group() {
         .await
         .expect("oneshot");
     assert_eq!(create_resp.status(), StatusCode::SEE_OTHER);
-    let location = create_resp
+    let group_path = create_resp
         .headers()
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .expect("location")
         .to_string();
-    let group_path = location
-        .split_once('?')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or(location);
 
     // Look up the seeded `realm.admin` role in the application realm.
     // The rig calls `authz.seed_realm(realm.id())` for exactly this — every
@@ -482,7 +473,7 @@ async fn admin_can_assign_realm_role_to_group() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("{group_path}/roles/assign?realm=Acme"))
+                .uri(format!("{group_path}/roles/assign"))
                 .header(header::COOKIE, cookie.clone())
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(assign_body))
@@ -506,7 +497,7 @@ async fn admin_can_assign_realm_role_to_group() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("{group_path}?realm=Acme&tab=roles"))
+                .uri(format!("{group_path}?tab=roles"))
                 .header(header::COOKIE, cookie.clone())
                 .body(Body::empty())
                 .expect("build"),

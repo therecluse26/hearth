@@ -10,7 +10,7 @@
 {% block body %}
 <div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <h1 class="font-display text-2xl font-medium text-ht-content-primary">{{ realm.name() }}</h1>
-  <a href="/ui/admin/settings/editor?section=realms&amp;realm={{ realm.name() }}"
+  <a href="/ui/admin/settings/editor?section=realms&amp;realm_key={{ realm.name() }}"
      class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
     Edit in Config Editor
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -19,15 +19,15 @@
 
 {# Workspace tabs — all resources in this realm are reachable from here. #}
 <nav class="mb-6 flex flex-wrap gap-1 border-b border-divider" aria-label="Realm workspace">
-  <a href="/ui/admin/realms/{{ realm.id().as_uuid() }}" aria-current="page"
+  <a href="/ui/admin/realms/{{ realm.name() }}" aria-current="page"
      class="border-b-2 border-brand px-3 py-2 text-sm font-medium text-ht-content-primary">Overview</a>
-  <a href="/ui/admin/users?realm={{ realm.name() }}"
+  <a href="/ui/admin/realms/{{ realm.name() }}/users"
      class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Users</a>
-  <a href="/ui/admin/organizations?realm={{ realm.name() }}"
+  <a href="/ui/admin/realms/{{ realm.name() }}/organizations"
      class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Organizations</a>
-  <a href="/ui/admin/applications?realm={{ realm.name() }}"
+  <a href="/ui/admin/realms/{{ realm.name() }}/applications"
      class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Applications</a>
-  <a href="/ui/admin/sessions?realm={{ realm.name() }}"
+  <a href="/ui/admin/realms/{{ realm.name() }}/sessions"
      class="border-b-2 border-transparent px-3 py-2 text-sm font-medium text-ht-content-secondary hover:text-ht-content-primary">Sessions</a>
 </nav>
 
@@ -315,7 +315,7 @@
     <label for="admin_search" class="block text-xs font-medium text-ht-content-secondary">Grant admin</label>
     <input type="search" id="admin_search" name="q" placeholder="Search by name or email…"
            class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus"
-           hx-get="/ui/admin/realms/{{ realm.id().as_uuid() }}/admins/picker"
+           hx-get="/ui/admin/realms/{{ realm.name() }}/admins/picker"
            hx-trigger="input changed delay:200ms, search"
            hx-target="#admin-picker-results"
            hx-swap="innerHTML">
@@ -334,7 +334,7 @@
       {% for a in admins %}
       <tr class="border-b border-divider-faint">
         <td class="px-3 py-2">
-          <a href="/ui/admin/users/{{ a.user_id }}{% if a.is_system_admin %}?admin_target=system{% endif %}" class="group">
+          <a href="{% if a.is_system_admin %}/ui/admin/users/{{ a.user_id }}?admin_target=system{% else %}/ui/admin/realms/{{ realm.name() }}/users/{{ a.user_id }}{% endif %}" class="group">
             <div class="flex items-center gap-2">
               <span class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ a.display_name }}</span>
               {% if a.is_system_admin %}
@@ -347,11 +347,11 @@
         <td class="px-3 py-2"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ a.user_id }}</code></td>
         <td class="px-3 py-2 text-right">
           <div class="flex items-center justify-end gap-3">
-            <a href="/ui/admin/rbac/debug?user_id={{ a.user_id }}"
+            <a href="/ui/admin/realms/{{ realm.name() }}/rbac/debug?user_id={{ a.user_id }}"
                class="text-xs text-ht-content-muted hover:text-ht-content-secondary"
                title="Open Permission Check pre-filled for this admin">Check access</a>
             {% if !a.is_system_admin %}
-            <form method="post" action="/ui/admin/realms/{{ realm.id().as_uuid() }}/admins/{{ a.user_id }}/revoke">
+            <form method="post" action="/ui/admin/realms/{{ realm.name() }}/admins/{{ a.user_id }}/revoke">
               {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
               <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
             </form>
@@ -388,7 +388,7 @@
                 class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
-        <form method="post" action="/ui/admin/realms/{{ realm.id().as_uuid() }}/delete">
+        <form method="post" action="/ui/admin/realms/{{ realm.name() }}/delete">
           {% match csrf %}
             {% when Some with (token) %}
               <input type="hidden" name="_csrf" value="{{ token }}">

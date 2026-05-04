@@ -53,14 +53,6 @@ use super::WebState;
 pub const SESSION_COOKIE: &str = "hearth_ui_session";
 /// Name of the page-readable cookie carrying the CSRF token.
 pub const CSRF_COOKIE: &str = "hearth_ui_csrf";
-/// Name of the cookie carrying the admin's currently-selected target
-/// realm name.
-///
-/// Set by the realm switcher in the admin UI; read by [`TargetRealm`].
-/// Does not need to be signed — the realm name is validated against
-/// storage on every extraction, and a tampered cookie just yields the
-/// wrong page (not an authentication bypass).
-pub const ADMIN_TARGET_COOKIE: &str = "hearth_ui_admin_target";
 
 /// Name of the short-lived cookie carrying the pending MFA challenge state.
 ///
@@ -543,29 +535,28 @@ pub fn resolve_session(
 }
 
 /// Extracts the application realm the admin is currently
-/// administering — the `?realm=<name>` query parameter on admin URLs.
+/// administering, recovered from the URL path itself.
 ///
 /// Admin sessions are always bound to the system realm
 /// ([`crate::identity::keys::system_realm_id`]), which is not a place
 /// for tenant users, OAuth clients, or organizations. The admin UI
 /// operates on tenant realms via this extractor.
 ///
-/// Resolution rules:
+/// **Resolution rules** (per `docs/specs/UI_ROUTING.md` R-5):
 ///
-/// 1. If `?realm=<name>` is present and names an existing non-system
-///    realm, use it.
-/// 2. If `?realm=<name>` is present but names the reserved `system`
-///    realm or a nonexistent realm, return 404.
-/// 3. Otherwise, if the `hearth_ui_admin_target` cookie is set and
-///    names an existing non-system realm, use it.
-/// 4. Otherwise, fall back to the first realm returned by
-///    [`crate::identity::IdentityEngine::list_realms`] (which already
-///    filters out the system realm). Operators without any tenant
-///    realm see 404; handlers should render a friendly "no realms
-///    yet" state where applicable.
-///
-/// Callers that need to handle "no realms yet" specially can extract
-/// [`Option<TargetRealm>`] instead and branch on `None`.
+/// 1. If `?admin_target=system` is present in the query, resolve to
+///    the system realm. This is the only query-based signal that
+///    survives — the system realm has no path slug, so it must be
+///    addressed by sentinel.
+/// 2. Otherwise, the URL path MUST be of the form
+///    `/ui/admin/realms/{realm_name}/...` or `/ui/admin/realms/{realm_name}`.
+///    The path segment is the realm name; the extractor resolves it.
+/// 3. If neither (1) nor (2) matched, the request is rejected. There
+///    is **no** `?realm=` query fallback, **no** cookie fallback, and
+///    **no** "first non-system realm" silent default. This is
+///    deliberate: prior versions of this extractor allowed those
+///    fallbacks, and HTMX form submissions that omitted the realm
+///    parameter silently routed to the wrong realm.
 #[derive(Debug, Clone)]
 pub struct TargetRealm(pub crate::identity::Realm);
 
@@ -604,18 +595,16 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let web_state = Arc::<WebState>::from_ref(state);
 
-        // System-realm sentinel: admin pages that operate on system-realm
-        // users (the operators listed at `/ui/admin/admin-users`) link to
-        // `/ui/admin/users/{id}?admin_target=system` so the same handlers
-        // serve both surfaces. The standard `?realm=<name>` resolver
-        // explicitly rejects the literal name `system` to keep the system
-        // realm out of tenant URLs, so admin-targeting needs its own key.
+        // R-3: System-realm sentinel. Admin pages that operate on
+        // system-realm users (the operators listed at
+        // `/ui/admin/admin-users`) reuse the generic user-management
+        // handlers but with this query sentinel. The system realm has
+        // no path slug, so a query signal is the only practical way
+        // to address it.
         //
         // Safe because every caller of `TargetRealm` is gated by
         // `RequireAdmin` at the route level — all `TargetRealm`
-        // consumers live in `protocol::web::admin`. A non-admin route
-        // adding this extractor would be a code-review red flag, not a
-        // privilege-escalation vector.
+        // consumers live in `protocol::web::admin`.
         let admin_target = parts.uri.query().and_then(|q| {
             q.split('&')
                 .find_map(|p| p.strip_prefix("admin_target="))
@@ -642,86 +631,43 @@ where
             }
         }
 
-        // Highest-priority source: the canonical
-        // `/ui/admin/realms/{name}/...` path segment. When the URL names
-        // a realm, it is the realm — no cookie or query override can
-        // redirect the request elsewhere. This is what makes a
-        // workspace URL share-able: two admins looking at the same link
-        // see the same realm regardless of their individual cookies.
+        // R-1 + R-5: the canonical `/ui/admin/realms/{name}/...` path
+        // segment. The realm name lives in the URL itself; there is no
+        // cookie or query override and no fallback. If the path
+        // doesn't carry a realm, the request is rejected.
         if let Some(name) = path_realm_segment(parts.uri.path()) {
             return resolve_named_realm(&web_state, &name);
         }
 
-        // Parse `?realm=<name>` from the URL query string. We don't
-        // use axum's Query<T> extractor here so we can gracefully
-        // accept admin URLs that carry many other unrelated query
-        // params without having to define a catch-all struct.
-        let query_realm = parts
-            .uri
-            .query()
-            .and_then(|q| {
-                q.split('&')
-                    .find_map(|p| p.strip_prefix("realm="))
-                    .map(|v| {
-                        // URL-decode '+' and '%' escapes minimally — realm
-                        // names are slug-ish so this usually returns the
-                        // value unchanged.
-                        percent_decode(v)
-                    })
-            })
-            .filter(|s| !s.is_empty());
-
-        // Try the query parameter first. Explicit URL overrides the
-        // cookie so deep-links and share-links behave predictably.
-        if let Some(name) = query_realm {
-            return resolve_named_realm(&web_state, &name);
-        }
-
-        // Fall back to the admin-target cookie. Unsigned — a tampered
-        // cookie just yields a different page, not an auth bypass, and
-        // the engine validates the name before use.
-        if let Some(name) = cookie_value(parts, ADMIN_TARGET_COOKIE) {
-            let decoded = percent_decode(name);
-            if !decoded.is_empty() && decoded != crate::identity::keys::SYSTEM_REALM_NAME {
-                if let Ok(Some(realm)) = web_state.identity.get_realm_by_name(&decoded) {
-                    return Ok(TargetRealm(realm));
-                }
-                // Cookie references a stale/deleted realm; fall through
-                // to the first-realm default rather than 404.
-            }
-        }
-
-        // Default: first non-system realm.
-        match web_state.identity.list_realms(None, 1) {
-            Ok(page) => match page.items.into_iter().next() {
-                Some(realm) => Ok(TargetRealm(realm)),
-                None => Err(render_status(
-                    &super::handlers_common::NotFoundTemplate::new(
-                        "No application realms exist yet. Declare one in hearth.yaml to begin."
-                            .to_string(),
-                    ),
-                    StatusCode::NOT_FOUND,
-                )),
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "TargetRealm: list_realms failed");
-                Err(render_status(
-                    &super::handlers_common::ServerErrorTemplate::new(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                ))
-            }
+        // No realm context resolved. Reject deliberately rather than
+        // falling back to a default — silent fallback was the entire
+        // root cause of the bug class this refactor eliminates.
+        // For GET we render a 404 page (admins navigating without a
+        // realm context get a friendly explanation); for non-GET we
+        // return a bare 400 so misconfigured forms surface as errors.
+        if parts.method == Method::GET {
+            Err(render_status(
+                &super::handlers_common::NotFoundTemplate::new(
+                    "Admin URL requires a realm context. Pick a realm from /ui/admin/realms."
+                        .to_string(),
+                ),
+                StatusCode::NOT_FOUND,
+            ))
+        } else {
+            Err((
+                StatusCode::BAD_REQUEST,
+                "Admin mutation requires realm context in the URL path",
+            )
+                .into_response())
         }
     }
 }
 
 /// Extracts the realm name from a URL path of the form
-/// `/ui/admin/realms/{name}/...`.
+/// `/ui/admin/realms/{name}` or `/ui/admin/realms/{name}/...`.
 ///
 /// Returns `None` for:
-/// * The bare realm list at `/ui/admin/realms`.
-/// * Admin realm detail at `/ui/admin/realms/{id}` where `{id}` is a
-///   UUID (the legacy flat realm-detail page — realm names cannot look
-///   like UUIDs because slug validation rejects them).
+/// * The bare realm list at `/ui/admin/realms` (no name segment).
 /// * Anything outside the `/ui/admin/realms/` prefix.
 ///
 /// The returned name is not validated against storage; the caller must
@@ -737,17 +683,6 @@ fn path_realm_segment(path: &str) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    // UUIDs indicate the legacy `/admin/realms/{id}` detail route.
-    // Realm names cannot parse as UUIDs because the slug validator
-    // rejects dashes-only / hex-only strings of that length.
-    if uuid::Uuid::parse_str(name).is_ok() {
-        return None;
-    }
-    // Only match paths that name a *sub-resource* under the realm —
-    // the pattern is `/admin/realms/{name}/{sub}/...`. A bare
-    // `/admin/realms/{name}` without a trailing segment is the
-    // workspace overview page, which is handled separately.
-    rest.find('/')?;
     Some(name.to_string())
 }
 

@@ -3,7 +3,7 @@
 {% block body %}
 {% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
-  <a href="/ui/admin/organizations{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+  <a href="/ui/admin/realms/{{ realm_name }}/organizations"
      class="hover:text-ht-content-primary">Organizations</a>
   <span>›</span>
   <span class="text-ht-content-secondary">New</span>
@@ -21,7 +21,7 @@
   {% endmatch %}
 
   <form method="post"
-        action="/ui/admin/organizations/new{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+        action="/ui/admin/realms/{{ realm_name }}/organizations/new"
         autocomplete="off"
         class="space-y-4"
         x-data="{ name: '{{ form_name }}', slug: '{{ form_slug }}', slugTouched: {% if form_slug.is_empty() %}false{% else %}true{% endif %} }">
@@ -77,7 +77,7 @@
               class="btn-ember rounded px-4 py-2 text-sm font-semibold">
         Create organization
       </button>
-      <a href="/ui/admin/organizations{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+      <a href="/ui/admin/realms/{{ realm_name }}/organizations"
          class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
     </div>
   </form>

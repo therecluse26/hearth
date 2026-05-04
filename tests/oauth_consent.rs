@@ -90,7 +90,7 @@ fn build_rig() -> Rig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -1324,7 +1324,7 @@ fn build_admin_rig() -> AdminRig {
     // Target (tenant) realm + a regular user + an OAuth client.
     let target_realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -1456,9 +1456,9 @@ async fn admin_can_list_any_users_consents_in_target_realm() {
     let rig = build_admin_rig();
     let cookie = admin_auth_cookie(&rig.admin_session, "x");
     let url = format!(
-        "/ui/admin/users/{}/consents?realm={}",
-        rig.target_user.as_uuid(),
+        "/ui/admin/realms/{}/users/{}/consents",
         rig.target_realm_name,
+        rig.target_user.as_uuid(),
     );
     let resp = rig
         .app
@@ -1492,10 +1492,10 @@ async fn admin_revoke_on_behalf_emits_audit_with_via_admin() {
     let csrf = "x";
     let cookie = admin_auth_cookie(&rig.admin_session, csrf);
     let url = format!(
-        "/ui/admin/users/{}/consents/{}/revoke?realm={}",
+        "/ui/admin/realms/{}/users/{}/consents/{}/revoke",
+        rig.target_realm_name,
         rig.target_user.as_uuid(),
         rig.client.client_id().as_uuid(),
-        rig.target_realm_name,
     );
     let resp = rig
         .app
@@ -1546,9 +1546,9 @@ async fn non_admin_cannot_access_admin_consent_page() {
     let rig = build_admin_rig();
     let cookie = auth_cookie(&rig.target_realm_id, &rig.non_admin_session, "x");
     let url = format!(
-        "/ui/admin/users/{}/consents?realm={}",
-        rig.target_user.as_uuid(),
+        "/ui/admin/realms/{}/users/{}/consents",
         rig.target_realm_name,
+        rig.target_user.as_uuid(),
     );
     let resp = rig
         .app

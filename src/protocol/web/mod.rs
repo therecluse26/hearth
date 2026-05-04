@@ -710,292 +710,295 @@ pub fn router(state: WebState) -> Router {
             "/admin/admin-users/new",
             axum::routing::get(admin::admin_admin_user_create_alias),
         )
-        .route("/admin/users", axum::routing::get(admin::admin_users_list))
-        .route(
-            "/admin/users/new",
-            axum::routing::get(admin::admin_user_create_form).post(admin::admin_user_create_submit),
-        )
-        .route(
-            "/admin/users/{id}",
-            axum::routing::get(admin::admin_user_detail),
-        )
-        .route(
-            "/admin/users/{id}/edit",
-            axum::routing::get(admin::admin_user_edit_form).post(admin::admin_user_edit_submit),
-        )
-        .route(
-            "/admin/users/{id}/delete",
-            axum::routing::post(admin::admin_user_delete),
-        )
-        .route(
-            "/admin/users/{id}/reset-password",
-            axum::routing::post(admin::admin_user_send_reset),
-        )
-        .route(
-            "/admin/users/{id}/disable-mfa",
-            axum::routing::post(admin::admin_user_disable_mfa),
-        )
-        .route(
-            "/admin/users/{id}/sessions/{sid}/revoke",
-            axum::routing::post(admin::admin_user_revoke_session),
-        )
-        .route(
-            "/admin/users/{id}/webauthn/{cred_id}/revoke",
-            axum::routing::post(admin::admin_user_revoke_webauthn),
-        )
-        .route(
-            "/admin/users/{id}/roles/assign",
-            axum::routing::post(admin::admin_user_assign_role),
-        )
-        .route(
-            "/admin/users/{id}/roles/{assignment_id}/unassign",
-            axum::routing::post(admin::admin_user_unassign_role),
-        )
-        .route(
-            "/admin/users/{id}/permissions/grant",
-            axum::routing::post(admin::admin_user_grant_permission),
-        )
-        .route(
-            "/admin/users/{id}/permissions/revoke",
-            axum::routing::post(admin::admin_user_revoke_permission),
-        )
-        .route(
-            "/admin/users/{id}/consents",
-            axum::routing::get(admin::admin_user_consents_list),
-        )
-        .route(
-            "/admin/users/{id}/applications",
-            axum::routing::get(admin::admin_user_consents_list),
-        )
-        .route(
-            "/admin/users/{id}/consents/{client_id}/revoke",
-            axum::routing::post(admin::admin_user_consent_revoke),
-        )
-        .route(
-            "/admin/users/{id}/applications/{client_id}/revoke",
-            axum::routing::post(admin::admin_user_consent_revoke),
-        )
-        // --- Realms (read-only; managed via hearth.yaml) ---
+        // --- Realms list (system-scoped) ---
         .route(
             "/admin/realms",
             axum::routing::get(admin::admin_realms_list),
         )
+        // --- Realm-scoped: users ---
         .route(
-            "/admin/realms/{id}",
+            "/admin/realms/{realm}/users",
+            axum::routing::get(admin::admin_users_list),
+        )
+        .route(
+            "/admin/realms/{realm}/users/new",
+            axum::routing::get(admin::admin_user_create_form).post(admin::admin_user_create_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}",
+            axum::routing::get(admin::admin_user_detail),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/edit",
+            axum::routing::get(admin::admin_user_edit_form).post(admin::admin_user_edit_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/delete",
+            axum::routing::post(admin::admin_user_delete),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/reset-password",
+            axum::routing::post(admin::admin_user_send_reset),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/disable-mfa",
+            axum::routing::post(admin::admin_user_disable_mfa),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/sessions/{sid}/revoke",
+            axum::routing::post(admin::admin_user_revoke_session),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/webauthn/{cred_id}/revoke",
+            axum::routing::post(admin::admin_user_revoke_webauthn),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/roles/assign",
+            axum::routing::post(admin::admin_user_assign_role),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/roles/{assignment_id}/unassign",
+            axum::routing::post(admin::admin_user_unassign_role),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/permissions/grant",
+            axum::routing::post(admin::admin_user_grant_permission),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/permissions/revoke",
+            axum::routing::post(admin::admin_user_revoke_permission),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/consents",
+            axum::routing::get(admin::admin_user_consents_list),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/applications",
+            axum::routing::get(admin::admin_user_consents_list),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/consents/{client_id}/revoke",
+            axum::routing::post(admin::admin_user_consent_revoke),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/applications/{client_id}/revoke",
+            axum::routing::post(admin::admin_user_consent_revoke),
+        )
+        // --- Realm meta (workspace landing, delete, admin grants, claims) ---
+        .route(
+            "/admin/realms/{realm}",
             axum::routing::get(admin::admin_realm_detail),
         )
         .route(
-            "/admin/realms/{id}/delete",
+            "/admin/realms/{realm}/delete",
             axum::routing::post(admin::admin_realm_delete),
         )
         .route(
-            "/admin/realms/{id}/admins/picker",
+            "/admin/realms/{realm}/admins/picker",
             axum::routing::get(admin::admin_realm_admin_picker),
         )
         .route(
-            "/admin/realms/{id}/admins/grant",
+            "/admin/realms/{realm}/admins/grant",
             axum::routing::post(admin::admin_realm_admin_grant),
         )
         .route(
-            "/admin/realms/{id}/admins/{uid}/revoke",
+            "/admin/realms/{realm}/admins/{uid}/revoke",
             axum::routing::post(admin::admin_realm_admin_revoke),
         )
         .route(
-            "/admin/realms/{id}/claims",
+            "/admin/realms/{realm}/claims",
             axum::routing::get(admin::admin_realm_claims),
         )
+        // --- Realm-scoped: RBAC + permissions ---
         .route(
-            "/admin/rbac/debug",
+            "/admin/realms/{realm}/rbac/debug",
             axum::routing::get(admin::admin_rbac_debug),
         )
         .route(
-            // Canonical resolver URL per spec (REQ-056). Aliases to /admin/rbac/debug
-            // preserving query string. The two surfaces share an implementation; this
-            // route just gives the spec-named URL a 302 home.
-            "/admin/permissions/resolve",
+            // Canonical resolver URL per spec (REQ-056). Aliases to /rbac/debug
+            // preserving query string.
+            "/admin/realms/{realm}/permissions/resolve",
             axum::routing::get(admin::admin_permissions_resolve_alias),
         )
         .route(
-            "/admin/rbac/token-preview",
+            "/admin/realms/{realm}/rbac/token-preview",
             axum::routing::post(admin::admin_rbac_token_preview),
         )
         .route(
-            "/admin/rbac/permissions",
+            "/admin/realms/{realm}/rbac/permissions",
             axum::routing::get(admin::admin_rbac_permissions),
         )
         .route(
-            "/admin/rbac/roles",
+            "/admin/realms/{realm}/rbac/roles",
             axum::routing::get(admin::admin_rbac_roles),
         )
         .route(
-            "/admin/rbac/scopes",
+            "/admin/realms/{realm}/rbac/scopes",
             axum::routing::get(admin::admin_rbac_scopes),
         )
-        // --- Organizations ---
+        // --- Realm-scoped: organizations ---
         .route(
-            "/admin/organizations",
+            "/admin/realms/{realm}/organizations",
             axum::routing::get(admin::admin_orgs_list),
         )
         .route(
-            "/admin/organizations/new",
+            "/admin/realms/{realm}/organizations/new",
             axum::routing::get(admin::admin_org_create_form).post(admin::admin_org_create_submit),
         )
         .route(
-            "/admin/organizations/bulk-delete",
+            "/admin/realms/{realm}/organizations/bulk-delete",
             axum::routing::post(admin::admin_orgs_bulk_delete),
         )
         .route(
-            "/admin/organizations/{id}",
+            "/admin/realms/{realm}/organizations/{id}",
             axum::routing::get(admin::admin_org_detail),
         )
         .route(
-            "/admin/organizations/{id}/edit",
+            "/admin/realms/{realm}/organizations/{id}/edit",
             axum::routing::get(admin::admin_org_edit_form).post(admin::admin_org_edit_submit),
         )
         .route(
-            "/admin/organizations/{id}/delete",
+            "/admin/realms/{realm}/organizations/{id}/delete",
             axum::routing::post(admin::admin_org_delete),
         )
         .route(
-            "/admin/organizations/{id}/members",
+            "/admin/realms/{realm}/organizations/{id}/members",
             axum::routing::post(admin::admin_org_add_member),
         )
         .route(
-            "/admin/organizations/{id}/members/picker",
+            "/admin/realms/{realm}/organizations/{id}/members/picker",
             axum::routing::get(admin::admin_org_member_picker),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/remove",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/remove",
             axum::routing::post(admin::admin_org_remove_member),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/role",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/role",
             axum::routing::post(admin::admin_org_update_role),
         )
         .route(
-            "/admin/organizations/{id}/invite",
+            "/admin/realms/{realm}/organizations/{id}/invite",
             axum::routing::post(admin::admin_org_invite),
         )
         .route(
-            "/admin/organizations/{id}/status",
+            "/admin/realms/{realm}/organizations/{id}/status",
             axum::routing::post(admin::admin_org_status_toggle),
         )
         .route(
-            "/admin/organizations/{id}/invitations/{iid}/revoke",
+            "/admin/realms/{realm}/organizations/{id}/invitations/{iid}/revoke",
             axum::routing::post(admin::admin_org_revoke_invite),
         )
         .route(
-            "/admin/organizations/{id}/invitations/{iid}/resend",
+            "/admin/realms/{realm}/organizations/{id}/invitations/{iid}/resend",
             axum::routing::post(admin::admin_org_resend_invite),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/rbac/assign",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/rbac/assign",
             axum::routing::post(admin::admin_org_member_assign_role),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/rbac/{aid}/unassign",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/rbac/{aid}/unassign",
             axum::routing::post(admin::admin_org_member_unassign_role),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/permissions/grant",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/permissions/grant",
             axum::routing::post(admin::admin_org_member_grant_perm),
         )
         .route(
-            "/admin/organizations/{id}/members/{uid}/permissions/revoke",
+            "/admin/realms/{realm}/organizations/{id}/members/{uid}/permissions/revoke",
             axum::routing::post(admin::admin_org_member_revoke_perm),
         )
-        // --- Groups (RBAC) ---
+        // --- Realm-scoped: groups (RBAC) ---
         .route(
-            "/admin/groups",
+            "/admin/realms/{realm}/groups",
             axum::routing::get(admin::admin_groups_list),
         )
         .route(
-            "/admin/groups/new",
+            "/admin/realms/{realm}/groups/new",
             axum::routing::get(admin::admin_group_create_form)
                 .post(admin::admin_group_create_submit),
         )
         .route(
-            "/admin/groups/{id}",
+            "/admin/realms/{realm}/groups/{id}",
             axum::routing::get(admin::admin_group_detail),
         )
         .route(
-            "/admin/groups/{id}/edit",
+            "/admin/realms/{realm}/groups/{id}/edit",
             axum::routing::get(admin::admin_group_edit_form).post(admin::admin_group_edit_submit),
         )
         .route(
-            "/admin/groups/{id}/delete",
+            "/admin/realms/{realm}/groups/{id}/delete",
             axum::routing::post(admin::admin_group_delete),
         )
         .route(
-            "/admin/groups/{id}/members",
+            "/admin/realms/{realm}/groups/{id}/members",
             axum::routing::post(admin::admin_group_member_add),
         )
         .route(
-            "/admin/groups/{id}/members/picker",
+            "/admin/realms/{realm}/groups/{id}/members/picker",
             axum::routing::get(admin::admin_group_member_picker),
         )
         .route(
-            "/admin/groups/{id}/members/{kind}/{mid}/remove",
+            "/admin/realms/{realm}/groups/{id}/members/{kind}/{mid}/remove",
             axum::routing::post(admin::admin_group_member_remove),
         )
         .route(
-            "/admin/groups/{id}/roles/assign",
+            "/admin/realms/{realm}/groups/{id}/roles/assign",
             axum::routing::post(admin::admin_group_role_assign),
         )
         .route(
-            "/admin/groups/{id}/roles/{aid}/unassign",
+            "/admin/realms/{realm}/groups/{id}/roles/{aid}/unassign",
             axum::routing::post(admin::admin_group_role_unassign),
         )
-        // --- User search API (HTMX) ---
+        // --- Realm-scoped: user search API (HTMX) ---
         .route(
-            "/admin/api/users/search",
+            "/admin/realms/{realm}/api/users/search",
             axum::routing::get(admin::admin_api_user_search),
         )
         .route(
-            "/admin/rbac/api/users/search",
+            "/admin/realms/{realm}/rbac/api/users/search",
             axum::routing::get(admin::admin_api_rbac_user_search),
         )
-        // --- Config reload API ---
+        // --- Config reload API (system-scoped) ---
         .route(
             "/admin/api/config/reload",
             axum::routing::post(admin::admin_api_config_reload),
         )
-        // --- Sidebar nav data (realm tree) ---
+        // --- Sidebar nav data (realm tree) (system-scoped) ---
         .route(
             "/admin/api/nav/realms",
             axum::routing::get(admin::admin_api_nav_realms),
         )
-        // --- Admin realm switcher ---
+        // --- Realm-scoped: applications (read-only) ---
         .route(
-            "/admin/switch-realm",
-            axum::routing::post(admin::admin_switch_realm),
-        )
-        // --- Applications (read-only — managed via hearth.yaml) ---
-        .route(
-            "/admin/applications",
+            "/admin/realms/{realm}/applications",
             axum::routing::get(admin::admin_apps_list),
         )
         .route(
-            "/admin/applications/{id}",
+            "/admin/realms/{realm}/applications/{id}",
             axum::routing::get(admin::admin_app_detail),
         )
         .route(
-            "/admin/applications/{id}/regenerate-secret",
+            "/admin/realms/{realm}/applications/{id}/regenerate-secret",
             axum::routing::post(admin::admin_app_regenerate_secret),
         )
-        // --- Sessions ---
+        // --- Realm-scoped: sessions ---
         .route(
-            "/admin/sessions",
+            "/admin/realms/{realm}/sessions",
             axum::routing::get(admin::admin_sessions_list),
         )
         .route(
-            "/admin/sessions/{id}/revoke",
+            "/admin/realms/{realm}/sessions/{id}/revoke",
             axum::routing::post(admin::admin_session_revoke),
         )
-        // --- Audit ---
-        .route("/admin/audit", axum::routing::get(admin::admin_audit_list))
+        // --- Realm-scoped: audit ---
         .route(
-            "/admin/audit/verify",
+            "/admin/realms/{realm}/audit",
+            axum::routing::get(admin::admin_audit_list),
+        )
+        .route(
+            "/admin/realms/{realm}/audit/verify",
             axum::routing::post(admin::admin_audit_verify_integrity),
         )
         .route(

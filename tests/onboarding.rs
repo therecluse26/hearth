@@ -315,7 +315,7 @@ fn complete_setup_creates_admin_and_sends_email() {
     // Seeding an application realm is no longer required — admins live
     // in the auto-seeded system realm. We still create one to verify it
     // is *not* picked (regression test on the old behavior).
-    let _ignored = env.seed_realm("Hearth Prod");
+    let _ignored = env.seed_realm("hearth-prod");
 
     let pw = CleartextPassword::new(b"correct-horse-battery-staple".to_vec());
     let outcome = env

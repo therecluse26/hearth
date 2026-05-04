@@ -89,21 +89,12 @@ struct UserListTemplate {
     users: Vec<User>,
     next_cursor: Option<String>,
     search_query: String,
-    // Realm-workspace context. `Some` for `/admin/users?realm=<name>`
-    // views (tenant workspace); `None` for `/admin/admin-users` which
-    // is explicitly cross-workspace system-realm scope.
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
-    /// URL query string appended to per-user links so the user-detail
-    /// handler resolves the same realm context as the list page.
-    /// Example values: `"?realm=internal-tools"` for tenant lists,
-    /// `"?admin_target=system"` for the admin-users surface, or empty
-    /// when no override is needed.
-    target_query: String,
+    realm_name: String,
     /// Base URL the search form submits to, also used as the `hx-get`
-    /// target for live search. `/ui/admin/users` for tenant realms,
-    /// `/ui/admin/admin-users` for the system-realm operator surface.
-    list_url: &'static str,
+    /// target for live search. `/ui/admin/realms/{name}/users` for
+    /// tenant realms, `/ui/admin/admin-users` for the system-realm
+    /// operator surface.
+    list_url: String,
     active_tab: &'static str,
     // Chrome fields.
     chrome: bool,
@@ -126,7 +117,7 @@ struct UserListTemplate {
 #[template(path = "ui/admin/users/_rows.html")]
 struct UserRowsTemplate {
     users: Vec<User>,
-    target_query: String,
+    realm_name: String,
 }
 
 /// `GET /ui/admin/users`.
@@ -134,6 +125,7 @@ pub async fn admin_users_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     htmx: super::templates::IsHtmx,
     Query(params): Query<UserListParams>,
 ) -> Response {
@@ -152,24 +144,20 @@ pub async fn admin_users_list(
             .list_users(target.id(), params.cursor.as_deref(), 20)
     };
 
-    let target_query = format!("?realm={}", target.0.name());
-
     match result {
         Ok(page) => {
             if htmx.0 {
                 return render(&UserRowsTemplate {
                     users: page.items,
-                    target_query,
+                    realm_name: target.0.name().to_string(),
                 });
             }
             render(&UserListTemplate {
                 users: page.items,
                 next_cursor: page.next_cursor,
                 search_query,
-                target_realm_name: Some(target.0.name().to_string()),
-                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
-                target_query,
-                list_url: "/ui/admin/users",
+                realm_name: target.0.name().to_string(),
+                list_url: format!("/ui/admin/realms/{}/users", target.0.name()),
                 active_tab: "users",
                 chrome: true,
                 active: "realm-workspace",
@@ -231,41 +219,32 @@ pub async fn admin_admin_users_list(
             .list_users(&system_realm, params.cursor.as_deref(), 20)
     };
 
-    // System realm sentinel — `TargetRealm` resolves this to
-    // the system realm only on `/ui/admin/*` routes (gated by
-    // `RequireAdmin`). Without it, clicking a row would 404
-    // because `?realm=system` is rejected by the standard
-    // resolver and the default falls back to a tenant realm.
-    let target_query = "?admin_target=system".to_string();
-
     match result {
         Ok(page) => {
             if htmx.0 {
                 return render(&UserRowsTemplate {
                     users: page.items,
-                    target_query,
+                    realm_name: String::new(),
                 });
             }
             render(&UserListTemplate {
-            users: page.items,
-            next_cursor: page.next_cursor,
-            search_query,
-            target_realm_name: None,
-            target_realm_id_hex: None,
-            target_query,
-            list_url: "/ui/admin/admin-users",
-            active_tab: "",
-            chrome: true,
-            active: "admin-users",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: false,
-            product_name: state.product_name.clone(),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            realm_theme_css: state.realm_theme_css(),
+                users: page.items,
+                next_cursor: page.next_cursor,
+                search_query,
+                realm_name: String::new(),
+                list_url: "/ui/admin/admin-users".to_string(),
+                active_tab: "",
+                chrome: true,
+                active: "admin-users",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: false,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: state.realm_theme_css(),
             })
         }
         Err(e) => {
@@ -284,18 +263,11 @@ pub async fn admin_admin_users_list(
 #[template(path = "ui/admin/users/new.html")]
 struct UserNewTemplate {
     error: Option<String>,
+    realm_name: String,
     form_email: String,
     form_display_name: String,
     form_first_name: String,
     form_last_name: String,
-    /// Query string the form must round-trip so the POST handler and
-    /// Cancel link land in the realm the operator was working in. The
-    /// 2026-04-29 audit caught the legacy form dropping the `?realm=`
-    /// param on Cancel — clicking Cancel from a tenant-realm Users page
-    /// would dump the operator into `/ui/admin/users` with no realm
-    /// context. Format: `"?realm=<name>"`, `"?admin_target=system"`,
-    /// or empty.
-    target_query: String,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -314,16 +286,15 @@ struct UserNewTemplate {
 pub async fn admin_user_create_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    raw_query: axum::extract::RawQuery,
+    AxumPath(realm_name): AxumPath<String>,
 ) -> Response {
-    let target_query = realm_query_string(raw_query.0.as_deref());
     render(&UserNewTemplate {
         error: None,
+        realm_name,
         form_email: String::new(),
         form_display_name: String::new(),
         form_first_name: String::new(),
         form_last_name: String::new(),
-        target_query,
         chrome: true,
         active: "users",
         user_email: Some(session.user_email.clone()),
@@ -336,27 +307,6 @@ pub async fn admin_user_create_form(
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
     })
-}
-
-/// Extracts `?realm=<name>` or `?admin_target=system` from a raw query
-/// string and reformats it as a single round-trippable token suitable
-/// for appending to form actions and link hrefs. Returns the empty
-/// string when neither key is present (caller renders unscoped URLs).
-fn realm_query_string(raw: Option<&str>) -> String {
-    let Some(q) = raw else {
-        return String::new();
-    };
-    for part in q.split('&') {
-        if let Some(name) = part.strip_prefix("realm=") {
-            if !name.is_empty() {
-                return format!("?realm={name}");
-            }
-        }
-        if part == "admin_target=system" {
-            return "?admin_target=system".to_string();
-        }
-    }
-    String::new()
 }
 
 /// `application/x-www-form-urlencoded` body for creating a user.
@@ -381,6 +331,7 @@ pub async fn admin_user_create_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     FriendlyForm(form): FriendlyForm<CreateUserForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -392,15 +343,6 @@ pub async fn admin_user_create_submit(
         display_name: form.display_name.clone(),
         first_name: form.first_name.clone(),
         last_name: form.last_name.clone(),
-    };
-
-    // Round-trip the realm context so the re-rendered form on error
-    // (and the post-success redirect) keeps the operator inside the
-    // realm they were creating into.
-    let target_query = if *target.id().as_uuid() == uuid::Uuid::nil() {
-        "?admin_target=system".to_string()
-    } else {
-        format!("?realm={}", target.0.name())
     };
 
     match state.identity.create_user(target.id(), &req) {
@@ -426,19 +368,19 @@ pub async fn admin_user_create_submit(
             // Audit.
             audit_user_event(&state, &session, &target.0, user.id(), "create");
             Redirect::to(&format!(
-                "/ui/admin/users/{}{}",
-                user.id().as_uuid(),
-                target_query
+                "/ui/admin/realms/{}/users/{}",
+                target.0.name(),
+                user.id().as_uuid()
             ))
             .into_response()
         }
         Err(IdentityError::DuplicateEmail) => render(&UserNewTemplate {
             error: Some("A user with that email already exists.".to_string()),
+            realm_name: target.0.name().to_string(),
             form_email: form.email.clone(),
             form_display_name: form.display_name.clone(),
             form_first_name: form.first_name.clone(),
             form_last_name: form.last_name.clone(),
-            target_query: target_query.clone(),
             chrome: true,
             active: "users",
             user_email: Some(session.user_email.clone()),
@@ -453,11 +395,11 @@ pub async fn admin_user_create_submit(
         }),
         Err(IdentityError::InvalidInput { reason }) => render(&UserNewTemplate {
             error: Some(reason),
+            realm_name: target.0.name().to_string(),
             form_email: form.email.clone(),
             form_display_name: form.display_name.clone(),
             form_first_name: form.first_name.clone(),
             form_last_name: form.last_name.clone(),
-            target_query: target_query.clone(),
             chrome: true,
             active: "users",
             user_email: Some(session.user_email.clone()),
@@ -474,11 +416,11 @@ pub async fn admin_user_create_submit(
             tracing::warn!(error = %e, "create_user failed");
             render(&UserNewTemplate {
                 error: Some("Unable to create user right now.".to_string()),
+                realm_name: target.0.name().to_string(),
                 form_email: form.email.clone(),
                 form_display_name: form.display_name.clone(),
                 form_first_name: form.first_name.clone(),
                 form_last_name: form.last_name.clone(),
-                target_query,
                 chrome: true,
                 active: "users",
                 user_email: Some(session.user_email.clone()),
@@ -652,6 +594,7 @@ pub struct UserPermissionGrantRow {
 #[allow(clippy::struct_excessive_bools)]
 struct UserDetailTemplate {
     user: User,
+    realm_name: String,
     /// User UUID string — shared with embedded partials via `{% include %}`.
     user_id: String,
     sessions: Vec<UserSessionRow>,
@@ -702,6 +645,7 @@ struct UserDetailTemplate {
 #[derive(Template)]
 #[template(path = "ui/admin/users/_roles_tab.html")]
 struct UserRolesTabTemplate {
+    realm_name: String,
     user_id: String,
     role_assignments: Vec<UserRoleAssignmentRow>,
     available_roles: Vec<AvailableRole>,
@@ -715,6 +659,7 @@ struct UserRolesTabTemplate {
 #[derive(Template)]
 #[template(path = "ui/admin/users/_permissions_tab.html")]
 struct UserPermissionsTabTemplate {
+    realm_name: String,
     user_id: String,
     extra_permissions: Vec<UserPermissionGrantRow>,
     /// Per-role groups of inherited permissions for attribution display.
@@ -738,7 +683,7 @@ pub async fn admin_user_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
     Query(params): Query<UserDetailParams>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
@@ -925,6 +870,7 @@ pub async fn admin_user_detail(
     render(&UserDetailTemplate {
         user_id: uid.as_uuid().to_string(),
         user,
+        realm_name: target.0.name().to_string(),
         sessions,
         mfa_enabled,
         webauthn_credentials,
@@ -961,7 +907,7 @@ pub async fn admin_user_send_reset(
     State(state): State<Arc<WebState>>,
     RequireAdmin(_session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
@@ -994,7 +940,11 @@ pub async fn admin_user_send_reset(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=reset_sent")).into_response()
+    Redirect::to(&format!(
+        "/ui/admin/realms/{}/users/{user_id}?flash=reset_sent",
+        target.0.name()
+    ))
+    .into_response()
 }
 
 /// `POST /ui/admin/users/:id/disable-mfa` — disables MFA for the user.
@@ -1002,7 +952,7 @@ pub async fn admin_user_disable_mfa(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
@@ -1018,7 +968,11 @@ pub async fn admin_user_disable_mfa(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=mfa_disabled")).into_response()
+    Redirect::to(&format!(
+        "/ui/admin/realms/{}/users/{user_id}?flash=mfa_disabled",
+        target.0.name()
+    ))
+    .into_response()
 }
 
 /// `POST /ui/admin/users/:id/sessions/:sid/revoke` — revokes a single session.
@@ -1026,7 +980,7 @@ pub async fn admin_user_revoke_session(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((user_id, session_id)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, user_id, session_id)): AxumPath<(String, String, String)>,
 ) -> Response {
     let sid = match session_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::SessionId::new(u),
@@ -1042,7 +996,11 @@ pub async fn admin_user_revoke_session(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=session_revoked")).into_response()
+    Redirect::to(&format!(
+        "/ui/admin/realms/{}/users/{user_id}?flash=session_revoked",
+        target.0.name()
+    ))
+    .into_response()
 }
 
 /// `POST /ui/admin/users/:id/webauthn/:cred_id/revoke` — revokes a `WebAuthn` credential.
@@ -1050,7 +1008,7 @@ pub async fn admin_user_revoke_webauthn(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((user_id, cred_id_b64)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, user_id, cred_id_b64)): AxumPath<(String, String, String)>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
@@ -1074,7 +1032,11 @@ pub async fn admin_user_revoke_webauthn(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/users/{user_id}?flash=webauthn_revoked")).into_response()
+    Redirect::to(&format!(
+        "/ui/admin/realms/{}/users/{user_id}?flash=webauthn_revoked",
+        target.0.name()
+    ))
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,6 +1049,7 @@ pub async fn admin_user_revoke_webauthn(
 #[allow(clippy::struct_excessive_bools)]
 struct UserEditTemplate {
     user: User,
+    realm_name: String,
     error: Option<String>,
     form_email: String,
     form_display_name: String,
@@ -1126,7 +1089,7 @@ pub async fn admin_user_edit_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
 ) -> Response {
     let uid = match user_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
@@ -1144,6 +1107,7 @@ pub async fn admin_user_edit_form(
                 form_last_name: user.last_name().to_string(),
                 form_status: format!("{:?}", user.status()),
                 user,
+                realm_name: target.0.name().to_string(),
                 error: None,
                 is_user_admin,
                 org_memberships,
@@ -1193,7 +1157,7 @@ pub async fn admin_user_edit_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<EditUserForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -1240,7 +1204,12 @@ pub async fn admin_user_edit_submit(
                 }
             }
             audit_user_event(&state, &session, &target.0, &uid, "update");
-            Redirect::to(&format!("/ui/admin/users/{}", uid.as_uuid())).into_response()
+            Redirect::to(&format!(
+                "/ui/admin/realms/{}/users/{}",
+                target.0.name(),
+                uid.as_uuid()
+            ))
+            .into_response()
         }
         Err(IdentityError::DuplicateEmail) => render_edit_error(
             &state,
@@ -1284,7 +1253,7 @@ pub async fn admin_user_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteUserForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -1299,7 +1268,7 @@ pub async fn admin_user_delete(
     match state.identity.delete_user(target.id(), &uid) {
         Ok(()) => {
             audit_user_event(&state, &session, &target.0, &uid, "delete");
-            Redirect::to("/ui/admin/users").into_response()
+            Redirect::to(&format!("/ui/admin/realms/{}/users", target.0.name())).into_response()
         }
         Err(IdentityError::UserNotFound) => super::handlers_common::not_found("User not found"),
         Err(e) => {
@@ -1341,6 +1310,7 @@ fn render_edit_error(
             let org_memberships = resolve_user_org_memberships(state, target.id(), uid);
             render(&UserEditTemplate {
                 user: user.clone(),
+                realm_name: target.name().to_string(),
                 error: Some(msg.to_string()),
                 form_email: form.email.clone(),
                 form_display_name: form.display_name.clone(),
@@ -1547,16 +1517,14 @@ struct RealmDetailTemplate {
     realm_theme_css: Option<String>,
 }
 
-/// `GET /ui/admin/realms/:id`.
+/// `GET /ui/admin/realms/{realm}`.
 pub async fn admin_realm_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    AxumPath(tid): AxumPath<String>,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
-    let realm_id = match tid.parse::<uuid::Uuid>() {
-        Ok(u) => RealmId::new(u),
-        Err(_) => return super::handlers_common::not_found("Realm not found"),
-    };
+    let realm_id = target.id().clone();
 
     match state.identity.get_realm(&realm_id) {
         Ok(Some(realm)) => {
@@ -1607,21 +1575,19 @@ pub struct DeleteForm {
     pub csrf: String,
 }
 
-/// `POST /ui/admin/realms/:id/delete`.
+/// `POST /ui/admin/realms/{realm}/delete`.
 pub async fn admin_realm_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    AxumPath(tid): AxumPath<String>,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
     }
 
-    let realm_id = match tid.parse::<uuid::Uuid>() {
-        Ok(u) => RealmId::new(u),
-        Err(_) => return super::handlers_common::not_found("Realm not found"),
-    };
+    let realm_id = target.id().clone();
 
     // Only allow permanent deletion of Archived realms.
     match state.identity.get_realm(&realm_id) {
@@ -1690,8 +1656,7 @@ fn audit_realm_event(
 struct AppListTemplate {
     applications: Vec<OAuthClient>,
     next_cursor: Option<String>,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
+    realm_name: String,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -1711,6 +1676,7 @@ pub async fn admin_apps_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(params): Query<PaginationParams>,
 ) -> Response {
     match state
@@ -1720,8 +1686,7 @@ pub async fn admin_apps_list(
         Ok(page) => render(&AppListTemplate {
             applications: page.items,
             next_cursor: page.next_cursor,
-            target_realm_name: Some(target.0.name().to_string()),
-            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            realm_name: target.0.name().to_string(),
             active_tab: "applications",
             chrome: true,
             active: "realm-workspace",
@@ -1750,6 +1715,7 @@ pub async fn admin_apps_list(
 #[template(path = "ui/admin/applications/detail.html")]
 struct AppDetailTemplate {
     app: OAuthClient,
+    realm_name: String,
     client_secret: Option<String>,
     chrome: bool,
     active: &'static str,
@@ -1769,7 +1735,7 @@ pub async fn admin_app_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(cid): AxumPath<String>,
+    AxumPath((_realm_name, cid)): AxumPath<(String, String)>,
 ) -> Response {
     let client_id = match cid.parse::<uuid::Uuid>() {
         Ok(u) => ClientId::new(u),
@@ -1779,6 +1745,7 @@ pub async fn admin_app_detail(
     match state.identity.get_client(target.id(), &client_id) {
         Ok(Some(app)) => render(&AppDetailTemplate {
             app,
+            realm_name: target.0.name().to_string(),
             client_secret: None,
             chrome: true,
             active: "applications",
@@ -1808,7 +1775,7 @@ pub async fn admin_app_regenerate_secret(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(cid): AxumPath<String>,
+    AxumPath((_realm_name, cid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -1830,6 +1797,7 @@ pub async fn admin_app_regenerate_secret(
             match state.identity.get_client(target.id(), &client_id) {
                 Ok(Some(app)) => render(&AppDetailTemplate {
                     app,
+                    realm_name: target.0.name().to_string(),
                     client_secret: Some(new_secret),
                     chrome: true,
                     active: "applications",
@@ -1843,8 +1811,12 @@ pub async fn admin_app_regenerate_secret(
                     theme_css: state.theme_css.clone(),
                     realm_theme_css: state.realm_theme_css(),
                 }),
-                _ => Redirect::to(&format!("/ui/admin/applications/{}", client_id.as_uuid()))
-                    .into_response(),
+                _ => Redirect::to(&format!(
+                    "/ui/admin/realms/{}/applications/{}",
+                    target.0.name(),
+                    client_id.as_uuid()
+                ))
+                .into_response(),
             }
         }
         Err(IdentityError::InvalidClient) => {
@@ -1925,8 +1897,7 @@ pub struct SessionRow {
 struct SessionListTemplate {
     sessions: Vec<SessionRow>,
     next_cursor: Option<String>,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
+    realm_name: String,
     /// `true` when the page is rendering the cross-realm aggregation at
     /// `/ui/admin/sessions` (no `?realm=` / `?admin_target=`). The list
     /// template uses this to swap the heading and reveal the Realm
@@ -2177,23 +2148,13 @@ fn resolve_user_email(
 /// that this PR doesn't introduce. A LIMIT-per-realm cap keeps the
 /// query bounded; busy deployments should narrow with `?realm=` until
 /// a real cross-realm cursor is added.
-#[allow(clippy::too_many_lines)]
 pub async fn admin_sessions_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(params): Query<SessionsListParams>,
-    raw_query: axum::extract::RawQuery,
 ) -> Response {
-    // Per-realm cap when aggregating globally. Avoids unbounded fan-out
-    // on deployments with many realms; the current handler doesn't
-    // have a cross-realm cursor yet (see doc comment).
-    const PER_REALM_GLOBAL_LIMIT: usize = 50;
-
-    let query_str = raw_query.0.unwrap_or_default();
-    let has_realm_param = query_str
-        .split('&')
-        .any(|p| p.starts_with("realm=") || p.starts_with("admin_target="));
-
     // Single now-snapshot per request — two rows can't disagree on
     // whether they're past expiry within the same render.
     let now_micros = crate::core::Timestamp::now().as_micros();
@@ -2203,175 +2164,62 @@ pub async fn admin_sessions_list(
         _ => "active".to_string(),
     };
 
-    // ---------- Single-realm modes (?realm= / ?admin_target=) ----------
-    if has_realm_param {
-        // Re-run TargetRealm extraction by hand — Axum's extractor isn't
-        // re-entrant from inside another handler. Mirrors the cookie /
-        // query / sentinel logic in `auth::TargetRealm`.
-        let admin_target = query_str
-            .split('&')
-            .find_map(|p| p.strip_prefix("admin_target="));
-        let realm_name = query_str.split('&').find_map(|p| p.strip_prefix("realm="));
+    let realm_name = target.0.name().to_string();
+    // Per-row revoke forms POST to a path-based URL; the suffix is
+    // empty under R-1 because the realm now lives in the path, not in
+    // a query string. Kept as a template field so the partial doesn't
+    // need to know whether realm context survives in query params.
+    let row_target_query = String::new();
 
-        let realm = if admin_target == Some("system") {
-            let id = crate::identity::keys::system_realm_id();
-            match state.identity.get_realm(&id) {
-                Ok(Some(r)) => r,
-                _ => return super::handlers_common::server_error(),
-            }
-        } else if let Some(name) = realm_name {
-            match state.identity.get_realm_by_name(name) {
-                Ok(Some(r)) => r,
-                _ => return super::handlers_common::not_found("Realm not found."),
-            }
-        } else {
-            return super::handlers_common::server_error();
-        };
-
-        match state
-            .identity
-            .list_sessions_by_realm(realm.id(), params.cursor.as_deref(), 20)
-        {
-            Ok(page) => {
-                let target_query = if admin_target == Some("system") {
-                    "?admin_target=system".to_string()
-                } else {
-                    format!("?realm={}", realm.name())
-                };
-                let all_rows: Vec<SessionRow> = page
-                    .items
-                    .into_iter()
-                    .map(|s| {
-                        build_session_row(
-                            &state,
-                            realm.id(),
-                            realm.name(),
-                            &target_query,
-                            s,
-                            now_micros,
-                        )
-                    })
-                    .collect();
-                let count_active = all_rows.iter().filter(|r| r.is_active).count();
-                let count_expired = all_rows.len() - count_active;
-                let rows = filter_session_rows(all_rows, &status_filter);
-                let in_realm_workspace = *realm.id().as_uuid() != uuid::Uuid::nil();
-                let realm_query_suffix = if admin_target == Some("system") {
-                    "&admin_target=system".to_string()
-                } else {
-                    format!("&realm={}", realm.name())
-                };
-                render(&SessionListTemplate {
-                    sessions: rows,
-                    next_cursor: page.next_cursor,
-                    target_realm_name: Some(realm.name().to_string()),
-                    target_realm_id_hex: Some(realm.id().as_uuid().to_string()),
-                    is_global: false,
-                    status_filter: status_filter.clone(),
-                    count_active,
-                    count_expired,
-                    realm_query_suffix,
-                    active_tab: "sessions",
-                    chrome: true,
-                    active: if in_realm_workspace {
-                        "realm-workspace"
-                    } else {
-                        "admin-users"
-                    },
-                    user_email: Some(session.user_email.clone()),
-                    is_admin: true,
-                    flash: None,
-                    csrf: session.csrf.clone(),
-                    narrow: false,
-                    product_name: state.product_name.clone(),
-                    logo_url: state.logo_url.clone(),
-                    theme_css: state.theme_css.clone(),
-                    realm_theme_css: state.realm_theme_css(),
-                })
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "list_sessions_by_realm failed");
-                super::handlers_common::server_error()
-            }
-        }
-    } else {
-        // ---------- Global view (no realm in query) ----------
-        let mut rows: Vec<SessionRow> = Vec::new();
-
-        // System realm first — operators including the requesting admin.
-        let system_id = crate::identity::keys::system_realm_id();
-        if let Ok(Some(system_realm)) = state.identity.get_realm(&system_id) {
-            if let Ok(page) =
-                state
-                    .identity
-                    .list_sessions_by_realm(&system_id, None, PER_REALM_GLOBAL_LIMIT)
-            {
-                for s in page.items {
-                    rows.push(build_session_row(
+    match state
+        .identity
+        .list_sessions_by_realm(target.id(), params.cursor.as_deref(), 20)
+    {
+        Ok(page) => {
+            let all_rows: Vec<SessionRow> = page
+                .items
+                .into_iter()
+                .map(|s| {
+                    build_session_row(
                         &state,
-                        &system_id,
-                        system_realm.name(),
-                        "?admin_target=system",
+                        target.id(),
+                        &realm_name,
+                        &row_target_query,
                         s,
                         now_micros,
-                    ));
-                }
-            }
+                    )
+                })
+                .collect();
+            let count_active = all_rows.iter().filter(|r| r.is_active).count();
+            let count_expired = all_rows.len() - count_active;
+            let rows = filter_session_rows(all_rows, &status_filter);
+            render(&SessionListTemplate {
+                sessions: rows,
+                next_cursor: page.next_cursor,
+                realm_name: realm_name.clone(),
+                is_global: false,
+                status_filter: status_filter.clone(),
+                count_active,
+                count_expired,
+                realm_query_suffix: String::new(),
+                active_tab: "sessions",
+                chrome: true,
+                active: "realm-workspace",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: false,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: state.realm_theme_css(),
+            })
         }
-
-        // Tenant realms.
-        if let Ok(realms_page) = state.identity.list_realms(None, 100) {
-            for realm in realms_page.items {
-                let target_query = format!("?realm={}", realm.name());
-                if let Ok(page) =
-                    state
-                        .identity
-                        .list_sessions_by_realm(realm.id(), None, PER_REALM_GLOBAL_LIMIT)
-                {
-                    for s in page.items {
-                        rows.push(build_session_row(
-                            &state,
-                            realm.id(),
-                            realm.name(),
-                            &target_query,
-                            s,
-                            now_micros,
-                        ));
-                    }
-                }
-            }
+        Err(e) => {
+            tracing::warn!(error = %e, "list_sessions_by_realm failed");
+            super::handlers_common::server_error()
         }
-
-        // Newest first across realms.
-        rows.sort_by(|a, b| b.session.created_at().cmp(&a.session.created_at()));
-
-        let count_active = rows.iter().filter(|r| r.is_active).count();
-        let count_expired = rows.len() - count_active;
-        let rows = filter_session_rows(rows, &status_filter);
-
-        render(&SessionListTemplate {
-            sessions: rows,
-            next_cursor: None,
-            target_realm_name: None,
-            target_realm_id_hex: None,
-            is_global: true,
-            status_filter: status_filter.clone(),
-            count_active,
-            count_expired,
-            realm_query_suffix: String::new(),
-            active_tab: "",
-            chrome: true,
-            active: "sessions-global",
-            user_email: Some(session.user_email.clone()),
-            is_admin: true,
-            flash: None,
-            csrf: session.csrf.clone(),
-            narrow: false,
-            product_name: state.product_name.clone(),
-            logo_url: state.logo_url.clone(),
-            theme_css: state.theme_css.clone(),
-            realm_theme_css: state.realm_theme_css(),
-        })
     }
 }
 
@@ -2420,7 +2268,7 @@ pub async fn admin_session_revoke(
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
     htmx: super::templates::IsHtmx,
-    AxumPath(sid): AxumPath<String>,
+    AxumPath((_realm_name, sid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -2438,7 +2286,8 @@ pub async fn admin_session_revoke(
             if htmx.0 {
                 super::templates::htmx_toast_response("Session revoked.", "success")
             } else {
-                Redirect::to("/ui/admin/sessions").into_response()
+                Redirect::to(&format!("/ui/admin/realms/{}/sessions", target.0.name()))
+                    .into_response()
             }
         }
         Err(IdentityError::SessionNotFound) => {
@@ -2652,6 +2501,7 @@ fn parse_date_to_timestamp(date_str: &str) -> Option<crate::core::Timestamp> {
 #[template(path = "ui/admin/audit/list.html")]
 struct AuditListTemplate {
     events: Vec<AuditRow>,
+    realm_name: String,
     form_actor: String,
     form_action: String,
     form_start_date: String,
@@ -2687,6 +2537,7 @@ pub async fn admin_audit_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     htmx: super::templates::IsHtmx,
     Query(params): Query<AuditFilterParams>,
 ) -> Response {
@@ -2753,6 +2604,7 @@ pub async fn admin_audit_list(
             } else {
                 render(&AuditListTemplate {
                     events: rows,
+                    realm_name: target.0.name().to_string(),
                     form_actor: params.actor.unwrap_or_default(),
                     form_action: params.action.unwrap_or_default(),
                     form_start_date: params.start_date.unwrap_or_default(),
@@ -2789,10 +2641,12 @@ pub async fn admin_audit_verify_integrity(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
     match state.audit.verify_integrity(target.id(), None, None) {
         Ok(true) => render(&AuditListTemplate {
             events: Vec::new(),
+            realm_name: target.0.name().to_string(),
             form_actor: String::new(),
             form_action: String::new(),
             form_start_date: String::new(),
@@ -2817,6 +2671,7 @@ pub async fn admin_audit_verify_integrity(
         }),
         Ok(false) => render(&AuditListTemplate {
             events: Vec::new(),
+            realm_name: target.0.name().to_string(),
             form_actor: String::new(),
             form_action: String::new(),
             form_start_date: String::new(),
@@ -2929,8 +2784,7 @@ struct OrgListTemplate {
     organizations: Vec<Organization>,
     next_cursor: Option<String>,
     search_query: String,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
+    realm_name: String,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -2950,6 +2804,7 @@ pub async fn admin_orgs_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(params): Query<OrgListParams>,
 ) -> Response {
     let search_query = params.q.clone().unwrap_or_default();
@@ -2988,8 +2843,7 @@ pub async fn admin_orgs_list(
             organizations: page.items,
             next_cursor: page.next_cursor,
             search_query,
-            target_realm_name: Some(target.0.name().to_string()),
-            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            realm_name: target.0.name().to_string(),
             active_tab: "organizations",
             chrome: true,
             active: "realm-workspace",
@@ -3019,12 +2873,11 @@ pub async fn admin_orgs_list(
 #[template(path = "ui/admin/organizations/new.html")]
 struct OrgNewTemplate {
     error: Option<String>,
+    realm_name: String,
     form_name: String,
     form_slug: String,
     form_description: String,
     form_max_members: Option<u32>,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -3044,15 +2897,15 @@ pub async fn admin_org_create_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
     render(&OrgNewTemplate {
         error: None,
+        realm_name: target.0.name().to_string(),
         form_name: String::new(),
         form_slug: String::new(),
         form_description: String::new(),
         form_max_members: None,
-        target_realm_name: Some(target.0.name().to_string()),
-        target_realm_id_hex: Some(target.id().as_uuid().to_string()),
         active_tab: "organizations",
         chrome: true,
         active: "realm-workspace",
@@ -3091,6 +2944,7 @@ pub async fn admin_org_create_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     FriendlyForm(form): FriendlyForm<CreateOrgForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -3152,20 +3006,19 @@ pub async fn admin_org_create_submit(
                 }
             }
             Redirect::to(&format!(
-                "/ui/admin/organizations/{}?realm={}",
-                org.id().as_uuid(),
-                realm_name
+                "/ui/admin/realms/{}/organizations/{}",
+                realm_name,
+                org.id().as_uuid()
             ))
             .into_response()
         }
         Err(IdentityError::DuplicateOrgSlug) => render(&OrgNewTemplate {
             error: Some("An organization with that slug already exists.".to_string()),
+            realm_name: realm_name.clone(),
             form_name: form.name,
             form_slug: form.slug,
             form_description: form.description,
             form_max_members: form.max_members,
-            target_realm_name: Some(realm_name),
-            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
             active_tab: "organizations",
             chrome: true,
             active: "realm-workspace",
@@ -3183,12 +3036,11 @@ pub async fn admin_org_create_submit(
             tracing::warn!(error = %e, "create_organization failed");
             render(&OrgNewTemplate {
                 error: Some(format!("Unable to create organization: {e}")),
+                realm_name: realm_name.clone(),
                 form_name: form.name,
                 form_slug: form.slug,
                 form_description: form.description,
                 form_max_members: form.max_members,
-                target_realm_name: Some(realm_name),
-                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
                 active_tab: "organizations",
                 chrome: true,
                 active: "realm-workspace",
@@ -3225,6 +3077,7 @@ pub struct MemberView {
 #[template(path = "ui/admin/organizations/detail.html")]
 struct OrgDetailTemplate {
     org: Organization,
+    realm_name: String,
     /// Org UUID string — shared with embedded partials via `{% include %}`.
     org_id: String,
     members: Vec<MemberWithAccess>,
@@ -3240,8 +3093,6 @@ struct OrgDetailTemplate {
     /// `danger`). Driven by `?tab=` query string. Defaults to
     /// `overview`. Shareable URLs surface the right tab on first paint.
     active_subtab: &'static str,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -3276,7 +3127,7 @@ pub async fn admin_org_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
     Query(params): Query<OrgDetailParams>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -3367,6 +3218,7 @@ pub async fn admin_org_detail(
     let had_flash = flash.is_some();
     let mut response = render(&OrgDetailTemplate {
         org,
+        realm_name: target.0.name().to_string(),
         org_id: org_id_str,
         members,
         member_count,
@@ -3374,8 +3226,6 @@ pub async fn admin_org_detail(
         max_members,
         available_roles,
         active_subtab,
-        target_realm_name: Some(target.0.name().to_string()),
-        target_realm_id_hex: Some(target.id().as_uuid().to_string()),
         active_tab: "organizations",
         chrome: true,
         active: "realm-workspace",
@@ -3410,13 +3260,12 @@ pub async fn admin_org_detail(
 #[template(path = "ui/admin/organizations/edit.html")]
 struct OrgEditTemplate {
     org: Organization,
+    realm_name: String,
     error: Option<String>,
     form_name: String,
     form_description: String,
     form_status: String,
     form_max_members: Option<u32>,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -3436,7 +3285,7 @@ pub async fn admin_org_edit_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
 ) -> Response {
     let org_id = match oid.parse::<uuid::Uuid>() {
         Ok(u) => OrganizationId::new(u),
@@ -3450,9 +3299,8 @@ pub async fn admin_org_edit_form(
             form_status: format!("{:?}", org.status()),
             form_max_members: org.config().max_members,
             org,
+            realm_name: target.0.name().to_string(),
             error: None,
-            target_realm_name: Some(target.0.name().to_string()),
-            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
             active_tab: "organizations",
             chrome: true,
             active: "realm-workspace",
@@ -3497,7 +3345,7 @@ pub async fn admin_org_edit_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<EditOrgForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -3540,9 +3388,9 @@ pub async fn admin_org_edit_submit(
         Ok(_) => {
             audit_org_event(&state, &session, &target.0, &org_id, "update");
             Redirect::to(&format!(
-                "/ui/admin/organizations/{}?realm={}",
-                org_id.as_uuid(),
-                realm_name
+                "/ui/admin/realms/{}/organizations/{}",
+                realm_name,
+                org_id.as_uuid()
             ))
             .into_response()
         }
@@ -3565,7 +3413,7 @@ pub async fn admin_org_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -3582,7 +3430,7 @@ pub async fn admin_org_delete(
     match state.identity.delete_organization(target.id(), &org_id) {
         Ok(()) => {
             audit_org_event(&state, &session, &target.0, &org_id, "delete");
-            Redirect::to(&format!("/ui/admin/organizations?realm={realm_name}")).into_response()
+            Redirect::to(&format!("/ui/admin/realms/{realm_name}/organizations")).into_response()
         }
         Err(IdentityError::OrganizationNotFound) => {
             super::handlers_common::not_found("Organization not found")
@@ -3622,6 +3470,7 @@ pub async fn admin_orgs_bulk_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     FriendlyForm(form): FriendlyForm<BulkDeleteOrgsForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -3647,7 +3496,7 @@ pub async fn admin_orgs_bulk_delete(
         }
     }
 
-    Redirect::to(&format!("/ui/admin/organizations?realm={realm_name}")).into_response()
+    Redirect::to(&format!("/ui/admin/realms/{realm_name}/organizations")).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -3671,7 +3520,7 @@ pub async fn admin_org_add_member(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<AddMemberForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -3729,6 +3578,7 @@ pub async fn admin_org_add_member(
 #[template(path = "ui/admin/organizations/_member_picker_rows.html")]
 #[allow(dead_code)]
 struct MemberPickerRowsTemplate {
+    realm_name: String,
     org_id: String,
     users: Vec<User>,
     query: String,
@@ -3749,6 +3599,7 @@ struct MemberPickerRowsTemplate {
 #[template(path = "ui/admin/organizations/_member_row.html")]
 #[allow(dead_code)]
 struct MemberRowTemplate {
+    realm_name: String,
     org_id: String,
     m: MemberWithAccess,
     /// All realm roles for the assign-role inline form.
@@ -3775,7 +3626,7 @@ pub async fn admin_org_member_picker(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
     Query(params): Query<MemberPickerParams>,
 ) -> Response {
     let org_id = match oid.parse::<uuid::Uuid>() {
@@ -3813,6 +3664,7 @@ pub async fn admin_org_member_picker(
     // each per-row Add form can echo the token.
     let available_roles = build_org_available_roles(&state, target.id());
     render(&MemberPickerRowsTemplate {
+        realm_name: target.0.name().to_string(),
         org_id: org_id_str,
         users,
         query,
@@ -3840,7 +3692,7 @@ pub async fn admin_org_remove_member(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, oid, uid)): AxumPath<(String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
@@ -3896,6 +3748,7 @@ pub async fn admin_org_remove_member(
                         &state,
                         &session,
                         target.id(),
+                        target.0.name(),
                         &org_id,
                         m,
                         &msg,
@@ -3926,6 +3779,7 @@ fn render_member_row_with_toast(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
     realm: &RealmId,
+    realm_name: &str,
     org_id: &OrganizationId,
     m: OrganizationMembership,
     message: &str,
@@ -3950,6 +3804,7 @@ fn render_member_row_with_toast(
     let m_access = build_member_with_access(state, realm, org_id, view, is_last_owner);
     let available_roles = build_org_available_roles(state, realm);
     let tmpl = MemberRowTemplate {
+        realm_name: realm_name.to_string(),
         org_id: org_id.as_uuid().to_string(),
         m: m_access,
         available_roles,
@@ -3994,7 +3849,7 @@ pub async fn admin_org_update_role(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, oid, uid)): AxumPath<(String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<UpdateRoleForm>,
 ) -> Response {
@@ -4053,6 +3908,7 @@ pub async fn admin_org_update_role(
                         &state,
                         &session,
                         target.id(),
+                        target.0.name(),
                         &org_id,
                         m,
                         "Role updated",
@@ -4077,6 +3933,7 @@ pub async fn admin_org_update_role(
                         &state,
                         &session,
                         target.id(),
+                        target.0.name(),
                         &org_id,
                         m,
                         &msg,
@@ -4111,7 +3968,7 @@ pub async fn admin_org_invite(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<InviteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -4192,7 +4049,7 @@ pub async fn admin_org_revoke_invite(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, iid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, oid, iid)): AxumPath<(String, String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -4220,9 +4077,9 @@ pub async fn admin_org_revoke_invite(
     }
 
     Redirect::to(&format!(
-        "/ui/admin/organizations/{}?realm={}",
-        org_id.as_uuid(),
-        target.0.name()
+        "/ui/admin/realms/{}/organizations/{}",
+        target.0.name(),
+        org_id.as_uuid()
     ))
     .into_response()
 }
@@ -4249,7 +4106,7 @@ pub async fn admin_org_status_toggle(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(oid): AxumPath<String>,
+    AxumPath((_realm_name, oid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<StatusToggleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -4317,7 +4174,7 @@ pub async fn admin_org_resend_invite(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, iid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, oid, iid)): AxumPath<(String, String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -4455,6 +4312,7 @@ pub async fn admin_api_user_search(
     State(state): State<Arc<WebState>>,
     RequireAdmin(_session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(params): Query<UserSearchParams>,
 ) -> Response {
     let query = params.q.trim().to_string();
@@ -4494,6 +4352,7 @@ pub async fn admin_api_rbac_user_search(
     State(state): State<Arc<WebState>>,
     RequireAdmin(_session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(params): Query<UserSearchParams>,
 ) -> Response {
     let query = params.q.trim().to_string();
@@ -4511,65 +4370,6 @@ pub async fn admin_api_rbac_user_search(
 // ---------------------------------------------------------------------------
 // Config reload API
 // ---------------------------------------------------------------------------
-
-/// Form body for `POST /ui/admin/switch-realm`.
-#[derive(Debug, serde::Deserialize)]
-pub struct SwitchRealmForm {
-    /// Target realm name. Validated by [`super::auth::TargetRealm`]
-    /// on the next admin request; persisted in the
-    /// `hearth_ui_admin_target` cookie here.
-    pub realm: String,
-    /// CSRF token echoed from the `hearth_ui_csrf` cookie.
-    #[serde(rename = "_csrf", default)]
-    pub csrf: String,
-    /// Optional `return_to` path — admins usually land back on the
-    /// same page they were administering.
-    #[serde(default)]
-    pub return_to: Option<String>,
-}
-
-/// `POST /ui/admin/switch-realm` — changes the admin's currently-
-/// targeted application realm by setting the
-/// `hearth_ui_admin_target` cookie. Redirects back to `return_to`.
-pub async fn admin_switch_realm(
-    State(_state): State<Arc<WebState>>,
-    RequireAdmin(session): RequireAdmin,
-    FriendlyForm(form): FriendlyForm<SwitchRealmForm>,
-) -> Response {
-    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
-        return resp;
-    }
-    // The realm name is NOT validated here — TargetRealm validates on
-    // every subsequent request and falls back to the first realm if
-    // the cookie is stale. Keep this handler cheap: no storage hit.
-    // Reject the reserved system name to avoid an obviously-wrong
-    // cookie value being set.
-    if form.realm == crate::identity::keys::SYSTEM_REALM_NAME || form.realm.is_empty() {
-        return (StatusCode::BAD_REQUEST, "invalid realm name").into_response();
-    }
-
-    // Default landing page after a switch is the realm workspace's
-    // Users tab with `?realm=<name>` so the operator sees the workspace
-    // chrome (breadcrumb + tab bar) instead of a flat "Users" view that
-    // hides the scope.
-    let default_return_to = format!("/ui/admin/users?realm={}", form.realm);
-    let return_to = form
-        .return_to
-        .as_deref()
-        .and_then(super::auth::sanitize_return_to)
-        .unwrap_or(default_return_to);
-
-    let cookie = format!(
-        "{}={}; HttpOnly; Path=/ui; SameSite=Lax",
-        super::auth::ADMIN_TARGET_COOKIE,
-        form.realm,
-    );
-    let mut response = Redirect::to(&return_to).into_response();
-    #[allow(clippy::unwrap_used)]
-    let cookie_header = axum::http::HeaderValue::from_str(&cookie).unwrap();
-    response.headers_mut().append("set-cookie", cookie_header);
-    response
-}
 
 /// `POST /admin/api/config/reload` — triggers config hot-reload.
 ///
@@ -4658,7 +4458,7 @@ fn org_redirect_flash(
     // so refreshes / bookmarks / back-button traversals don't replay the
     // banner, and there is no reflected-text surface in the URL.
     let url = format!(
-        "/ui/admin/organizations/{}?realm={realm_name}",
+        "/ui/admin/realms/{realm_name}/organizations/{}",
         org_id.as_uuid()
     );
     super::templates::redirect_with_flash(&url, message, kind)
@@ -4721,8 +4521,7 @@ struct GroupListTemplate {
     groups: Vec<Group>,
     next_cursor: Option<String>,
     search_query: String,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
+    realm_name: String,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -4742,6 +4541,7 @@ pub async fn admin_groups_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(params): Query<GroupListParams>,
 ) -> Response {
     let search_query = params.q.clone().unwrap_or_default();
@@ -4775,8 +4575,7 @@ pub async fn admin_groups_list(
             groups: page.items,
             next_cursor: page.next_cursor,
             search_query,
-            target_realm_name: Some(target.0.name().to_string()),
-            target_realm_id_hex: Some(target.id().as_uuid().to_string()),
+            realm_name: target.0.name().to_string(),
             active_tab: "groups",
             chrome: true,
             active: "realm-workspace",
@@ -4807,11 +4606,10 @@ pub async fn admin_groups_list(
 #[allow(clippy::struct_excessive_bools)]
 struct GroupNewTemplate {
     error: Option<String>,
+    realm_name: String,
     form_name: String,
     form_slug: String,
     form_description: String,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -4831,14 +4629,14 @@ pub async fn admin_group_create_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
     render(&GroupNewTemplate {
         error: None,
+        realm_name: target.0.name().to_string(),
         form_name: String::new(),
         form_slug: String::new(),
         form_description: String::new(),
-        target_realm_name: Some(target.0.name().to_string()),
-        target_realm_id_hex: Some(target.id().as_uuid().to_string()),
         active_tab: "groups",
         chrome: true,
         active: "realm-workspace",
@@ -4872,6 +4670,7 @@ pub async fn admin_group_create_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     FriendlyForm(form): FriendlyForm<CreateGroupForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -4897,9 +4696,9 @@ pub async fn admin_group_create_submit(
         Ok(group) => {
             audit_group_event(&state, &session, &target.0, &group.id, "create", None);
             Redirect::to(&format!(
-                "/ui/admin/groups/{}?realm={}",
-                group.id.as_uuid(),
-                realm_name
+                "/ui/admin/realms/{}/groups/{}",
+                realm_name,
+                group.id.as_uuid()
             ))
             .into_response()
         }
@@ -4913,11 +4712,10 @@ pub async fn admin_group_create_submit(
             tracing::warn!(error = %e, "create_group failed");
             render(&GroupNewTemplate {
                 error: Some(msg),
+                realm_name: realm_name.clone(),
                 form_name: form.name,
                 form_slug: form.slug,
                 form_description: form.description,
-                target_realm_name: Some(realm_name),
-                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
                 active_tab: "groups",
                 chrome: true,
                 active: "realm-workspace",
@@ -4951,6 +4749,85 @@ pub struct GroupMemberView {
     pub subtitle: String,
 }
 
+/// Standalone re-render of a single group-member row, used by HTMX
+/// error paths that need to swap a row back into the table when a
+/// mutation fails. Empty bodies + `outerHTML` swap would silently
+/// delete the row from the DOM and lie about success — see BUG-004.
+#[derive(Template)]
+#[template(path = "ui/admin/groups/_member_row.html")]
+struct GroupMemberRowTemplate {
+    realm_name: String,
+    group_id: String,
+    m: GroupMemberView,
+    csrf: Option<String>,
+}
+
+/// Re-renders a single group-member row plus an `HX-Trigger: showToast`
+/// header. Mirrors `render_member_row_with_toast` for the org case.
+/// On engine failure the caller HTMX-swaps the same row back into the
+/// table with an error toast, instead of returning an empty body that
+/// would visually delete the row even though the data is unchanged.
+fn render_group_member_row_with_toast(
+    state: &Arc<WebState>,
+    session: &super::auth::UiSession,
+    realm: &RealmId,
+    realm_name: &str,
+    group_id: &GroupId,
+    member: &GroupMember,
+    message: &str,
+    kind: &str,
+) -> Response {
+    let view = match member {
+        GroupMember::User(uid) => match state.identity.get_user(realm, uid) {
+            Ok(Some(u)) => GroupMemberView {
+                member_kind: "user",
+                member_id_uuid: uid.as_uuid().to_string(),
+                display_name: u.display_name().to_string(),
+                subtitle: u.email().to_string(),
+            },
+            _ => GroupMemberView {
+                member_kind: "user",
+                member_id_uuid: uid.as_uuid().to_string(),
+                display_name: format!("user_{}", uid.as_uuid()),
+                subtitle: "unknown user".to_string(),
+            },
+        },
+        GroupMember::Group(gid) => match state.rbac.get_group(realm, gid) {
+            Ok(Some(g)) => GroupMemberView {
+                member_kind: "group",
+                member_id_uuid: gid.as_uuid().to_string(),
+                display_name: g.name,
+                subtitle: g.slug,
+            },
+            _ => GroupMemberView {
+                member_kind: "group",
+                member_id_uuid: gid.as_uuid().to_string(),
+                display_name: format!("group_{}", gid.as_uuid()),
+                subtitle: "unknown group".to_string(),
+            },
+        },
+    };
+    let tmpl = GroupMemberRowTemplate {
+        realm_name: realm_name.to_string(),
+        group_id: group_id.as_uuid().to_string(),
+        m: view,
+        csrf: session.csrf.clone(),
+    };
+    let mut response = render(&tmpl);
+    let json = format!(
+        r#"{{"showToast":{{"message":"{}","kind":"{}"}}}}"#,
+        message.replace('"', r#"\""#),
+        kind.replace('"', r#"\""#),
+    );
+    if let Ok(val) = axum::http::HeaderValue::from_str(&json) {
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("hx-trigger"),
+            val,
+        );
+    }
+    response
+}
+
 /// Display row for a role assignment on the detail Roles tab.
 pub struct GroupRoleAssignmentView {
     /// `AssignmentId` UUID string — used in the unassign POST URL.
@@ -4967,6 +4844,7 @@ pub struct GroupRoleAssignmentView {
 #[allow(clippy::struct_excessive_bools)]
 struct GroupDetailTemplate {
     group: Group,
+    realm_name: String,
     /// Group UUID string — shared with the embedded `_member_row.html`
     /// partial so member-row form actions can use the parent group's ID.
     group_id: String,
@@ -4995,8 +4873,6 @@ struct GroupDetailTemplate {
     /// initial page size.
     next_cursor: Option<String>,
     active_subtab: &'static str,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -5023,7 +4899,7 @@ pub async fn admin_group_detail(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(gid): AxumPath<String>,
+    AxumPath((_realm_name, gid)): AxumPath<(String, String)>,
     Query(params): Query<GroupDetailParams>,
 ) -> Response {
     let group_id = match gid.parse::<uuid::Uuid>() {
@@ -5089,23 +4965,21 @@ pub async fn admin_group_detail(
     // Already-assigned members are excluded so the picker doesn't show
     // them as add-able candidates.
     let initial_exclude = group_member_user_ids(&state, target.id(), &group_id);
-    let (initial_users, initial_next_cursor) = match state
-        .identity
-        .list_users(target.id(), None, 20)
-    {
-        Ok(p) => {
-            let filtered: Vec<User> = p
-                .items
-                .into_iter()
-                .filter(|u| !initial_exclude.contains(u.id().as_uuid()))
-                .collect();
-            (filtered, p.next_cursor)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "initial picker list_users failed");
-            (Vec::new(), None)
-        }
-    };
+    let (initial_users, initial_next_cursor) =
+        match state.identity.list_users(target.id(), None, 20) {
+            Ok(p) => {
+                let filtered: Vec<User> = p
+                    .items
+                    .into_iter()
+                    .filter(|u| !initial_exclude.contains(u.id().as_uuid()))
+                    .collect();
+                (filtered, p.next_cursor)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "initial picker list_users failed");
+                (Vec::new(), None)
+            }
+        };
 
     // All realm roles (any scope_kind) — the assign form's scope dropdown
     // decides which scope the assignment is recorded against. We use the
@@ -5138,6 +5012,7 @@ pub async fn admin_group_detail(
     let group_id_str = group.id.as_uuid().to_string();
     render(&GroupDetailTemplate {
         group,
+        realm_name: target.0.name().to_string(),
         group_id: group_id_str,
         members,
         member_count,
@@ -5149,8 +5024,6 @@ pub async fn admin_group_detail(
         query: String::new(),
         next_cursor: initial_next_cursor,
         active_subtab,
-        target_realm_name: Some(target.0.name().to_string()),
-        target_realm_id_hex: Some(target.id().as_uuid().to_string()),
         active_tab: "groups",
         chrome: true,
         active: "realm-workspace",
@@ -5256,12 +5129,11 @@ fn build_group_member_views(
 #[allow(clippy::struct_excessive_bools)]
 struct GroupEditTemplate {
     group: Group,
+    realm_name: String,
     error: Option<String>,
     form_name: String,
     form_slug: String,
     form_description: String,
-    target_realm_name: Option<String>,
-    target_realm_id_hex: Option<String>,
     active_tab: &'static str,
     chrome: bool,
     active: &'static str,
@@ -5281,7 +5153,7 @@ pub async fn admin_group_edit_form(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(gid): AxumPath<String>,
+    AxumPath((_realm_name, gid)): AxumPath<(String, String)>,
 ) -> Response {
     let group_id = match gid.parse::<uuid::Uuid>() {
         Ok(u) => GroupId::new(u),
@@ -5294,12 +5166,11 @@ pub async fn admin_group_edit_form(
             let form_description = group.description.clone().unwrap_or_default();
             render(&GroupEditTemplate {
                 group,
+                realm_name: target.0.name().to_string(),
                 error: None,
                 form_name,
                 form_slug,
                 form_description,
-                target_realm_name: Some(target.0.name().to_string()),
-                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
                 active_tab: "groups",
                 chrome: true,
                 active: "realm-workspace",
@@ -5340,7 +5211,7 @@ pub async fn admin_group_edit_submit(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(gid): AxumPath<String>,
+    AxumPath((_realm_name, gid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<UpdateGroupForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -5364,9 +5235,9 @@ pub async fn admin_group_edit_submit(
         Ok(_) => {
             audit_group_event(&state, &session, &target.0, &group_id, "update", None);
             Redirect::to(&format!(
-                "/ui/admin/groups/{}?realm={}",
-                group_id.as_uuid(),
-                realm_name
+                "/ui/admin/realms/{}/groups/{}",
+                realm_name,
+                group_id.as_uuid()
             ))
             .into_response()
         }
@@ -5385,12 +5256,11 @@ pub async fn admin_group_edit_submit(
             };
             render(&GroupEditTemplate {
                 group,
+                realm_name: realm_name.clone(),
                 error: Some(msg),
                 form_name: form.name,
                 form_slug: form.slug,
                 form_description: form.description,
-                target_realm_name: Some(realm_name),
-                target_realm_id_hex: Some(target.id().as_uuid().to_string()),
                 active_tab: "groups",
                 chrome: true,
                 active: "realm-workspace",
@@ -5417,7 +5287,7 @@ pub async fn admin_group_delete(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(gid): AxumPath<String>,
+    AxumPath((_realm_name, gid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -5431,12 +5301,15 @@ pub async fn admin_group_delete(
     match state.rbac.delete_group(target.id(), &group_id) {
         Ok(()) => {
             audit_group_event(&state, &session, &target.0, &group_id, "delete", None);
-            Redirect::to(&format!("/ui/admin/groups?realm={realm_name}")).into_response()
+            Redirect::to(&format!("/ui/admin/realms/{realm_name}/groups")).into_response()
         }
         Err(e) => {
             tracing::warn!(error = %e, "delete_group failed");
             super::templates::redirect_with_flash(
-                &format!("/ui/admin/groups/{}?realm={realm_name}", group_id.as_uuid()),
+                &format!(
+                    "/ui/admin/realms/{realm_name}/groups/{}",
+                    group_id.as_uuid()
+                ),
                 &format!("Unable to delete group: {e}"),
                 "error",
             )
@@ -5452,11 +5325,11 @@ pub async fn admin_group_delete(
 #[derive(Template)]
 #[template(path = "ui/admin/groups/_member_picker_rows.html")]
 struct GroupMemberPickerRowsTemplate {
+    realm_name: String,
     group_id: String,
     users: Vec<User>,
     query: String,
     next_cursor: Option<String>,
-    target_realm_name: Option<String>,
     csrf: Option<String>,
 }
 
@@ -5465,7 +5338,7 @@ pub async fn admin_group_member_picker(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(gid): AxumPath<String>,
+    AxumPath((_realm_name, gid)): AxumPath<(String, String)>,
     Query(params): Query<MemberPickerParams>,
 ) -> Response {
     let group_id = match gid.parse::<uuid::Uuid>() {
@@ -5502,25 +5375,22 @@ pub async fn admin_group_member_picker(
                 }
             })
     } else {
-        state
-            .identity
-            .list_users(target.id(), None, 200)
-            .map(|p| {
-                let needle = query.to_ascii_lowercase();
-                let filtered: Vec<User> = p
-                    .items
-                    .into_iter()
-                    .filter(|u| !exclude.contains(u.id().as_uuid()))
-                    .filter(|u| {
-                        u.display_name().to_ascii_lowercase().contains(&needle)
-                            || u.email().to_ascii_lowercase().contains(&needle)
-                    })
-                    .collect();
-                Page {
-                    items: filtered,
-                    next_cursor: None,
-                }
-            })
+        state.identity.list_users(target.id(), None, 200).map(|p| {
+            let needle = query.to_ascii_lowercase();
+            let filtered: Vec<User> = p
+                .items
+                .into_iter()
+                .filter(|u| !exclude.contains(u.id().as_uuid()))
+                .filter(|u| {
+                    u.display_name().to_ascii_lowercase().contains(&needle)
+                        || u.email().to_ascii_lowercase().contains(&needle)
+                })
+                .collect();
+            Page {
+                items: filtered,
+                next_cursor: None,
+            }
+        })
     };
     let (users, next_cursor) = match page {
         Ok(p) => (p.items, p.next_cursor),
@@ -5530,11 +5400,11 @@ pub async fn admin_group_member_picker(
         }
     };
     render(&GroupMemberPickerRowsTemplate {
+        realm_name: target.0.name().to_string(),
         group_id: group_id.as_uuid().to_string(),
         users,
         query,
         next_cursor,
-        target_realm_name: Some(target.0.name().to_string()),
         csrf: session.csrf.clone(),
     })
 }
@@ -5557,7 +5427,7 @@ pub async fn admin_group_member_add(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(gid): AxumPath<String>,
+    AxumPath((_realm_name, gid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<AddGroupMemberForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -5573,7 +5443,7 @@ pub async fn admin_group_member_add(
         Err(_) => {
             return super::templates::redirect_with_flash(
                 &format!(
-                    "/ui/admin/groups/{}?realm={realm_name}&tab=members",
+                    "/ui/admin/realms/{realm_name}/groups/{}?tab=members",
                     group_id.as_uuid()
                 ),
                 "Invalid member ID.",
@@ -5602,7 +5472,7 @@ pub async fn admin_group_member_add(
             );
             super::templates::redirect_with_flash(
                 &format!(
-                    "/ui/admin/groups/{}?realm={realm_name}&tab=members",
+                    "/ui/admin/realms/{realm_name}/groups/{}?tab=members",
                     group_id.as_uuid()
                 ),
                 "Member added.",
@@ -5613,7 +5483,7 @@ pub async fn admin_group_member_add(
             tracing::warn!(error = %e, "add_group_member failed");
             super::templates::redirect_with_flash(
                 &format!(
-                    "/ui/admin/groups/{}?realm={realm_name}&tab=members",
+                    "/ui/admin/realms/{realm_name}/groups/{}?tab=members",
                     group_id.as_uuid()
                 ),
                 &format!("Unable to add member: {e}"),
@@ -5631,7 +5501,7 @@ pub async fn admin_group_member_remove(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((gid, kind, mid)): AxumPath<(String, String, String)>,
+    AxumPath((_realm_name, gid, kind, mid)): AxumPath<(String, String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
@@ -5676,7 +5546,7 @@ pub async fn admin_group_member_remove(
             } else {
                 super::templates::redirect_with_flash(
                     &format!(
-                        "/ui/admin/groups/{}?realm={realm_name}&tab=members",
+                        "/ui/admin/realms/{realm_name}/groups/{}?tab=members",
                         group_id.as_uuid()
                     ),
                     "Member removed.",
@@ -5687,11 +5557,25 @@ pub async fn admin_group_member_remove(
         Err(e) => {
             tracing::warn!(error = %e, "remove_group_member failed");
             if is_htmx {
-                super::templates::htmx_toast_response(&format!("{e}"), "error")
+                // BUG-004 fix: re-render the row instead of returning an
+                // empty body. The Remove button uses `hx-swap="outerHTML"`,
+                // so an empty error response would visually delete the row
+                // and mask the failure. Mirroring the org pattern keeps
+                // the row in place and surfaces the error via toast.
+                render_group_member_row_with_toast(
+                    &state,
+                    &session,
+                    target.id(),
+                    &realm_name,
+                    &group_id,
+                    &member,
+                    &format!("Unable to remove member: {e}"),
+                    "error",
+                )
             } else {
                 super::templates::redirect_with_flash(
                     &format!(
-                        "/ui/admin/groups/{}?realm={realm_name}&tab=members",
+                        "/ui/admin/realms/{realm_name}/groups/{}?tab=members",
                         group_id.as_uuid()
                     ),
                     &format!("Unable to remove member: {e}"),
@@ -5733,7 +5617,7 @@ pub async fn admin_group_role_assign(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(gid): AxumPath<String>,
+    AxumPath((_realm_name, gid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<GroupAssignRoleForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -5745,7 +5629,7 @@ pub async fn admin_group_role_assign(
     };
     let realm_name = target.0.name().to_string();
     let detail_url = format!(
-        "/ui/admin/groups/{}?realm={realm_name}&tab=roles",
+        "/ui/admin/realms/{realm_name}/groups/{}?tab=roles",
         group_id.as_uuid()
     );
     let Ok(role_uuid) = form.role_id.parse::<uuid::Uuid>() else {
@@ -5801,7 +5685,7 @@ pub async fn admin_group_role_unassign(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((gid, aid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, gid, aid)): AxumPath<(String, String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -5813,7 +5697,7 @@ pub async fn admin_group_role_unassign(
     };
     let realm_name = target.0.name().to_string();
     let detail_url = format!(
-        "/ui/admin/groups/{}?realm={realm_name}&tab=roles",
+        "/ui/admin/realms/{realm_name}/groups/{}?tab=roles",
         group_id.as_uuid()
     );
     let Ok(assign_uuid) = aid.parse::<uuid::Uuid>() else {
@@ -6594,7 +6478,7 @@ pub async fn admin_user_consents_list(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target_realm: TargetRealm,
-    AxumPath(user_id_str): AxumPath<String>,
+    AxumPath((_realm_name, user_id_str)): AxumPath<(String, String)>,
 ) -> Response {
     let Ok(uuid) = user_id_str.parse::<uuid::Uuid>() else {
         return super::handlers_common::not_found("User not found");
@@ -6654,7 +6538,7 @@ pub async fn admin_user_consent_revoke(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target_realm: TargetRealm,
-    AxumPath((user_id_str, client_id_str)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, user_id_str, client_id_str)): AxumPath<(String, String, String)>,
     FriendlyForm(form): FriendlyForm<CsrfOnlyForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
@@ -6687,7 +6571,8 @@ pub async fn admin_user_consent_revoke(
                 })),
             });
             Redirect::to(&format!(
-                "/ui/admin/users/{}/applications",
+                "/ui/admin/realms/{}/users/{}/applications",
+                target_realm.0.name(),
                 user_id.as_uuid()
             ))
             .into_response()
@@ -6840,16 +6725,14 @@ pub struct RealmAdminGrantForm {
 pub async fn admin_realm_admin_grant(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    AxumPath(rid): AxumPath<String>,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     FriendlyForm(form): FriendlyForm<RealmAdminGrantForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
     }
-    let Ok(realm_uuid) = rid.parse::<uuid::Uuid>() else {
-        return super::handlers_common::not_found("Realm not found");
-    };
-    let realm_id = RealmId::new(realm_uuid);
+    let realm_id = target.id().clone();
     let Ok(user_uuid) = form.user_id.trim().parse::<uuid::Uuid>() else {
         return super::handlers_common::bad_request("Invalid user ID");
     };
@@ -6865,7 +6748,7 @@ pub async fn admin_realm_admin_grant(
     }
 
     if check_user_admin(&state, &realm_id, &target_user) {
-        return Redirect::to(&format!("/ui/admin/realms/{}", realm_id.as_uuid())).into_response();
+        return Redirect::to(&format!("/ui/admin/realms/{}", target.0.name())).into_response();
     }
 
     if let Err(e) = set_user_admin(&state, &realm_id, &target_user, true) {
@@ -6882,23 +6765,21 @@ pub async fn admin_realm_admin_grant(
         "admin",
         "admin",
     );
-    Redirect::to(&format!("/ui/admin/realms/{}", realm_id.as_uuid())).into_response()
+    Redirect::to(&format!("/ui/admin/realms/{}", target.0.name())).into_response()
 }
 
-/// `POST /ui/admin/realms/:id/admins/:uid/revoke`.
+/// `POST /ui/admin/realms/{realm}/admins/:uid/revoke`.
 pub async fn admin_realm_admin_revoke(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    AxumPath((rid, uid)): AxumPath<(String, String)>,
+    target: TargetRealm,
+    AxumPath((_realm_name, uid)): AxumPath<(String, String)>,
     FriendlyForm(form): FriendlyForm<DeleteForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
     }
-    let Ok(realm_uuid) = rid.parse::<uuid::Uuid>() else {
-        return super::handlers_common::not_found("Realm not found");
-    };
-    let realm_id = RealmId::new(realm_uuid);
+    let realm_id = target.id().clone();
     let Ok(user_uuid) = uid.parse::<uuid::Uuid>() else {
         return super::handlers_common::not_found("User not found");
     };
@@ -6914,7 +6795,7 @@ pub async fn admin_realm_admin_revoke(
     }
 
     if !check_user_admin(&state, &realm_id, &target_user) {
-        return Redirect::to(&format!("/ui/admin/realms/{}", realm_id.as_uuid())).into_response();
+        return Redirect::to(&format!("/ui/admin/realms/{}", target.0.name())).into_response();
     }
 
     if let Err(e) = set_user_admin(&state, &realm_id, &target_user, false) {
@@ -6931,7 +6812,7 @@ pub async fn admin_realm_admin_revoke(
         "admin",
         "admin",
     );
-    Redirect::to(&format!("/ui/admin/realms/{}", realm_id.as_uuid())).into_response()
+    Redirect::to(&format!("/ui/admin/realms/{}", target.0.name())).into_response()
 }
 
 // =========================================================================
@@ -6941,6 +6822,7 @@ pub async fn admin_realm_admin_revoke(
 #[derive(Template)]
 #[template(path = "ui/admin/rbac/debug.html")]
 struct RbacDebugTemplate {
+    realm_name: String,
     /// UUID string of the user being resolved, if any.
     user_id_input: String,
     /// Optional org UUID input narrowing the scope.
@@ -6988,11 +6870,14 @@ pub struct RbacDebugQuery {
 /// land on the same resolver as `/ui/admin/rbac/debug?user_id=…&org_id=…`.
 /// 302 redirect (not 308) — the resolver is GET-only and idempotent.
 pub async fn admin_permissions_resolve_alias(
+    AxumPath(realm_name): AxumPath<String>,
     raw_query: axum::extract::RawQuery,
 ) -> axum::response::Redirect {
     let target = match raw_query.0 {
-        Some(q) if !q.is_empty() => format!("/ui/admin/rbac/debug?{q}"),
-        _ => "/ui/admin/rbac/debug".to_string(),
+        Some(q) if !q.is_empty() => {
+            format!("/ui/admin/realms/{realm_name}/rbac/debug?{q}")
+        }
+        _ => format!("/ui/admin/realms/{realm_name}/rbac/debug"),
     };
     axum::response::Redirect::to(&target)
 }
@@ -7006,6 +6891,7 @@ pub async fn admin_rbac_debug(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(q): Query<RbacDebugQuery>,
 ) -> Response {
     let user_id_input = q.user_id.trim().to_string();
@@ -7063,6 +6949,7 @@ pub async fn admin_rbac_debug(
     }
 
     render(&RbacDebugTemplate {
+        realm_name: target.0.name().to_string(),
         user_id_input,
         org_id_input,
         scope_input,
@@ -7104,6 +6991,7 @@ pub async fn admin_rbac_token_preview(
     State(state): State<Arc<WebState>>,
     RequireAdmin(_session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     axum::Form(form): axum::Form<TokenPreviewForm>,
 ) -> Response {
     use axum::response::IntoResponse;
@@ -7200,6 +7088,7 @@ pub async fn admin_rbac_scopes(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
     let realm_name = state
         .identity
@@ -7259,6 +7148,7 @@ pub async fn admin_rbac_scopes(
 #[template(path = "ui/admin/realms/_admin_picker_rows.html")]
 struct RealmAdminPickerRowsTemplate {
     realm_id: String,
+    realm_name: String,
     users: Vec<crate::identity::User>,
     query: String,
     csrf: Option<String>,
@@ -7279,13 +7169,11 @@ pub struct RealmAdminPickerParams {
 pub async fn admin_realm_admin_picker(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    AxumPath(rid): AxumPath<String>,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
     Query(params): Query<RealmAdminPickerParams>,
 ) -> Response {
-    let Ok(realm_uuid) = rid.parse::<uuid::Uuid>() else {
-        return super::handlers_common::not_found("Realm not found");
-    };
-    let realm_id = RealmId::new(realm_uuid);
+    let realm_id = target.id().clone();
     let query = params.q.trim().to_string();
 
     // Short queries show the prompt hint in the template; avoid hitting
@@ -7301,6 +7189,7 @@ pub async fn admin_realm_admin_picker(
 
     render(&RealmAdminPickerRowsTemplate {
         realm_id: realm_id.as_uuid().to_string(),
+        realm_name: target.0.name().to_string(),
         users,
         query,
         csrf: session.csrf.clone(),
@@ -7634,6 +7523,7 @@ fn render_roles_tab(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
     realm_id: &RealmId,
+    realm_name: &str,
     user_id: &crate::core::UserId,
 ) -> Response {
     let user_id_str = user_id.as_uuid().to_string();
@@ -7668,6 +7558,7 @@ fn render_roles_tab(
         serde_json::to_string(&role_perms_map).unwrap_or_else(|_| "{}".to_string());
     let available_orgs = build_available_orgs(state, realm_id);
     render(&UserRolesTabTemplate {
+        realm_name: realm_name.to_string(),
         user_id: user_id_str,
         role_assignments,
         available_roles,
@@ -7682,6 +7573,7 @@ fn render_permissions_tab(
     state: &Arc<WebState>,
     session: &super::auth::UiSession,
     realm_id: &RealmId,
+    realm_name: &str,
     user_id: &crate::core::UserId,
 ) -> Response {
     let user_id_str = user_id.as_uuid().to_string();
@@ -7712,6 +7604,7 @@ fn render_permissions_tab(
         .collect();
     let available_orgs = build_available_orgs(state, realm_id);
     render(&UserPermissionsTabTemplate {
+        realm_name: realm_name.to_string(),
         user_id: user_id_str,
         extra_permissions,
         role_inherited_groups,
@@ -7726,7 +7619,7 @@ pub async fn admin_user_assign_role(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<AssignRoleForm>,
 ) -> Response {
@@ -7737,11 +7630,15 @@ pub async fn admin_user_assign_role(
         Ok(u) => crate::core::UserId::new(u),
         Err(_) => return super::handlers_common::not_found("User not found"),
     };
+    let realm_name = target.0.name();
     let Ok(role_uuid) = form.role_id.parse::<uuid::Uuid>() else {
         return if is_htmx_request(&headers) {
             super::templates::htmx_toast_response("Invalid role ID", "error")
         } else {
-            Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_role")).into_response()
+            Redirect::to(&format!(
+                "/ui/admin/realms/{realm_name}/users/{user_id}?flash=invalid_role"
+            ))
+            .into_response()
         };
     };
     let role_id = crate::rbac::RoleId::new(role_uuid);
@@ -7752,8 +7649,10 @@ pub async fn admin_user_assign_role(
             return if is_htmx_request(&headers) {
                 super::templates::htmx_toast_response("Invalid scope", "error")
             } else {
-                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_scope"))
-                    .into_response()
+                Redirect::to(&format!(
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=invalid_scope"
+                ))
+                .into_response()
             };
         }
     };
@@ -7776,10 +7675,12 @@ pub async fn admin_user_assign_role(
                 &form.role_id,
             );
             if is_htmx_request(&headers) {
-                render_roles_tab(&state, &session, target.id(), &uid)
+                render_roles_tab(&state, &session, target.id(), target.0.name(), &uid)
             } else {
-                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=role_assigned"))
-                    .into_response()
+                Redirect::to(&format!(
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=role_assigned"
+                ))
+                .into_response()
             }
         }
         Err(e) => {
@@ -7788,7 +7689,7 @@ pub async fn admin_user_assign_role(
                 super::templates::htmx_toast_response(&format!("{e}"), "error")
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=assign_role_failed"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=assign_role_failed"
                 ))
                 .into_response()
             }
@@ -7801,7 +7702,7 @@ pub async fn admin_user_unassign_role(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((user_id, assignment_id)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, user_id, assignment_id)): AxumPath<(String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<UnassignRoleForm>,
 ) -> Response {
@@ -7816,6 +7717,7 @@ pub async fn admin_user_unassign_role(
         return super::handlers_common::not_found("Assignment not found");
     };
     let aid = crate::rbac::AssignmentId::new(assign_uuid);
+    let realm_name = target.0.name();
     match state.rbac.unassign_role(target.id(), &aid) {
         Ok(()) => {
             audit_role_event(
@@ -7829,10 +7731,12 @@ pub async fn admin_user_unassign_role(
                 &assignment_id,
             );
             if is_htmx_request(&headers) {
-                render_roles_tab(&state, &session, target.id(), &uid)
+                render_roles_tab(&state, &session, target.id(), target.0.name(), &uid)
             } else {
-                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=role_unassigned"))
-                    .into_response()
+                Redirect::to(&format!(
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=role_unassigned"
+                ))
+                .into_response()
             }
         }
         Err(e) => {
@@ -7841,7 +7745,7 @@ pub async fn admin_user_unassign_role(
                 super::templates::htmx_toast_response(&format!("{e}"), "error")
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=unassign_role_failed"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=unassign_role_failed"
                 ))
                 .into_response()
             }
@@ -7854,7 +7758,7 @@ pub async fn admin_user_grant_permission(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<GrantPermissionForm>,
 ) -> Response {
@@ -7862,6 +7766,7 @@ pub async fn admin_user_grant_permission(
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
     }
+    let realm_name = target.0.name();
     let uid = match user_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
         Err(_) => return super::handlers_common::not_found("User not found"),
@@ -7877,7 +7782,7 @@ pub async fn admin_user_grant_permission(
                 )
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=invalid_permission"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=invalid_permission"
                 ))
                 .into_response()
             };
@@ -7890,8 +7795,10 @@ pub async fn admin_user_grant_permission(
             return if is_htmx_request(&headers) {
                 super::templates::htmx_toast_response("Invalid scope", "error")
             } else {
-                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_scope"))
-                    .into_response()
+                Redirect::to(&format!(
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=invalid_scope"
+                ))
+                .into_response()
             };
         }
     };
@@ -7921,10 +7828,10 @@ pub async fn admin_user_grant_permission(
                 tracing::warn!(error = %e, "permission grant audit append failed");
             }
             if is_htmx_request(&headers) {
-                render_permissions_tab(&state, &session, target.id(), &uid)
+                render_permissions_tab(&state, &session, target.id(), target.0.name(), &uid)
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=permission_granted"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=permission_granted"
                 ))
                 .into_response()
             }
@@ -7935,7 +7842,7 @@ pub async fn admin_user_grant_permission(
                 super::templates::htmx_toast_response(&format!("{e}"), "error")
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=grant_permission_failed"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=grant_permission_failed"
                 ))
                 .into_response()
             }
@@ -7948,13 +7855,14 @@ pub async fn admin_user_revoke_permission(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath(user_id): AxumPath<String>,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<RevokePermissionForm>,
 ) -> Response {
     if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
         return resp;
     }
+    let realm_name = target.0.name();
     let uid = match user_id.parse::<uuid::Uuid>() {
         Ok(u) => crate::core::UserId::new(u),
         Err(_) => return super::handlers_common::not_found("User not found"),
@@ -7967,7 +7875,7 @@ pub async fn admin_user_revoke_permission(
                 super::templates::htmx_toast_response("Invalid permission string", "error")
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=invalid_permission"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=invalid_permission"
                 ))
                 .into_response()
             };
@@ -7980,8 +7888,10 @@ pub async fn admin_user_revoke_permission(
             return if is_htmx_request(&headers) {
                 super::templates::htmx_toast_response("Invalid scope", "error")
             } else {
-                Redirect::to(&format!("/ui/admin/users/{user_id}?flash=invalid_scope"))
-                    .into_response()
+                Redirect::to(&format!(
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=invalid_scope"
+                ))
+                .into_response()
             };
         }
     };
@@ -8006,10 +7916,10 @@ pub async fn admin_user_revoke_permission(
                 tracing::warn!(error = %e, "permission revoke audit append failed");
             }
             if is_htmx_request(&headers) {
-                render_permissions_tab(&state, &session, target.id(), &uid)
+                render_permissions_tab(&state, &session, target.id(), target.0.name(), &uid)
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=permission_revoked"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=permission_revoked"
                 ))
                 .into_response()
             }
@@ -8020,7 +7930,7 @@ pub async fn admin_user_revoke_permission(
                 super::templates::htmx_toast_response(&format!("{e}"), "error")
             } else {
                 Redirect::to(&format!(
-                    "/ui/admin/users/{user_id}?flash=revoke_permission_failed"
+                    "/ui/admin/realms/{realm_name}/users/{user_id}?flash=revoke_permission_failed"
                 ))
                 .into_response()
             }
@@ -8232,7 +8142,7 @@ pub async fn admin_org_member_assign_role(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, oid, uid)): AxumPath<(String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<MemberAssignRoleForm>,
 ) -> Response {
@@ -8281,6 +8191,7 @@ pub async fn admin_org_member_assign_role(
                         &state,
                         &session,
                         target.id(),
+                        target.0.name(),
                         &org_id,
                         m,
                         "Role assigned",
@@ -8305,7 +8216,7 @@ pub async fn admin_org_member_unassign_role(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, uid, aid)): AxumPath<(String, String, String)>,
+    AxumPath((_realm_name, oid, uid, aid)): AxumPath<(String, String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<MemberUnassignRoleForm>,
 ) -> Response {
@@ -8335,6 +8246,7 @@ pub async fn admin_org_member_unassign_role(
                         &state,
                         &session,
                         target.id(),
+                        target.0.name(),
                         &org_id,
                         m,
                         "Role removed",
@@ -8359,7 +8271,7 @@ pub async fn admin_org_member_grant_perm(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, oid, uid)): AxumPath<(String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<MemberGrantPermForm>,
 ) -> Response {
@@ -8407,6 +8319,7 @@ pub async fn admin_org_member_grant_perm(
                         &state,
                         &session,
                         target.id(),
+                        target.0.name(),
                         &org_id,
                         m,
                         "Permission granted",
@@ -8431,7 +8344,7 @@ pub async fn admin_org_member_revoke_perm(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
-    AxumPath((oid, uid)): AxumPath<(String, String)>,
+    AxumPath((_realm_name, oid, uid)): AxumPath<(String, String, String)>,
     headers: axum::http::HeaderMap,
     FriendlyForm(form): FriendlyForm<MemberRevokePermForm>,
 ) -> Response {
@@ -8473,6 +8386,7 @@ pub async fn admin_org_member_revoke_perm(
                         &state,
                         &session,
                         target.id(),
+                        target.0.name(),
                         &org_id,
                         m,
                         "Permission revoked",
@@ -8545,6 +8459,7 @@ pub async fn admin_rbac_permissions(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
     // Look up realm name so we can index into config by name.
     let realm_name = state
@@ -8684,6 +8599,7 @@ pub async fn admin_rbac_roles(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
     target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
     let page = state
         .rbac
@@ -8780,16 +8696,14 @@ fn claim_source_label(source: &ClaimSource) -> String {
     }
 }
 
-/// `GET /ui/admin/realms/:id/claims` — read-only claim profile viewer.
+/// `GET /ui/admin/realms/{realm}/claims` — read-only claim profile viewer.
 pub async fn admin_realm_claims(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
-    AxumPath(rid): AxumPath<String>,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
-    let Ok(realm_uuid) = rid.parse::<uuid::Uuid>() else {
-        return super::handlers_common::not_found("Realm not found");
-    };
-    let realm_id = RealmId::new(realm_uuid);
+    let realm_id = target.id().clone();
 
     let realm = match state.identity.get_realm(&realm_id) {
         Ok(Some(r)) => r,
@@ -8838,4 +8752,3 @@ pub async fn admin_realm_claims(
         realm_theme_css: state.realm_theme_css(),
     })
 }
-

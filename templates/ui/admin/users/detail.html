@@ -16,7 +16,7 @@
     <p class="mt-0.5 truncate text-sm text-ht-content-muted">{{ user.email() }}</p>
   </div>
   <div class="flex shrink-0 items-center gap-2">
-    <a href="/ui/admin/users/{{ user.id().as_uuid() }}/edit"
+    <a href="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/edit"
        class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
       Edit
     </a>
@@ -67,7 +67,7 @@
 {# Actions bar #}
 <div class="mt-6 rounded-md bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
   <div class="flex flex-wrap items-center gap-3">
-    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/reset-password"
+    <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/reset-password"
           x-data="{ confirm: false, timer: null }"
           @reset-confirm.window="clearTimeout(timer); confirm = false">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
@@ -78,7 +78,7 @@
       </button>
     </form>
     {% if mfa_enabled %}
-    <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/disable-mfa" x-data="{ confirm: false }">
+    <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/disable-mfa" x-data="{ confirm: false }">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
       <button @click.prevent="confirm ? $el.form.submit() : (confirm = true)" type="button"
               :class="confirm ? 'btn-danger' : 'border border-strong bg-ht-surface-elevated text-ht-content-secondary hover-bg-divider'"
@@ -215,7 +215,7 @@
         </td>
         <td class="px-3 py-2 text-right">
           {% if !s.revoked && !s.expired %}
-          <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/sessions/{{ s.id }}/revoke">
+          <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/sessions/{{ s.id }}/revoke">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
             <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
           </form>
@@ -269,7 +269,7 @@
           {% endif %}
         </td>
         <td class="px-3 py-2 text-right">
-          <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/webauthn/{{ c.id_b64url }}/revoke">
+          <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/webauthn/{{ c.id_b64url }}/revoke">
             {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
             <button type="submit" class="text-xs text-danger-fg hover:text-red-300">Revoke</button>
           </form>
@@ -297,7 +297,7 @@
       {% for m in org_memberships %}
       <tr class="border-b border-divider-faint">
         <td class="px-3 py-2">
-          <a href="/ui/admin/organizations/{{ m.org_id }}" class="group">
+          <a href="/ui/admin/realms/{{ realm_name }}/organizations/{{ m.org_id }}" class="group">
             <div class="text-sm font-medium text-ht-content-brand group-hover:text-ht-brand-deep">{{ m.org_name }}</div>
             <div class="text-xs text-ht-content-muted">{{ m.org_slug }}</div>
           </a>
@@ -339,7 +339,7 @@
                 class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Cancel
         </button>
-        <form method="post" action="/ui/admin/users/{{ user.id().as_uuid() }}/delete">
+        <form method="post" action="/ui/admin/realms/{{ realm_name }}/users/{{ user.id().as_uuid() }}/delete">
           {% match csrf %}
             {% when Some with (token) %}
               <input type="hidden" name="_csrf" value="{{ token }}">

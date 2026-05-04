@@ -8,7 +8,7 @@
     <p class="mt-1 text-sm text-ht-content-muted">B2B customer groups inside this realm. Members share roles, RBAC, and audit history.</p>
   </div>
   <a id="primary-cta"
-     href="{% match target_realm_name %}{% when Some with (name) %}/ui/admin/organizations/new?realm={{ name }}{% when None %}/ui/admin/organizations/new{% endmatch %}"
+     href="/ui/admin/realms/{{ realm_name }}/organizations/new"
      class="btn-ember inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     Create organization
@@ -17,11 +17,7 @@
 
 {# Search bar — substring match over name/slug. Form GET keeps state in
    the URL and refreshes the realm-scoped list pattern. #}
-<form method="get" action="/ui/admin/organizations" class="mb-4">
-  {% match target_realm_name %}
-    {% when Some with (name) %}<input type="hidden" name="realm" value="{{ name }}">
-    {% when None %}
-  {% endmatch %}
+<form method="get" action="/ui/admin/realms/{{ realm_name }}/organizations" class="mb-4">
   <div class="relative">
     <input id="page-search" type="search" name="q" value="{{ search_query }}" placeholder="Search by name or slug…"
            class="block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 pl-9 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
@@ -42,7 +38,7 @@
     <p class="mx-auto mt-2 max-w-md text-sm text-ht-content-secondary">
       Organizations group customers, projects, or teams within this realm. Members share RBAC roles, invitations, and audit history.
     </p>
-    <a href="{% match target_realm_name %}{% when Some with (name) %}/ui/admin/organizations/new?realm={{ name }}{% when None %}/ui/admin/organizations/new{% endmatch %}"
+    <a href="/ui/admin/realms/{{ realm_name }}/organizations/new"
        class="btn-ember mt-6 inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
       <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Create your first organization
@@ -57,7 +53,7 @@
      row checkboxes (`name="ids"`) post with the form. Two-click confirm
      mirrors the per-row revoke pattern. #}
   <form method="post"
-        action="/ui/admin/organizations/bulk-delete{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+        action="/ui/admin/realms/{{ realm_name }}/organizations/bulk-delete"
         x-data="{ selected: 0, confirm: false, allChecked: false, idsCsv: '' }"
         @org-checked.window="
           let checked = $el.querySelectorAll('input.row-check:checked');
@@ -111,7 +107,7 @@
   {% match next_cursor %}
     {% when Some with (cursor) %}
       <nav class="mt-4 flex justify-end">
-        <a href="/ui/admin/organizations?cursor={{ cursor }}{% match target_realm_name %}{% when Some with (name) %}&realm={{ name }}{% when None %}{% endmatch %}"
+        <a href="/ui/admin/realms/{{ realm_name }}/organizations?cursor={{ cursor }}"
            class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
           Next page
           <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

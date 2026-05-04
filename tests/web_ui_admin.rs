@@ -87,16 +87,15 @@ fn build_rig() -> TestRig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
 
     // Admin user lives in the system realm (nil UUID) — this matches
     // the invariant enforced by `RequireAdmin`. Tests that exercise
-    // admin routes target the application realm ("Acme") via the
-    // TargetRealm extractor, which defaults to the first non-system
-    // realm when `?realm=<name>` is absent.
+    // admin routes target the application realm ("acme") via the
+    // path-based `TargetRealm` extractor (`/ui/admin/realms/acme/...`).
     let admin_realm_id = hearth::core::RealmId::new(uuid::Uuid::nil());
     let admin_user = identity
         .create_admin_user(&CreateUserRequest {
@@ -262,7 +261,7 @@ async fn non_admin_user_gets_403_on_admin_pages() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users")
+                .uri("/ui/admin/realms/acme/users")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -283,7 +282,7 @@ async fn unauthenticated_user_redirects_to_login() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users")
+                .uri("/ui/admin/realms/acme/users")
                 .body(Body::empty())
                 .expect("build request"),
         )
@@ -308,7 +307,7 @@ async fn admin_user_list_renders() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users")
+                .uri("/ui/admin/realms/acme/users")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -321,7 +320,8 @@ async fn admin_user_list_renders() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("admin@acme.test"), "should list admin user");
+    // The acme tenant realm contains only `bob@acme.test`; the admin
+    // lives in the system realm so they don't appear here.
     assert!(body.contains("bob@acme.test"), "should list non-admin user");
     assert!(body.contains("Create user"));
 }
@@ -341,7 +341,7 @@ async fn admin_create_user_form_renders() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users/new")
+                .uri("/ui/admin/realms/acme/users/new")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -374,7 +374,7 @@ async fn admin_create_user_succeeds() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ui/admin/users/new")
+                .uri("/ui/admin/realms/acme/users/new")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -390,7 +390,7 @@ async fn admin_create_user_succeeds() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
-        location.starts_with("/ui/admin/users/"),
+        location.starts_with("/ui/admin/realms/acme/users/"),
         "expected redirect to user detail, got: {location}"
     );
 }
@@ -413,7 +413,7 @@ async fn admin_create_user_duplicate_email_shows_error() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ui/admin/users/new")
+                .uri("/ui/admin/realms/acme/users/new")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -445,7 +445,7 @@ async fn admin_create_user_without_csrf_returns_403() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ui/admin/users/new")
+                .uri("/ui/admin/realms/acme/users/new")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -466,7 +466,10 @@ async fn admin_user_detail_renders() {
     let rig = build_rig();
     let cookie = admin_cookie(&rig, "csrf-detail");
 
-    let uri = format!("/ui/admin/users/{}", rig.non_admin_user_id.as_uuid());
+    let uri = format!(
+        "/ui/admin/realms/acme/users/{}",
+        rig.non_admin_user_id.as_uuid()
+    );
     let response = rig
         .app
         .clone()
@@ -491,109 +494,10 @@ async fn admin_user_detail_renders() {
     assert!(body.contains("Delete user"));
 }
 
-/// Regression: clicking a row on `/ui/admin/admin-users` must reach a
-/// working user-detail page. Before the `?admin_target=system` sentinel,
-/// the link 404'd because the standard `?realm=<name>` resolver excludes
-/// the system realm and the default fallback picks the first tenant
-/// realm — where the system admin doesn't exist.
-#[tokio::test]
-async fn admin_user_detail_resolves_system_realm_via_admin_target_sentinel() {
-    let rig = build_rig();
-    // `admin_user_id` lives in the system realm, mirroring how the seed
-    // operator is created in production (`create_admin_user` always pins
-    // to `RealmId::nil()`).
-    #[allow(deprecated)]
-    let admin_uid = rig.admin_user_id.as_uuid();
-    let cookie = admin_cookie(&rig, "csrf-admin-target-system");
-
-    let uri = format!("/ui/admin/users/{admin_uid}?admin_target=system");
-    let response = rig
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(&uri)
-                .header(header::COOKIE, cookie)
-                .body(Body::empty())
-                .expect("build request"),
-        )
-        .await
-        .expect("oneshot");
-
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "?admin_target=system must let the user-detail handler resolve the system realm"
-    );
-    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .expect("body");
-    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(
-        body.contains("admin@acme.test"),
-        "system-realm admin email must render"
-    );
-}
-
-/// `/ui/admin/sessions` with no realm query renders the cross-realm
-/// global view: shows the admin's system-realm session AND the tenant
-/// session in the same table, with a Realm column. Pins the fix for
-/// the audit's "own session invisible" finding.
-#[tokio::test]
-async fn admin_sessions_global_view_includes_system_and_tenant() {
-    let rig = build_rig();
-    let cookie = admin_cookie(&rig, "csrf-sessions-global");
-
-    let response = rig
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/ui/admin/sessions")
-                .header(header::COOKIE, cookie)
-                .body(Body::empty())
-                .expect("build request"),
-        )
-        .await
-        .expect("oneshot");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body_bytes = to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .expect("body");
-    let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-
-    assert!(
-        body.contains("All sessions"),
-        "global view must use the cross-realm heading"
-    );
-    assert!(
-        body.contains("admin@acme.test"),
-        "system admin session must appear in global view"
-    );
-    assert!(
-        body.contains("bob@acme.test"),
-        "tenant user session must appear in global view"
-    );
-    assert!(
-        body.contains("Realm</th>"),
-        "global view must surface a Realm column"
-    );
-    assert!(
-        body.contains("?admin_target=system"),
-        "system-realm rows' revoke action must carry the admin-target sentinel"
-    );
-    assert!(
-        body.contains("?realm=Acme"),
-        "tenant rows' revoke action must carry the tenant realm name"
-    );
-}
-
-/// `/ui/admin/sessions?realm=<name>` renders the per-realm view (no
-/// Realm column, scoped heading). Pins that the global view didn't
-/// regress the realm-scoped view.
+/// `/ui/admin/realms/acme/sessions` renders the per-realm view (no
+/// Realm column, scoped heading). The previous global / cross-realm view
+/// was deleted alongside the path-based routing migration — every
+/// realm-scoped page now lives under `/ui/admin/realms/{name}/...`.
 #[tokio::test]
 async fn admin_sessions_realm_scoped_view_omits_realm_column() {
     let rig = build_rig();
@@ -605,7 +509,7 @@ async fn admin_sessions_realm_scoped_view_omits_realm_column() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/sessions?realm=Acme")
+                .uri("/ui/admin/realms/acme/sessions")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -652,7 +556,7 @@ async fn admin_users_list_renders_htmx_live_search_attrs() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users?realm=Acme")
+                .uri("/ui/admin/realms/acme/users")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -667,7 +571,7 @@ async fn admin_users_list_renders_htmx_live_search_attrs() {
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
 
     assert!(
-        body.contains(r#"hx-get="/ui/admin/users""#),
+        body.contains(r#"hx-get="/ui/admin/realms/acme/users""#),
         "search form must point hx-get at the list URL"
     );
     assert!(
@@ -698,7 +602,7 @@ async fn admin_users_list_returns_rows_partial_for_htmx_request() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users?realm=Acme")
+                .uri("/ui/admin/realms/acme/users")
                 .header(header::COOKIE, cookie)
                 .header("HX-Request", "true")
                 .body(Body::empty())
@@ -741,7 +645,7 @@ async fn admin_sessions_list_renders_status_filter_pills() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/sessions")
+                .uri("/ui/admin/realms/acme/sessions")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -757,11 +661,14 @@ async fn admin_sessions_list_renders_status_filter_pills() {
 
     // All three pills present, with their query strings.
     assert!(body.contains("?status=active"), "Active pill must be wired");
-    assert!(body.contains("?status=expired"), "Expired pill must be wired");
+    assert!(
+        body.contains("?status=expired"),
+        "Expired pill must be wired"
+    );
     assert!(body.contains("?status=all"), "All pill must be wired");
 
     // Default is Active — only the Active pill carries aria-selected="true".
-    let active_marker = r#"href="/ui/admin/sessions?status=active"
+    let active_marker = r#"href="/ui/admin/realms/acme/sessions?status=active"
      role="tab"
      aria-selected="true""#;
     assert!(
@@ -783,7 +690,7 @@ async fn admin_sessions_list_expired_filter_empty_when_all_active() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/sessions?status=expired")
+                .uri("/ui/admin/realms/acme/sessions?status=expired")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -803,7 +710,7 @@ async fn admin_sessions_list_expired_filter_empty_when_all_active() {
         "expired view should render the empty-state row when all sessions are active"
     );
     // Expired pill is the selected one.
-    let expired_marker = r#"href="/ui/admin/sessions?status=expired"
+    let expired_marker = r#"href="/ui/admin/realms/acme/sessions?status=expired"
      role="tab"
      aria-selected="true""#;
     assert!(
@@ -822,14 +729,14 @@ async fn admin_user_detail_404_renders_inside_admin_shell() {
     let rig = build_rig();
     let cookie = admin_cookie(&rig, "csrf-404-chrome");
 
-    // Hit a UUID that doesn't exist in the default-resolved tenant realm.
+    // Hit a UUID that doesn't exist in the acme tenant realm.
     let response = rig
         .app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users/00000000-0000-0000-0000-0000ffff0001")
+                .uri("/ui/admin/realms/acme/users/00000000-0000-0000-0000-0000ffff0001")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -859,23 +766,21 @@ async fn admin_user_detail_404_renders_inside_admin_shell() {
     );
 }
 
-/// Without the sentinel, the same request 404s because TargetRealm
-/// falls back to the first tenant realm. Pins the URL contract.
+/// `GET /ui/admin/users` (no realm) returns 404 — the path-based routing
+/// migration deleted the cookie / `?realm=` fallbacks that used to
+/// silently resolve a tenant realm. Pins R-5 from `UI_ROUTING.md`.
 #[tokio::test]
-async fn admin_user_detail_404s_for_system_admin_without_sentinel() {
+async fn admin_user_list_without_realm_path_returns_404() {
     let rig = build_rig();
-    #[allow(deprecated)]
-    let admin_uid = rig.admin_user_id.as_uuid();
-    let cookie = admin_cookie(&rig, "csrf-no-sentinel");
+    let cookie = admin_cookie(&rig, "csrf-no-realm");
 
-    let uri = format!("/ui/admin/users/{admin_uid}");
     let response = rig
         .app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&uri)
+                .uri("/ui/admin/users")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -883,12 +788,7 @@ async fn admin_user_detail_404s_for_system_admin_without_sentinel() {
         .await
         .expect("oneshot");
 
-    assert_eq!(
-        response.status(),
-        StatusCode::NOT_FOUND,
-        "without ?admin_target=system, lookup falls back to a tenant realm \
-         where the system admin doesn't exist"
-    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -902,7 +802,7 @@ async fn admin_user_detail_returns_404_for_unknown() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users/00000000-0000-0000-0000-000000000099")
+                .uri("/ui/admin/realms/acme/users/00000000-0000-0000-0000-000000000099")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -932,7 +832,7 @@ async fn admin_edit_user_succeeds() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/users/{uid}/edit"))
+                .uri(format!("/ui/admin/realms/acme/users/{uid}/edit"))
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -972,7 +872,7 @@ async fn admin_delete_user_succeeds() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/users/{uid}/delete"))
+                .uri(format!("/ui/admin/realms/acme/users/{uid}/delete"))
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -987,7 +887,7 @@ async fn admin_delete_user_succeeds() {
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
-        Some("/ui/admin/users"),
+        Some("/ui/admin/realms/acme/users"),
     );
 
     // User no longer exists.
@@ -1026,7 +926,7 @@ async fn admin_realm_list_renders() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("Acme"), "should list the realm");
+    assert!(body.contains("acme"), "should list the realm");
     assert!(
         body.contains("hearth.yaml"),
         "should show YAML config notice"
@@ -1041,7 +941,7 @@ async fn admin_realm_detail_renders() {
     let rig = build_rig();
     let cookie = admin_cookie(&rig, "csrf-tdetail");
 
-    let uri = format!("/ui/admin/realms/{}", rig.realm_id.as_uuid());
+    let uri = "/ui/admin/realms/acme".to_string();
     let response = rig
         .app
         .clone()
@@ -1061,7 +961,7 @@ async fn admin_realm_detail_renders() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    assert!(body.contains("Acme"));
+    assert!(body.contains("acme"));
     assert!(body.contains("Active"));
 }
 
@@ -1078,13 +978,12 @@ async fn admin_delete_realm_requires_archived_status() {
     let extra = rig
         .identity
         .create_realm(&CreateRealmRequest {
-            name: "Doomed".to_string(),
+            name: "doomed".to_string(),
             config: None,
         })
         .expect("create doomed realm");
 
     // Deleting an Active realm should be rejected (400).
-    let tid = extra.id().as_uuid();
     let form = format!("_csrf={csrf}");
     let response = rig
         .app
@@ -1092,7 +991,7 @@ async fn admin_delete_realm_requires_archived_status() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/realms/{tid}/delete"))
+                .uri("/ui/admin/realms/doomed/delete")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -1126,7 +1025,7 @@ async fn admin_delete_realm_requires_archived_status() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/realms/{tid}/delete"))
+                .uri("/ui/admin/realms/doomed/delete")
                 .header(header::COOKIE, &cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form2))
@@ -1166,7 +1065,7 @@ async fn admin_app_list_renders() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/applications")
+                .uri("/ui/admin/realms/acme/applications")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -1222,7 +1121,7 @@ async fn admin_app_detail_renders() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/ui/admin/applications/{cid}"))
+                .uri(format!("/ui/admin/realms/acme/applications/{cid}"))
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -1254,7 +1153,7 @@ async fn admin_sessions_list_renders() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/sessions")
+                .uri("/ui/admin/realms/acme/sessions")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -1267,10 +1166,10 @@ async fn admin_sessions_list_renders() {
         .await
         .expect("body");
     let body = std::str::from_utf8(&body_bytes).expect("utf-8");
-    // At least the admin's own session should be listed.
+    // The acme realm contains bob's session.
     assert!(
-        body.contains("admin@acme.test"),
-        "should show admin session"
+        body.contains("bob@acme.test"),
+        "should show non-admin session"
     );
 }
 
@@ -1298,7 +1197,7 @@ async fn admin_revoke_session_succeeds() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/ui/admin/sessions/{sid}/revoke"))
+                .uri(format!("/ui/admin/realms/acme/sessions/{sid}/revoke"))
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -1313,7 +1212,7 @@ async fn admin_revoke_session_succeeds() {
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok()),
-        Some("/ui/admin/sessions"),
+        Some("/ui/admin/realms/acme/sessions"),
     );
 
     // Session should be gone (revoked → get_session returns None).
@@ -1339,7 +1238,7 @@ async fn admin_audit_page_renders() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/audit")
+                .uri("/ui/admin/realms/acme/audit")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -1371,7 +1270,7 @@ async fn admin_audit_page_shows_events_after_user_create() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ui/admin/users/new")
+                .uri("/ui/admin/realms/acme/users/new")
                 .header(header::COOKIE, admin_cookie(&rig, csrf))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
@@ -1387,7 +1286,7 @@ async fn admin_audit_page_shows_events_after_user_create() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/audit?action=user_created")
+                .uri("/ui/admin/realms/acme/audit?action=user_created")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .expect("build request"),
@@ -1436,7 +1335,7 @@ async fn unauthenticated_admin_path_redirects_to_admin_login() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users")
+                .uri("/ui/admin/realms/acme/users")
                 .body(Body::empty())
                 .expect("build"),
         )
@@ -1577,7 +1476,7 @@ async fn admin_users_page_lists_only_system_realm_users() {
         "admin-users page must not leak tenant-realm users"
     );
     assert!(
-        body.contains("Admin users"),
+        body.contains("Admin Users"),
         "admin-users page header must differ from tenant Users header"
     );
 }
@@ -1592,7 +1491,7 @@ async fn tenant_users_list_renders_realm_breadcrumb() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/ui/admin/users")
+                .uri("/ui/admin/realms/acme/users")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .expect("build"),

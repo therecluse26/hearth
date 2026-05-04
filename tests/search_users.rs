@@ -8,7 +8,7 @@ use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityEngine, Re
 fn setup_realm(identity: &dyn IdentityEngine) -> hearth::core::RealmId {
     identity
         .create_realm(&CreateRealmRequest {
-            name: "Search Test Realm".to_string(),
+            name: "search-test-realm".to_string(),
             config: None,
         })
         .expect("create realm")

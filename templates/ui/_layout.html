@@ -94,10 +94,11 @@
         </div>
 
         {# Per-realm tree: realms fetched from /ui/admin/api/nav/realms,
-           rendered client-side. The current realm is read from ?realm=<name>
-           or the hearth_ui_admin_target cookie; that realm is auto-expanded
-           and highlighted. The active page (server-rendered `active` value)
-           is matched inside the expanded subtree. #}
+           rendered client-side. The current realm is parsed from the URL
+           path (`/ui/admin/realms/{name}/...`) per UI_ROUTING.md R-1; that
+           realm is auto-expanded and highlighted. The active page
+           (server-rendered `active` value) is matched inside the expanded
+           subtree. #}
         <div x-data="realmNav('{{ active }}')" x-init="load()">
           <p class="mb-2 px-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Realms</p>
           <template x-if="loading">
@@ -233,34 +234,32 @@
       }));
 
       // Sidebar realm tree. Fetches realms once at mount, derives the
-      // current realm from ?realm=<name> or the hearth_ui_admin_target
-      // cookie so the matching subtree auto-expands and highlights.
+      // current realm from the URL path (`/ui/admin/realms/{name}/...`)
+      // per UI_ROUTING.md R-1, so the matching subtree auto-expands and
+      // highlights. Subpage URLs are built path-first; `{realm}` is
+      // substituted by the active realm slug.
       Alpine.data('realmNav', (activePage) => ({
         loading: true,
         realms: [],
         currentRealm: '',
         activePage: activePage || '',
         subPages: [
-          { key: 'users',            label: 'Users',            href: '/ui/admin/users?realm={realm}' },
-          { key: 'organizations',    label: 'Organizations',    href: '/ui/admin/organizations?realm={realm}' },
-          { key: 'groups',           label: 'Groups',           href: '/ui/admin/groups?realm={realm}' },
-          { key: 'applications',     label: 'Applications',     href: '/ui/admin/applications?realm={realm}' },
-          { key: 'sessions',         label: 'Sessions',         href: '/ui/admin/sessions?realm={realm}' },
-          { key: 'audit',            label: 'Audit Log',        href: '/ui/admin/audit?realm={realm}' },
-          { key: 'rbac_permissions', label: 'Permissions',      href: '/ui/admin/rbac/permissions?realm={realm}' },
-          { key: 'rbac_roles',       label: 'Roles',            href: '/ui/admin/rbac/roles?realm={realm}' },
-          { key: 'rbac_scopes',      label: 'Scopes',           href: '/ui/admin/rbac/scopes?realm={realm}' },
-          { key: 'rbac_debug',       label: 'Permission Check', href: '/ui/admin/rbac/debug?realm={realm}' },
+          { key: 'users',            label: 'Users',            href: '/ui/admin/realms/{realm}/users' },
+          { key: 'organizations',    label: 'Organizations',    href: '/ui/admin/realms/{realm}/organizations' },
+          { key: 'groups',           label: 'Groups',           href: '/ui/admin/realms/{realm}/groups' },
+          { key: 'applications',     label: 'Applications',     href: '/ui/admin/realms/{realm}/applications' },
+          { key: 'sessions',         label: 'Sessions',         href: '/ui/admin/realms/{realm}/sessions' },
+          { key: 'audit',            label: 'Audit Log',        href: '/ui/admin/realms/{realm}/audit' },
+          { key: 'rbac_permissions', label: 'Permissions',      href: '/ui/admin/realms/{realm}/rbac/permissions' },
+          { key: 'rbac_roles',       label: 'Roles',            href: '/ui/admin/realms/{realm}/rbac/roles' },
+          { key: 'rbac_scopes',      label: 'Scopes',           href: '/ui/admin/realms/{realm}/rbac/scopes' },
+          { key: 'rbac_debug',       label: 'Permission Check', href: '/ui/admin/realms/{realm}/rbac/debug' },
         ],
-        readCookie(name) {
-          const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
-          return m ? decodeURIComponent(m[1]) : '';
-        },
         deriveCurrentRealm() {
-          const params = new URLSearchParams(window.location.search);
-          const fromQuery = params.get('realm');
-          if (fromQuery) return fromQuery;
-          return this.readCookie('hearth_ui_admin_target');
+          // URL shape: /ui/admin/realms/{name}[/...]
+          // Anything else (dashboard, settings, admin-users) returns ''.
+          const m = window.location.pathname.match(/^\/ui\/admin\/realms\/([^\/?#]+)(?:\/|$)/);
+          return m ? decodeURIComponent(m[1]) : '';
         },
         async load() {
           this.currentRealm = this.deriveCurrentRealm();

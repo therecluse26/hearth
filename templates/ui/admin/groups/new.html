@@ -3,7 +3,7 @@
 {% block body %}
 {% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
-  <a href="/ui/admin/groups{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+  <a href="/ui/admin/realms/{{ realm_name }}/groups"
      class="hover:text-ht-content-primary">Groups</a>
   <span>›</span>
   <span class="text-ht-content-secondary">New</span>
@@ -21,7 +21,7 @@
   {% endmatch %}
 
   <form method="post"
-        action="/ui/admin/groups/new{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+        action="/ui/admin/realms/{{ realm_name }}/groups/new"
         autocomplete="off"
         class="space-y-4"
         x-data="{ name: '{{ form_name }}', slug: '{{ form_slug }}', slugTouched: {% if form_slug.is_empty() %}false{% else %}true{% endif %} }">
@@ -69,7 +69,7 @@
               class="btn-ember rounded px-4 py-2 text-sm font-semibold">
         Create group
       </button>
-      <a href="/ui/admin/groups{% match target_realm_name %}{% when Some with (name) %}?realm={{ name }}{% when None %}{% endmatch %}"
+      <a href="/ui/admin/realms/{{ realm_name }}/groups"
          class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
     </div>
   </form>

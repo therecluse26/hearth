@@ -17,8 +17,8 @@
   </td>
   <td class="px-4 py-3 text-right">
     {% if s.is_active %}
-    <form method="post" action="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke{{ s.realm_target_query }}"
-          hx-post="/ui/admin/sessions/{{ s.session.id().as_uuid() }}/revoke{{ s.realm_target_query }}"
+    <form method="post" action="/ui/admin/realms/{{ s.realm_name }}/sessions/{{ s.session.id().as_uuid() }}/revoke"
+          hx-post="/ui/admin/realms/{{ s.realm_name }}/sessions/{{ s.session.id().as_uuid() }}/revoke"
           hx-target="#session-{{ s.session.id().as_uuid() }}"
           hx-swap="outerHTML"
           onsubmit="if(!this.hasAttribute('hx-post'))return confirm('Revoke this session?');">

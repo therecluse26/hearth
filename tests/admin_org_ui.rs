@@ -78,7 +78,7 @@ fn build_rig() -> Rig {
 
     let realm = identity
         .create_realm(&CreateRealmRequest {
-            name: "Acme".to_string(),
+            name: "acme".to_string(),
             config: None,
         })
         .expect("create realm");
@@ -232,7 +232,7 @@ async fn update_role_htmx_returns_row_partial_and_show_toast_trigger() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/{}/role",
+                    "/ui/admin/realms/acme/organizations/{}/members/{}/role",
                     rig.org_id.as_uuid(),
                     rig.member_user_id.as_uuid()
                 ))
@@ -293,7 +293,7 @@ async fn update_role_non_htmx_returns_303_redirect() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/{}/role",
+                    "/ui/admin/realms/acme/organizations/{}/members/{}/role",
                     rig.org_id.as_uuid(),
                     rig.member_user_id.as_uuid()
                 ))
@@ -312,7 +312,10 @@ async fn update_role_non_htmx_returns_303_redirect() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
-        location.starts_with(&format!("/ui/admin/organizations/{}", rig.org_id.as_uuid())),
+        location.starts_with(&format!(
+            "/ui/admin/realms/acme/organizations/{}",
+            rig.org_id.as_uuid()
+        )),
         "expected redirect to org detail, got: {location}"
     );
 }
@@ -334,7 +337,7 @@ async fn remove_member_htmx_returns_empty_body_and_toast_trigger() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/{}/remove",
+                    "/ui/admin/realms/acme/organizations/{}/members/{}/remove",
                     rig.org_id.as_uuid(),
                     rig.member_user_id.as_uuid()
                 ))
@@ -375,7 +378,7 @@ async fn bulk_add_route_is_gone() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/members/bulk",
+                    "/ui/admin/realms/acme/organizations/{}/members/bulk",
                     rig.org_id.as_uuid()
                 ))
                 .header(header::COOKIE, cookie)
@@ -417,7 +420,7 @@ async fn create_org_accepts_empty_max_members() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ui/admin/organizations/new?realm=Acme")
+                .uri("/ui/admin/realms/acme/organizations/new")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(body))
@@ -438,7 +441,7 @@ async fn create_org_accepts_empty_max_members() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
-        location.starts_with("/ui/admin/organizations/"),
+        location.starts_with("/ui/admin/realms/acme/organizations/"),
         "expected redirect to org detail, got: {location}"
     );
 }
@@ -460,7 +463,7 @@ async fn edit_org_accepts_empty_max_members() {
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/ui/admin/organizations/{}/edit?realm=Acme",
+                    "/ui/admin/realms/acme/organizations/{}/edit",
                     rig.org_id.as_uuid()
                 ))
                 .header(header::COOKIE, cookie)
