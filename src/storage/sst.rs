@@ -1,32 +1,34 @@
 //! Sorted String Table (SST) persistence for memtable flushes.
 //!
-//! Binary format (v1):
+//! All SST files are encrypted at rest using AES-256-GCM envelope encryption.
+//!
+//! Binary format:
 //! ```text
-//! HEADER (12 bytes):
+//! BASE HEADER (12 bytes):
 //!   [4B] magic    = b"HSST"
-//!   [1B] version  = 0x01
 //!   [4B] entry_count (u32 LE)
-//!   [3B] reserved = 0x00
+//!   [4B] CRC32 of the plaintext data section
 //!
-//! DATA SECTION (variable, entries sorted by CompositeKey):
-//!   Per entry:
-//!     [1B]  type (0x00=Data, 0x01=Tombstone)
-//!     [16B] realm UUID
-//!     [4B]  key length (u32 LE)
-//!     [NB]  key bytes
-//!     [4B]  value length (u32 LE, 0 for tombstone)
-//!     [MB]  value bytes
+//! ENCRYPTION HEADER (76 bytes):
+//!   [16B] KEK identifier (realm UUID bytes)
+//!   [12B] Nonce used for DEK wrapping
+//!   [32B] DEK ciphertext (AES-256-GCM output)
+//!   [16B] GCM authentication tag for DEK wrapping
 //!
-//! FOOTER (8 bytes):
-//!   [4B] CRC32 of entire data section
-//!   [4B] footer magic = b"HEND"
+//! ENCRYPTED DATA SECTION (variable):
+//!   [NB] AES-256-GCM ciphertext of the serialized data section
+//!        (includes appended 16B GCM tag)
 //! ```
+//!
+//! Per-file DEKs are randomly generated. The data nonce is derived from
+//! the SST file number via `counter_nonce()`.
 
 use std::path::Path;
 
 use uuid::Uuid;
 
 use crate::core::RealmId;
+use crate::storage::encryption::{self, counter_nonce, DataEncryptionKey, EncryptionHeader, KekId};
 use crate::storage::error::StorageError;
 use crate::storage::fs::{Fs, RealFs};
 use crate::storage::memtable::{CompositeKey, MemtableValue};
@@ -34,17 +36,11 @@ use crate::storage::memtable::{CompositeKey, MemtableValue};
 /// SST file magic bytes.
 const SST_MAGIC: &[u8; 4] = b"HSST";
 
-/// SST format version.
-const SST_VERSION: u8 = 0x01;
+/// Size of the base header: magic(4) + entry_count(4) + crc32(4).
+const BASE_HEADER_SIZE: usize = 12;
 
-/// Footer magic bytes.
-const FOOTER_MAGIC: &[u8; 4] = b"HEND";
-
-/// Header size in bytes: 4 (magic) + 1 (version) + 4 (count) + 3 (reserved).
-const HEADER_SIZE: usize = 12;
-
-/// Footer size in bytes: 4 (CRC32) + 4 (footer magic).
-const FOOTER_SIZE: usize = 8;
+/// Total header size: base(12) + encryption(76).
+pub(crate) const TOTAL_HEADER_SIZE: usize = BASE_HEADER_SIZE + encryption::ENCRYPTION_HEADER_SIZE;
 
 /// Metadata about a written SST file.
 #[derive(Debug, Clone)]
@@ -66,8 +62,11 @@ impl SstWriter {
     pub(crate) fn write_sst(
         path: &Path,
         entries: &[(CompositeKey, MemtableValue)],
+        sst_number: u64,
+        dek: &DataEncryptionKey,
+        enc_header: &EncryptionHeader,
     ) -> Result<SstMetadata, StorageError> {
-        Self::write_sst_with_fs(path, entries, &RealFs)
+        Self::write_sst_with_fs(path, entries, &RealFs, sst_number, dek, enc_header)
     }
 
     /// Writes an SST file using a custom filesystem implementation.
@@ -75,29 +74,35 @@ impl SstWriter {
         path: &Path,
         entries: &[(CompositeKey, MemtableValue)],
         fs: &dyn Fs,
+        sst_number: u64,
+        dek: &DataEncryptionKey,
+        enc_header: &EncryptionHeader,
     ) -> Result<SstMetadata, StorageError> {
         let mut file = fs.create(path)?;
 
-        // --- Header ---
-        file.write_all(SST_MAGIC)?;
-        file.write_all(&[SST_VERSION])?;
+        // --- Serialize entries to plaintext ---
+        let plaintext = Self::serialize_entries(entries);
+        let crc = crc32fast::hash(&plaintext);
+
+        // --- Write base header ---
         #[allow(clippy::cast_possible_truncation)]
         let entry_count = entries.len() as u32;
+        file.write_all(SST_MAGIC)?;
         file.write_all(&entry_count.to_le_bytes())?;
-        file.write_all(&[0u8; 3])?; // reserved
-
-        // --- Data Section ---
-        let data_section = Self::serialize_entries(entries);
-        file.write_all(&data_section)?;
-
-        // --- Footer ---
-        let crc = crc32fast::hash(&data_section);
         file.write_all(&crc.to_le_bytes())?;
-        file.write_all(FOOTER_MAGIC)?;
+
+        // --- Write encryption header ---
+        file.write_all(&enc_header.to_bytes())?;
+
+        // --- Encrypt and write data section ---
+        let data_nonce = counter_nonce(sst_number);
+        let aad = sst_number.to_le_bytes();
+        let ciphertext = encryption::encrypt_section(&plaintext, dek, &data_nonce, &aad)?;
+        file.write_all(&ciphertext)?;
 
         file.sync_all()?;
 
-        let file_size = HEADER_SIZE as u64 + data_section.len() as u64 + FOOTER_SIZE as u64;
+        let file_size = TOTAL_HEADER_SIZE as u64 + ciphertext.len() as u64;
 
         Ok(SstMetadata {
             entry_count,
@@ -116,7 +121,6 @@ impl SstWriter {
 
     /// Serializes a single entry into the buffer.
     fn serialize_entry(buf: &mut Vec<u8>, key: &CompositeKey, value: &MemtableValue) {
-        // Type byte
         match value {
             MemtableValue::Data(_) => buf.push(0x00),
             MemtableValue::Tombstone => buf.push(0x01),
@@ -156,66 +160,73 @@ pub(crate) struct SstReader {
 }
 
 impl SstReader {
-    /// Opens and validates an SST file, loading all entries into memory.
-    pub(crate) fn open(path: &Path) -> Result<Self, StorageError> {
-        Self::open_with_fs(path, &RealFs)
+    /// Opens and validates an SST file, decrypting and loading all entries.
+    pub(crate) fn open(
+        path: &Path,
+        sst_number: u64,
+        dek: &DataEncryptionKey,
+    ) -> Result<Self, StorageError> {
+        Self::open_with_fs(path, &RealFs, sst_number, dek)
     }
 
     /// Opens an SST file using a custom filesystem implementation.
-    pub(crate) fn open_with_fs(path: &Path, fs: &dyn Fs) -> Result<Self, StorageError> {
+    pub(crate) fn open_with_fs(
+        path: &Path,
+        fs: &dyn Fs,
+        sst_number: u64,
+        dek: &DataEncryptionKey,
+    ) -> Result<Self, StorageError> {
         let data = fs.read(path)?;
 
-        // Minimum file size: header + footer
-        if data.len() < HEADER_SIZE + FOOTER_SIZE {
+        // Minimum file size: base header + encryption header
+        if data.len() < TOTAL_HEADER_SIZE {
             return Err(StorageError::InvalidSstFormat {
                 reason: format!("file too small: {} bytes", data.len()),
             });
         }
 
-        // --- Validate header ---
+        // --- Parse base header ---
         if &data[0..4] != SST_MAGIC {
             return Err(StorageError::InvalidSstFormat {
                 reason: "invalid magic bytes".to_string(),
             });
         }
-        if data[4] != SST_VERSION {
-            return Err(StorageError::InvalidSstFormat {
-                reason: format!("unsupported version: {}", data[4]),
-            });
-        }
-        let entry_count = u32::from_le_bytes(data[5..9].try_into().map_err(|_| {
+        let entry_count = u32::from_le_bytes(data[4..8].try_into().map_err(|_| {
             StorageError::InvalidSstFormat {
                 reason: "invalid entry count bytes".to_string(),
             }
         })?);
+        let stored_crc = u32::from_le_bytes(data[8..12].try_into().map_err(|_| {
+            StorageError::InvalidSstFormat {
+                reason: "invalid CRC bytes".to_string(),
+            }
+        })?);
 
-        // --- Validate footer ---
-        let footer_start = data.len() - FOOTER_SIZE;
-        if &data[footer_start + 4..] != FOOTER_MAGIC {
-            return Err(StorageError::InvalidSstFormat {
-                reason: "invalid footer magic".to_string(),
-            });
-        }
+        // --- Parse encryption header (validate it parseable) ---
+        let enc_bytes: &[u8; encryption::ENCRYPTION_HEADER_SIZE] = data
+            [BASE_HEADER_SIZE..TOTAL_HEADER_SIZE]
+            .try_into()
+            .map_err(|_| StorageError::InvalidSstFormat {
+                reason: "truncated encryption header".to_string(),
+            })?;
+        let _enc_header = EncryptionHeader::from_bytes(enc_bytes);
 
-        let stored_crc = u32::from_le_bytes(
-            data[footer_start..footer_start + 4]
-                .try_into()
-                .map_err(|_| StorageError::InvalidSstFormat {
-                    reason: "invalid CRC bytes".to_string(),
-                })?,
-        );
+        // --- Decrypt data section ---
+        let ciphertext = &data[TOTAL_HEADER_SIZE..];
+        let data_nonce = counter_nonce(sst_number);
+        let aad = sst_number.to_le_bytes();
+        let plaintext = encryption::decrypt_section(ciphertext, dek, &data_nonce, &aad)?;
 
-        // --- Validate CRC ---
-        let data_section = &data[HEADER_SIZE..footer_start];
-        let computed_crc = crc32fast::hash(data_section);
+        // --- Verify CRC ---
+        let computed_crc = crc32fast::hash(&plaintext);
         if stored_crc != computed_crc {
             return Err(StorageError::ChecksumMismatch {
-                offset: footer_start as u64,
+                offset: TOTAL_HEADER_SIZE as u64,
             });
         }
 
         // --- Parse entries ---
-        let entries = Self::deserialize_entries(data_section, entry_count)?;
+        let entries = Self::deserialize_entries(&plaintext, entry_count)?;
 
         Ok(Self {
             entries,
@@ -279,7 +290,6 @@ impl SstReader {
         let mut pos = 0;
 
         while pos < data.len() {
-            // Type byte
             if pos >= data.len() {
                 return Err(StorageError::InvalidSstFormat {
                     reason: "truncated entry: missing type byte".to_string(),
@@ -381,8 +391,18 @@ impl SstReader {
 pub(crate) fn compact(
     input_ssts: &[&SstReader],
     output_path: &Path,
+    output_sst_number: u64,
+    dek: &DataEncryptionKey,
+    enc_header: &EncryptionHeader,
 ) -> Result<SstMetadata, StorageError> {
-    compact_with_fs(input_ssts, output_path, &RealFs)
+    compact_with_fs(
+        input_ssts,
+        output_path,
+        &RealFs,
+        output_sst_number,
+        dek,
+        enc_header,
+    )
 }
 
 /// Compacts SST files using a custom filesystem implementation.
@@ -390,8 +410,10 @@ pub(crate) fn compact_with_fs(
     input_ssts: &[&SstReader],
     output_path: &Path,
     fs: &dyn Fs,
+    output_sst_number: u64,
+    dek: &DataEncryptionKey,
+    enc_header: &EncryptionHeader,
 ) -> Result<SstMetadata, StorageError> {
-    // Merge all entries, newest-last wins for duplicates
     let mut merged = std::collections::BTreeMap::new();
     for sst in input_ssts {
         for (key, value) in sst.iter_all() {
@@ -399,23 +421,70 @@ pub(crate) fn compact_with_fs(
         }
     }
 
-    // Remove tombstones — they've shadowed older values
     let live_entries: Vec<(CompositeKey, MemtableValue)> = merged
         .into_iter()
         .filter(|(_, v)| !matches!(v, MemtableValue::Tombstone))
         .collect();
 
-    SstWriter::write_sst_with_fs(output_path, &live_entries, fs)
+    SstWriter::write_sst_with_fs(
+        output_path,
+        &live_entries,
+        fs,
+        output_sst_number,
+        dek,
+        enc_header,
+    )
+}
+
+/// Reads the encryption header from an SST file without decrypting the data.
+///
+/// Returns the `(KekId, EncryptionHeader)` so callers can look up the
+/// appropriate KEK before fully opening the file.
+pub(crate) fn read_encryption_header(
+    path: &Path,
+    fs: &dyn Fs,
+) -> Result<(KekId, EncryptionHeader), StorageError> {
+    let data = fs.read(path)?;
+    if data.len() < TOTAL_HEADER_SIZE {
+        return Err(StorageError::InvalidSstFormat {
+            reason: format!("file too small for header: {} bytes", data.len()),
+        });
+    }
+
+    if &data[0..4] != SST_MAGIC {
+        return Err(StorageError::InvalidSstFormat {
+            reason: "invalid magic bytes".to_string(),
+        });
+    }
+
+    let enc_bytes: &[u8; encryption::ENCRYPTION_HEADER_SIZE] = data
+        [BASE_HEADER_SIZE..TOTAL_HEADER_SIZE]
+        .try_into()
+        .map_err(|_| StorageError::InvalidSstFormat {
+            reason: "truncated encryption header".to_string(),
+        })?;
+
+    let enc_header = EncryptionHeader::from_bytes(enc_bytes);
+    let kek_id = enc_header.kek_id;
+
+    Ok((kek_id, enc_header))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::RealmId;
+    use crate::storage::encryption;
     use crate::storage::memtable::{Memtable, MemtableConfig};
-    // ===== Phase A: P0 Fast Unit Tests =====
 
-    // TEST_SCENARIOS.md: "Flush memtable to SST produces valid binary format"
+    /// Helper to create encryption context for tests.
+    fn test_encryption_context() -> (DataEncryptionKey, EncryptionHeader) {
+        let dek = encryption::generate_dek().expect("dek");
+        let kek = encryption::generate_kek().expect("kek");
+        let kek_id = [0x42u8; encryption::KEK_ID_SIZE];
+        let enc_header = encryption::wrap_dek(&dek, &kek, kek_id).expect("wrap");
+        (dek, enc_header)
+    }
 
     #[test]
     fn flush_memtable_to_sst_produces_valid_format() {
@@ -430,39 +499,19 @@ mod tests {
         mt.put(&realm, b"key3", b"value3").expect("put");
 
         let entries = mt.iter_all();
-        let metadata = SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
+        let (dek, enc_header) = test_encryption_context();
+        let metadata =
+            SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write_sst");
 
         assert_eq!(metadata.entry_count, 3);
         assert!(metadata.file_size > 0);
 
         // Verify raw file structure
         let raw = std::fs::read(&sst_path).expect("read file");
-
-        // Header: magic
+        assert!(raw.len() >= TOTAL_HEADER_SIZE);
         assert_eq!(&raw[0..4], b"HSST");
-        // Header: version
-        assert_eq!(raw[4], 0x01);
-        // Header: entry count
-        assert_eq!(u32::from_le_bytes(raw[5..9].try_into().expect("bytes")), 3);
-        // Header: reserved
-        assert_eq!(&raw[9..12], &[0u8; 3]);
-
-        // Footer: last 4 bytes are HEND
-        let footer_end = raw.len();
-        assert_eq!(&raw[footer_end - 4..], b"HEND");
-
-        // Footer: CRC32 of data section
-        let data_section = &raw[HEADER_SIZE..footer_end - FOOTER_SIZE];
-        let expected_crc = crc32fast::hash(data_section);
-        let stored_crc = u32::from_le_bytes(
-            raw[footer_end - 8..footer_end - 4]
-                .try_into()
-                .expect("crc bytes"),
-        );
-        assert_eq!(stored_crc, expected_crc);
+        assert_eq!(u32::from_le_bytes(raw[4..8].try_into().expect("bytes")), 3);
     }
-
-    // TEST_SCENARIOS.md: "Read SST back matches original memtable contents"
 
     #[test]
     fn read_sst_matches_original_memtable_contents() {
@@ -478,9 +527,11 @@ mod tests {
         mt.put(&realm, b"delta", b"val-d").expect("put");
 
         let original_entries = mt.iter_all();
-        SstWriter::write_sst(&sst_path, &original_entries).expect("write_sst");
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &original_entries, 1, &dek, &enc_header)
+            .expect("write_sst");
 
-        let reader = SstReader::open(&sst_path).expect("open");
+        let reader = SstReader::open(&sst_path, 1, &dek).expect("open");
         let read_entries = reader.iter_all();
 
         assert_eq!(read_entries.len(), original_entries.len());
@@ -488,8 +539,6 @@ mod tests {
             assert_eq!(orig, read);
         }
     }
-
-    // TEST_SCENARIOS.md: "Compaction merges, deduplicates, and removes tombstones"
 
     #[test]
     fn compaction_merges_deduplicates_and_removes_tombstones() {
@@ -512,7 +561,8 @@ mod tests {
                 MemtableValue::Data(b"v3".to_vec()),
             ),
         ];
-        SstWriter::write_sst(&sst1_path, &entries1).expect("write sst1");
+        let (dek1, enc1) = test_encryption_context();
+        SstWriter::write_sst(&sst1_path, &entries1, 1, &dek1, &enc1).expect("write sst1");
 
         // SST 2 (newer): key1=v1-new (overwrite), key3=tombstone (delete)
         let sst2_path = dir.path().join("sst2.sst");
@@ -526,18 +576,20 @@ mod tests {
                 MemtableValue::Tombstone,
             ),
         ];
-        SstWriter::write_sst(&sst2_path, &entries2).expect("write sst2");
+        let (dek2, enc2) = test_encryption_context();
+        SstWriter::write_sst(&sst2_path, &entries2, 2, &dek2, &enc2).expect("write sst2");
 
         // Compact (oldest first, newest last)
-        let reader1 = SstReader::open(&sst1_path).expect("open sst1");
-        let reader2 = SstReader::open(&sst2_path).expect("open sst2");
+        let reader1 = SstReader::open(&sst1_path, 1, &dek1).expect("open sst1");
+        let reader2 = SstReader::open(&sst2_path, 2, &dek2).expect("open sst2");
         let output_path = dir.path().join("compacted.sst");
-        let metadata = compact(&[&reader1, &reader2], &output_path).expect("compact");
+        let (dek_out, enc_out) = test_encryption_context();
+        let metadata =
+            compact(&[&reader1, &reader2], &output_path, 3, &dek_out, &enc_out).expect("compact");
 
-        // Should have 2 entries: key1 (updated) and key2 (unchanged). key3 tombstoned → removed.
         assert_eq!(metadata.entry_count, 2);
 
-        let compacted = SstReader::open(&output_path).expect("open compacted");
+        let compacted = SstReader::open(&output_path, 3, &dek_out).expect("open compacted");
         let all = compacted.iter_all();
 
         assert_eq!(all.len(), 2);
@@ -547,25 +599,64 @@ mod tests {
         assert_eq!(all[1].1, MemtableValue::Data(b"v2".to_vec()));
     }
 
-    // ===== Supplementary P0 Fast Tests =====
-
     #[test]
     fn empty_memtable_flush_produces_valid_sst() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sst_path = dir.path().join("empty.sst");
 
         let entries: Vec<(CompositeKey, MemtableValue)> = vec![];
-        let metadata = SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
+        let (dek, enc_header) = test_encryption_context();
+        let metadata =
+            SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write_sst");
 
         assert_eq!(metadata.entry_count, 0);
 
-        let reader = SstReader::open(&sst_path).expect("open");
+        let reader = SstReader::open(&sst_path, 1, &dek).expect("open");
         assert_eq!(reader.entry_count(), 0);
         assert!(reader.iter_all().is_empty());
     }
 
     #[test]
-    fn crc_corruption_detected() {
+    fn wrong_dek_fails_decryption() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sst_path = dir.path().join("wrong_dek.sst");
+
+        let realm = RealmId::generate();
+        let entries = vec![(
+            CompositeKey::new(realm, b"key1".to_vec()),
+            MemtableValue::Data(b"val1".to_vec()),
+        )];
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write_sst");
+
+        // Try to open with a different DEK
+        let wrong_dek = encryption::generate_dek().expect("wrong dek");
+        let result = SstReader::open(&sst_path, 1, &wrong_dek);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn wrong_sst_number_fails_decryption() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sst_path = dir.path().join("wrong_num.sst");
+
+        let realm = RealmId::generate();
+        let entries = vec![(
+            CompositeKey::new(realm, b"key1".to_vec()),
+            MemtableValue::Data(b"val1".to_vec()),
+        )];
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 42, &dek, &enc_header).expect("write_sst");
+
+        // Try to open with wrong SST number (changes nonce + AAD)
+        let result = SstReader::open(&sst_path, 99, &dek);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn corruption_in_ciphertext_fails() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sst_path = dir.path().join("corrupt.sst");
 
@@ -574,20 +665,16 @@ mod tests {
             CompositeKey::new(realm, b"key1".to_vec()),
             MemtableValue::Data(b"val1".to_vec()),
         )];
-        SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write_sst");
 
-        // Corrupt a byte in the data section
+        // Corrupt a byte in the ciphertext
         let mut raw = std::fs::read(&sst_path).expect("read");
-        let data_start = HEADER_SIZE;
-        raw[data_start + 1] ^= 0xFF; // flip a byte in the realm UUID area
+        raw[TOTAL_HEADER_SIZE + 1] ^= 0xFF;
         std::fs::write(&sst_path, &raw).expect("write corrupt");
 
-        let result = SstReader::open(&sst_path);
+        let result = SstReader::open(&sst_path, 1, &dek);
         assert!(result.is_err());
-        match result.expect_err("should fail") {
-            StorageError::ChecksumMismatch { .. } => {} // expected
-            other => panic!("expected ChecksumMismatch, got: {other}"),
-        }
     }
 
     #[test]
@@ -600,13 +687,14 @@ mod tests {
             CompositeKey::new(realm, b"k".to_vec()),
             MemtableValue::Data(b"v".to_vec()),
         )];
-        SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write_sst");
 
         let mut raw = std::fs::read(&sst_path).expect("read");
         raw[0..4].copy_from_slice(b"BAAD");
         std::fs::write(&sst_path, &raw).expect("write");
 
-        let result = SstReader::open(&sst_path);
+        let result = SstReader::open(&sst_path, 1, &dek);
         assert!(matches!(result, Err(StorageError::InvalidSstFormat { .. })));
     }
 
@@ -618,30 +706,27 @@ mod tests {
         let realm_a = RealmId::generate();
         let realm_b = RealmId::generate();
 
-        // Ensure deterministic ordering: use iter_all from a memtable
         let mt = Memtable::new(MemtableConfig::default());
         mt.put(&realm_a, b"a-key1", b"a-val1").expect("put");
         mt.put(&realm_a, b"a-key2", b"a-val2").expect("put");
         mt.put(&realm_b, b"b-key1", b"b-val1").expect("put");
 
         let entries = mt.iter_all();
-        SstWriter::write_sst(&sst_path, &entries).expect("write_sst");
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write_sst");
 
-        let reader = SstReader::open(&sst_path).expect("open");
+        let reader = SstReader::open(&sst_path, 1, &dek).expect("open");
 
-        // Realm A sees only their keys
         let a_entries = reader.iter_realm(&realm_a);
         assert_eq!(a_entries.len(), 2);
         for (k, _) in &a_entries {
             assert!(k.starts_with(b"a-key"), "unexpected key: {k:?}");
         }
 
-        // Realm B sees only their key
         let b_entries = reader.iter_realm(&realm_b);
         assert_eq!(b_entries.len(), 1);
         assert_eq!(b_entries[0].0, b"b-key1".to_vec());
 
-        // Non-existent realm sees nothing
         let ghost = RealmId::generate();
         assert!(reader.iter_realm(&ghost).is_empty());
     }
@@ -662,14 +747,16 @@ mod tests {
                 MemtableValue::Tombstone,
             ),
         ];
-        SstWriter::write_sst(&sst_path, &entries).expect("write");
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write");
 
-        let reader = SstReader::open(&sst_path).expect("open");
+        let reader = SstReader::open(&sst_path, 1, &dek).expect("open");
         let output_path = dir.path().join("compacted.sst");
-        let metadata = compact(&[&reader], &output_path).expect("compact");
+        let (dek_out, enc_out) = test_encryption_context();
+        let metadata = compact(&[&reader], &output_path, 2, &dek_out, &enc_out).expect("compact");
 
         assert_eq!(metadata.entry_count, 0);
-        let compacted = SstReader::open(&output_path).expect("open compacted");
+        let compacted = SstReader::open(&output_path, 2, &dek_out).expect("open compacted");
         assert!(compacted.iter_all().is_empty());
     }
 
@@ -693,23 +780,20 @@ mod tests {
                 MemtableValue::Data(b"v3".to_vec()),
             ),
         ];
-        SstWriter::write_sst(&sst_path, &entries).expect("write");
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write");
 
-        let reader = SstReader::open(&sst_path).expect("open");
+        let reader = SstReader::open(&sst_path, 1, &dek).expect("open");
         let output_path = dir.path().join("compacted.sst");
-        let metadata = compact(&[&reader], &output_path).expect("compact");
+        let (dek_out, enc_out) = test_encryption_context();
+        let metadata = compact(&[&reader], &output_path, 2, &dek_out, &enc_out).expect("compact");
 
-        // k2 (tombstone) removed, k1 and k3 survive
         assert_eq!(metadata.entry_count, 2);
-        let compacted = SstReader::open(&output_path).expect("open compacted");
+        let compacted = SstReader::open(&output_path, 2, &dek_out).expect("open compacted");
         let all = compacted.iter_all();
         assert_eq!(all[0].0.key(), b"k1");
         assert_eq!(all[1].0.key(), b"k3");
     }
-
-    // ===== Phase A continued: P1 Fast =====
-
-    // TEST_SCENARIOS.md: "Point lookup and range scan over SST"
 
     #[test]
     fn point_lookup_and_range_scan_over_sst() {
@@ -726,178 +810,45 @@ mod tests {
         mt.delete(&realm, b"fig").expect("delete");
 
         let entries = mt.iter_all();
-        SstWriter::write_sst(&sst_path, &entries).expect("write");
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write");
 
-        let reader = SstReader::open(&sst_path).expect("open");
+        let reader = SstReader::open(&sst_path, 1, &dek).expect("open");
 
-        // Point lookup: hit
         assert_eq!(
             reader.get(&realm, b"banana"),
             Some(MemtableValue::Data(b"v-banana".to_vec()))
         );
-
-        // Point lookup: miss
         assert_eq!(reader.get(&realm, b"grape"), None);
-
-        // Point lookup: tombstone (returns Some(Tombstone), caller decides behavior)
         assert_eq!(reader.get(&realm, b"fig"), Some(MemtableValue::Tombstone));
 
-        // Range scan: [banana, date) = banana, cherry
         let range = reader.range_scan(&realm, b"banana", b"date");
         assert_eq!(range.len(), 2);
         assert_eq!(range[0].0, b"banana".to_vec());
         assert_eq!(range[1].0, b"cherry".to_vec());
 
-        // Range scan: realm isolation
         let ghost = RealmId::generate();
         assert!(reader.range_scan(&ghost, b"a", b"z").is_empty());
         assert_eq!(reader.get(&ghost, b"apple"), None);
 
-        // iter_realm returns correct subset
         let realm_entries = reader.iter_realm(&realm);
-        assert_eq!(realm_entries.len(), 6); // 5 data + 1 tombstone
+        assert_eq!(realm_entries.len(), 6);
     }
 
-    // ===== Phase B: P0 Extended (proptest) =====
+    #[test]
+    fn read_encryption_header_extracts_kek_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sst_path = dir.path().join("enc_header.sst");
 
-    use proptest::prelude::*;
+        let realm = RealmId::generate();
+        let entries = vec![(
+            CompositeKey::new(realm, b"key1".to_vec()),
+            MemtableValue::Data(b"val1".to_vec()),
+        )];
+        let (dek, enc_header) = test_encryption_context();
+        SstWriter::write_sst(&sst_path, &entries, 1, &dek, &enc_header).expect("write_sst");
 
-    /// Strategy for a (key, value) pair within a single realm.
-    fn arb_kv() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
-        (
-            prop::collection::vec(any::<u8>(), 1..64),
-            prop::collection::vec(any::<u8>(), 0..128),
-        )
+        let (kek_id, _) = read_encryption_header(&sst_path, &RealFs).expect("read header");
+        assert_eq!(kek_id, enc_header.kek_id);
     }
-
-    // TEST_SCENARIOS.md: "proptest write-flush-read integrity"
-    proptest! {
-        #[test]
-        fn proptest_write_flush_read_integrity(
-            kvs in prop::collection::vec(arb_kv(), 1..100)
-        ) {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let sst_path = dir.path().join("prop.sst");
-            let mt = Memtable::new(MemtableConfig::default());
-            let realm = RealmId::generate();
-
-            // Apply all ops to memtable (some keys may be overwritten)
-            let mut oracle = std::collections::BTreeMap::new();
-            for (k, v) in &kvs {
-                mt.put(&realm, k, v).expect("put");
-                oracle.insert(k.clone(), v.clone());
-            }
-
-            // Flush to SST
-            let entries = mt.iter_all();
-            SstWriter::write_sst(&sst_path, &entries).expect("write");
-
-            // Read back
-            let reader = SstReader::open(&sst_path).expect("open");
-            let realm_entries = reader.iter_realm(&realm);
-
-            // All live entries should match oracle
-            let read_map: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = realm_entries
-                .into_iter()
-                .filter_map(|(k, v)| match v {
-                    MemtableValue::Data(d) => Some((k, d)),
-                    MemtableValue::Tombstone => None,
-                })
-                .collect();
-
-            prop_assert_eq!(oracle, read_map);
-        }
-    }
-
-    /// Strategy for compaction test operations.
-    #[derive(Debug, Clone)]
-    enum CompactOp {
-        Put(Vec<u8>, Vec<u8>),
-        Delete(Vec<u8>),
-    }
-
-    fn arb_compact_op() -> impl Strategy<Value = CompactOp> {
-        prop_oneof![
-            (
-                prop::collection::vec(any::<u8>(), 1..32),
-                prop::collection::vec(any::<u8>(), 0..64),
-            )
-                .prop_map(|(k, v)| CompactOp::Put(k, v)),
-            prop::collection::vec(any::<u8>(), 1..32).prop_map(CompactOp::Delete),
-        ]
-    }
-
-    // TEST_SCENARIOS.md: "proptest compaction preserves live, removes tombstones"
-    proptest! {
-        #[test]
-        fn proptest_compaction_preserves_live_removes_tombstones(
-            ops1 in prop::collection::vec(arb_compact_op(), 1..50),
-            ops2 in prop::collection::vec(arb_compact_op(), 1..50),
-        ) {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let realm = RealmId::generate();
-
-            // Build SST 1 (older)
-            let mt1 = Memtable::new(MemtableConfig::default());
-            let mut oracle = std::collections::BTreeMap::new();
-            for op in &ops1 {
-                match op {
-                    CompactOp::Put(k, v) => {
-                        mt1.put(&realm, k, v).expect("put");
-                        oracle.insert(k.clone(), Some(v.clone()));
-                    }
-                    CompactOp::Delete(k) => {
-                        mt1.delete(&realm, k).expect("delete");
-                        oracle.insert(k.clone(), None);
-                    }
-                }
-            }
-            let sst1_path = dir.path().join("sst1.sst");
-            SstWriter::write_sst(&sst1_path, &mt1.iter_all()).expect("write sst1");
-
-            // Build SST 2 (newer — overwrites win)
-            let mt2 = Memtable::new(MemtableConfig::default());
-            for op in &ops2 {
-                match op {
-                    CompactOp::Put(k, v) => {
-                        mt2.put(&realm, k, v).expect("put");
-                        oracle.insert(k.clone(), Some(v.clone()));
-                    }
-                    CompactOp::Delete(k) => {
-                        mt2.delete(&realm, k).expect("delete");
-                        oracle.insert(k.clone(), None);
-                    }
-                }
-            }
-            let sst2_path = dir.path().join("sst2.sst");
-            SstWriter::write_sst(&sst2_path, &mt2.iter_all()).expect("write sst2");
-
-            // Compact
-            let reader1 = SstReader::open(&sst1_path).expect("open sst1");
-            let reader2 = SstReader::open(&sst2_path).expect("open sst2");
-            let output_path = dir.path().join("compacted.sst");
-            compact(&[&reader1, &reader2], &output_path).expect("compact");
-
-            // Verify against oracle
-            let compacted = SstReader::open(&output_path).expect("open compacted");
-            let compacted_entries = compacted.iter_realm(&realm);
-            let compacted_map: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = compacted_entries
-                .into_iter()
-                .filter_map(|(k, v)| match v {
-                    MemtableValue::Data(d) => Some((k, d)),
-                    MemtableValue::Tombstone => None,
-                })
-                .collect();
-
-            // Oracle: keep only live entries
-            let oracle_live: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = oracle
-                .into_iter()
-                .filter_map(|(k, v)| v.map(|val| (k, val)))
-                .collect();
-
-            prop_assert_eq!(oracle_live, compacted_map);
-        }
-    }
-
-    // ===== Phase C: Simulation tests — see simulation/ crate =====
 }

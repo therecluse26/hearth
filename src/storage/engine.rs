@@ -11,10 +11,12 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwap;
 
 use crate::core::RealmId;
+use crate::storage::encryption;
 use crate::storage::error::StorageError;
 use crate::storage::fs::{Fs, RealFs};
+use crate::storage::key_registry::KeyRegistry;
 use crate::storage::memtable::{Memtable, MemtableConfig, MemtableValue};
-use crate::storage::sst::{SstReader, SstWriter};
+use crate::storage::sst::{self, SstReader, SstWriter};
 use crate::storage::tiered::{HotTier, TieredConfig};
 use crate::storage::wal::{BatchEntry, Wal, WalConfig, WalEntry, WalOperation};
 use crate::storage::{ScanEntry, StorageEngine};
@@ -30,6 +32,12 @@ pub struct StorageConfig {
     pub(crate) memtable_config: MemtableConfig,
     /// Hot tier configuration.
     pub(crate) tiered_config: TieredConfig,
+    /// When true, missing KEKs during startup only log a warning
+    /// instead of returning an error. Default: false.
+    ///
+    /// Operators can use this as an escape hatch to recover from a
+    /// partly-corrupted `hearth.keys` file without recompiling.
+    pub allow_missing_keks: bool,
 }
 
 impl StorageConfig {
@@ -48,6 +56,7 @@ impl StorageConfig {
             },
             memtable_config: MemtableConfig::default(),
             tiered_config: TieredConfig::default(),
+            allow_missing_keks: false,
         }
     }
 
@@ -68,6 +77,7 @@ impl StorageConfig {
                 hot_tier_capacity: 100,
                 eviction_batch_size: 10,
             },
+            allow_missing_keks: false,
         }
     }
 }
@@ -90,6 +100,10 @@ pub struct EmbeddedStorageEngine {
     sst_counter: std::sync::atomic::AtomicU64,
     /// Filesystem abstraction for fault injection in simulation tests.
     fs: Arc<dyn Fs>,
+    /// Key registry for per-realm KEK management.
+    key_registry: Arc<KeyRegistry>,
+    /// System realm identifier used for file-level encryption.
+    system_realm: RealmId,
 }
 
 impl EmbeddedStorageEngine {
@@ -107,38 +121,107 @@ impl EmbeddedStorageEngine {
     pub fn open_with_fs(config: StorageConfig, fs: Arc<dyn Fs>) -> Result<Self, StorageError> {
         fs.create_dir_all(&config.data_dir)?;
 
-        // Discover existing SST files, sorted newest-first by filename
-        let mut sst_paths: Vec<PathBuf> = fs
-            .read_dir(&config.data_dir)?
-            .into_iter()
-            .filter(|p| p.extension().is_some_and(|ext| ext == "sst"))
-            .collect();
-        sst_paths.sort();
-        sst_paths.reverse(); // newest first (higher numbered files are newer)
+        // Load key registry (host key from env/auto-gen)
+        let key_registry = Arc::new(KeyRegistry::load_with_fs(
+            &config.data_dir,
+            Arc::clone(&fs),
+        )?);
 
-        let mut sst_readers = Vec::new();
-        let mut max_sst_num: u64 = 0;
-        for path in &sst_paths {
-            if let Ok(reader) = SstReader::open_with_fs(path, &*fs) {
-                // Extract number from filename like "000001.sst"
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Ok(num) = stem.parse::<u64>() {
-                        max_sst_num = max_sst_num.max(num);
-                    }
+        // System realm: a fixed UUID used for file-level encryption keys.
+        // Kept stable across restarts so SST/WAL files remain decryptable.
+        let system_realm = RealmId::new(
+            uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").map_err(|_| {
+                StorageError::Crypto {
+                    reason: "failed to parse system realm UUID".to_string(),
                 }
-                sst_readers.push(reader);
-            }
-            // Skip corrupted SST files — data should be recoverable from WAL
-        }
+            })?,
+        );
 
-        // Open WAL and replay into fresh memtable
+        // Ensure the system realm has a KEK for file encryption
+        key_registry.ensure_kek_for_realm(&system_realm)?;
+        let system_kek = key_registry
+            .get_kek_for_realm(&system_realm)
+            .ok_or_else(|| StorageError::Crypto {
+                reason: "failed to get system KEK".to_string(),
+            })?;
+        let system_kek_id = key_registry.kek_id_for_realm(&system_realm);
+
+        // Open WAL with encryption
         let wal_path = config.data_dir.join("hearth.wal");
-        let wal = Wal::open_with_fs(&wal_path, config.wal_config, Arc::clone(&fs))?;
+        let wal = Wal::open_with_fs(
+            &wal_path,
+            config.wal_config,
+            Arc::clone(&fs),
+            &system_kek,
+            system_kek_id,
+        )?;
         let memtable = Memtable::new(config.memtable_config);
 
         let entries = wal.read_all()?;
         for entry in &entries {
             memtable.apply_wal_entry(entry)?;
+        }
+
+        // Discover existing SST files, sorted newest-first by filename
+        let mut sst_paths: Vec<(PathBuf, u64)> = fs
+            .read_dir(&config.data_dir)?
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|ext| ext == "sst"))
+            .filter_map(|p| {
+                let num = p.file_stem()?.to_str()?.parse::<u64>().ok()?;
+                Some((p, num))
+            })
+            .collect();
+        sst_paths.sort_by_key(|(_, num)| std::cmp::Reverse(*num)); // newest first
+
+        let mut sst_readers = Vec::new();
+        let mut max_sst_num: u64 = 0;
+        for (path, sst_num) in &sst_paths {
+            // Read encryption header and extract KEK ID
+            let (kek_id, enc_header) = sst::read_encryption_header(path, &*fs)?;
+            // Look up the KEK from the registry by matching kek_id bytes to a realm
+            let realm_for_kek = RealmId::new(uuid::Uuid::from_bytes(kek_id));
+            let kek = if let Some(k) = key_registry.get_kek_for_realm(&realm_for_kek) {
+                k
+            } else if config.allow_missing_keks {
+                tracing::warn!(
+                    path = %path.display(),
+                    realm = %realm_for_kek,
+                    "SST file skipped: KEK not found in registry"
+                );
+                continue;
+            } else {
+                return Err(StorageError::Crypto {
+                    reason: format!(
+                        "SST {} references KEK for realm {} but no KEK is registered; refusing to start",
+                        path.display(),
+                        realm_for_kek
+                    ),
+                });
+            };
+            let dek = match encryption::unwrap_dek(&enc_header, &kek) {
+                Ok(d) => d,
+                Err(e) => {
+                    if config.allow_missing_keks {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "SST file skipped: DEK unwrapping failed"
+                        );
+                        continue;
+                    }
+                    return Err(StorageError::Crypto {
+                        reason: format!("SST {} DEK unwrapping failed: {}", path.display(), e),
+                    });
+                }
+            };
+            let reader = SstReader::open_with_fs(path, &*fs, *sst_num, &dek).map_err(|e| {
+                StorageError::Crypto {
+                    reason: format!("SST {} failed to open reader: {}", path.display(), e),
+                }
+            })?;
+            max_sst_num = max_sst_num.max(*sst_num);
+            sst_readers.push(reader);
         }
 
         let hot_tier = HotTier::new(config.tiered_config);
@@ -152,6 +235,8 @@ impl EmbeddedStorageEngine {
             flush_lock: Mutex::new(()),
             sst_counter: std::sync::atomic::AtomicU64::new(max_sst_num + 1),
             fs,
+            key_registry,
+            system_realm,
         })
     }
 
@@ -174,24 +259,77 @@ impl EmbeddedStorageEngine {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let sst_path = self.data_dir.join(format!("{sst_num:06}.sst"));
 
-        SstWriter::write_sst_with_fs(&sst_path, &entries, &*self.fs)?;
+        // Generate per-file DEK and wrap with system realm KEK
+        let system_kek = self
+            .key_registry
+            .get_kek_for_realm(&self.system_realm)
+            .ok_or_else(|| StorageError::Crypto {
+                reason: "system KEK not found".to_string(),
+            })?;
+        let system_kek_id = self.key_registry.kek_id_for_realm(&self.system_realm);
+        let dek = encryption::generate_dek()?;
+        let enc_header = encryption::wrap_dek(&dek, &system_kek, system_kek_id)?;
+
+        SstWriter::write_sst_with_fs(&sst_path, &entries, &*self.fs, sst_num, &dek, &enc_header)?;
 
         // Rebuild SST reader list from disk (re-open all files).
-        // SstReader is not Clone, so we re-open. This is acceptable for Phase 0
-        // since flush is off the hot path.
-        let mut all_sst_paths: Vec<PathBuf> = self
+        let mut all_sst_paths: Vec<(PathBuf, u64)> = self
             .fs
             .read_dir(&self.data_dir)?
             .into_iter()
             .filter(|p| p.extension().is_some_and(|ext| ext == "sst"))
+            .filter_map(|p| {
+                let num = p.file_stem()?.to_str()?.parse::<u64>().ok()?;
+                Some((p, num))
+            })
             .collect();
-        all_sst_paths.sort();
-        all_sst_paths.reverse(); // newest first
+        all_sst_paths.sort_by_key(|(_, num)| std::cmp::Reverse(*num)); // newest first
 
         let mut rebuilt_readers = Vec::new();
-        for path in &all_sst_paths {
-            if let Ok(reader) = SstReader::open_with_fs(path, &*self.fs) {
-                rebuilt_readers.push(reader);
+        for (path, sst_num) in &all_sst_paths {
+            let (kek_id, enc_header) = match sst::read_encryption_header(path, &*self.fs) {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "SST file skipped: failed to read encryption header"
+                    );
+                    continue;
+                }
+            };
+            let realm_for_kek = RealmId::new(uuid::Uuid::from_bytes(kek_id));
+            let kek = match self.key_registry.get_kek_for_realm(&realm_for_kek) {
+                Some(k) => k,
+                None => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        realm = %realm_for_kek,
+                        "SST file skipped: KEK not found"
+                    );
+                    continue;
+                }
+            };
+            let dek = match encryption::unwrap_dek(&enc_header, &kek) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "SST file skipped: DEK unwrapping failed"
+                    );
+                    continue;
+                }
+            };
+            match SstReader::open_with_fs(path, &*self.fs, *sst_num, &dek) {
+                Ok(reader) => rebuilt_readers.push(reader),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "SST file skipped: failed to open reader"
+                    );
+                }
             }
         }
         self.sst_readers.store(Arc::new(rebuilt_readers));
@@ -541,6 +679,7 @@ mod tests {
                 hot_tier_capacity: 100,
                 eviction_batch_size: 10,
             },
+            allow_missing_keks: false,
         };
         let engine = EmbeddedStorageEngine::open(config).expect("open");
 
@@ -595,6 +734,7 @@ mod tests {
                     hot_tier_capacity: 100,
                     eviction_batch_size: 10,
                 },
+                allow_missing_keks: false,
             };
             let engine = EmbeddedStorageEngine::open(config).expect("open");
 
@@ -620,6 +760,7 @@ mod tests {
                     hot_tier_capacity: 100,
                     eviction_batch_size: 10,
                 },
+                allow_missing_keks: false,
             };
             let engine = EmbeddedStorageEngine::open(config).expect("reopen");
 
@@ -660,6 +801,7 @@ mod tests {
                 flush_threshold_bytes: 100,
             },
             tiered_config: TieredConfig::default(),
+            allow_missing_keks: false,
         };
         let engine = EmbeddedStorageEngine::open(config).expect("open");
 
@@ -697,5 +839,116 @@ mod tests {
     fn engine_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<EmbeddedStorageEngine>();
+    }
+
+    #[test]
+    fn engine_refuses_to_start_with_missing_keks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+
+        // Build engine, flush data to create an SST file
+        {
+            let config = StorageConfig {
+                data_dir: dir.path().to_path_buf(),
+                wal_config: WalConfig {
+                    max_size: 64 * 1024 * 1024,
+                    sync_mode: SyncMode::None,
+                },
+                memtable_config: MemtableConfig {
+                    flush_threshold_bytes: 50,
+                },
+                tiered_config: TieredConfig {
+                    hot_tier_capacity: 100,
+                    eviction_batch_size: 10,
+                },
+                allow_missing_keks: false,
+            };
+            let engine = EmbeddedStorageEngine::open(config).expect("open");
+            for i in 0u32..5 {
+                engine
+                    .put(&realm, format!("k-{i}").as_bytes(), b"v")
+                    .expect("put");
+            }
+        }
+
+        // Delete the key registry so KEKs are lost, and the WAL (which also
+        // has a wrapped DEK that can't be unwrapped without the old KEK).
+        std::fs::remove_file(dir.path().join("hearth.keys")).expect("remove keys");
+        std::fs::remove_file(dir.path().join("hearth.wal")).expect("remove wal");
+
+        // Reopen: SSTs reference a KEK that no longer exists, should fail
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            wal_config: WalConfig {
+                max_size: 64 * 1024 * 1024,
+                sync_mode: SyncMode::None,
+            },
+            memtable_config: MemtableConfig::default(),
+            tiered_config: TieredConfig::default(),
+            allow_missing_keks: false,
+        };
+        let result = EmbeddedStorageEngine::open(config);
+        assert!(
+            matches!(result, Err(StorageError::Crypto { .. })),
+            "expected StorageError::Crypto, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn engine_allow_missing_keks_silently_drops_sst() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+
+        // Build engine, flush data to create an SST file
+        {
+            let config = StorageConfig {
+                data_dir: dir.path().to_path_buf(),
+                wal_config: WalConfig {
+                    max_size: 64 * 1024 * 1024,
+                    sync_mode: SyncMode::None,
+                },
+                memtable_config: MemtableConfig {
+                    flush_threshold_bytes: 50,
+                },
+                tiered_config: TieredConfig {
+                    hot_tier_capacity: 100,
+                    eviction_batch_size: 10,
+                },
+                allow_missing_keks: false,
+            };
+            let engine = EmbeddedStorageEngine::open(config).expect("open");
+            for i in 0u32..5 {
+                engine
+                    .put(&realm, format!("k-{i}").as_bytes(), b"v")
+                    .expect("put");
+            }
+        }
+
+        // Remove key registry and WAL so SST DEKs can't be unwrapped
+        std::fs::remove_file(dir.path().join("hearth.keys")).expect("remove keys");
+        std::fs::remove_file(dir.path().join("hearth.wal")).expect("remove wal");
+
+        // Reopen with allow_missing_keks: SST is silently dropped, open succeeds
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            wal_config: WalConfig {
+                max_size: 64 * 1024 * 1024,
+                sync_mode: SyncMode::None,
+            },
+            memtable_config: MemtableConfig::default(),
+            tiered_config: TieredConfig::default(),
+            allow_missing_keks: true,
+        };
+        let engine = EmbeddedStorageEngine::open(config).expect("open with allow_missing_keks");
+        // Data that was only in the SST is no longer reachable
+        for i in 0u32..5 {
+            assert_eq!(
+                engine
+                    .get(&realm, format!("k-{i}").as_bytes())
+                    .expect("get"),
+                None,
+                "SST-dropped key k-{i} should not be found"
+            );
+        }
     }
 }

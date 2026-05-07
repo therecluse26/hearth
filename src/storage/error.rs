@@ -30,6 +30,12 @@ pub enum StorageError {
     },
     /// The hot tier is full and eviction could not free space.
     HotTierFull,
+    /// A cryptographic operation failed (encryption, decryption, or key
+    /// generation).
+    Crypto {
+        /// Description of what went wrong. MUST NOT contain key material.
+        reason: String,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -49,6 +55,9 @@ impl fmt::Display for StorageError {
                 write!(f, "invalid SST format: {reason}")
             }
             Self::HotTierFull => write!(f, "hot tier is full and eviction could not free space"),
+            Self::Crypto { reason } => {
+                write!(f, "cryptographic operation failed: {reason}")
+            }
         }
     }
 }
@@ -61,7 +70,8 @@ impl std::error::Error for StorageError {
             | Self::DeserializationFailed { .. }
             | Self::Corrupted { .. }
             | Self::InvalidSstFormat { .. }
-            | Self::HotTierFull => None,
+            | Self::HotTierFull
+            | Self::Crypto { .. } => None,
         }
     }
 }

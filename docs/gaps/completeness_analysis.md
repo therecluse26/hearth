@@ -9,7 +9,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 
 ### Top 5 Production Blockers
 
-1. **Encryption at rest is completely absent** — credentials written to disk in plaintext. No envelope encryption, no DEK/KEK, no AES-256-GCM. This is the single biggest production-readiness gap.
+1. **~~Encryption at rest~~** — ✅ RESOLVED (2026-05-06). Envelope encryption (AES-256-GCM) with DEK/KEK, per-realm keys, host key from env var or auto-gen, SST/WAL fully encrypted.
 
 2. **Audit logging is not wired** — `src/audit/` has a full `AuditEngine` trait with `append`, `query`, `verify_integrity` but `EmbeddedIdentityEngine` (11,600 lines) holds no audit reference and makes zero audit calls for security-critical mutations.
 
@@ -33,7 +33,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 
 | # | Gap | Spec | Evidence |
 |---|-----|------|----------|
-| 1 | **Encryption at rest** | ARCH §6.3 | Zero encryption code in `src/storage/`. No AES/DEK/KEK/envelope references. SST header is 12 bytes with no encryption fields. WAL writes plaintext. |
+| 1 | **Encryption at rest** | ARCH §6.3 | ✅ RESOLVED. Envelope encryption (AES-256-GCM) implemented in `src/storage/`. Per-file DEKs wrapped by per-realm KEKs. Host key from `HEARTH_MASTER_KEY` env var or auto-generated. SST and WAL fully encrypted. |
 | 2 | **Audit engine not wired** | ARCH §8.5 | `src/identity/engine.rs` has zero `audit::` references. `EmbeddedIdentityEngine` holds no `Arc<dyn AuditEngine>`. |
 | 3 | **No periodic cleanup** | — | No background task for expired auth codes, device codes, grant families, pending tickets. |
 | 4 | **Hot tier auto-sizing** | ARCH §6.2 | `TieredConfig::default()` hardcodes 100K capacity. No memory/cgroup detection. |
@@ -116,7 +116,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 
 ### P0 — Must fix before production deploy
 
-- [ ] **[P0][L]** Implement encryption at rest: envelope encryption (AES-256-GCM), DEK/KEK, SST header encryption fields, WAL per-segment encryption, per-realm keys — resolves gaps #1 · _depends on: none_
+- [x] **[P0][L]** Implement encryption at rest: envelope encryption (AES-256-GCM), DEK/KEK, SST header encryption fields, WAL per-segment encryption, per-realm keys — resolves gaps #1 · _depends on: none_
 - [ ] **[P0][M]** Wire `AuditEngine` into `EmbeddedIdentityEngine` — hold `Arc<dyn AuditEngine>`, call `audit.append()` for every security-critical mutation — resolves gaps #2 · _depends on: none_
 - [ ] **[P0][S]** Add periodic cleanup background task: sweep expired authorization codes, device codes, grant families, pending authorization tickets — resolves gaps #3 · _depends on: none_
 - [ ] **[P0][M]** Implement hot tier auto-sizing: read `/proc/meminfo` or cgroup `memory.limit_in_bytes`, reserve margin (20% or 2GB), allocate remainder; respect `storage.hot_tier_max_memory` override — resolves gaps #4 · _depends on: none_

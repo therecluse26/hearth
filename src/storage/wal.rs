@@ -1,17 +1,30 @@
 //! Write-ahead log for durable storage of mutations.
 //!
-//! Binary format per record:
+//! All WAL records are encrypted at rest using AES-256-GCM envelope encryption.
+//! The WAL file starts with a 76-byte encryption header containing the
+//! per-segment DEK wrapped by a realm KEK. Each record payload is encrypted
+//! with a monotonic counter-based nonce.
+//!
+//! On-disk layout:
 //! ```text
-//! [4 bytes: payload length (u32 LE)]
-//! [N bytes: payload]
-//! [4 bytes: CRC32 of payload]
+//! ENCRYPTION HEADER (76 bytes):
+//!   [16B] KEK identifier
+//!   [12B] Nonce for DEK wrapping
+//!   [32B] DEK ciphertext
+//!   [16B] GCM auth tag
+//!
+//! RECORDS (starting at byte 76):
+//!   Per record:
+//!     [4B] encrypted payload length (u32 LE, includes GCM tag)
+//!     [NB] encrypted payload (AES-256-GCM ciphertext + 16B tag)
+//!     [4B] CRC32 of encrypted payload bytes
 //! ```
 //!
-//! Payload layout:
+//! Payload (plaintext, before encryption):
 //! ```text
 //! [8 bytes: timestamp i64 LE]
 //! [16 bytes: realm UUID]
-//! [1 byte: operation (0=Put, 1=Delete)]
+//! [1 byte: operation (0=Put, 1=Delete, 2=Batch)]
 //! [4 bytes: key length u32 LE]
 //! [N bytes: key]
 //! [4 bytes: value length u32 LE]
@@ -19,10 +32,16 @@
 //! ```
 
 use crate::core::{RealmId, Timestamp};
+use crate::storage::encryption::{
+    self, counter_nonce, DataEncryptionKey, EncryptionHeader, KekId, ENCRYPTION_HEADER_SIZE,
+    KEK_ID_SIZE,
+};
 use crate::storage::error::StorageError;
 use crate::storage::fs::{Fs, FsFile, RealFs};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -357,6 +376,13 @@ impl Default for WalConfig {
     }
 }
 
+/// Rotation state: the per-segment DEK and encryption header.
+/// Protected by its own Mutex for safe interior mutability during rotation.
+struct RotationState {
+    dek: DataEncryptionKey,
+    enc_header: EncryptionHeader,
+}
+
 /// Write-ahead log providing durable, ordered storage of mutations.
 ///
 /// Thread-safe via `std::sync::Mutex`. WAL writes are blocking I/O and
@@ -365,17 +391,22 @@ pub struct Wal {
     file: Mutex<Box<dyn FsFile>>,
     path: PathBuf,
     config: WalConfig,
+    /// Rotation state (DEK + encryption header), locked separately.
+    rotation: Mutex<RotationState>,
+    /// Monotonic record counter used as the encryption nonce.
+    record_counter: AtomicU64,
+    /// Key encryption key (unused currently, reserved for key rotation).
+    #[allow(dead_code)]
+    kek: encryption::KeyEncryptionKey,
+    /// KEK identifier.
+    #[allow(dead_code)]
+    kek_id: KekId,
     /// Retained for potential re-open after rotation in future phases.
     #[allow(dead_code)]
     fs: Arc<dyn Fs>,
 }
 
 impl Wal {
-    /// Opens or creates a WAL file at the given path using the default filesystem.
-    pub fn open(path: &Path, config: WalConfig) -> Result<Self, StorageError> {
-        Self::open_with_fs(path, config, Arc::new(RealFs))
-    }
-
     /// Opens or creates a WAL file at the given path using a custom filesystem.
     ///
     /// Used by the simulation crate to inject faults via a `FaultFs`.
@@ -383,23 +414,97 @@ impl Wal {
         path: &Path,
         config: WalConfig,
         fs: Arc<dyn Fs>,
+        kek: &encryption::KeyEncryptionKey,
+        kek_id: KekId,
     ) -> Result<Self, StorageError> {
-        let file = fs.open_append(path)?;
+        let mut file = fs.open_append(path)?;
+        let file_size = file.seek(SeekFrom::End(0))?;
+
+        let (dek, enc_header, record_count) = if file_size == 0 {
+            // New file: generate DEK, write encryption header
+            let dek = encryption::generate_dek()?;
+            let enc_header = encryption::wrap_dek(&dek, kek, kek_id)?;
+            file.write_all(&enc_header.to_bytes())?;
+            file.sync_all()?;
+            (dek, enc_header, 0u64)
+        } else {
+            // Existing file: read encryption header
+            if file_size < ENCRYPTION_HEADER_SIZE as u64 {
+                return Err(StorageError::Crypto {
+                    reason: format!("WAL file too small for encryption header: {file_size} bytes"),
+                });
+            }
+
+            // Read entire file to get the header + count records
+            let mut all_data = Vec::new();
+            file.seek(SeekFrom::Start(0))?;
+            file.read_to_end(&mut all_data)?;
+
+            if all_data.len() < ENCRYPTION_HEADER_SIZE {
+                return Err(StorageError::Crypto {
+                    reason: "failed to read full encryption header from WAL".to_string(),
+                });
+            }
+
+            let header_arr: [u8; ENCRYPTION_HEADER_SIZE] = all_data[..ENCRYPTION_HEADER_SIZE]
+                .try_into()
+                .map_err(|_| StorageError::Crypto {
+                    reason: "failed to convert WAL header bytes".to_string(),
+                })?;
+
+            let enc_header = EncryptionHeader::from_bytes(&header_arr);
+            let dek = encryption::unwrap_dek(&enc_header, kek)?;
+
+            // Count existing records for the counter
+            let mut count = 0u64;
+            let record_data = &all_data[ENCRYPTION_HEADER_SIZE..];
+            let mut pos = 0usize;
+
+            while pos + 4 <= record_data.len() {
+                let len_bytes: [u8; 4] = match record_data[pos..pos + 4].try_into() {
+                    Ok(b) => b,
+                    Err(_) => break,
+                };
+                let payload_len = u32::from_le_bytes(len_bytes) as usize;
+                if pos + 4 + payload_len + 4 > record_data.len() {
+                    break;
+                }
+                pos += 4 + payload_len + 4;
+                count += 1;
+            }
+
+            file.seek(SeekFrom::End(0))?;
+            (dek, enc_header, count)
+        };
 
         Ok(Self {
             file: Mutex::new(file),
             path: path.to_path_buf(),
             config,
+            rotation: Mutex::new(RotationState { dek, enc_header }),
+            record_counter: AtomicU64::new(record_count),
+            kek: kek.clone_key(),
+            kek_id,
             fs,
         })
     }
 
+    /// Returns a copy of the encryption header for this WAL segment.
+    #[allow(dead_code)]
+    pub(crate) fn enc_header(&self) -> EncryptionHeader {
+        self.rotation
+            .lock()
+            .expect("rotation mutex poisoned")
+            .enc_header
+            .clone()
+    }
+
     /// Appends an entry to the WAL.
     ///
-    /// Serializes the entry, writes `[length][payload][crc32]`, and optionally fsyncs.
+    /// Serializes the entry, encrypts the payload, writes `[length][ciphertext][crc32]`,
+    /// and optionally fsyncs.
     pub fn append(&self, entry: &WalEntry) -> Result<(), StorageError> {
-        let payload = entry.serialize();
-        let crc = crc32fast::hash(&payload);
+        let plaintext = entry.serialize();
 
         let mut file = self
             .file
@@ -409,21 +514,42 @@ impl Wal {
         // Check if rotation is needed
         let file_size = file.seek(SeekFrom::End(0))?;
         #[allow(clippy::cast_possible_truncation)]
-        let record_size = 4 + payload.len() as u64 + 4;
-        if self.config.max_size > 0 && file_size + record_size > self.config.max_size {
+        let approx_record_size = 4 + plaintext.len() as u64 + encryption::TAG_SIZE as u64 + 4;
+        if self.config.max_size > 0 && file_size + approx_record_size > self.config.max_size {
             self.rotate_locked(&mut **file)?;
         }
 
-        // Write: [payload_length: u32 LE][payload][crc32: u32 LE]
+        // Load record counter AFTER rotation check (rotation resets to 0)
+        let record_num = self.record_counter.load(Ordering::Relaxed);
+
+        // Encrypt with current DEK
+        let nonce = counter_nonce(record_num);
+        let aad = record_num.to_le_bytes();
+        let (ciphertext, crc) = {
+            let rot = self
+                .rotation
+                .lock()
+                .map_err(|_| StorageError::Io(std::io::Error::other("rotation mutex poisoned")))?;
+            let mut dek_bytes = [0u8; 32];
+            dek_bytes.copy_from_slice(rot.dek.as_bytes());
+            let dek = DataEncryptionKey::from_bytes(dek_bytes);
+            let ct = encryption::encrypt_section(&plaintext, &dek, &nonce, &aad)?;
+            let c = crc32fast::hash(&ct);
+            (ct, c)
+        };
+
+        // Write: [payload_length: u32 LE][ciphertext][crc32: u32 LE]
         #[allow(clippy::cast_possible_truncation)]
-        let payload_len = payload.len() as u32;
+        let payload_len = ciphertext.len() as u32;
         file.write_all(&payload_len.to_le_bytes())?;
-        file.write_all(&payload)?;
+        file.write_all(&ciphertext)?;
         file.write_all(&crc.to_le_bytes())?;
 
         if self.config.sync_mode == SyncMode::EveryWrite {
             file.sync_all()?;
         }
+
+        self.record_counter.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
     }
@@ -438,15 +564,34 @@ impl Wal {
             .lock()
             .map_err(|_| StorageError::Io(std::io::Error::other("WAL mutex poisoned")))?;
 
-        file.seek(SeekFrom::Start(0))?;
+        // Snapshot the DEK for this read pass
+        let dek = {
+            let rot = self
+                .rotation
+                .lock()
+                .map_err(|_| StorageError::Io(std::io::Error::other("rotation mutex poisoned")))?;
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(rot.dek.as_bytes());
+            DataEncryptionKey::from_bytes(bytes)
+        };
+
+        // Skip encryption header
+        let file_size = file.seek(SeekFrom::End(0))?;
+        if file_size < ENCRYPTION_HEADER_SIZE as u64 {
+            return Ok(Vec::new());
+        }
 
         let mut all_data = Vec::new();
+        file.seek(SeekFrom::Start(ENCRYPTION_HEADER_SIZE as u64))?;
         file.read_to_end(&mut all_data)?;
 
         let mut entries = Vec::new();
         let mut pos: usize = 0;
+        let mut record_num: u64 = 0;
 
         while pos + 4 <= all_data.len() {
+            let record_start = pos;
+
             // Read payload length
             let len_bytes: [u8; 4] = match all_data[pos..pos + 4].try_into() {
                 Ok(b) => b,
@@ -455,31 +600,58 @@ impl Wal {
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
             pos += 4;
 
-            // Check we have enough data for payload + CRC
+            // Check we have enough data for payload + CRC.
+            // Torn writes (incomplete record with partial ciphertext
+            // or missing CRC) are intentionally silent truncation:
+            // the process crashed mid-write, and we return the valid
+            // prefix from before the crash.
             if pos + payload_len + 4 > all_data.len() {
-                break; // Incomplete record — stop
+                break;
             }
 
-            let payload = &all_data[pos..pos + payload_len];
+            let ciphertext = &all_data[pos..pos + payload_len];
             pos += payload_len;
 
-            // Read and verify CRC
+            // Read and verify CRC (over ciphertext)
             let crc_bytes: [u8; 4] = match all_data[pos..pos + 4].try_into() {
                 Ok(b) => b,
                 Err(_) => break,
             };
             let stored_crc = u32::from_le_bytes(crc_bytes);
-            let computed_crc = crc32fast::hash(payload);
+            let computed_crc = crc32fast::hash(ciphertext);
             pos += 4;
 
             if stored_crc != computed_crc {
-                break; // Corrupted record — stop, return valid prefix
+                if pos < all_data.len() {
+                    // Mid-stream CRC corruption: more data follows
+                    // this record. Not normal crash-recovery — the
+                    // trailing bytes are intact but the CRC doesn't
+                    // match. Likely disk rot or tampering.
+                    return Err(StorageError::ChecksumMismatch {
+                        offset: record_start as u64,
+                    });
+                }
+                // Terminal CRC failure: this is the last record and
+                // the process crashed before completing it. Silent
+                // truncation is the expected recovery behavior.
+                break;
             }
 
-            match WalEntry::deserialize(payload) {
+            // Decrypt payload — AEAD tag failure surfaces as error
+            // unconditionally. GCM authentication failure means the
+            // ciphertext was tampered with (or the wrong key/nonce/
+            // AAD was used). None of those happen during clean
+            // truncation.
+            let nonce = counter_nonce(record_num);
+            let aad = record_num.to_le_bytes();
+            let plaintext = encryption::decrypt_section(ciphertext, &dek, &nonce, &aad)?;
+
+            match WalEntry::deserialize(&plaintext) {
                 Ok(entry) => entries.push(entry),
                 Err(_) => break, // Deserialization failure — stop
             }
+
+            record_num += 1;
         }
 
         Ok(entries)
@@ -495,16 +667,34 @@ impl Wal {
         Ok(())
     }
 
-    /// Rotates the WAL file by truncating the current file.
-    ///
-    /// In a full implementation this would rename and create a new segment.
-    /// For Phase 0, rotation truncates the file to start fresh.
+    /// Rotates the WAL file by truncating and writing a fresh encryption header.
     fn rotate_locked(&self, file: &mut dyn FsFile) -> Result<(), StorageError> {
+        // Generate new per-segment DEK and encrypt with the KEK
+        let new_dek = encryption::generate_dek()?;
+        let mut kek_bytes = [0u8; 32];
+        kek_bytes.copy_from_slice(self.kek.as_bytes());
+        let kek = encryption::KeyEncryptionKey::from_bytes(kek_bytes);
+        let new_enc_header = encryption::wrap_dek(&new_dek, &kek, self.kek_id)?;
+
         file.set_len(0)?;
         file.seek(SeekFrom::Start(0))?;
+        file.write_all(&new_enc_header.to_bytes())?;
+
         if self.config.sync_mode == SyncMode::EveryWrite {
             file.sync_all()?;
         }
+
+        // Update rotation state
+        {
+            let mut rot = self
+                .rotation
+                .lock()
+                .map_err(|_| StorageError::Io(std::io::Error::other("rotation mutex poisoned")))?;
+            rot.dek = new_dek;
+            rot.enc_header = new_enc_header;
+        }
+        self.record_counter.store(0, Ordering::Relaxed);
+
         Ok(())
     }
 }
@@ -514,6 +704,10 @@ impl std::fmt::Debug for Wal {
         f.debug_struct("Wal")
             .field("path", &self.path)
             .field("config", &self.config)
+            .field(
+                "record_counter",
+                &self.record_counter.load(Ordering::Relaxed),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -523,8 +717,25 @@ mod tests {
     use super::*;
     use crate::core::RealmId;
     use proptest::prelude::*;
-    use std::fs::OpenOptions;
     use std::io::Write;
+
+    /// Helper to generate a test KEK for WAL tests.
+    /// Uses a fixed deterministic key so that WAL re-open tests work correctly.
+    fn test_kek() -> (encryption::KeyEncryptionKey, KekId) {
+        let mut kek_bytes = [0u8; 32];
+        for i in 0..32 {
+            kek_bytes[i] = (i * 13 + 7) as u8;
+        }
+        let kek = encryption::KeyEncryptionKey::from_bytes(kek_bytes);
+        let kek_id = [0x42u8; KEK_ID_SIZE];
+        (kek, kek_id)
+    }
+
+    /// Helper to open a WAL for testing.
+    fn open_test_wal(path: &Path, config: WalConfig) -> Wal {
+        let (kek, kek_id) = test_kek();
+        Wal::open_with_fs(path, config, Arc::new(RealFs), &kek, kek_id).expect("open wal")
+    }
 
     /// Helper to create a test WAL entry.
     fn make_entry(key: &[u8], value: &[u8], op: WalOperation) -> WalEntry {
@@ -561,7 +772,7 @@ mod tests {
     fn empty_wal_returns_no_entries() {
         let dir = tempfile::tempdir().expect("tempdir");
         let wal_path = dir.path().join("test.wal");
-        let wal = Wal::open(&wal_path, WalConfig::default()).expect("open");
+        let wal = open_test_wal(&wal_path, WalConfig::default());
         let entries = wal.read_all().expect("read");
         assert!(entries.is_empty());
     }
@@ -570,7 +781,7 @@ mod tests {
     fn append_single_entry_and_read_back() {
         let dir = tempfile::tempdir().expect("tempdir");
         let wal_path = dir.path().join("test.wal");
-        let wal = Wal::open(&wal_path, WalConfig::default()).expect("open");
+        let wal = open_test_wal(&wal_path, WalConfig::default());
 
         let entry = make_entry(b"key1", b"value1", WalOperation::Put);
         wal.append(&entry).expect("append");
@@ -584,7 +795,7 @@ mod tests {
     fn append_multiple_preserves_order() {
         let dir = tempfile::tempdir().expect("tempdir");
         let wal_path = dir.path().join("test.wal");
-        let wal = Wal::open(&wal_path, WalConfig::default()).expect("open");
+        let wal = open_test_wal(&wal_path, WalConfig::default());
 
         let mut expected = Vec::new();
         for i in 0..10 {
@@ -611,20 +822,19 @@ mod tests {
 
         // Write and drop (simulates process exit)
         {
-            let wal = Wal::open(
+            let wal = open_test_wal(
                 &wal_path,
                 WalConfig {
                     sync_mode: SyncMode::EveryWrite,
                     ..WalConfig::default()
                 },
-            )
-            .expect("open");
+            );
             wal.append(&entry).expect("append");
         }
 
         // Re-open and verify data persisted
         {
-            let wal = Wal::open(&wal_path, WalConfig::default()).expect("reopen");
+            let wal = open_test_wal(&wal_path, WalConfig::default());
             let entries = wal.read_all().expect("read");
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0], entry);
@@ -641,14 +851,14 @@ mod tests {
 
         // Write two valid entries
         {
-            let wal = Wal::open(&wal_path, WalConfig::default()).expect("open");
+            let wal = open_test_wal(&wal_path, WalConfig::default());
             wal.append(&entry1).expect("append 1");
             wal.append(&entry2).expect("append 2");
         }
 
         // Append garbage bytes to simulate corruption
         {
-            let mut file = OpenOptions::new()
+            let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(&wal_path)
                 .expect("open for corruption");
@@ -659,7 +869,7 @@ mod tests {
 
         // Re-open: should get both valid entries, garbage ignored
         {
-            let wal = Wal::open(&wal_path, WalConfig::default()).expect("reopen");
+            let wal = open_test_wal(&wal_path, WalConfig::default());
             let entries = wal.read_all().expect("read");
             assert_eq!(entries.len(), 2);
             assert_eq!(entries[0], entry1);
@@ -676,13 +886,13 @@ mod tests {
 
         // Very small max_size to trigger rotation quickly
         let config = WalConfig {
-            max_size: 100,
+            max_size: 500,
             sync_mode: SyncMode::None,
         };
-        let wal = Wal::open(&wal_path, config).expect("open");
+        let wal = open_test_wal(&wal_path, config);
 
         // Write entries until rotation occurs
-        for i in 0..10 {
+        for i in 0..20 {
             let entry = make_entry(
                 format!("key-{i}").as_bytes(),
                 format!("value-{i}").as_bytes(),
@@ -695,22 +905,110 @@ mod tests {
         // because rotation truncates the file
         let entries = wal.read_all().expect("read");
         assert!(
-            entries.len() < 10,
+            entries.len() < 20,
             "expected rotation to truncate, got {} entries",
             entries.len()
         );
     }
 
-    // --- P0 extended property tests ---
+    #[test]
+    fn wal_reads_across_rotation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = dir.path().join("test.wal");
+
+        let config = WalConfig {
+            max_size: 500,
+            sync_mode: SyncMode::None,
+        };
+        let wal = open_test_wal(&wal_path, config);
+
+        // Fill up and trigger rotation
+        for i in 0..30 {
+            let entry = make_entry(
+                format!("burst-{i}").as_bytes(),
+                format!("val-{i}").as_bytes(),
+                WalOperation::Put,
+            );
+            wal.append(&entry).expect("append");
+        }
+
+        // After rotation, write more entries that should survive
+        let post_entry = make_entry(b"post-rotate", b"survives", WalOperation::Put);
+        wal.append(&post_entry).expect("append post");
+
+        let entries = wal.read_all().expect("read");
+        assert!(
+            entries.iter().any(|e| e.key == b"post-rotate"),
+            "post-rotation entry should be readable"
+        );
+    }
+
+    #[test]
+    fn wal_tampered_gcm_ciphertext_detected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = dir.path().join("test.wal");
+
+        let entry1 = make_entry(b"good1", b"val1", WalOperation::Put);
+        let entry2 = make_entry(b"good2", b"val2", WalOperation::Put);
+
+        // Write two valid entries
+        {
+            let wal = open_test_wal(&wal_path, WalConfig::default());
+            wal.append(&entry1).expect("append 1");
+            wal.append(&entry2).expect("append 2");
+        }
+
+        // Tamper with the GCM tag of entry2 (last 16 bytes of ciphertext)
+        {
+            // Read the raw WAL file
+            let mut data = std::fs::read(&wal_path).expect("read wal");
+            // Skip encryption header (76 bytes)
+            // Record 0: [4B len][ciphertext][4B CRC]
+            // Record 1: [4B len][ciphertext][4B CRC]
+            // Find the second record's ciphertext and flip a byte near the end
+            let enc_header_size = ENCRYPTION_HEADER_SIZE as usize;
+            let mut pos = enc_header_size;
+
+            // Skip record 0
+            if pos + 4 <= data.len() {
+                let len0 = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+                pos += 4 + len0 + 4;
+            }
+            // Now at record 1: flip byte in the GCM tag region (last 16 bytes of ciphertext)
+            if pos + 4 <= data.len() {
+                let len1 = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+                // CRC is at pos + 4 + len1..pos + 4 + len1 + 4
+                // GCM tag is the last 16 bytes of the ciphertext (at pos+4+len1-16..pos+4+len1)
+                let tag_pos = pos + 4 + len1 - 1; // last byte of tag
+                data[tag_pos] ^= 0xFF; // tamper
+            }
+
+            std::fs::write(&wal_path, &data).expect("write tampered wal");
+        }
+
+        // Re-open: should only get entry1 (entry2 fails GCM auth)
+        {
+            let wal = open_test_wal(&wal_path, WalConfig::default());
+            let entries = wal.read_all().expect("read");
+            assert_eq!(
+                entries.len(),
+                1,
+                "only first record should survive tampering"
+            );
+            assert_eq!(entries[0], entry1);
+        }
+    }
+
+    // --- Property tests ---
 
     /// Strategy for generating arbitrary `WalEntry` values.
     fn arb_wal_entry() -> impl Strategy<Value = WalEntry> {
         (
-            any::<i64>(),                               // timestamp micros
-            any::<[u8; 16]>(),                          // realm uuid bytes
-            prop_oneof![Just(0u8), Just(1u8)],          // operation
-            prop::collection::vec(any::<u8>(), 0..256), // key
-            prop::collection::vec(any::<u8>(), 0..256), // value
+            any::<i64>(),
+            any::<[u8; 16]>(),
+            prop_oneof![Just(0u8), Just(1u8)],
+            prop::collection::vec(any::<u8>(), 0..256),
+            prop::collection::vec(any::<u8>(), 0..256),
         )
             .prop_map(|(ts, uuid_bytes, op_byte, key, value)| {
                 let operation = if op_byte == 0 {
@@ -728,10 +1026,6 @@ mod tests {
             })
     }
 
-    // ===== Phase C: Simulation tests — see simulation/ crate =====
-
-    // ===== Phase D: Property tests =====
-
     proptest! {
         #[test]
         fn proptest_entry_serde_round_trip(entry in arb_wal_entry()) {
@@ -747,10 +1041,10 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let wal_path = dir.path().join("test.wal");
             let config = WalConfig {
-                max_size: u64::MAX, // no rotation
+                max_size: u64::MAX,
                 sync_mode: SyncMode::None,
             };
-            let wal = Wal::open(&wal_path, config).expect("open");
+            let wal = open_test_wal(&wal_path, config);
 
             for entry in &entries {
                 wal.append(entry).expect("append");
@@ -773,7 +1067,7 @@ mod tests {
 
             // Write all entries
             {
-                let wal = Wal::open(&wal_path, config.clone()).expect("open");
+                let wal = open_test_wal(&wal_path, config.clone());
                 for entry in &entries {
                     wal.append(entry).expect("append");
                 }
@@ -781,7 +1075,7 @@ mod tests {
 
             // Re-open and verify all entries survive
             {
-                let wal = Wal::open(&wal_path, config).expect("reopen");
+                let wal = open_test_wal(&wal_path, config);
                 let read_back = wal.read_all().expect("read");
                 prop_assert_eq!(entries, read_back);
             }

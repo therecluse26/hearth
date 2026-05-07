@@ -7,9 +7,30 @@
 //! enabled via `RUSTFLAGS='--cfg madsim'` in a future phase.
 
 use std::io::Write;
+use std::sync::Arc;
 
 use hearth::core::{RealmId, Timestamp};
+use hearth::storage::encryption;
+use hearth::storage::error::StorageError;
+use hearth::storage::fs::RealFs;
 use hearth::storage::wal::{SyncMode, Wal, WalConfig, WalEntry, WalOperation};
+
+/// Deterministic test KEK for WAL crash tests.
+fn test_kek() -> (encryption::KeyEncryptionKey, encryption::KekId) {
+    let mut kek_bytes = [0u8; 32];
+    for i in 0..32 {
+        kek_bytes[i] = (i * 13 + 7) as u8;
+    }
+    let kek = encryption::KeyEncryptionKey::from_bytes(kek_bytes);
+    let kek_id = [0x42u8; encryption::KEK_ID_SIZE];
+    (kek, kek_id)
+}
+
+/// Helper to open a WAL for crash tests.
+fn open_test_wal(path: &std::path::Path, config: WalConfig) -> Wal {
+    let (kek, kek_id) = test_kek();
+    Wal::open_with_fs(path, config, Arc::new(RealFs), &kek, kek_id).expect("open wal")
+}
 
 /// Helper to create a test WAL entry.
 fn make_entry(key: &[u8], value: &[u8]) -> WalEntry {
@@ -45,7 +66,7 @@ fn simulation_crash_mid_write() {
 
     // Write two valid entries normally
     {
-        let wal = Wal::open(&wal_path, config.clone()).expect("open");
+        let wal = open_test_wal(&wal_path, config.clone());
         wal.append(&entry1).expect("append 1");
         wal.append(&entry2).expect("append 2");
     }
@@ -75,7 +96,7 @@ fn simulation_crash_mid_write() {
 
     // Recovery: should return only the 2 committed entries
     {
-        let wal = Wal::open(&wal_path, config).expect("reopen");
+        let wal = open_test_wal(&wal_path, config);
         let entries = wal.read_all().expect("read");
         assert_eq!(
             entries.len(),
@@ -109,7 +130,7 @@ fn simulation_crash_mid_fsync() {
 
     // Write one valid entry
     {
-        let wal = Wal::open(&wal_path, config.clone()).expect("open");
+        let wal = open_test_wal(&wal_path, config.clone());
         wal.append(&entry1).expect("append 1");
     }
 
@@ -134,7 +155,7 @@ fn simulation_crash_mid_fsync() {
 
     // Recovery: corrupt CRC causes the second record to be discarded
     {
-        let wal = Wal::open(&wal_path, config).expect("reopen");
+        let wal = open_test_wal(&wal_path, config);
         let entries = wal.read_all().expect("read");
         assert_eq!(
             entries.len(),
@@ -164,7 +185,7 @@ fn simulation_disk_io_failure() {
 
     // Write a valid entry
     {
-        let wal = Wal::open(&wal_path, config.clone()).expect("open");
+        let wal = open_test_wal(&wal_path, config.clone());
         wal.append(&entry1).expect("append");
     }
 
@@ -181,7 +202,7 @@ fn simulation_disk_io_failure() {
 
     // Recovery: partial record must be discarded
     {
-        let wal = Wal::open(&wal_path, config).expect("reopen");
+        let wal = open_test_wal(&wal_path, config);
         let entries = wal.read_all().expect("read after failure");
         assert_eq!(
             entries.len(),
@@ -190,4 +211,55 @@ fn simulation_disk_io_failure() {
         );
         assert_eq!(entries[0], entry1);
     }
+}
+
+/// Tampering: byte-flip in ciphertext with a recomputed CRC must be
+/// detected by AEAD authentication, not silently truncated.
+#[test]
+fn simulation_aead_detects_tampered_ciphertext_with_valid_crc() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal_path = dir.path().join("test.wal");
+    let config = WalConfig {
+        max_size: u64::MAX,
+        sync_mode: SyncMode::EveryWrite,
+    };
+
+    // Write two records and close.
+    {
+        let wal = open_test_wal(&wal_path, config.clone());
+        wal.append(&make_entry(b"k1", b"v1")).expect("append 1");
+        wal.append(&make_entry(b"k2", b"v2")).expect("append 2");
+    }
+
+    // Tamper with record 0's ciphertext, then recompute the CRC so the
+    // structural check passes. This isolates the AEAD tag check.
+    {
+        let mut data = std::fs::read(&wal_path).expect("read wal");
+        let header_size = encryption::ENCRYPTION_HEADER_SIZE;
+        // Record 0 starts at header_size: [u32 len][ciphertext][u32 crc]
+        let len_off = header_size;
+        let ct_off = len_off + 4;
+        let len = u32::from_le_bytes(data[len_off..len_off + 4].try_into().unwrap()) as usize;
+        let crc_off = ct_off + len;
+
+        // Flip one byte in the middle of the ciphertext (avoid the GCM tag
+        // region to prove the tag still catches body tampering).
+        data[ct_off + len / 2] ^= 0x01;
+
+        // Recompute and overwrite the CRC so the structural check passes.
+        let new_crc = crc32fast::hash(&data[ct_off..ct_off + len]);
+        data[crc_off..crc_off + 4].copy_from_slice(&new_crc.to_le_bytes());
+
+        std::fs::write(&wal_path, &data).expect("write tampered");
+    }
+
+    // Reopen and read. AEAD failure must surface as Crypto error — not
+    // silent truncation that returns [].
+    let wal = open_test_wal(&wal_path, config);
+    let result = wal.read_all();
+    assert!(
+        matches!(result, Err(StorageError::Crypto { .. })),
+        "tampered ciphertext must be rejected with Crypto error; got {:?}",
+        result
+    );
 }

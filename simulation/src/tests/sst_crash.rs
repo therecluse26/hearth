@@ -27,20 +27,26 @@ fn simulation_crash_during_memtable_flush() {
         engine.put(&realm, b"flush-key-2", b"val-2").expect("put");
     }
 
-    // Inject a corrupt SST file
+    // Inject a corrupt SST file (new encrypted format: 88-byte header)
     {
         let corrupt_sst_path = dir.path().join("000001.sst");
         let mut file = std::fs::File::create(&corrupt_sst_path).expect("create corrupt sst");
+        // Write a minimum-valid-sized file with garbage data.
+        // Base header: magic + entry_count + crc (12 bytes)
         file.write_all(b"HSST").expect("magic");
-        file.write_all(&[0x01]).expect("version");
         file.write_all(&2u32.to_le_bytes()).expect("count");
-        file.write_all(&[0u8; 3]).expect("reserved");
+        file.write_all(&[0xAA; 4]).expect("crc");
+        // Encryption header: 76 bytes of garbage
+        file.write_all(&[0xDE; 76]).expect("enc header");
+        // Corrupt data: not valid ciphertext
+        file.write_all(&[0xAD; 16]).expect("bad data");
         file.sync_all().expect("sync");
     }
 
     // Re-open: engine should skip corrupt SST and recover from WAL
     {
-        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let mut config = StorageConfig::dev(dir.path().to_path_buf());
+        config.allow_missing_keks = true;
         let engine = EmbeddedStorageEngine::open(config).expect("recovery");
 
         assert_eq!(
@@ -85,19 +91,22 @@ fn simulation_crash_during_compaction() {
     {
         let compacted_path = dir.path().join("999999.sst");
         let mut file = std::fs::File::create(&compacted_path).expect("create");
+        // Write a minimum-valid-sized file with garbage data.
+        // Base header: magic + entry_count + crc (12 bytes)
         file.write_all(b"HSST").expect("magic");
-        file.write_all(&[0x01]).expect("version");
         file.write_all(&4u32.to_le_bytes()).expect("count");
-        file.write_all(&[0u8; 3]).expect("reserved");
-        file.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).expect("data");
-        file.write_all(&[0xFF; 4]).expect("bad crc");
-        file.write_all(b"HEND").expect("footer magic");
+        file.write_all(&[0xAA; 4]).expect("crc");
+        // Encryption header: 76 bytes of garbage
+        file.write_all(&[0xDE; 76]).expect("enc header");
+        // Corrupt data: not valid ciphertext
+        file.write_all(&[0xAD; 16]).expect("bad data");
         file.sync_all().expect("sync");
     }
 
     // Re-open: engine should skip corrupt SST and recover from WAL
     {
-        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let mut config = StorageConfig::dev(dir.path().to_path_buf());
+        config.allow_missing_keks = true;
         let engine = EmbeddedStorageEngine::open(config).expect("recovery");
         assert_eq!(
             engine.get(&realm, b"key-a").expect("get"),

@@ -9,9 +9,13 @@
 //! [`EmbeddedStorageEngine`] is the default implementation composing
 //! WAL, memtable, SST, and hot tier components.
 
+#[allow(dead_code)]
+pub mod encryption;
 mod engine;
 pub mod error;
 pub mod fs;
+#[allow(dead_code)]
+pub(crate) mod key_registry;
 #[allow(dead_code)]
 pub(crate) mod memtable;
 #[allow(dead_code)]
