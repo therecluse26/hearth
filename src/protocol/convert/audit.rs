@@ -63,6 +63,7 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         domain::AuditAction::ScimGroupDeleted => pb::AuditAction::ScimGroupDeleted,
         domain::AuditAction::RoleAssigned => pb::AuditAction::RoleAssigned,
         domain::AuditAction::RoleRevoked => pb::AuditAction::RoleRevoked,
+        domain::AuditAction::Cleanup => pb::AuditAction::Cleanup,
         // These variants have no proto equivalents yet (proto RPC work deferred).
         // Serialize as Unspecified so existing gRPC clients see them as an
         // unknown action rather than a decode error.
@@ -187,6 +188,7 @@ mod tests {
             domain::AuditAction::ClientConsentGranted,
             domain::AuditAction::ClientConsentRevoked,
             domain::AuditAction::ConsentRequiredOnRefresh,
+            domain::AuditAction::Cleanup,
         ];
         for v in &variants {
             let _proto = domain_audit_action_to_proto(v);

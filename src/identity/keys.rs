@@ -309,6 +309,13 @@ pub(crate) fn encode_oauth_code(code_hash: &str) -> Vec<u8> {
     format!("{OAUTH_CODE_PREFIX}{code_hash}").into_bytes()
 }
 
+/// Returns the scan prefix for all OAuth authorization codes.
+///
+/// Format: `oauth:code:`
+pub(crate) fn oauth_code_scan_prefix() -> Vec<u8> {
+    OAUTH_CODE_PREFIX.as_bytes().to_vec()
+}
+
 // ===== Realm key encoding =====
 
 /// The well-known system `RealmId`.

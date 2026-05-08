@@ -35,7 +35,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 |---|-----|------|----------|
 | 1 | **Encryption at rest** | ARCH §6.3 | ✅ RESOLVED. Envelope encryption (AES-256-GCM) implemented in `src/storage/`. Per-file DEKs wrapped by per-realm KEKs. Host key from `HEARTH_MASTER_KEY` env var or auto-generated. SST and WAL fully encrypted. |
 | 2 | **Audit engine not wired** | ARCH §8.5 | `src/identity/engine.rs` has zero `audit::` references. `EmbeddedIdentityEngine` holds no `Arc<dyn AuditEngine>`. |
-| 3 | **No periodic cleanup** | — | No background task for expired auth codes, device codes, grant families, pending tickets. |
+| 3 | **No periodic cleanup** | — | **✅ RESOLVED (2026-05-08).** Background `tokio::spawn` task runs `sweep_expired()` on a configurable interval (default 300s). Sweeps expired authorization codes (`oauth:code:`), device codes (`oauth:device:` + `oauth:ucode:`), pending authorization tickets (`oauth:pending_auth:`), and grant families (`oauth:family:`). Grant families carry a new `expires_at` field (extended on rotation, sliding). Best-effort per-entity-type error handling. Summary `AuditAction::Cleanup` audit event emitted per realm per sweep. `IdentityConfig.cleanup` (enabled, interval_secs, max_per_type). |
 | 4 | **Hot tier auto-sizing** | ARCH §6.2 | `TieredConfig::default()` hardcodes 100K capacity. No memory/cgroup detection. |
 | 5 | **Background compaction** | — | `sst.rs:381` — `compact()` exists but never called automatically. SSTs accumulate. |
 | 6 | **Token size cap enforcement** | AUTHZ §2.6, §5.4 | Error variant exists but no `validate_token_size()` function. |
@@ -118,7 +118,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 
 - [x] **[P0][L]** Implement encryption at rest: envelope encryption (AES-256-GCM), DEK/KEK, SST header encryption fields, WAL per-segment encryption, per-realm keys — resolves gaps #1 · _depends on: none_
 - [x] **[P0][M]** Wire `AuditEngine` into `EmbeddedIdentityEngine` — hold `Arc<dyn AuditEngine>`, call `audit.append()` for every security-critical mutation — resolves gaps #2 · _depends on: none_ ✅ DONE (2026-05-07)
-- [ ] **[P0][S]** Add periodic cleanup background task: sweep expired authorization codes, device codes, grant families, pending authorization tickets — resolves gaps #3 · _depends on: none_
+- [x] **[P0][S]** Add periodic cleanup background task: sweep expired authorization codes, device codes, grant families, pending authorization tickets — resolves gaps #3 · _depends on: none_ ✅ DONE (2026-05-08)
 - [ ] **[P0][M]** Implement hot tier auto-sizing: read `/proc/meminfo` or cgroup `memory.limit_in_bytes`, reserve margin (20% or 2GB), allocate remainder; respect `storage.hot_tier_max_memory` override — resolves gaps #4 · _depends on: none_
 - [ ] **[P0][M]** Add background compaction loop to `EmbeddedStorageEngine`: periodically merge accumulated SST files — resolves gaps #5 · _depends on: none_
 - [ ] **[P0][S]** Implement `identity::validate_token_size()` — enforce permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB; call from `issue_tokens_with_context` — resolves gaps #6 · _depends on: none_

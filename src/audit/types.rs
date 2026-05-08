@@ -171,6 +171,10 @@ pub enum AuditAction {
     ///
     /// Metadata carries `client_id`.
     ConsentRequiredOnRefresh,
+    /// Periodic sweep of expired entities (authorization codes, device
+    /// codes, pending tickets, grant families). Emitted once per realm
+    /// per sweep; metadata carries deletion counts.
+    Cleanup,
 }
 
 impl AuditAction {
@@ -242,6 +246,7 @@ impl AuditAction {
             Self::ClientConsentGranted,
             Self::ClientConsentRevoked,
             Self::ConsentRequiredOnRefresh,
+            Self::Cleanup,
         ];
         v.sort_by_key(|a| a.as_str());
         v
@@ -311,6 +316,7 @@ impl AuditAction {
             Self::ClientConsentGranted => "client_consent_granted",
             Self::ClientConsentRevoked => "client_consent_revoked",
             Self::ConsentRequiredOnRefresh => "consent_required_on_refresh",
+            Self::Cleanup => "cleanup",
         }
     }
 }
@@ -381,6 +387,7 @@ impl std::str::FromStr for AuditAction {
             "client_consent_granted" => Ok(Self::ClientConsentGranted),
             "client_consent_revoked" => Ok(Self::ClientConsentRevoked),
             "consent_required_on_refresh" => Ok(Self::ConsentRequiredOnRefresh),
+            "cleanup" => Ok(Self::Cleanup),
             other => Err(format!("unknown audit action: {other}")),
         }
     }
@@ -460,7 +467,8 @@ impl AuditAction {
             | Self::UserPermissionRevoked
             | Self::ClientConsentGranted
             | Self::OrphanedReferenceSkipped
-            | Self::ConsentRequiredOnRefresh => LogOnly,
+            | Self::ConsentRequiredOnRefresh
+            | Self::Cleanup => LogOnly,
             // ---- FailOperation (destructive / security-sensitive) ----
             Self::UserDeleted
             | Self::CredentialChanged

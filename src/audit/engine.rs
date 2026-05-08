@@ -842,6 +842,7 @@ mod property_tests {
             Just(AuditAction::AuthorizationCodeExchanged),
             Just(AuditAction::TupleWritten),
             Just(AuditAction::TupleDeleted),
+            Just(AuditAction::Cleanup),
         ]
     }
 

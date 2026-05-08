@@ -719,6 +719,12 @@ pub(crate) struct StoredGrantFamily {
     pub(crate) revoked: bool,
     /// When the family was created.
     pub(crate) created_at: Timestamp,
+    /// When this family expires and becomes eligible for sweep.
+    ///
+    /// Set to `created_at + refresh_token_ttl` at creation and extended
+    /// on each successful rotation so the family lifetime tracks the
+    /// latest refresh token's `exp` claim.
+    pub(crate) expires_at: Timestamp,
     /// The OAuth client that owns this grant family.
     ///
     /// Optional for backward compatibility — families created before this

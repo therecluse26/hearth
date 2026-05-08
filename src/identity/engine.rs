@@ -160,6 +160,8 @@ pub struct IdentityConfig {
     pub oidc: OidcConfig,
     /// Rate limiting for credential verification.
     pub rate_limit: RateLimitConfig,
+    /// Periodic cleanup sweeper configuration.
+    pub cleanup: crate::identity::cleanup::CleanupConfig,
 }
 
 impl Default for IdentityConfig {
@@ -171,6 +173,7 @@ impl Default for IdentityConfig {
             token: TokenConfig::default(),
             oidc: OidcConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            cleanup: crate::identity::cleanup::CleanupConfig::default(),
         }
     }
 }
@@ -1270,6 +1273,10 @@ impl EmbeddedIdentityEngine {
 
         // Rotate the family's current refresh hash
         family.current_refresh_hash = Self::sha256_hex(new_refresh.as_bytes());
+        // Extend family expiration to match the new refresh token (sliding).
+        family.expires_at = crate::core::Timestamp::from_micros(
+            self.clock.now().as_micros() + self.config.token.refresh_token_ttl_secs * 1_000_000,
+        );
         let updated = serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
             reason: e.to_string(),
         })?;
@@ -3387,6 +3394,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             realm_id: realm_id.clone(),
             revoked: false,
             created_at: now,
+            expires_at: crate::core::Timestamp::from_micros(
+                now.as_micros() + self.config.token.refresh_token_ttl_secs * 1_000_000,
+            ),
             // Store the client_id so the refresh path can perform a
             // consent digest re-check without a separate client lookup.
             client_id: Some(request.client_id.clone()),
@@ -3662,7 +3672,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .get(realm_id, &uc_key)
             .map_err(Self::storage_err)?
-            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+            .ok_or(IdentityError::DeviceCodeExpired)?;
         let dc_hash = String::from_utf8(dc_hash_bytes)
             .map_err(|_| IdentityError::InvalidAuthorizationCode)?;
 
@@ -3672,7 +3682,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .get(realm_id, &dc_key)
             .map_err(Self::storage_err)?
-            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+            .ok_or(IdentityError::DeviceCodeExpired)?;
         let mut stored: StoredDeviceCode =
             serde_json::from_slice(&dc_bytes).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
@@ -3730,7 +3740,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .storage
             .get(realm_id, &dc_key)
             .map_err(Self::storage_err)?
-            .ok_or(IdentityError::InvalidAuthorizationCode)?;
+            .ok_or(IdentityError::DeviceCodeExpired)?;
         let mut stored: StoredDeviceCode =
             serde_json::from_slice(&dc_bytes).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
@@ -7748,6 +7758,43 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         b.copy_from_slice(&bytes);
         let org_id = OrganizationId::new(uuid::Uuid::from_bytes(b));
         self.get_organization(realm_id, &org_id)
+    }
+
+    // ===== Periodic cleanup =====
+
+    fn sweep_expired(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<crate::identity::cleanup::CleanupStats, IdentityError> {
+        let stats = crate::identity::cleanup::sweep_expired(
+            realm_id,
+            self.storage.as_ref(),
+            self.clock.as_ref(),
+            &self.config.cleanup,
+        );
+
+        if stats.total_deleted() > 0 {
+            let metadata = Some(serde_json::json!({
+                "auth_codes_deleted": stats.auth_codes_deleted,
+                "device_codes_deleted": stats.device_codes_deleted,
+                "pending_tickets_deleted": stats.pending_tickets_deleted,
+                "grant_families_deleted": stats.grant_families_deleted,
+                "errors": stats.errors,
+            }));
+            let ctx = crate::audit::context::AuditContext {
+                actor: crate::audit::context::Actor::System,
+                metadata,
+            };
+            let _ = self.record_audit(
+                realm_id,
+                Some(&ctx),
+                crate::audit::AuditAction::Cleanup,
+                "system",
+                &realm_id.to_string(),
+            );
+        }
+
+        Ok(stats)
     }
 
     // ===== SAML =====

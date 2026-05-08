@@ -56,6 +56,7 @@ enum AuditAction {
   AUDIT_ACTION_SCIM_GROUP_DELETED = 47;
   AUDIT_ACTION_ROLE_ASSIGNED = 48;
   AUDIT_ACTION_ROLE_REVOKED = 49;
+  AUDIT_ACTION_CLEANUP = 50;
 }
 
 // A recorded audit event in the append-only log.

@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use tokio::sync::Notify;
@@ -473,6 +474,10 @@ async fn run_serve(
         }
     };
 
+    // Extract cleanup config before identity_config is consumed by the engine.
+    let cleanup_enabled = identity_config.cleanup.enabled;
+    let cleanup_interval_secs = identity_config.cleanup.interval_secs;
+
     // Build the RBAC engine before the identity engine — identity depends on rbac.
     let rbac_engine: Arc<dyn RbacEngine> = Arc::new(EmbeddedRbacEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
@@ -579,6 +584,57 @@ async fn run_serve(
                 std::process::exit(1);
             }
         }
+    }
+
+    // Background periodic cleanup sweep.
+    if cleanup_enabled && cleanup_interval_secs > 0 {
+        let engine = Arc::clone(&identity_engine);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(cleanup_interval_secs));
+            // Skip the immediate first tick so the server finishes warm-up.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let mut cursor = None::<String>;
+                loop {
+                    let page = match engine.list_realms(cursor.as_deref(), 100) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!(error = %e, "cleanup: realm enumeration failed, retrying next tick");
+                            break;
+                        }
+                    };
+                    for realm in &page.items {
+                        match engine.sweep_expired(realm.id()) {
+                            Ok(stats) => {
+                                if stats.total_deleted() > 0 {
+                                    info!(
+                                        realm = %realm.name(),
+                                        auth_codes = stats.auth_codes_deleted,
+                                        device_codes = stats.device_codes_deleted,
+                                        pending_tickets = stats.pending_tickets_deleted,
+                                        grant_families = stats.grant_families_deleted,
+                                        errors = stats.errors,
+                                        "cleanup: swept expired entities",
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    realm = %realm.name(),
+                                    error = %e,
+                                    "cleanup: sweep failed for realm",
+                                );
+                            }
+                        }
+                    }
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(

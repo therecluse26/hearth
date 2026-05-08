@@ -5,6 +5,7 @@
 //! May call `authz` (lateral dependency). Never the reverse.
 
 pub mod claims_config;
+pub(crate) mod cleanup;
 pub(crate) mod credentials;
 pub mod email;
 mod engine;
@@ -1291,4 +1292,15 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         external_id: &str,
     ) -> Result<Option<Organization>, IdentityError>;
+
+    /// Sweeps expired entities (authorization codes, device codes,
+    /// pending authorization tickets, grant families) from storage.
+    ///
+    /// Called periodically by a background task. Returns deletion counts
+    /// per entity type. Errors from individual sweeps are logged and
+    /// counted; the function always returns stats (best-effort).
+    fn sweep_expired(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<crate::identity::cleanup::CleanupStats, IdentityError>;
 }
