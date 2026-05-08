@@ -20,8 +20,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
 
-use crate::audit::{AuditAction, CreateAuditEvent};
-use crate::core::{ClientId, RealmId, UserId};
+use crate::core::ClientId;
 use crate::identity::{ConsentListEntry, IdentityError};
 
 use super::auth::{verify_csrf_form_field, UiSession};
@@ -214,7 +213,7 @@ pub async fn revoke_all_consents(
         }
     };
     for entry in &entries {
-        state
+        let _ = state
             .identity
             .revoke_consent(&session.realm_id, &session.user_id, &entry.record.client_id)
             .is_ok();
@@ -249,37 +248,6 @@ fn load_consents(state: &Arc<WebState>, session: &UiSession) -> Vec<ConsentRow> 
             updated_at: format_ts(e.record.updated_at),
         })
         .collect()
-}
-
-fn audit_self_consent_revoke(
-    state: &Arc<WebState>,
-    realm: &RealmId,
-    user: &UserId,
-    client: &ClientId,
-    batch: bool,
-) {
-    let meta = if batch {
-        serde_json::json!({
-            "via": "self",
-            "batch": true,
-            "client_id": client.as_uuid().to_string(),
-        })
-    } else {
-        serde_json::json!({
-            "via": "self",
-            "client_id": client.as_uuid().to_string(),
-        })
-    };
-    if let Err(e) = state.audit.append(&CreateAuditEvent {
-        realm_id: realm.clone(),
-        actor: user.as_uuid().to_string(),
-        action: AuditAction::ConsentRevoked,
-        resource_type: "oauth_client".to_string(),
-        resource_id: client.as_uuid().to_string(),
-        metadata: Some(meta),
-    }) {
-        tracing::warn!(error = %e, "self consent revoke audit append failed");
-    }
 }
 
 /// Formats a timestamp as `YYYY-MM-DD HH:MM UTC` — same shape the
