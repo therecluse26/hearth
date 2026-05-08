@@ -90,6 +90,7 @@ async fn session_full_lifecycle_server() {
 
 #[tokio::test]
 async fn session_persists_across_restart() {
+    use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
     use hearth::core::SystemClock;
     use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
     use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
@@ -109,10 +110,15 @@ async fn session_persists_across_restart() {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        )) as Arc<dyn AuditEngine>;
         let engine = EmbeddedIdentityEngine::new(
             Arc::clone(&storage) as Arc<dyn StorageEngine>,
             clock,
             identity_config,
+            Arc::clone(&audit),
         )
         .expect("engine creation");
 
@@ -155,10 +161,15 @@ async fn session_persists_across_restart() {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        )) as Arc<dyn AuditEngine>;
         let engine = EmbeddedIdentityEngine::new(
             Arc::clone(&storage) as Arc<dyn StorageEngine>,
             clock,
             identity_config,
+            Arc::clone(&audit),
         )
         .expect("engine creation");
 
@@ -418,6 +429,7 @@ async fn session_fixation_prevention() {
 
 #[tokio::test]
 async fn enumeration_resistance() {
+    use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
     use hearth::core::FakeClock;
     use hearth::identity::{
         CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, SessionConfig,
@@ -439,10 +451,15 @@ async fn enumeration_resistance() {
         },
         ..IdentityConfig::default()
     };
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock) as Arc<dyn hearth::core::Clock>,
+    )) as Arc<dyn AuditEngine>;
     let engine = EmbeddedIdentityEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock) as Arc<dyn hearth::core::Clock>,
         identity_config,
+        Arc::clone(&audit),
     )
     .expect("engine creation");
 

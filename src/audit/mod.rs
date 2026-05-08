@@ -12,14 +12,16 @@
 //! Events are **append-only**: the trait exposes no update or delete
 //! operations. This is enforced at the type level.
 
+pub mod context;
 mod engine;
 pub mod error;
 pub(crate) mod keys;
 mod types;
 
+pub use context::{Actor, AuditContext};
 pub use engine::EmbeddedAuditEngine;
 pub use error::AuditError;
-pub use types::{AuditAction, AuditEvent, AuditQuery, CreateAuditEvent};
+pub use types::{AuditAction, AuditEvent, AuditFailurePolicy, AuditQuery, CreateAuditEvent};
 
 use crate::core::{RealmId, Timestamp};
 

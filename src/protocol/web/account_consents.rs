@@ -178,13 +178,7 @@ pub async fn revoke_consent(
         .revoke_consent(&session.realm_id, &session.user_id, &client_id)
     {
         Ok(()) => {
-            audit_self_consent_revoke(
-                &state,
-                &session.realm_id,
-                &session.user_id,
-                &client_id,
-                false,
-            );
+            // Engine now emits ConsentRevoked internally.
             Redirect::to("/ui/account/applications").into_response()
         }
         Err(IdentityError::ConsentNotFound) => handlers_common::not_found("Consent not found"),
@@ -220,19 +214,10 @@ pub async fn revoke_all_consents(
         }
     };
     for entry in &entries {
-        if state
+        state
             .identity
             .revoke_consent(&session.realm_id, &session.user_id, &entry.record.client_id)
-            .is_ok()
-        {
-            audit_self_consent_revoke(
-                &state,
-                &session.realm_id,
-                &session.user_id,
-                &entry.record.client_id,
-                true,
-            );
-        }
+            .is_ok();
     }
     Redirect::to("/ui/account/applications").into_response()
 }

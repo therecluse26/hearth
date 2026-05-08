@@ -6557,26 +6557,12 @@ pub async fn admin_user_consent_revoke(
         .identity
         .revoke_consent(target_realm.id(), &user_id, &client_id)
     {
-        Ok(()) => {
-            let _ = state.audit.append(&crate::audit::CreateAuditEvent {
-                realm_id: target_realm.id().clone(),
-                actor: session.user_id.as_uuid().to_string(),
-                action: crate::audit::AuditAction::ConsentRevoked,
-                resource_type: "oauth_client".to_string(),
-                resource_id: client_id.as_uuid().to_string(),
-                metadata: Some(serde_json::json!({
-                    "via": "admin",
-                    "target_user": user_id.as_uuid().to_string(),
-                    "client_id": client_id.as_uuid().to_string(),
-                })),
-            });
-            Redirect::to(&format!(
-                "/ui/admin/realms/{}/users/{}/applications",
-                target_realm.0.name(),
-                user_id.as_uuid()
-            ))
-            .into_response()
-        }
+        Ok(()) => Redirect::to(&format!(
+            "/ui/admin/realms/{}/users/{}/applications",
+            target_realm.0.name(),
+            user_id.as_uuid()
+        ))
+        .into_response(),
         Err(IdentityError::ConsentNotFound) => {
             super::handlers_common::not_found("Consent not found")
         }

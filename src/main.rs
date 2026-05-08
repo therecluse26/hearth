@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use hearth::audit::EmbeddedAuditEngine;
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::config::{Config, EmailTransport, EnvVarWarningKind};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::email::mailgun::MailgunRegion;
@@ -479,11 +479,17 @@ async fn run_serve(
         Arc::clone(&clock),
     ));
 
+    let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+    ));
+
     let identity_engine: Arc<dyn IdentityEngine> = Arc::new(EmbeddedIdentityEngine::with_rbac(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
         identity_config,
         Arc::clone(&rbac_engine),
+        Arc::clone(&audit_engine) as Arc<dyn AuditEngine>,
     )?);
 
     // Build the PermissionRegistry from the initial config and wrap it in an
@@ -1497,11 +1503,16 @@ fn build_engines(
         Arc::clone(storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
     )) as Arc<dyn hearth::rbac::RbacEngine>;
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+    )) as Arc<dyn hearth::audit::AuditEngine>;
     let identity = Arc::new(EmbeddedIdentityEngine::with_rbac(
         Arc::clone(storage) as Arc<dyn StorageEngine>,
         clock,
         identity_config,
         Arc::clone(&rbac),
+        Arc::clone(&audit),
     )?) as Arc<dyn hearth::identity::IdentityEngine>;
     Ok((identity, rbac))
 }

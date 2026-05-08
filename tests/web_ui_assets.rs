@@ -49,6 +49,10 @@ fn minimal_web_state() -> WebState {
         EmbeddedStorageEngine::open(StorageConfig::dev(data_dir.clone())).expect("storage"),
     );
     let clock = Arc::new(SystemClock) as Arc<dyn hearth::core::Clock>;
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
+        Arc::clone(&clock),
+    )) as Arc<dyn hearth::audit::AuditEngine>;
     let identity = Arc::new(
         EmbeddedIdentityEngine::new(
             Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
@@ -57,6 +61,7 @@ fn minimal_web_state() -> WebState {
                 credential: CredentialConfig::fast_for_testing(),
                 ..IdentityConfig::default()
             },
+            Arc::clone(&audit),
         )
         .expect("identity"),
     ) as Arc<dyn hearth::identity::IdentityEngine>;
@@ -64,10 +69,6 @@ fn minimal_web_state() -> WebState {
         Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
         Arc::clone(&clock),
     )) as Arc<dyn hearth::rbac::RbacEngine>;
-    let audit = Arc::new(EmbeddedAuditEngine::new(
-        Arc::clone(&storage) as Arc<dyn hearth::storage::StorageEngine>,
-        Arc::clone(&clock),
-    )) as Arc<dyn hearth::audit::AuditEngine>;
 
     identity
         .create_realm(&CreateRealmRequest {

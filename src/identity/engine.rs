@@ -10,6 +10,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ring::rand::SecureRandom;
 
+use crate::audit::{Actor, AuditAction, AuditContext, AuditEngine, CreateAuditEvent};
 use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, UserId};
 use crate::identity::claims_config::{
     resolve_claims_for_target, ClaimEvaluationContext, ClaimTarget,
@@ -198,6 +199,11 @@ pub struct EmbeddedIdentityEngine {
     /// Claims-based RBAC engine used to resolve effective permissions
     /// at token-issue time. See `docs/specs/AUTHORIZATION.md`.
     rbac: Arc<dyn crate::rbac::RbacEngine>,
+    /// Audit engine for recording security-critical mutations.
+    ///
+    /// Best-effort for non-destructive operations; returns
+    /// `AuditFailure` for destructive operations when appending fails.
+    audit: Arc<dyn AuditEngine>,
     /// Pre-computed dummy hash for timing-oracle prevention.
     ///
     /// When `verify_password` is called for a nonexistent user or missing
@@ -384,6 +390,57 @@ impl EmbeddedIdentityEngine {
         Ok(())
     }
 
+    /// Records an audit event for a security-critical mutation.
+    ///
+    /// Best-effort for non-destructive actions (`LogOnly` policy): logs
+    /// a warning on failure. Returns `Err(AuditFailure)` for destructive
+    /// actions (`FailOperation` policy) so the caller knows the audit
+    /// trail has a gap.
+    fn record_audit(
+        &self,
+        realm_id: &RealmId,
+        ctx: Option<&AuditContext>,
+        action: AuditAction,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Result<(), IdentityError> {
+        let policy = action.failure_policy();
+        let actor = ctx.map_or_else(|| "system".to_string(), |c| c.actor.label());
+        let event = CreateAuditEvent {
+            realm_id: realm_id.clone(),
+            actor,
+            action,
+            resource_type: resource_type.to_string(),
+            resource_id: resource_id.to_string(),
+            metadata: ctx.and_then(|c| c.metadata.clone()),
+        };
+        match self.audit.append(&event) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if policy == crate::audit::AuditFailurePolicy::FailOperation {
+                    tracing::error!(
+                        error = %e,
+                        action = %event.action.as_str(),
+                        resource_id = %resource_id,
+                        "Audit append failed for destructive operation"
+                    );
+                    Err(IdentityError::AuditFailure {
+                        action: event.action.as_str().to_string(),
+                        reason: e.to_string(),
+                    })
+                } else {
+                    tracing::warn!(
+                        error = %e,
+                        action = %event.action.as_str(),
+                        resource_id = %resource_id,
+                        "Audit append failed (non-blocking)"
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
+
     /// Creates a new identity engine, constructing a fresh
     /// [`crate::rbac::EmbeddedRbacEngine`] sharing the same storage and
     /// clock. Convenience for tests and benches that don't need to hold
@@ -392,11 +449,12 @@ impl EmbeddedIdentityEngine {
         storage: Arc<dyn StorageEngine>,
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
+        audit: Arc<dyn AuditEngine>,
     ) -> Result<Self, IdentityError> {
         let rbac: Arc<dyn crate::rbac::RbacEngine> = Arc::new(
             crate::rbac::EmbeddedRbacEngine::new(Arc::clone(&storage), Arc::clone(&clock)),
         );
-        Self::with_rbac(storage, clock, config, rbac)
+        Self::with_rbac(storage, clock, config, rbac, audit)
     }
 
     /// Creates a new identity engine wired to an explicit RBAC engine.
@@ -410,6 +468,7 @@ impl EmbeddedIdentityEngine {
         clock: Arc<dyn Clock>,
         config: IdentityConfig,
         rbac: Arc<dyn crate::rbac::RbacEngine>,
+        audit: Arc<dyn AuditEngine>,
     ) -> Result<Self, IdentityError> {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let signing_key = Arc::new(SigningKey::generate()?);
@@ -418,6 +477,7 @@ impl EmbeddedIdentityEngine {
             clock,
             config,
             rbac,
+            audit,
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
@@ -445,6 +505,7 @@ impl EmbeddedIdentityEngine {
         config: IdentityConfig,
         signing_key: Arc<SigningKey>,
         rbac: Arc<dyn crate::rbac::RbacEngine>,
+        audit: Arc<dyn AuditEngine>,
     ) -> Self {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
         let engine = Self {
@@ -452,6 +513,7 @@ impl EmbeddedIdentityEngine {
             clock,
             config,
             rbac,
+            audit,
             dummy_hash,
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
@@ -922,6 +984,14 @@ impl EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &id_key, &user_bytes)
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::UserCreated,
+            "user",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(user)
     }
@@ -1450,6 +1520,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             key_cache.insert(realm_id.as_uuid().to_string(), Arc::new(realm_signing_key));
         }
 
+        self.record_audit(
+            &realm_id,
+            None,
+            AuditAction::RealmCreated,
+            "realm",
+            &realm_id.as_uuid().to_string(),
+        )?;
+
         Ok(realm)
     }
 
@@ -1562,6 +1640,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // Best-effort: remove old name index
             let _ = self.storage.delete(&sys_realm, &old_name_key);
         }
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::RealmUpdated,
+            "realm",
+            &realm_id.as_uuid().to_string(),
+        )?;
 
         Ok(realm)
     }
@@ -1922,6 +2008,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::RealmNotFound);
         }
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::RealmDeleted,
+            "realm",
+            &realm_id.as_uuid().to_string(),
+        )?;
+
         Ok(())
     }
 
@@ -2092,6 +2186,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &id_key, &user_bytes)
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::UserUpdated,
+            "user",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(user)
     }
@@ -2271,6 +2373,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .map_err(Self::storage_err)?;
         }
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::UserDeleted,
+            "user",
+            &user_id.as_uuid().to_string(),
+        )?;
+
         Ok(())
     }
 
@@ -2295,6 +2405,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &cred_key, &cred_bytes)
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::CredentialSet,
+            "credential",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(())
     }
@@ -2377,6 +2495,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // Set the new password
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::CredentialChanged,
+            "credential",
+            &user_id.as_uuid().to_string(),
+        )?;
         self.set_password(realm_id, user_id, new_password)
     }
 
@@ -2420,6 +2545,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(realm_id, &user_session_key, &[])
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::SessionCreated,
+            "session",
+            &session_id.as_uuid().to_string(),
+        )?;
+
         Ok(session)
     }
 
@@ -2447,6 +2580,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         session.revoke();
         self.persist_session(realm_id, &session)?;
 
+        let audit_ctx = AuditContext {
+            actor: Actor::User(session.user_id().clone()),
+            metadata: None,
+        };
+        self.record_audit(
+            realm_id,
+            Some(&audit_ctx),
+            AuditAction::SessionRevoked,
+            "session",
+            &session_id.as_uuid().to_string(),
+        )?;
+
         Ok(())
     }
 
@@ -2466,6 +2611,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         session.refresh(self.clock.now(), self.config.session.ttl_micros);
         self.persist_session(realm_id, &session)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::SessionCreated,
+            "session",
+            &session_id.as_uuid().to_string(),
+        )?;
 
         Ok(session)
     }
@@ -2664,6 +2817,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             oid_ref,
             ClaimTarget::AccessToken,
         );
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::TokenIssued,
+            "token",
+            &session_id.as_uuid().to_string(),
+        )?;
         self.signing_key.issue_token_pair(&IssueTokenRequest {
             sub: &user_id.to_string(),
             sid: &session_id.to_string(),
@@ -2755,6 +2915,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let user_uuid =
             uuid::Uuid::parse_str(user_id_str).map_err(|_| IdentityError::InvalidToken)?;
         let user_id = UserId::new(user_uuid);
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::TokenRefreshed,
+            "token",
+            &session_id.as_uuid().to_string(),
+        )?;
 
         // Grant family rotation (if fid is present)
         if let Some(ref fid) = claims.fid {
@@ -2875,6 +3043,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &key, &client_bytes)
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::ClientRegistered,
+            "client",
+            &client_id.as_uuid().to_string(),
+        )?;
 
         Ok(client)
     }
@@ -3252,6 +3428,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     reason: format!("failed to issue ID token: {e}"),
                 })?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::AuthorizationCodeExchanged,
+            "authz_code",
+            &request.code,
+        )?;
+
         Ok(OidcTokenResponse::new(
             access_token,
             id_token,
@@ -3517,6 +3701,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(realm_id, &dc_key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::User(user_id.clone()),
+                metadata: None,
+            }),
+            AuditAction::AuthorizationCodeExchanged,
+            "device",
+            user_code,
+        )?;
+
         Ok(())
     }
 
@@ -3695,6 +3890,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             _ => {} // Unknown token type → silent success
         }
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::SessionRevoked,
+            "token",
+            &request.token,
+        )?;
+
         Ok(())
     }
 
@@ -3819,6 +4022,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         };
         self.save_mfa_state(realm_id, user_id, &state)?;
 
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::User(user_id.clone()),
+                metadata: None,
+            }),
+            AuditAction::CredentialSet,
+            "credential",
+            &user_id.as_uuid().to_string(),
+        )?;
+
         Ok(TotpEnrollment {
             secret_base32,
             provisioning_uri,
@@ -3862,6 +4076,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             state.recovery_code_hashes = recovery_hashes;
             state.pending_recovery_codes = None;
             self.save_mfa_state(realm_id, user_id, &state)?;
+            self.record_audit(
+                realm_id,
+                Some(&AuditContext {
+                    actor: Actor::User(user_id.clone()),
+                    metadata: None,
+                }),
+                AuditAction::CredentialVerified,
+                "credential",
+                &user_id.as_uuid().to_string(),
+            )?;
             Ok(())
         } else {
             Err(IdentityError::InvalidMfaCode)
@@ -3895,6 +4119,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             state.last_used_step = Some(step);
             self.save_mfa_state(realm_id, user_id, &state)?;
             self.clear_mfa_attempts(realm_id, user_id);
+            self.record_audit(
+                realm_id,
+                Some(&AuditContext {
+                    actor: Actor::User(user_id.clone()),
+                    metadata: None,
+                }),
+                AuditAction::CredentialVerified,
+                "credential",
+                &user_id.as_uuid().to_string(),
+            )?;
             Ok(())
         } else {
             self.record_mfa_failed_attempt(realm_id, user_id);
@@ -3923,6 +4157,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 state.recovery_code_hashes[i] = None;
                 self.save_mfa_state(realm_id, user_id, &state)?;
                 self.clear_mfa_attempts(realm_id, user_id);
+                self.record_audit(
+                    realm_id,
+                    Some(&AuditContext {
+                        actor: Actor::User(user_id.clone()),
+                        metadata: None,
+                    }),
+                    AuditAction::CredentialVerified,
+                    "credential",
+                    &user_id.as_uuid().to_string(),
+                )?;
                 Ok(())
             }
             None => Err(IdentityError::InvalidMfaCode),
@@ -3938,6 +4182,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     .delete(realm_id, &key)
                     .map_err(Self::storage_err)?;
                 self.clear_mfa_attempts(realm_id, user_id);
+                self.record_audit(
+                    realm_id,
+                    Some(&AuditContext {
+                        actor: Actor::User(user_id.clone()),
+                        metadata: None,
+                    }),
+                    AuditAction::CredentialChanged,
+                    "credential",
+                    &user_id.as_uuid().to_string(),
+                )?;
                 Ok(())
             }
             _ => Err(IdentityError::MfaNotEnabled),
@@ -4053,6 +4307,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .put(realm_id, &disc_key, &user_uuid_bytes)
                 .map_err(Self::storage_err)?;
         }
+
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::User(user_id.clone()),
+                metadata: None,
+            }),
+            AuditAction::CredentialSet,
+            "credential",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(info)
     }
@@ -4259,6 +4524,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .delete(realm_id, &disc_key)
                 .map_err(Self::storage_err)?;
         }
+
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::User(user_id.clone()),
+                metadata: None,
+            }),
+            AuditAction::CredentialChanged,
+            "credential",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(())
     }
@@ -4496,8 +4772,20 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 9. Issue a verification token.
         let verification_token = self.issue_email_verification_token(realm_id, user.id())?;
 
+        let new_user_id = user.id().clone();
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::Anonymous,
+                metadata: None,
+            }),
+            AuditAction::UserCreated,
+            "user",
+            &new_user_id.as_uuid().to_string(),
+        )?;
+
         Ok(RegisterUserResponse {
-            user_id: user.id().clone(),
+            user_id: new_user_id,
             verification_token,
         })
     }
@@ -4606,6 +4894,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
         let user_id = UserId::new(uuid);
         self.set_password(realm_id, &user_id, new_password)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::CredentialChanged,
+            "credential",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(user_id)
     }
@@ -5089,6 +5385,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(realm_id, &key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::ClientUpdated,
+            "client",
+            &client_id.as_uuid().to_string(),
+        )?;
+
         Ok(client)
     }
 
@@ -5137,6 +5441,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(realm_id, &key, &updated_bytes)
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::ClientUpdated,
+            "client",
+            &client_id.as_uuid().to_string(),
+        )?;
+
         Ok(plaintext_secret)
     }
 
@@ -5175,6 +5487,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 }
             }
         }
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::ClientDeleted,
+            "client",
+            &client_id.as_uuid().to_string(),
+        )?;
         Ok(())
     }
 
@@ -5331,6 +5650,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Remove the legacy key if it existed to avoid stale duplicates.
         let _ = self.storage.delete(realm_id, &legacy_key);
 
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::User(user_id.clone()),
+                metadata: None,
+            }),
+            AuditAction::ConsentGranted,
+            "consent",
+            &client_id.as_uuid().to_string(),
+        )?;
+
         Ok(record)
     }
 
@@ -5359,6 +5689,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // Also clean up any lingering legacy key.
             let legacy_key = keys::encode_consent_key(user_id, client_id);
             let _ = self.storage.delete(realm_id, &legacy_key);
+            self.record_audit(
+                realm_id,
+                Some(&AuditContext {
+                    actor: Actor::User(user_id.clone()),
+                    metadata: None,
+                }),
+                AuditAction::ConsentRevoked,
+                "consent",
+                &client_id.as_uuid().to_string(),
+            )?;
             return Ok(());
         }
 
@@ -5373,6 +5713,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             self.storage
                 .delete(realm_id, &legacy_key)
                 .map_err(Self::storage_err)?;
+            self.record_audit(
+                realm_id,
+                Some(&AuditContext {
+                    actor: Actor::User(user_id.clone()),
+                    metadata: None,
+                }),
+                AuditAction::ConsentRevoked,
+                "consent",
+                &client_id.as_uuid().to_string(),
+            )?;
             return Ok(());
         }
 
@@ -5396,6 +5746,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .delete(realm_id, &entry.key)
                 .map_err(Self::storage_err)?;
         }
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::User(user_id.clone()),
+                metadata: None,
+            }),
+            AuditAction::ConsentRevoked,
+            "consent",
+            "all",
+        )?;
         Ok(count)
     }
 
@@ -5501,7 +5861,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         requests: &[CreateUserRequest],
     ) -> Result<Vec<BulkResult<User>>, IdentityError> {
-        let mut results = Vec::with_capacity(requests.len());
+        let count = requests.len();
+        let mut results = Vec::with_capacity(count);
         for (index, request) in requests.iter().enumerate() {
             let result = match self.create_user(realm_id, request) {
                 Ok(user) => BulkResult {
@@ -5515,6 +5876,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             };
             results.push(result);
         }
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::BulkUsersCreated,
+            "user",
+            &count.to_string(),
+        )?;
         Ok(results)
     }
 
@@ -5523,7 +5891,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         user_ids: &[UserId],
     ) -> Result<Vec<BulkResult<()>>, IdentityError> {
-        let mut results = Vec::with_capacity(user_ids.len());
+        let count = user_ids.len();
+        let mut results = Vec::with_capacity(count);
         for (index, user_id) in user_ids.iter().enumerate() {
             let result = match self.update_user(
                 realm_id,
@@ -5544,6 +5913,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             };
             results.push(result);
         }
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::BulkUsersDisabled,
+            "user",
+            &count.to_string(),
+        )?;
         Ok(results)
     }
 
@@ -5621,6 +5997,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             let mut key_cache = self.realm_signing_keys.lock().expect("key cache lock");
             key_cache.insert(realm_id.as_uuid().to_string(), Arc::new(realm_signing_key));
         }
+
+        self.record_audit(
+            &realm_id,
+            None,
+            AuditAction::RealmCreated,
+            "realm",
+            &realm_id.as_uuid().to_string(),
+        )?;
 
         Ok(realm)
     }
@@ -5721,6 +6105,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put_batch(realm_id, &entries)
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::UserCreated,
+            "user",
+            &user_id.as_uuid().to_string(),
+        )?;
+
         Ok(user)
     }
 
@@ -5814,6 +6206,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(realm_id, &key, &client_bytes)
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::ClientRegistered,
+            "client",
+            &client.client_id().as_uuid().to_string(),
+        )?;
+
         Ok(client)
     }
 
@@ -5872,6 +6272,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &slug_key, org_id.as_uuid().as_bytes())
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::OrgCreated,
+            "org",
+            &org_id.as_uuid().to_string(),
+        )?;
 
         Ok(org)
     }
@@ -5960,6 +6368,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &id_key, &org_bytes)
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::OrgUpdated,
+            "org",
+            &org_id.as_uuid().to_string(),
+        )?;
 
         Ok(org)
     }
@@ -6077,6 +6493,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .delete(realm_id, &id_key)
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::OrgDeleted,
+            "org",
+            &org_id.as_uuid().to_string(),
+        )?;
+
         Ok(())
     }
 
@@ -6193,6 +6617,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(realm_id, &rev_key, &membership_bytes)
             .map_err(Self::storage_err)?;
 
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::GroupMemberAdded,
+            "org_membership",
+            &user_id.as_uuid().to_string(),
+        )?;
+
         Ok(membership)
     }
 
@@ -6244,6 +6676,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .delete(realm_id, &rev_key)
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::GroupMemberRemoved,
+            "org_membership",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(())
     }
@@ -6303,6 +6743,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &rev_key, &updated_bytes)
             .map_err(Self::storage_err)?;
+
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::GroupMemberRoleChanged,
+            "org_membership",
+            &user_id.as_uuid().to_string(),
+        )?;
 
         Ok(membership)
     }
@@ -6736,6 +7184,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let bytes = serde_json::to_vec(config).map_err(|e| IdentityError::Serialization {
             reason: e.to_string(),
         })?;
+        self.record_audit(
+            &config.realm_id,
+            None,
+            AuditAction::FederationAccountLinked,
+            "idp",
+            &config.id.as_uuid().to_string(),
+        )?;
         self.storage
             .put(&config.realm_id, &key, &bytes)
             .map_err(Self::storage_err)
@@ -6838,6 +7293,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 .map_err(Self::storage_err)?;
         }
         // Now remove the connector record itself.
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::FederationAccountUnlinked,
+            "idp",
+            &idp_id.as_uuid().to_string(),
+        )?;
         let key = keys::encode_idp_key(idp_id);
         self.storage
             .delete(realm_id, &key)
@@ -6950,6 +7412,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .put(realm_id, &reverse_key, user_id.as_uuid().as_bytes())
             .map_err(Self::storage_err)?;
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::FederationAccountLinked,
+            "federation",
+            &idp_id.as_uuid().to_string(),
+        )?;
         self.storage
             .put(realm_id, &forward_key, external_sub.as_bytes())
             .map_err(Self::storage_err)
@@ -6975,6 +7444,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.storage
             .delete(realm_id, &reverse_key)
             .map_err(Self::storage_err)?;
+        self.record_audit(
+            realm_id,
+            None,
+            AuditAction::FederationAccountUnlinked,
+            "federation",
+            &idp_id.as_uuid().to_string(),
+        )?;
         self.storage
             .delete(realm_id, &forward_key)
             .map_err(Self::storage_err)
@@ -7533,23 +8009,30 @@ fn classify_phc_algorithm(phc: &str) -> Option<crate::identity::credentials::Pas
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::EmbeddedAuditEngine;
     use crate::core::{FakeClock, Timestamp};
     use crate::identity::types::RealmConfig;
-    use crate::storage::{EmbeddedStorageEngine, StorageConfig};
+    use crate::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
     fn setup_engine() -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             Arc::clone(&clock) as Arc<dyn Clock>,
             identity_config,
+            audit as Arc<dyn AuditEngine>,
         )
         .expect("engine creation");
         (dir, engine, clock)
@@ -9205,7 +9688,8 @@ mod tests {
     ) -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
@@ -9215,10 +9699,15 @@ mod tests {
             },
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             Arc::clone(&clock) as Arc<dyn Clock>,
             identity_config,
+            audit as Arc<dyn AuditEngine>,
         )
         .expect("engine creation");
         (dir, engine, clock)
@@ -9340,7 +9829,8 @@ mod tests {
     ) -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
@@ -9350,10 +9840,15 @@ mod tests {
             },
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             Arc::clone(&clock) as Arc<dyn Clock>,
             identity_config,
+            audit as Arc<dyn AuditEngine>,
         )
         .expect("engine creation");
         (dir, engine, clock)
@@ -10974,16 +11469,22 @@ mod tests {
     fn magic_link_request_returns_nonempty_token() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn crate::core::Clock>,
+        ));
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             clock.clone() as Arc<dyn crate::core::Clock>,
             identity_config,
+            audit as Arc<dyn AuditEngine>,
         )
         .expect("engine");
 
@@ -11024,16 +11525,22 @@ mod tests {
     fn magic_link_validate_returns_correct_user() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn crate::core::Clock>,
+        ));
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             clock as Arc<dyn crate::core::Clock>,
             identity_config,
+            audit as Arc<dyn AuditEngine>,
         )
         .expect("engine");
 
@@ -11059,16 +11566,22 @@ mod tests {
     fn magic_link_expired_token_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn crate::core::Clock>,
+        ));
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             clock.clone() as Arc<dyn crate::core::Clock>,
             identity_config,
+            audit as Arc<dyn AuditEngine>,
         )
         .expect("engine");
 
@@ -11097,16 +11610,22 @@ mod tests {
     fn magic_link_single_use_enforced() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn crate::core::Clock>,
+        ));
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             clock as Arc<dyn crate::core::Clock>,
             identity_config,
+            audit as Arc<dyn AuditEngine>,
         )
         .expect("engine");
 

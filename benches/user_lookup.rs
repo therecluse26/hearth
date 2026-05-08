@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     CleartextPassword, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
@@ -25,12 +26,18 @@ fn setup_user() -> (
 ) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = StorageConfig::dev(dir.path().to_path_buf());
-    let storage = EmbeddedStorageEngine::open(config).expect("open");
+    let storage =
+        Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let engine = EmbeddedIdentityEngine::new(
-        Arc::new(storage) as Arc<dyn StorageEngine>,
-        clock,
+        Arc::clone(&storage),
+        Arc::clone(&clock),
         IdentityConfig::default(),
+        Arc::clone(&audit),
     )
     .expect("engine creation");
     let realm = RealmId::generate();
@@ -78,14 +85,20 @@ fn bench_user_lookup_by_email(c: &mut Criterion) {
 fn bench_user_creation(c: &mut Criterion) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = StorageConfig::dev(dir.path().to_path_buf());
-    let storage = EmbeddedStorageEngine::open(config).expect("open");
+    let storage =
+        Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     // Use default config (full Argon2id parameters, NOT fast_for_testing)
     // to measure real-world password hashing performance.
     let engine = EmbeddedIdentityEngine::new(
-        Arc::new(storage) as Arc<dyn StorageEngine>,
-        clock,
+        Arc::clone(&storage),
+        Arc::clone(&clock),
         IdentityConfig::default(),
+        Arc::clone(&audit),
     )
     .expect("engine creation");
     let realm = RealmId::generate();

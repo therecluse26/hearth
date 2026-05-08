@@ -254,6 +254,10 @@ async fn complete_setup_targets_system_realm() {
     );
     let clock =
         std::sync::Arc::new(hearth::core::SystemClock) as std::sync::Arc<dyn hearth::core::Clock>;
+    let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
+        std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
+        std::sync::Arc::clone(&clock),
+    )) as std::sync::Arc<dyn hearth::audit::AuditEngine>;
     let identity = std::sync::Arc::new(
         hearth::identity::EmbeddedIdentityEngine::new(
             std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
@@ -262,6 +266,7 @@ async fn complete_setup_targets_system_realm() {
                 credential: hearth::identity::CredentialConfig::fast_for_testing(),
                 ..hearth::identity::IdentityConfig::default()
             },
+            std::sync::Arc::clone(&audit),
         )
         .expect("identity"),
     ) as std::sync::Arc<dyn hearth::identity::IdentityEngine>;
@@ -351,6 +356,10 @@ async fn admin_login_route_renders_form() {
     );
     let clock =
         std::sync::Arc::new(hearth::core::SystemClock) as std::sync::Arc<dyn hearth::core::Clock>;
+    let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
+        std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
+        std::sync::Arc::clone(&clock),
+    )) as std::sync::Arc<dyn hearth::audit::AuditEngine>;
     let identity = std::sync::Arc::new(
         hearth::identity::EmbeddedIdentityEngine::new(
             std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
@@ -359,6 +368,7 @@ async fn admin_login_route_renders_form() {
                 credential: hearth::identity::CredentialConfig::fast_for_testing(),
                 ..hearth::identity::IdentityConfig::default()
             },
+            std::sync::Arc::clone(&audit),
         )
         .expect("identity"),
     ) as std::sync::Arc<dyn hearth::identity::IdentityEngine>;
@@ -366,10 +376,6 @@ async fn admin_login_route_renders_form() {
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
         std::sync::Arc::clone(&clock),
     )) as std::sync::Arc<dyn hearth::rbac::RbacEngine>;
-    let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
-        std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
-        std::sync::Arc::clone(&clock),
-    )) as std::sync::Arc<dyn hearth::audit::AuditEngine>;
     let email = std::sync::Arc::new(
         hearth::identity::email::EmailService::new(
             std::sync::Arc::new(hearth::identity::email::LoggingEmailSender::new()),
@@ -451,6 +457,10 @@ async fn admin_setup_verify_login_end_to_end() {
     );
     let clock =
         std::sync::Arc::new(hearth::core::SystemClock) as std::sync::Arc<dyn hearth::core::Clock>;
+    let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
+        std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
+        std::sync::Arc::clone(&clock),
+    )) as std::sync::Arc<dyn hearth::audit::AuditEngine>;
     let identity = std::sync::Arc::new(
         hearth::identity::EmbeddedIdentityEngine::new(
             std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
@@ -459,6 +469,7 @@ async fn admin_setup_verify_login_end_to_end() {
                 credential: hearth::identity::CredentialConfig::fast_for_testing(),
                 ..hearth::identity::IdentityConfig::default()
             },
+            std::sync::Arc::clone(&audit),
         )
         .expect("identity"),
     ) as std::sync::Arc<dyn hearth::identity::IdentityEngine>;
@@ -466,10 +477,6 @@ async fn admin_setup_verify_login_end_to_end() {
         std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
         std::sync::Arc::clone(&clock),
     )) as std::sync::Arc<dyn hearth::rbac::RbacEngine>;
-    let audit = std::sync::Arc::new(hearth::audit::EmbeddedAuditEngine::new(
-        std::sync::Arc::clone(&storage) as std::sync::Arc<dyn hearth::storage::StorageEngine>,
-        std::sync::Arc::clone(&clock),
-    )) as std::sync::Arc<dyn hearth::audit::AuditEngine>;
     let email = std::sync::Arc::new(
         hearth::identity::email::EmailService::new(
             std::sync::Arc::new(hearth::identity::email::LoggingEmailSender::new()),

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use hearth::audit::EmbeddedAuditEngine;
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::migration::{ImportOptions, KeycloakImporter};
 use hearth::identity::{
@@ -44,13 +44,19 @@ fn build_engines() -> (
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
     };
+    let audit: Arc<dyn AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
     let identity: Arc<dyn IdentityEngine> = Arc::new(
-        EmbeddedIdentityEngine::new(Arc::clone(&storage), Arc::clone(&clock), identity_config)
-            .expect("identity"),
+        EmbeddedIdentityEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock),
+            identity_config,
+            Arc::clone(&audit),
+        )
+        .expect("identity"),
     );
-    // Keep audit engine constructed so the storage has the same wiring
-    // as a real deployment, even though these tests don't assert on it.
-    let _audit = EmbeddedAuditEngine::new(storage, clock);
 
     (identity, authz, temp)
 }

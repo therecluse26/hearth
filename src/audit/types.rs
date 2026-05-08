@@ -73,6 +73,11 @@ pub enum AuditAction {
     /// A member was removed from a group.
     /// Metadata carries `member_type` + `member_id`.
     GroupMemberRemoved,
+    /// A member's role within an organization was changed
+    /// (promotion / demotion).
+    ///
+    /// Metadata carries `previous_role` + `new_role`.
+    GroupMemberRoleChanged,
     /// A role was assigned to a subject (user) on an object (realm / organization / application).
     ///
     /// Metadata carries `object_type`, `object_id`, `role`, and the previous
@@ -228,6 +233,7 @@ impl AuditAction {
             Self::GroupDeleted,
             Self::GroupMemberAdded,
             Self::GroupMemberRemoved,
+            Self::GroupMemberRoleChanged,
             Self::RoleAssigned,
             Self::RoleRevoked,
             Self::OrphanedReferenceSkipped,
@@ -274,6 +280,7 @@ impl AuditAction {
             Self::GroupDeleted => "group_deleted",
             Self::GroupMemberAdded => "group_member_added",
             Self::GroupMemberRemoved => "group_member_removed",
+            Self::GroupMemberRoleChanged => "group_member_role_changed",
             Self::ConsentGranted => "consent_granted",
             Self::ConsentDenied => "consent_denied",
             Self::ConsentRevoked => "consent_revoked",
@@ -343,6 +350,7 @@ impl std::str::FromStr for AuditAction {
             "group_deleted" => Ok(Self::GroupDeleted),
             "group_member_added" => Ok(Self::GroupMemberAdded),
             "group_member_removed" => Ok(Self::GroupMemberRemoved),
+            "group_member_role_changed" => Ok(Self::GroupMemberRoleChanged),
             "consent_granted" => Ok(Self::ConsentGranted),
             "consent_denied" => Ok(Self::ConsentDenied),
             "consent_revoked" => Ok(Self::ConsentRevoked),
@@ -381,6 +389,98 @@ impl std::str::FromStr for AuditAction {
 impl std::fmt::Display for AuditAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// How the identity engine should handle a failed audit append.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditFailurePolicy {
+    /// Log a warning and continue. The mutation succeeded but the
+    /// audit event was lost; the WAL is still the durable record.
+    LogOnly,
+    /// Log an error AND return [`crate::identity::IdentityError::AuditFailure`]
+    /// to the caller. The mutation already happened (it is in the WAL),
+    /// but the caller learns that no audit trail was created.
+    FailOperation,
+}
+
+impl AuditAction {
+    /// Returns the failure policy for this action.
+    ///
+    /// Non-destructive mutations use [`AuditFailurePolicy::LogOnly`].
+    /// Destructive / security-sensitive mutations (deletions,
+    /// credential changes, consent revocations, bulk disables) use
+    /// [`AuditFailurePolicy::FailOperation`] so operators are alerted
+    /// when an auditable destructive operation happens without a
+    /// corresponding audit event.
+    #[must_use]
+    pub fn failure_policy(&self) -> AuditFailurePolicy {
+        use AuditFailurePolicy::{FailOperation, LogOnly};
+        match self {
+            // ---- LogOnly (non-destructive) ----
+            Self::UserCreated
+            | Self::UserUpdated
+            | Self::CredentialSet
+            | Self::CredentialVerified
+            | Self::SessionCreated
+            | Self::TokenIssued
+            | Self::TokenRefreshed
+            | Self::RealmCreated
+            | Self::RealmUpdated
+            | Self::ClientRegistered
+            | Self::ClientUpdated
+            | Self::AuthorizationCodeIssued
+            | Self::AuthorizationCodeExchanged
+            | Self::TupleWritten
+            | Self::OrgCreated
+            | Self::OrgUpdated
+            | Self::GroupCreated
+            | Self::GroupUpdated
+            | Self::GroupMemberAdded
+            | Self::GroupMemberRoleChanged
+            | Self::BulkUsersCreated
+            | Self::ConsentGranted
+            | Self::FederationLoginStarted
+            | Self::FederationLoginCompleted
+            | Self::FederationAccountLinked
+            | Self::FederationJitProvisioned
+            | Self::SamlLoginInitiated
+            | Self::SamlLoginCompleted
+            | Self::SamlIdpAuthnRequestReceived
+            | Self::SamlIdpResponseIssued
+            | Self::SamlIdpInitiatedSso
+            | Self::SamlSloRequested
+            | Self::SamlSloCompleted
+            | Self::ScimUserCreated
+            | Self::ScimUserUpdated
+            | Self::ScimGroupCreated
+            | Self::ScimGroupUpdated
+            | Self::RoleAssigned
+            | Self::UserPermissionGranted
+            | Self::UserPermissionRevoked
+            | Self::ClientConsentGranted
+            | Self::OrphanedReferenceSkipped
+            | Self::ConsentRequiredOnRefresh => LogOnly,
+            // ---- FailOperation (destructive / security-sensitive) ----
+            Self::UserDeleted
+            | Self::CredentialChanged
+            | Self::SessionRevoked
+            | Self::RealmDeleted
+            | Self::ClientDeleted
+            | Self::TupleDeleted
+            | Self::OrgDeleted
+            | Self::GroupDeleted
+            | Self::GroupMemberRemoved
+            | Self::BulkUsersDisabled
+            | Self::ConsentRevoked
+            | Self::ConsentDenied
+            | Self::FederationAccountUnlinked
+            | Self::SamlLoginFailed
+            | Self::ScimUserDeleted
+            | Self::ScimGroupDeleted
+            | Self::RoleRevoked
+            | Self::ClientConsentRevoked => FailOperation,
+        }
     }
 }
 

@@ -61,6 +61,10 @@ fn build_rig(realm_names: &[&str], default_realm: Option<&str>) -> Rig {
         EmbeddedStorageEngine::open(StorageConfig::dev(data_dir.clone())).expect("open storage"),
     );
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+    )) as Arc<dyn hearth::audit::AuditEngine>;
     let identity = Arc::new(
         EmbeddedIdentityEngine::new(
             Arc::clone(&storage) as Arc<dyn StorageEngine>,
@@ -69,6 +73,7 @@ fn build_rig(realm_names: &[&str], default_realm: Option<&str>) -> Rig {
                 credential: CredentialConfig::fast_for_testing(),
                 ..IdentityConfig::default()
             },
+            Arc::clone(&audit),
         )
         .expect("identity engine"),
     ) as Arc<dyn IdentityEngine>;
@@ -76,10 +81,6 @@ fn build_rig(realm_names: &[&str], default_realm: Option<&str>) -> Rig {
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
     )) as Arc<dyn RbacEngine>;
-    let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
-        Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        Arc::clone(&clock),
-    )) as Arc<dyn hearth::audit::AuditEngine>;
 
     for name in realm_names {
         identity

@@ -108,22 +108,26 @@ impl TestHarness {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit_engine = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        ));
         let identity_engine = EmbeddedIdentityEngine::with_rbac(
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
             identity_config,
             Arc::clone(&rbac_engine) as Arc<dyn RbacEngine>,
+            Arc::clone(&audit_engine) as Arc<dyn AuditEngine>,
         )
         .expect("identity engine creation");
-        let audit_engine =
-            EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
+        let identity_engine = Arc::new(identity_engine);
 
         Ok(Self {
             mode: HarnessMode::Embedded,
             engine,
             rbac_engine,
-            identity_engine: Arc::new(identity_engine),
-            audit_engine: Arc::new(audit_engine),
+            identity_engine,
+            audit_engine,
             _temp_dir: temp_dir,
         })
     }

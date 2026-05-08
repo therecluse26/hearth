@@ -1,17 +1,17 @@
 # Completeness Analysis — Hearth
-_Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Code rev: a7c028d_
+_Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Code rev: a7c028d · Updated: 2026-05-07_
 
 ## Summary
 
 - **Phase 0 (Foundation):** 148/148 test scenarios passing. Core engine is solid.
-- **Phase 1 (Production Single-Node):** ~90% complete. Several P0 gaps remain.
+- **Phase 1 (Production Single-Node):** ~95% complete. P0 gaps closing.
 - **Phase 2 (Clustering):** Not started. Entire `src/cluster/` is a stub.
 
 ### Top 5 Production Blockers
 
-1. **~~Encryption at rest~~** — ✅ RESOLVED (2026-05-06). Envelope encryption (AES-256-GCM) with DEK/KEK, per-realm keys, host key from env var or auto-gen, SST/WAL fully encrypted.
+1. **~~Encryption at rest~~** — ✅ RESOLVED (2026-05-06).
 
-2. **Audit logging is not wired** — `src/audit/` has a full `AuditEngine` trait with `append`, `query`, `verify_integrity` but `EmbeddedIdentityEngine` (11,600 lines) holds no audit reference and makes zero audit calls for security-critical mutations.
+2. **~~Audit logging is not wired~~** — ✅ RESOLVED (2026-05-07). `EmbeddedIdentityEngine` now holds `Arc<dyn AuditEngine>`. 47 mutation methods emit audit events (`src/identity/engine.rs`). Failure policy: `FailOperation` for destructive mutations (delete, credential change, session revoke, consent revoke), `LogOnly` for non-destructive. `AuditContext { actor: Actor, metadata }` type in `src/audit/context.rs`. 3 redundant protocol-layer audit calls removed (consent grant, consent revoke, session self-revoke). Follow-up: metadata-threading for remaining protocol-layer audit sites (4 federation + 1 SAML + registration IP).
 
 3. **No periodic cleanup** — expired authorization codes, device codes, grant families, and pending authorization tickets accumulate indefinitely with no background reaper.
 
@@ -117,7 +117,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 ### P0 — Must fix before production deploy
 
 - [x] **[P0][L]** Implement encryption at rest: envelope encryption (AES-256-GCM), DEK/KEK, SST header encryption fields, WAL per-segment encryption, per-realm keys — resolves gaps #1 · _depends on: none_
-- [ ] **[P0][M]** Wire `AuditEngine` into `EmbeddedIdentityEngine` — hold `Arc<dyn AuditEngine>`, call `audit.append()` for every security-critical mutation — resolves gaps #2 · _depends on: none_
+- [x] **[P0][M]** Wire `AuditEngine` into `EmbeddedIdentityEngine` — hold `Arc<dyn AuditEngine>`, call `audit.append()` for every security-critical mutation — resolves gaps #2 · _depends on: none_ ✅ DONE (2026-05-07)
 - [ ] **[P0][S]** Add periodic cleanup background task: sweep expired authorization codes, device codes, grant families, pending authorization tickets — resolves gaps #3 · _depends on: none_
 - [ ] **[P0][M]** Implement hot tier auto-sizing: read `/proc/meminfo` or cgroup `memory.limit_in_bytes`, reserve margin (20% or 2GB), allocate remainder; respect `storage.hot_tier_max_memory` override — resolves gaps #4 · _depends on: none_
 - [ ] **[P0][M]** Add background compaction loop to `EmbeddedStorageEngine`: periodically merge accumulated SST files — resolves gaps #5 · _depends on: none_

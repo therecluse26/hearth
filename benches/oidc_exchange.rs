@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     AuthorizationRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig,
@@ -24,12 +25,18 @@ fn setup_oidc() -> (
 ) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = StorageConfig::dev(dir.path().to_path_buf());
-    let storage = EmbeddedStorageEngine::open(config).expect("open");
+    let storage =
+        Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let engine = EmbeddedIdentityEngine::new(
-        Arc::new(storage) as Arc<dyn StorageEngine>,
-        clock,
+        Arc::clone(&storage),
+        Arc::clone(&clock),
         IdentityConfig::default(),
+        Arc::clone(&audit),
     )
     .expect("engine creation");
     let realm = RealmId::generate();
@@ -44,6 +51,7 @@ fn setup_oidc() -> (
                 grant_types: vec!["authorization_code".to_string()],
                 require_consent: true,
                 client_logo_url: None,
+                ..Default::default()
             },
         )
         .expect("register client");
@@ -84,6 +92,7 @@ fn bench_auth_code_exchange(c: &mut Criterion) {
                         redirect_uri: "https://bench.example.com/callback".to_string(),
                         scope: "openid".to_string(),
                         state: "bench-state".to_string(),
+                        resource: None,
                         response_type: "code".to_string(),
                         user_id: user_id.clone(),
                         code_challenge: None,

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use hearth::audit::EmbeddedAuditEngine;
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock, UserId};
 use hearth::identity::{
     CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
@@ -283,23 +283,26 @@ fn build_router() -> axum::Router {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
     };
+    let audit_engine = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&engine) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let identity_engine = EmbeddedIdentityEngine::new(
         Arc::clone(&engine) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
         identity_config,
+        Arc::clone(&audit_engine),
     )
     .expect("identity engine");
     let authz_engine = EmbeddedRbacEngine::new(
         Arc::clone(&engine) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
     );
-    let audit_engine =
-        EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
 
     let state = Arc::new(AppState::new(
         Arc::new(identity_engine),
         Arc::new(authz_engine),
-        Arc::new(audit_engine),
+        audit_engine,
     ));
     router(state)
 }

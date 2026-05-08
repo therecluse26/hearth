@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     CreateRealmRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
@@ -73,10 +74,15 @@ fn open_engines(
     let storage =
         Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let identity = EmbeddedIdentityEngine::new(
         Arc::clone(&storage),
         Arc::clone(&clock),
         IdentityConfig::default(),
+        Arc::clone(&audit),
     )
     .expect("identity engine");
     let authz = EmbeddedRbacEngine::new(Arc::clone(&storage), Arc::clone(&clock));

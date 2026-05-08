@@ -835,6 +835,10 @@ fn identity_error_to_response(
         }
         IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
         IdentityError::InvalidAttribute { .. } => (StatusCode::BAD_REQUEST, "invalid attribute"),
+        IdentityError::AuditFailure { .. } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error: audit record failed",
+        ),
     };
 
     (status, Json(serde_json::json!({"error": message})))
@@ -2126,17 +2130,7 @@ async fn self_revoke_consent(
         .revoke_consent(&realm_id, &user_id, &client_id)
     {
         Ok(()) => {
-            let _ = state.audit.append(&crate::audit::CreateAuditEvent {
-                realm_id: realm_id.clone(),
-                actor: user_id.as_uuid().to_string(),
-                action: crate::audit::AuditAction::ConsentRevoked,
-                resource_type: "oauth_client".to_string(),
-                resource_id: client_id.as_uuid().to_string(),
-                metadata: Some(serde_json::json!({
-                    "via": "self",
-                    "client_id": client_id.as_uuid().to_string(),
-                })),
-            });
+            // Engine now emits ConsentRevoked internally.
             (StatusCode::NO_CONTENT, ()).into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
@@ -2955,20 +2949,23 @@ mod tests {
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
         ));
+        let audit_engine = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        ));
         let identity_engine = EmbeddedIdentityEngine::with_rbac(
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
             identity_config,
             Arc::clone(&rbac_engine),
+            Arc::clone(&audit_engine) as Arc<dyn AuditEngine>,
         )
         .expect("identity engine");
-        let audit_engine =
-            EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
 
         Arc::new(AppState::new(
             Arc::new(identity_engine),
             rbac_engine,
-            Arc::new(audit_engine),
+            audit_engine.clone() as Arc<dyn AuditEngine>,
         ))
     }
 
@@ -2985,20 +2982,23 @@ mod tests {
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
         ));
+        let audit_engine = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&engine) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        ));
         let identity_engine = EmbeddedIdentityEngine::with_rbac(
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
             identity_config,
             Arc::clone(&rbac_engine),
+            Arc::clone(&audit_engine) as Arc<dyn AuditEngine>,
         )
         .expect("identity engine");
-        let audit_engine =
-            EmbeddedAuditEngine::new(Arc::clone(&engine) as Arc<dyn StorageEngine>, clock);
 
         Arc::new(AppState::new_dev(
             Arc::new(identity_engine),
             rbac_engine,
-            Arc::new(audit_engine),
+            audit_engine.clone() as Arc<dyn AuditEngine>,
         ))
     }
 

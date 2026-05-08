@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use hearth::audit::EmbeddedAuditEngine;
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     CreateRealmRequest, CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine,
@@ -38,19 +38,20 @@ fn build_rig() -> Rig {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
     };
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&engine) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let identity = Arc::new(
         EmbeddedIdentityEngine::new(
             Arc::clone(&engine) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
             identity_config,
+            Arc::clone(&audit),
         )
         .expect("identity engine"),
     );
     let authz = Arc::new(EmbeddedRbacEngine::new(
-        Arc::clone(&engine) as Arc<dyn StorageEngine>,
-        Arc::clone(&clock),
-    ));
-    let audit = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&engine) as Arc<dyn StorageEngine>,
         Arc::clone(&clock),
     ));

@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, FakeClock, RealmId, Timestamp};
 use hearth::identity::{
     CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
@@ -26,16 +27,22 @@ fn simulation_crash_recovery_sessions() {
     // Phase 1: Create users and sessions, then drop (crash)
     {
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("open");
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        )) as Arc<dyn AuditEngine>;
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             Arc::clone(&clock) as Arc<dyn Clock>,
             identity_config,
+            Arc::clone(&audit),
         )
         .expect("engine");
 
@@ -62,16 +69,22 @@ fn simulation_crash_recovery_sessions() {
     // Phase 2: Recover from WAL and verify all sessions survived
     {
         let config = StorageConfig::dev(dir.path().to_path_buf());
-        let storage = EmbeddedStorageEngine::open(config).expect("reopen");
+        let storage = Arc::new(EmbeddedStorageEngine::open(config).expect("reopen"))
+            as Arc<dyn StorageEngine>;
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
         let identity_config = IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        )) as Arc<dyn AuditEngine>;
         let engine = EmbeddedIdentityEngine::new(
-            Arc::new(storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&storage),
             Arc::clone(&clock) as Arc<dyn Clock>,
             identity_config,
+            Arc::clone(&audit),
         )
         .expect("engine recovery");
 
@@ -105,16 +118,22 @@ fn simulation_ttl_clock_skew() {
     let realm = RealmId::generate();
 
     let config = StorageConfig::dev(dir.path().to_path_buf());
-    let storage = EmbeddedStorageEngine::open(config).expect("open");
+    let storage =
+        Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
     let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
     let identity_config = IdentityConfig {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
     };
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    )) as Arc<dyn AuditEngine>;
     let engine = EmbeddedIdentityEngine::new(
-        Arc::new(storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&storage),
         Arc::clone(&clock) as Arc<dyn Clock>,
         identity_config.clone(),
+        Arc::clone(&audit),
     )
     .expect("engine");
 

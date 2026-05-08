@@ -524,16 +524,8 @@ pub async fn consent_submit(
                 tracing::warn!(error = %e, "grant_consent failed");
                 return handlers_common::server_error();
             }
-
-            audit_consent_event(
-                &state,
-                &session.realm_id,
-                &session.user_id,
-                &pending.client_id,
-                AuditAction::ConsentGranted,
-                &approved,
-                "self",
-            );
+            // Engine now emits ConsentGranted internally; metadata-threading
+            // for via/scopes context tracked in follow-up.
 
             let method = pending.code_challenge_method.as_deref().and_then(|m| {
                 if m == "S256" {

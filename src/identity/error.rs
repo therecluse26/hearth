@@ -339,6 +339,18 @@ pub enum IdentityError {
         /// Description of what was invalid.
         reason: String,
     },
+    /// A security-critical mutation succeeded but the audit event
+    /// could not be recorded. The operation is durable (WAL was
+    /// written) but the audit trail has a gap.
+    ///
+    /// Only returned for actions whose [`AuditAction::failure_policy`] is
+    /// [`AuditFailurePolicy::FailOperation`].
+    AuditFailure {
+        /// The action that could not be recorded.
+        action: String,
+        /// Why the audit append failed.
+        reason: String,
+    },
 }
 
 impl fmt::Display for IdentityError {
@@ -484,6 +496,12 @@ impl fmt::Display for IdentityError {
                 "resolved claim set exceeds size limit {limit} ({actual} > {limit_value})"
             ),
             Self::InvalidAttribute { reason } => write!(f, "invalid attribute: {reason}"),
+            Self::AuditFailure { action, reason } => {
+                write!(
+                    f,
+                    "audit append failed for destructive action '{action}': {reason}"
+                )
+            }
         }
     }
 }
@@ -574,7 +592,8 @@ impl std::error::Error for IdentityError {
             | Self::Serialization { .. }
             | Self::Internal { .. }
             | Self::TokenTooLarge { .. }
-            | Self::InvalidAttribute { .. } => None,
+            | Self::InvalidAttribute { .. }
+            | Self::AuditFailure { .. } => None,
         }
     }
 }

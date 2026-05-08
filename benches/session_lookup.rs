@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
@@ -22,12 +23,18 @@ fn setup_session() -> (
 ) {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = StorageConfig::dev(dir.path().to_path_buf());
-    let storage = EmbeddedStorageEngine::open(config).expect("open");
+    let storage =
+        Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let engine = EmbeddedIdentityEngine::new(
-        Arc::new(storage) as Arc<dyn StorageEngine>,
-        clock,
+        Arc::clone(&storage),
+        Arc::clone(&clock),
         IdentityConfig::default(),
+        Arc::clone(&audit),
     )
     .expect("engine creation");
     let realm = RealmId::generate();

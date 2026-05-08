@@ -76,7 +76,8 @@ pub(crate) fn domain_audit_action_to_proto(a: &domain::AuditAction) -> pb::Audit
         | domain::AuditAction::GroupUpdated
         | domain::AuditAction::GroupDeleted
         | domain::AuditAction::GroupMemberAdded
-        | domain::AuditAction::GroupMemberRemoved => pb::AuditAction::Unspecified,
+        | domain::AuditAction::GroupMemberRemoved
+        | domain::AuditAction::GroupMemberRoleChanged => pb::AuditAction::Unspecified,
     }
 }
 

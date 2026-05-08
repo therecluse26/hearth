@@ -17,6 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::email::{EmailBranding, EmailError, EmailMessage, EmailSender, EmailService};
 use hearth::identity::onboarding::{
@@ -95,9 +96,18 @@ impl TestEnv {
             credential: CredentialConfig::fast_for_testing(),
             ..IdentityConfig::default()
         };
+        let audit: Arc<dyn AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage_dyn),
+            Arc::clone(&clock),
+        ));
         let identity: Arc<dyn IdentityEngine> = Arc::new(
-            EmbeddedIdentityEngine::new(Arc::clone(&storage_dyn), clock, identity_cfg)
-                .expect("identity engine"),
+            EmbeddedIdentityEngine::new(
+                Arc::clone(&storage_dyn),
+                Arc::clone(&clock),
+                identity_cfg,
+                Arc::clone(&audit),
+            )
+            .expect("identity engine"),
         );
         let email_service = Arc::new(
             EmailService::new(
@@ -587,8 +597,19 @@ fn complete_setup_surfaces_email_delivery_failure() {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()
     };
-    let identity: Arc<dyn IdentityEngine> =
-        Arc::new(EmbeddedIdentityEngine::new(storage_dyn, clock, identity_cfg).expect("identity"));
+    let audit: Arc<dyn AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage_dyn),
+        Arc::clone(&clock),
+    ));
+    let identity: Arc<dyn IdentityEngine> = Arc::new(
+        EmbeddedIdentityEngine::new(
+            Arc::clone(&storage_dyn),
+            Arc::clone(&clock),
+            identity_cfg,
+            Arc::clone(&audit),
+        )
+        .expect("identity"),
+    );
     let email_service = Arc::new(
         EmailService::new(
             Arc::new(FailingEmailSender) as hearth::identity::SharedEmailSender,

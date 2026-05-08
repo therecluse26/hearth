@@ -106,6 +106,7 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::FederationUpstreamError { .. }
         | IdentityError::SamlMetadataFetch { .. }
         | IdentityError::ConfigInvalid { .. }
+        | IdentityError::AuditFailure { .. }
         | IdentityError::Internal { .. } => {
             tracing::error!(error = %err, "internal gRPC error");
             (Code::Internal, "internal error".to_string())

@@ -22,6 +22,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     CreateRealmRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, UpdateRealmRequest,
@@ -53,11 +54,16 @@ fn open_engines_with_fs(
     let storage = Arc::new(EmbeddedStorageEngine::open_with_fs(config, fs).expect("open storage"))
         as Arc<dyn StorageEngine>;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let identity = Arc::new(
         EmbeddedIdentityEngine::new(
             Arc::clone(&storage),
             Arc::clone(&clock),
             IdentityConfig::default(),
+            Arc::clone(&audit),
         )
         .expect("identity engine"),
     );
@@ -70,11 +76,16 @@ fn open_engines_real(dir: &Path) -> (Arc<dyn StorageEngine>, Arc<EmbeddedIdentit
     let storage = Arc::new(EmbeddedStorageEngine::open(config).expect("open storage"))
         as Arc<dyn StorageEngine>;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    )) as Arc<dyn AuditEngine>;
     let identity = Arc::new(
         EmbeddedIdentityEngine::new(
             Arc::clone(&storage),
             Arc::clone(&clock),
             IdentityConfig::default(),
+            Arc::clone(&audit),
         )
         .expect("identity engine"),
     );

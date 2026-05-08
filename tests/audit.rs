@@ -28,16 +28,10 @@ async fn audit_lifecycle_via_embedded_api() {
         .expect("create realm");
     let realm_id = realm.id().clone();
 
-    // Perform a series of mutations and record audit events
+    // Perform a series of mutations and record audit events.
+    // Note: the engine now emits RealmCreated automatically when
+    // create_realm is called above, so we skip the manual RealmCreated.
     let events_to_create = vec![
-        CreateAuditEvent {
-            realm_id: realm_id.clone(),
-            actor: "admin".to_string(),
-            action: AuditAction::RealmCreated,
-            resource_type: "realm".to_string(),
-            resource_id: realm_id.to_string(),
-            metadata: None,
-        },
         CreateAuditEvent {
             realm_id: realm_id.clone(),
             actor: "admin".to_string(),
@@ -75,11 +69,12 @@ async fn audit_lifecycle_via_embedded_api() {
     assert_eq!(
         all_events.len(),
         4,
-        "should have 4 audit events, got {}",
+        "should have 4 audit events (1 engine-emitted RealmCreated + 3 manual), got {}",
         all_events.len()
     );
 
-    // Verify event trail matches creation order
+    // Verify event trail matches creation order.
+    // events[0] is the engine-emitted RealmCreated from create_realm above.
     assert_eq!(all_events[0].action, AuditAction::RealmCreated);
     assert_eq!(all_events[1].action, AuditAction::UserCreated);
     assert_eq!(all_events[2].action, AuditAction::CredentialSet);
