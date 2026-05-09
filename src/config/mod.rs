@@ -11,7 +11,7 @@ pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
 pub use types::parse_duration_to_micros;
 pub use types::{
-    ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, EmailConfig,
+    ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, CompactionSection, EmailConfig,
     EmailTransport, FederationProviderYaml, FederationYamlConfig, LinkModeYaml, MailgunConfig,
     MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig, OnboardingConfig,
     OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
@@ -163,6 +163,7 @@ impl Config {
                 hot_tier_capacity: Some(1_000),
                 hot_tier_max_memory: None,
                 fsync: false,
+                compaction: CompactionSection::default(),
             },
             observability: ObservabilityConfig {
                 log_level: "debug".to_string(),

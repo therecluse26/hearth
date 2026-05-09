@@ -4,11 +4,17 @@ Hearth is a purpose-built identity database: a single-binary Rust server for aut
 
 ## Ground Rules (ALWAYS follow)
 
-### Tool Selection
+### Tool Selection — ALWAYS use Reflex, NEVER use built-in grep/glob
 
-**Before using ANY search tool, check if Reflex MCP tools are available (`mcp__reflex__*`). Prefer them over built-in tools.**
+Reflex MCP tools (`mcp__reflex__*`) are available. Use them for ALL code search and exploration — never use the built-in `grep`, `glob`, or `read` tools for searching code.
 
-If you see `Index not found. Run 'rfx index' to build the cache first`, run `mcp__reflex__index_project` immediately, then retry.
+| Instead of | Use |
+|-----------|-----|
+| `grep` / `rg` | `mcp__reflex__search_code` (simple text) or `mcp__reflex__search_regex` (regex patterns) |
+| `glob` | `mcp__reflex__search_code` with `paths=true` or `mcp__reflex__list_locations` |
+| `read` (to explore unknown files) | `mcp__reflex__search_code` first to find relevant locations, THEN `read` |
+
+If you see `Index not found. Run 'rfx index' to build the cache first`, run `mcp__reflex__index_project` immediately, then retry the failed tool.
 
 ### First Commands After Clone
 

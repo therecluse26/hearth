@@ -25,7 +25,7 @@ pub(crate) mod sst;
 mod tiered;
 pub mod wal;
 
-pub use engine::{EmbeddedStorageEngine, StorageConfig};
+pub use engine::{CompactionConfig, EmbeddedStorageEngine, StorageConfig};
 pub use error::StorageError;
 pub use fs::{Fs, FsFile, RealFs};
 

@@ -157,6 +157,8 @@ pub(crate) struct SstReader {
     entries: Vec<(CompositeKey, MemtableValue)>,
     /// Number of entries as declared in the header.
     entry_count: u32,
+    /// Monotonically increasing SST file number for path derivation.
+    sst_number: u64,
 }
 
 impl SstReader {
@@ -231,6 +233,7 @@ impl SstReader {
         Ok(Self {
             entries,
             entry_count,
+            sst_number,
         })
     }
 
@@ -279,6 +282,11 @@ impl SstReader {
     /// Returns the entry count as declared in the SST header.
     pub(crate) fn entry_count(&self) -> u32 {
         self.entry_count
+    }
+
+    /// Returns the SST file number used for path derivation.
+    pub(crate) fn sst_number(&self) -> u64 {
+        self.sst_number
     }
 
     /// Deserializes the data section into entries.

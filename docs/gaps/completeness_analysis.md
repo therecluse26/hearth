@@ -17,7 +17,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 
 4. **~~Hot tier auto-sizing missing~~** — ✅ RESOLVED (2026-05-08). Capacity now auto-sizes from `/proc/meminfo` `MemAvailable`, cgroup v2 `memory.max`, or cgroup v1 `memory.limit_in_bytes` (with sentinel detection). Reserves margin (`max(20%, 2 GiB)`) and converts bytes to entries via estimated `ESTIMATED_BYTES_PER_HOT_ENTRY = 1024`. `hot_tier_capacity` in YAML is now `Option<usize>` (`None` = auto-size). `hot_tier_max_memory` provides an explicit memory budget override. `StorageConfig::production()` constructor wires the full `[storage]` YAML section — fixing a latent bug where `StorageConfig::dev()` was used even in production mode, ignoring all storage settings.
 
-5. **Background compaction** — `sst.rs:381` — `compact()` exists but never called automatically. SSTs accumulate.
+5. **~~Background compaction~~** — ✅ RESOLVED (2026-05-08). Background `tokio::spawn` task periodically calls `compact_ssts()` at a configurable interval (default 3600s). Merges all SSTs into a single file via `sst::compact_with_fs()` (newest-value-wins, tombstone removal). Writes to `.sst.tmp` + atomic rename for crash safety. Acquires `flush_lock` to serialize with flushes; offloaded to `spawn_blocking` to avoid blocking Tokio workers. Old SST deletion is best-effort after rename — leaked files after crash are harmless orphans cleaned up by the next compaction. Configurable via `[storage.compaction]` YAML section (all fields optional: `enabled`, `interval_secs`, `min_sst_count`).
 
 6. **Token size cap enforcement** — AUTHZ §2.6, §5.4 — Error variant exists but no `validate_token_size()` function.
 
@@ -39,7 +39,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 | 2 | **Audit engine not wired** | ARCH §8.5 | `src/identity/engine.rs` has zero `audit::` references. `EmbeddedIdentityEngine` holds no `Arc<dyn AuditEngine>`. |
 | 3 | **No periodic cleanup** | — | **✅ RESOLVED (2026-05-08).** Background `tokio::spawn` task runs `sweep_expired()` on a configurable interval (default 300s). Sweeps expired authorization codes (`oauth:code:`), device codes (`oauth:device:` + `oauth:ucode:`), pending authorization tickets (`oauth:pending_auth:`), and grant families (`oauth:family:`). Grant families carry a new `expires_at` field (extended on rotation, sliding). Best-effort per-entity-type error handling. Summary `AuditAction::Cleanup` audit event emitted per realm per sweep. `IdentityConfig.cleanup` (enabled, interval_secs, max_per_type). |
 | 4 | **Hot tier auto-sizing** | ARCH §6.2 | ✅ RESOLVED (2026-05-08). Auto-sizing via /proc/meminfo + cgroup v1/v2. Margin: max(20%, 2 GiB). hot_tier_capacity is now Option<usize>. hot_tier_max_memory override. StorageConfig::production() wires the full storage section. |
-| 5 | **Background compaction** | — | `sst.rs:381` — `compact()` exists but never called automatically. SSTs accumulate. |
+| 5 | **~~Background compaction~~** | — | ✅ RESOLVED (2026-05-08). Background `tokio::spawn` task periodically calls `compact_ssts()` at configurable interval (default 3600s). Writes to `.sst.tmp` + atomic rename for crash safety. Offloaded to `spawn_blocking`. Configurable via `[storage.compaction]` YAML section. |
 | 6 | **Token size cap enforcement** | AUTHZ §2.6, §5.4 | Error variant exists but no `validate_token_size()` function. |
 | 7 | **`/admin/users/{id}/effective-permissions` REST endpoint** | AUTHZ §8.2 | No route in `src/protocol/http.rs`. Only available via gRPC/UI. |
 | 8 | **Dynamic Client Registration (RFC 7591)** | AGENT_AUTH §2.7 | No `POST /register` endpoint. |
@@ -122,7 +122,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 - [x] **[P0][M]** Wire `AuditEngine` into `EmbeddedIdentityEngine` — hold `Arc<dyn AuditEngine>`, call `audit.append()` for every security-critical mutation — resolves gaps #2 · _depends on: none_ ✅ DONE (2026-05-07)
 - [x] **[P0][S]** Add periodic cleanup background task: sweep expired authorization codes, device codes, grant families, pending authorization tickets — resolves gaps #3 · _depends on: none_ ✅ DONE (2026-05-08)
 - [x] **[P0][M]** Implement hot tier auto-sizing: read `/proc/meminfo` or cgroup `memory.limit_in_bytes`, reserve margin (20% or 2GB), allocate remainder; respect `storage.hot_tier_max_memory` override — resolves gaps #4 · _depends on: none_ ✅ DONE (2026-05-08)
-- [ ] **[P0][M]** Add background compaction loop to `EmbeddedStorageEngine`: periodically merge accumulated SST files — resolves gaps #5 · _depends on: none_
+- [x] **[P0][M]** Add background compaction loop to `EmbeddedStorageEngine`: periodically merge accumulated SST files — resolves gaps #5 · _depends on: none_ ✅ DONE (2026-05-08)
 - [ ] **[P0][S]** Implement `identity::validate_token_size()` — enforce permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB; call from `issue_tokens_with_context` — resolves gaps #6 · _depends on: none_
 - [ ] **[P0][S]** Add `GET /admin/users/{id}/effective-permissions` REST endpoint to `http.rs` — resolves gaps #7 · _depends on: none_
 - [ ] **[P0][M]** Implement Dynamic Client Registration (RFC 7591) `POST /register` endpoint — resolves gaps #8 · _depends on: none_

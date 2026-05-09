@@ -36,6 +36,10 @@ storage:
   memtable_flush_bytes: 67108864          # 64 MiB  — memtable→SST flush threshold
   hot_tier_capacity: 10000                # entries cached in the hot tier
   fsync: true                             # MUST be true in production; dev mode disables this
+  # compaction:                            # optional — all fields have defaults shown below
+  #   enabled: true                       # whether background SST compaction runs
+  #   interval_secs: 3600                 # seconds between compaction sweeps
+  #   min_sst_count: 3                    # compact only when SST count >= this threshold
 
 observability:
   log_level: "info"      # trace | debug | info | warn | error

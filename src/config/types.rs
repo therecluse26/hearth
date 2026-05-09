@@ -109,6 +109,42 @@ impl Default for ServerConfig {
     }
 }
 
+/// Background SST compaction configuration (all fields optional).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompactionSection {
+    /// Whether automatic background compaction is enabled.
+    #[serde(default = "CompactionSection::default_enabled")]
+    pub enabled: bool,
+    /// Seconds between periodic compaction sweeps.
+    #[serde(default = "CompactionSection::default_interval_secs")]
+    pub interval_secs: u64,
+    /// Minimum SST files before a compaction is attempted.
+    #[serde(default = "CompactionSection::default_min_sst_count")]
+    pub min_sst_count: usize,
+}
+
+impl Default for CompactionSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 3600,
+            min_sst_count: 3,
+        }
+    }
+}
+
+impl CompactionSection {
+    const fn default_enabled() -> bool {
+        true
+    }
+    const fn default_interval_secs() -> u64 {
+        3600
+    }
+    const fn default_min_sst_count() -> usize {
+        3
+    }
+}
+
 /// Storage engine configuration.
 ///
 /// These values control WAL, memtable, and hot tier behavior.
@@ -138,6 +174,9 @@ pub struct StorageSection {
     /// Whether to fsync WAL writes. MUST be true in production.
     #[serde(default = "StorageSection::default_fsync")]
     pub fsync: bool,
+    /// Background SST compaction (all fields optional).
+    #[serde(default)]
+    pub compaction: CompactionSection,
 }
 
 impl StorageSection {
@@ -167,6 +206,7 @@ impl Default for StorageSection {
             hot_tier_capacity: None,
             hot_tier_max_memory: None,
             fsync: Self::default_fsync(),
+            compaction: CompactionSection::default(),
         }
     }
 }

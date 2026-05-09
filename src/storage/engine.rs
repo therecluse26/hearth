@@ -38,6 +38,29 @@ pub struct StorageConfig {
     /// Operators can use this as an escape hatch to recover from a
     /// partly-corrupted `hearth.keys` file without recompiling.
     pub allow_missing_keks: bool,
+    /// Background SST compaction configuration.
+    pub compaction: CompactionConfig,
+}
+
+/// Configuration for background SST compaction.
+#[derive(Debug, Clone)]
+pub struct CompactionConfig {
+    /// Whether automatic background compaction is enabled.
+    pub enabled: bool,
+    /// Interval between compaction attempts in seconds.
+    pub interval_secs: u64,
+    /// Minimum number of SST files before compaction is triggered.
+    pub min_sst_count: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 3600,
+            min_sst_count: 3,
+        }
+    }
 }
 
 impl StorageConfig {
@@ -57,6 +80,7 @@ impl StorageConfig {
             memtable_config: MemtableConfig::default(),
             tiered_config: TieredConfig::default(),
             allow_missing_keks: false,
+            compaction: CompactionConfig::default(),
         }
     }
 
@@ -95,6 +119,7 @@ impl StorageConfig {
                 eviction_batch_size: 64,
             },
             allow_missing_keks: false,
+            compaction: CompactionConfig::default(),
         }
     }
 
@@ -116,6 +141,11 @@ impl StorageConfig {
                 eviction_batch_size: 10,
             },
             allow_missing_keks: false,
+            compaction: CompactionConfig {
+                enabled: false,
+                interval_secs: 0,
+                min_sst_count: 2,
+            },
         }
     }
 }
@@ -376,6 +406,111 @@ impl EmbeddedStorageEngine {
         self.active_memtable.clear()?;
 
         Ok(())
+    }
+}
+
+impl EmbeddedStorageEngine {
+    /// Compacts all current SST files into a single output SST.
+    ///
+    /// Returns the number of SSTs compacted (0 if the count is below
+    /// `min_sst_count`). Writes to a temporary path and atomically
+    /// renames for crash safety.
+    ///
+    /// Acquires the flush lock to serialize with memtable flushes.
+    /// Callers in async contexts should wrap this in `spawn_blocking`
+    /// to avoid blocking Tokio worker threads.
+    ///
+    /// # Crash Safety
+    ///
+    /// The compacted SST is written to a `.sst.tmp` path and atomically
+    /// renamed to `{num:06}.sst`. If the process crashes **after** the
+    /// rename but **before** old SST files are deleted, both old and new
+    /// SSTs coexist on disk. Recovery handles this correctly — the newer
+    /// SST (higher number) takes priority for duplicate keys. The leaked
+    /// old files are harmless orphans cleaned up by the next compaction.
+    pub fn compact_ssts(&self, min_sst_count: usize) -> Result<usize, StorageError> {
+        // Fast path — check count without locking
+        let sst_readers = self.sst_readers.load();
+        if sst_readers.len() < min_sst_count {
+            return Ok(0);
+        }
+        let input_count = sst_readers.len();
+
+        // TODO(compaction): holding flush_lock across full merge blocks writers
+        // for O(total-data) time. In Phase 2+, switch to leveled compaction
+        // where minor compactions merge subsets of SSTs without blocking.
+
+        let Ok(_guard) = self.flush_lock.lock() else {
+            return Err(StorageError::Io(std::io::Error::other(
+                "flush mutex poisoned",
+            )));
+        };
+
+        // Re-check after lock — another compaction may have reduced count
+        let sst_readers = self.sst_readers.load();
+        if sst_readers.len() < min_sst_count {
+            return Ok(0);
+        }
+
+        // Collect old SST numbers for file deletion after successful compaction
+        let old_sst_nums: Vec<u64> = sst_readers.iter().map(|r| r.sst_number()).collect();
+
+        // Inputs in oldest-to-newest order (sst_readers is newest-first)
+        let readers_oldest_first: Vec<&SstReader> = sst_readers.iter().rev().collect();
+
+        // DEK + encryption header (same pattern as trigger_flush)
+        let system_kek = self
+            .key_registry
+            .get_kek_for_realm(&self.system_realm)
+            .ok_or_else(|| StorageError::Crypto {
+                reason: "system KEK not found".to_string(),
+            })?;
+        let system_kek_id = self.key_registry.kek_id_for_realm(&self.system_realm);
+        let dek = encryption::generate_dek()?;
+        let enc_header = encryption::wrap_dek(&dek, &system_kek, system_kek_id)?;
+
+        let sst_num = self
+            .sst_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = self.data_dir.join(format!("{sst_num:06}.sst.tmp"));
+        let final_path = self.data_dir.join(format!("{sst_num:06}.sst"));
+
+        // Write to temp path for crash safety
+        sst::compact_with_fs(
+            &readers_oldest_first,
+            &tmp_path,
+            &*self.fs,
+            sst_num,
+            &dek,
+            &enc_header,
+        )?;
+
+        // Open reader from temp path before rename (SstReader is in-memory,
+        // independent of the underlying file path)
+        let new_reader = SstReader::open_with_fs(&tmp_path, &*self.fs, sst_num, &dek)
+            .map_err(|e| StorageError::Crypto {
+                reason: format!("compacted SST failed to open reader: {e}"),
+            })?;
+
+        // Atomic rename — crash-safe: partial writes leave a .tmp, not a corrupt .sst
+        self.fs.rename(&tmp_path, &final_path)?;
+
+        // Atomically swap reader list to just the compacted SST
+        self.sst_readers.store(Arc::new(vec![new_reader]));
+
+        // Delete old SST files (best-effort — warn on failure)
+        for old_num in old_sst_nums {
+            let old_path = self.data_dir.join(format!("{old_num:06}.sst"));
+            if let Err(e) = self.fs.remove_file(&old_path) {
+                tracing::warn!(
+                    path = %old_path.display(),
+                    error = %e,
+                    "compaction: failed to delete old SST file",
+                );
+            }
+        }
+
+        Ok(input_count)
     }
 }
 
@@ -718,6 +853,7 @@ mod tests {
                 eviction_batch_size: 10,
             },
             allow_missing_keks: false,
+            compaction: CompactionConfig::default(),
         };
         let engine = EmbeddedStorageEngine::open(config).expect("open");
 
@@ -773,6 +909,7 @@ mod tests {
                     eviction_batch_size: 10,
                 },
                 allow_missing_keks: false,
+                compaction: CompactionConfig::default(),
             };
             let engine = EmbeddedStorageEngine::open(config).expect("open");
 
@@ -799,6 +936,7 @@ mod tests {
                     eviction_batch_size: 10,
                 },
                 allow_missing_keks: false,
+                compaction: CompactionConfig::default(),
             };
             let engine = EmbeddedStorageEngine::open(config).expect("reopen");
 
@@ -838,12 +976,13 @@ mod tests {
             memtable_config: MemtableConfig {
                 flush_threshold_bytes: 100,
             },
-            tiered_config: TieredConfig::default(),
-            allow_missing_keks: false,
-        };
-        let engine = EmbeddedStorageEngine::open(config).expect("open");
+                tiered_config: TieredConfig::default(),
+                allow_missing_keks: false,
+                compaction: CompactionConfig::default(),
+            };
+            let engine = EmbeddedStorageEngine::open(config).expect("open");
 
-        // Write keys that will end up in SST (flush triggered by small threshold)
+            // Write keys that will end up in SST (flush triggered by small threshold)
         engine.put(&realm, b"aaa", b"sst-val").expect("put");
         engine.put(&realm, b"bbb", b"sst-val").expect("put");
         engine.put(&realm, b"ccc", b"sst-val").expect("put");
@@ -900,6 +1039,7 @@ mod tests {
                     eviction_batch_size: 10,
                 },
                 allow_missing_keks: false,
+                compaction: CompactionConfig::default(),
             };
             let engine = EmbeddedStorageEngine::open(config).expect("open");
             for i in 0u32..5 {
@@ -924,6 +1064,7 @@ mod tests {
             memtable_config: MemtableConfig::default(),
             tiered_config: TieredConfig::default(),
             allow_missing_keks: false,
+            compaction: CompactionConfig::default(),
         };
         let result = EmbeddedStorageEngine::open(config);
         assert!(
@@ -953,6 +1094,7 @@ mod tests {
                     eviction_batch_size: 10,
                 },
                 allow_missing_keks: false,
+                compaction: CompactionConfig::default(),
             };
             let engine = EmbeddedStorageEngine::open(config).expect("open");
             for i in 0u32..5 {
@@ -976,6 +1118,7 @@ mod tests {
             memtable_config: MemtableConfig::default(),
             tiered_config: TieredConfig::default(),
             allow_missing_keks: true,
+            compaction: CompactionConfig::default(),
         };
         let engine = EmbeddedStorageEngine::open(config).expect("open with allow_missing_keks");
         // Data that was only in the SST is no longer reachable
@@ -986,6 +1129,203 @@ mod tests {
                     .expect("get"),
                 None,
                 "SST-dropped key k-{i} should not be found"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_compaction_reduces_sst_count_and_preserves_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+
+        let mut config = StorageConfig::test_config(dir.path().to_path_buf());
+        config.memtable_config.flush_threshold_bytes = 50;
+        config.compaction = CompactionConfig {
+            enabled: false,
+            interval_secs: 0,
+            min_sst_count: 2,
+        };
+        let engine = EmbeddedStorageEngine::open(config).expect("open");
+
+        for i in 0u32..50 {
+            engine
+                .put(
+                    &realm,
+                    format!("c-{i:04}").as_bytes(),
+                    format!("val-{i:04}").as_bytes(),
+                )
+                .expect("put");
+        }
+
+        let sst_before = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "sst"))
+            .count();
+        assert!(
+            sst_before >= 2,
+            "expected at least 2 SST files before compaction, got {sst_before}"
+        );
+
+        let compacted = engine.compact_ssts(2).expect("compact_ssts");
+        assert_eq!(
+            compacted, sst_before,
+            "compacted count should match input SST count"
+        );
+
+        let sst_after = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "sst"))
+            .count();
+        assert_eq!(
+            sst_after, 1,
+            "after compaction there should be exactly 1 SST file, got {sst_after}"
+        );
+
+        for i in 0u32..50 {
+            let key = format!("c-{i:04}");
+            assert_eq!(
+                engine.get(&realm, key.as_bytes()).expect("get"),
+                Some(format!("val-{i:04}").into_bytes()),
+                "key {key} should be accessible after compaction"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_compaction_skips_when_below_min_sst_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+
+        let mut config = StorageConfig::test_config(dir.path().to_path_buf());
+        config.compaction = CompactionConfig {
+            enabled: false,
+            interval_secs: 0,
+            min_sst_count: 2,
+        };
+        let engine = EmbeddedStorageEngine::open(config).expect("open");
+
+        engine.put(&realm, b"a", b"val-a").expect("put");
+
+        let compacted = engine.compact_ssts(5).expect("compact_ssts");
+        assert_eq!(
+            compacted, 0,
+            "compaction should skip when SST count is below min_sst_count"
+        );
+    }
+
+    #[test]
+    fn engine_compaction_succeeds_at_exact_min_sst_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+
+        let mut config = StorageConfig::test_config(dir.path().to_path_buf());
+        config.memtable_config.flush_threshold_bytes = 50;
+        config.compaction = CompactionConfig {
+            enabled: false,
+            interval_secs: 0,
+            min_sst_count: 2,
+        };
+        let engine = EmbeddedStorageEngine::open(config).expect("open");
+
+        for i in 0u32..30 {
+            engine
+                .put(
+                    &realm,
+                    format!("b-{i:04}").as_bytes(),
+                    format!("vb-{i:04}").as_bytes(),
+                )
+                .expect("put");
+        }
+
+        let sst_before = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "sst"))
+            .count();
+
+        if sst_before >= 2 {
+            let compacted = engine.compact_ssts(2).expect("compact_ssts");
+            assert_eq!(
+                compacted, sst_before,
+                "compaction at exact min_sst_count boundary should succeed"
+            );
+
+            for i in 0u32..30 {
+                let key = format!("b-{i:04}");
+                assert_eq!(
+                    engine.get(&realm, key.as_bytes()).expect("get"),
+                    Some(format!("vb-{i:04}").into_bytes()),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn engine_compaction_removes_tombstones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+
+        let mut config = StorageConfig::test_config(dir.path().to_path_buf());
+        config.memtable_config.flush_threshold_bytes = 50;
+        config.compaction = CompactionConfig {
+            enabled: false,
+            interval_secs: 0,
+            min_sst_count: 2,
+        };
+        let engine = EmbeddedStorageEngine::open(config).expect("open");
+
+        for i in 0u32..20 {
+            engine
+                .put(
+                    &realm,
+                    format!("k-{i:04}").as_bytes(),
+                    format!("val-{i:04}").as_bytes(),
+                )
+                .expect("put");
+        }
+        for i in 0u32..10 {
+            engine
+                .delete(&realm, format!("k-{i:04}").as_bytes())
+                .expect("delete");
+        }
+
+        // Extra writes to force flushes (push tombstones into SSTs)
+        engine.put(&realm, b"flush-a", b"x").expect("put");
+        engine.put(&realm, b"flush-b", b"x").expect("put");
+
+        let compacted = engine.compact_ssts(2).expect("compact");
+        assert!(compacted > 0, "should have compacted at least 2 SSTs");
+
+        // Compacted SST must have zero tombstones
+        let readers = engine.sst_readers.load();
+        assert_eq!(readers.len(), 1, "should be 1 SST after compaction");
+        for (_key, value) in readers[0].iter_all() {
+            assert!(
+                !matches!(value, MemtableValue::Tombstone),
+                "compacted SST must contain zero tombstones"
+            );
+        }
+
+        // Deleted keys must be unreachable
+        for i in 0u32..10 {
+            assert_eq!(
+                engine
+                    .get(&realm, format!("k-{i:04}").as_bytes())
+                    .expect("get"),
+                None,
+                "deleted key k-{i:04} must not be reachable after compaction"
+            );
+        }
+
+        // Live keys must still be reachable
+        for i in 10u32..20 {
+            assert_eq!(
+                engine
+                    .get(&realm, format!("k-{i:04}").as_bytes())
+                    .expect("get"),
+                Some(format!("val-{i:04}").into_bytes()),
             );
         }
     }

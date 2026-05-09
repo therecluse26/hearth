@@ -26,7 +26,7 @@ use hearth::protocol::http::{self, AppState};
 use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
 use hearth::protocol::web::{self, WebState};
 use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
-use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+use hearth::storage::{CompactionConfig, EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Hearth — a purpose-built identity database.
 #[derive(Parser)]
@@ -408,7 +408,12 @@ async fn run_serve(
         info!(path = %temp_dir.path().display(), "using temporary data directory (dev mode)");
         // Convert to owned path so it outlives the tempdir handle
         let data_path = temp_dir.keep();
-        let storage_config = StorageConfig::dev(data_path);
+        let mut storage_config = StorageConfig::dev(data_path);
+        storage_config.compaction = CompactionConfig {
+            enabled: config.storage.compaction.enabled,
+            interval_secs: config.storage.compaction.interval_secs,
+            min_sst_count: config.storage.compaction.min_sst_count,
+        };
         Arc::new(EmbeddedStorageEngine::open(storage_config)?)
     } else {
         let hot_tier_capacity = config.storage.hot_tier_capacity.unwrap_or_else(|| {
@@ -423,13 +428,18 @@ async fn run_serve(
             cap
         });
 
-        let storage_config = StorageConfig::production(
+        let mut storage_config = StorageConfig::production(
             PathBuf::from(&config.storage.data_dir),
             config.storage.wal_max_size_bytes,
             config.storage.fsync,
             config.storage.memtable_flush_bytes,
             hot_tier_capacity,
         );
+        storage_config.compaction = CompactionConfig {
+            enabled: config.storage.compaction.enabled,
+            interval_secs: config.storage.compaction.interval_secs,
+            min_sst_count: config.storage.compaction.min_sst_count,
+        };
         Arc::new(EmbeddedStorageEngine::open(storage_config)?)
     };
 
@@ -650,6 +660,36 @@ async fn run_serve(
                     if cursor.is_none() {
                         break;
                     }
+                }
+            }
+        });
+    }
+
+    // Background periodic SST compaction.
+    if config.storage.compaction.enabled && config.storage.compaction.interval_secs > 0 {
+        let storage_engine = Arc::clone(&storage);
+        let interval_secs = config.storage.compaction.interval_secs;
+        let min_sst_count = config.storage.compaction.min_sst_count;
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(interval_secs));
+            // Skip the immediate first tick so the server finishes warm-up.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let engine = Arc::clone(&storage_engine);
+                match tokio::task::spawn_blocking(move || engine.compact_ssts(min_sst_count)).await
+                {
+                    Ok(Ok(n)) if n > 0 => {
+                        info!(merged = n, "background SST compaction complete");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "background SST compaction failed");
+                    }
+                    Err(join_err) => {
+                        warn!(error = %join_err, "compaction task panicked");
+                    }
+                    _ => {}
                 }
             }
         });
