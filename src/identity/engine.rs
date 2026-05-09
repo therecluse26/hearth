@@ -34,6 +34,78 @@ use crate::identity::magic_link::{
     PASSWORD_RESET_EXPIRY_MICROS,
 };
 
+/// Enforces token size caps per AUTHORIZATION.md § 2.6.
+///
+/// Operates on the *post-profile* claim payload that will actually be
+/// embedded in the JWT, not the raw `ResolvedPermissions`. This ensures
+/// scope-narrowed tokens are measured correctly.
+///
+/// Validates independently per `ClaimTarget` so that access-token and
+/// ID-token payloads (which may differ after `apply_claim_profile`) are
+/// each checked against the same numeric caps. Limit names include the
+/// target prefix so operators can tell which surface tripped.
+///
+/// Custom claims are intentionally excluded from the 8 KiB byte limit
+/// per the spec ("Serialized JWT claim bytes (`roles + groups + permissions`)").
+pub(crate) fn validate_claim_payload(
+    target: ClaimTarget,
+    roles: &[String],
+    groups: &[String],
+    permissions: &[String],
+) -> Result<(), IdentityError> {
+    const MAX_PERMISSIONS: usize = 100;
+    const MAX_ROLES: usize = 50;
+    const MAX_GROUPS: usize = 50;
+    const MAX_CLAIM_BYTES: usize = 8192;
+
+    let target_prefix = match target {
+        ClaimTarget::AccessToken => "access_token",
+        ClaimTarget::IdToken => "id_token",
+        ClaimTarget::UserInfo => "userinfo",
+    };
+
+    if permissions.len() > MAX_PERMISSIONS {
+        return Err(IdentityError::TokenTooLarge {
+            limit: format!("{target_prefix}_permissions_per_token"),
+            limit_value: MAX_PERMISSIONS,
+            actual: permissions.len(),
+        });
+    }
+    if roles.len() > MAX_ROLES {
+        return Err(IdentityError::TokenTooLarge {
+            limit: format!("{target_prefix}_roles_per_token"),
+            limit_value: MAX_ROLES,
+            actual: roles.len(),
+        });
+    }
+    if groups.len() > MAX_GROUPS {
+        return Err(IdentityError::TokenTooLarge {
+            limit: format!("{target_prefix}_groups_per_token"),
+            limit_value: MAX_GROUPS,
+            actual: groups.len(),
+        });
+    }
+
+    let payload = serde_json::json!({
+        "roles": roles,
+        "groups": groups,
+        "permissions": permissions,
+    });
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|e| IdentityError::Internal {
+            reason: format!("token size serialization failed: {e}"),
+        })?;
+    if bytes.len() > MAX_CLAIM_BYTES {
+        return Err(IdentityError::TokenTooLarge {
+            limit: format!("{target_prefix}_claims_bytes_per_token"),
+            limit_value: MAX_CLAIM_BYTES,
+            actual: bytes.len(),
+        });
+    }
+
+    Ok(())
+}
+
 /// Email-verification token expiry: 24 hours in microseconds.
 const EMAIL_VERIFY_EXPIRY_MICROS: i64 = 24 * 60 * 60 * 1_000_000;
 
@@ -2824,6 +2896,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             oid_ref,
             ClaimTarget::AccessToken,
         );
+        validate_claim_payload(ClaimTarget::AccessToken, &roles, &groups, &permissions)?;
         self.record_audit(
             realm_id,
             None,
@@ -3271,20 +3344,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
         }
 
-        // 8. Mark the code as used
-        stored_code.used = true;
-        let updated_bytes =
-            serde_json::to_vec(&stored_code).map_err(|e| IdentityError::Serialization {
-                reason: e.to_string(),
-            })?;
-        self.storage
-            .put(realm_id, &code_key, &updated_bytes)
-            .map_err(Self::storage_err)?;
-
-        // 9. Create a session for the user (OAuth code exchange — no browser context)
-        let session =
-            self.create_session(realm_id, &stored_code.user_id, &SessionContext::default())?;
-
+        // 8. Resolve claims and validate size caps before consuming side effects.
         let user = self
             .get_user(realm_id, &stored_code.user_id)?
             .ok_or(IdentityError::UserNotFound)?;
@@ -3316,6 +3376,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 None,
                 ClaimTarget::AccessToken,
             );
+        validate_claim_payload(
+            ClaimTarget::AccessToken,
+            &access_roles,
+            &access_groups,
+            &access_permissions,
+        )?;
         let (id_roles, id_groups, id_permissions, id_custom) = self.apply_claim_profile(
             realm_id,
             &user,
@@ -3325,11 +3391,31 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             None,
             ClaimTarget::IdToken,
         );
+        validate_claim_payload(
+            ClaimTarget::IdToken,
+            &id_roles,
+            &id_groups,
+            &id_permissions,
+        )?;
 
-        // 10. Create grant family for refresh token rotation
+        // 9. Mark the code as used
+        stored_code.used = true;
+        let updated_bytes =
+            serde_json::to_vec(&stored_code).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        self.storage
+            .put(realm_id, &code_key, &updated_bytes)
+            .map_err(Self::storage_err)?;
+
+        // 10. Create a session for the user (OAuth code exchange — no browser context)
+        let session =
+            self.create_session(realm_id, &stored_code.user_id, &SessionContext::default())?;
+
+        // 11. Create grant family for refresh token rotation
         let family_id = uuid::Uuid::new_v4().to_string();
 
-        // 11. Issue tokens with family ID
+        // 12. Issue tokens with family ID
         let iat = now.as_micros() / 1_000_000;
         let signing_key = self.get_signing_key_or_default(realm_id);
 

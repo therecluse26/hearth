@@ -19,7 +19,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 
 5. **~~Background compaction~~** — ✅ RESOLVED (2026-05-08). Background `tokio::spawn` task periodically calls `compact_ssts()` at a configurable interval (default 3600s). Merges all SSTs into a single file via `sst::compact_with_fs()` (newest-value-wins, tombstone removal). Writes to `.sst.tmp` + atomic rename for crash safety. Acquires `flush_lock` to serialize with flushes; offloaded to `spawn_blocking` to avoid blocking Tokio workers. Old SST deletion is best-effort after rename — leaked files after crash are harmless orphans cleaned up by the next compaction. Configurable via `[storage.compaction]` YAML section (all fields optional: `enabled`, `interval_secs`, `min_sst_count`).
 
-6. **Token size cap enforcement** — AUTHZ §2.6, §5.4 — Error variant exists but no `validate_token_size()` function.
+6. **~~Token size cap enforcement~~** — ✅ RESOLVED (2026-05-09). `validate_claim_payload()` enforces permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB (JSON-serialized roles+groups+permissions) per `ClaimTarget` with per-target limit names. Wired post-`apply_claim_profile` in `issue_tokens_with_context` (access token) and `exchange_authorization_code` (access + ID token). Five integration tests cover permissions cap, roles cap, groups cap, exact-limit success, and byte-cap refusal.
 
 ### What IS Working Well
 
@@ -40,7 +40,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 | 3 | **No periodic cleanup** | — | **✅ RESOLVED (2026-05-08).** Background `tokio::spawn` task runs `sweep_expired()` on a configurable interval (default 300s). Sweeps expired authorization codes (`oauth:code:`), device codes (`oauth:device:` + `oauth:ucode:`), pending authorization tickets (`oauth:pending_auth:`), and grant families (`oauth:family:`). Grant families carry a new `expires_at` field (extended on rotation, sliding). Best-effort per-entity-type error handling. Summary `AuditAction::Cleanup` audit event emitted per realm per sweep. `IdentityConfig.cleanup` (enabled, interval_secs, max_per_type). |
 | 4 | **Hot tier auto-sizing** | ARCH §6.2 | ✅ RESOLVED (2026-05-08). Auto-sizing via /proc/meminfo + cgroup v1/v2. Margin: max(20%, 2 GiB). hot_tier_capacity is now Option<usize>. hot_tier_max_memory override. StorageConfig::production() wires the full storage section. |
 | 5 | **~~Background compaction~~** | — | ✅ RESOLVED (2026-05-08). Background `tokio::spawn` task periodically calls `compact_ssts()` at configurable interval (default 3600s). Writes to `.sst.tmp` + atomic rename for crash safety. Offloaded to `spawn_blocking`. Configurable via `[storage.compaction]` YAML section. |
-| 6 | **Token size cap enforcement** | AUTHZ §2.6, §5.4 | Error variant exists but no `validate_token_size()` function. |
+| 6 | **~~Token size cap enforcement~~** | AUTHZ §2.6, §5.4 | ✅ RESOLVED (2026-05-09). `validate_claim_payload()` enforces post-profile caps (permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB) with per-target limit names. Wired in `issue_tokens_with_context` and `exchange_authorization_code`. Five integration tests. |
 | 7 | **`/admin/users/{id}/effective-permissions` REST endpoint** | AUTHZ §8.2 | No route in `src/protocol/http.rs`. Only available via gRPC/UI. |
 | 8 | **Dynamic Client Registration (RFC 7591)** | AGENT_AUTH §2.7 | No `POST /register` endpoint. |
 | 9 | **Resolve-time cycle detection** | AUTHZ §3 | `resolve.rs:505` treats DAG cycles as diamonds (silent skip), not errors. Only self-edges error. |
@@ -123,7 +123,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 - [x] **[P0][S]** Add periodic cleanup background task: sweep expired authorization codes, device codes, grant families, pending authorization tickets — resolves gaps #3 · _depends on: none_ ✅ DONE (2026-05-08)
 - [x] **[P0][M]** Implement hot tier auto-sizing: read `/proc/meminfo` or cgroup `memory.limit_in_bytes`, reserve margin (20% or 2GB), allocate remainder; respect `storage.hot_tier_max_memory` override — resolves gaps #4 · _depends on: none_ ✅ DONE (2026-05-08)
 - [x] **[P0][M]** Add background compaction loop to `EmbeddedStorageEngine`: periodically merge accumulated SST files — resolves gaps #5 · _depends on: none_ ✅ DONE (2026-05-08)
-- [ ] **[P0][S]** Implement `identity::validate_token_size()` — enforce permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB; call from `issue_tokens_with_context` — resolves gaps #6 · _depends on: none_
+- [x] **[P0][S]** Implement `validate_claim_payload()` — enforce permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB; wired in `issue_tokens_with_context` and `exchange_authorization_code` (access + ID token) — resolves gaps #6 · _depends on: none_
 - [ ] **[P0][S]** Add `GET /admin/users/{id}/effective-permissions` REST endpoint to `http.rs` — resolves gaps #7 · _depends on: none_
 - [ ] **[P0][M]** Implement Dynamic Client Registration (RFC 7591) `POST /register` endpoint — resolves gaps #8 · _depends on: none_
 
