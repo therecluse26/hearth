@@ -41,7 +41,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 | 4 | **Hot tier auto-sizing** | ARCH §6.2 | ✅ RESOLVED (2026-05-08). Auto-sizing via /proc/meminfo + cgroup v1/v2. Margin: max(20%, 2 GiB). hot_tier_capacity is now Option<usize>. hot_tier_max_memory override. StorageConfig::production() wires the full storage section. |
 | 5 | **~~Background compaction~~** | — | ✅ RESOLVED (2026-05-08). Background `tokio::spawn` task periodically calls `compact_ssts()` at configurable interval (default 3600s). Writes to `.sst.tmp` + atomic rename for crash safety. Offloaded to `spawn_blocking`. Configurable via `[storage.compaction]` YAML section. |
 | 6 | **~~Token size cap enforcement~~** | AUTHZ §2.6, §5.4 | ✅ RESOLVED (2026-05-09). `validate_claim_payload()` enforces post-profile caps (permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB) with per-target limit names. Wired in `issue_tokens_with_context` and `exchange_authorization_code`. Five integration tests. |
-| 7 | **`/admin/users/{id}/effective-permissions` REST endpoint** | AUTHZ §8.2 | No route in `src/protocol/http.rs`. Only available via gRPC/UI. |
+| 7 | **`/admin/users/{id}/effective-permissions` REST endpoint** | AUTHZ §8.2 | ✅ RESOLVED (2026-05-09). `GET /admin/users/{id}/effective-permissions` handler added to `src/protocol/http.rs`. Admin-authenticated via `extract_admin_auth` (Bearer token + `hearth.admin`). Accepts optional `org_id` (strips `org_` prefix, 400 on malformed) and `scope` query params. Returns identity-prechecked 404 for unknown users. Reuses `MePermissionsResponse`. Six integration tests in `tests/admin_effective_permissions.rs`. |
 | 8 | **Dynamic Client Registration (RFC 7591)** | AGENT_AUTH §2.7 | No `POST /register` endpoint. |
 | 9 | **Resolve-time cycle detection** | AUTHZ §3 | `resolve.rs:505` treats DAG cycles as diamonds (silent skip), not errors. Only self-edges error. |
 
@@ -124,7 +124,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 - [x] **[P0][M]** Implement hot tier auto-sizing: read `/proc/meminfo` or cgroup `memory.limit_in_bytes`, reserve margin (20% or 2GB), allocate remainder; respect `storage.hot_tier_max_memory` override — resolves gaps #4 · _depends on: none_ ✅ DONE (2026-05-08)
 - [x] **[P0][M]** Add background compaction loop to `EmbeddedStorageEngine`: periodically merge accumulated SST files — resolves gaps #5 · _depends on: none_ ✅ DONE (2026-05-08)
 - [x] **[P0][S]** Implement `validate_claim_payload()` — enforce permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB; wired in `issue_tokens_with_context` and `exchange_authorization_code` (access + ID token) — resolves gaps #6 · _depends on: none_
-- [ ] **[P0][S]** Add `GET /admin/users/{id}/effective-permissions` REST endpoint to `http.rs` — resolves gaps #7 · _depends on: none_
+- [x] **[P0][S]** Add `GET /admin/users/{id}/effective-permissions` REST endpoint to `http.rs` — resolves gaps #7 · _depends on: none_ ✅ DONE (2026-05-09)
 - [ ] **[P0][M]** Implement Dynamic Client Registration (RFC 7591) `POST /register` endpoint — resolves gaps #8 · _depends on: none_
 
 ### P1 — Should fix

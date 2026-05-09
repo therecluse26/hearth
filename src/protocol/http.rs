@@ -274,6 +274,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/users/{id}/consents/{client_id}",
             axum::routing::delete(admin_revoke_user_consent),
         )
+        .route(
+            "/users/{id}/effective-permissions",
+            axum::routing::get(admin_get_user_effective_permissions),
+        )
         .route("/audit", axum::routing::get(admin_list_audit))
         .route(
             "/roles",
@@ -2225,6 +2229,87 @@ async fn admin_revoke_user_consent(
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+/// `GET /admin/users/{id}/effective-permissions` — resolves the effective
+/// roles, groups, and permissions for a given user in the admin's realm.
+///
+/// Accepts optional `org_id` and `scope` query parameters. Returns the
+/// same response shape as `GET /v1/me/permissions` but scoped to an
+/// arbitrary user (admin-only).
+async fn admin_get_user_effective_permissions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(user_id_str): axum::extract::Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let Ok(uuid) = user_id_str.parse::<uuid::Uuid>() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid user_id"})),
+        )
+            .into_response();
+    };
+    let user_id = UserId::new(uuid);
+
+    // Precheck: the target user must exist in the admin's realm.
+    match state.identity.get_user(&auth.realm_id, &user_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    }
+
+    let org_id = match params.get("org_id") {
+        Some(s) => {
+            let stripped = s.strip_prefix("org_").unwrap_or(s);
+            match uuid::Uuid::parse_str(stripped) {
+                Ok(u) => Some(crate::core::OrganizationId::new(u)),
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "invalid org_id"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        None => None,
+    };
+    let scope = params.get("scope").cloned();
+
+    let resolved =
+        match state
+            .rbac
+            .resolve_permissions(&user_id, &auth.realm_id, org_id.as_ref(), scope.as_deref())
+        {
+            Ok(r) => r,
+            Err(e) => return rbac_error_to_response(&e).into_response(),
+        };
+
+    (
+        StatusCode::OK,
+        Json(MePermissionsResponse {
+            roles: resolved.roles,
+            groups: resolved.groups,
+            permissions: resolved
+                .permissions
+                .into_iter()
+                .map(|p| p.into_string())
+                .collect(),
+            scope,
+        }),
+    )
+        .into_response()
 }
 
 // === Dev Bootstrap Endpoint ===
