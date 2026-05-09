@@ -1,39 +1,80 @@
 # Hearth — Development Rules
 
-Hearth is a purpose-built identity database: a single-binary Rust server for authentication, claims-based RBAC authorization, and session management with a custom embedded storage engine. It targets sub-millisecond p99 latency on the hot path.
+Hearth is a purpose-built identity database: a single-binary Rust server for authentication, claims-based RBAC authorization, and session management with a custom embedded storage engine. Targets sub-millisecond p99 latency on the hot path.
 
-## Ground Rules (Agents: ALWAYS follow)
+## Ground Rules (ALWAYS follow)
 
-### 🚨 CRITICAL: Tool Selection
+### Tool Selection
 
-**Before using ANY search tool, check if Reflex MCP tools are available (`mcp__reflex__*`). These should be preferred
-over built-in tools.**
+**Before using ANY search tool, check if Reflex MCP tools are available (`mcp__reflex__*`). Prefer them over built-in tools.**
 
-If you see a message like `Index not found. Run 'rfx index' to build the cache first`, run `mcp__reflex__index_project`
-immediately, and once the indexing completes, run the previously failed tool again.
+If you see `Index not found. Run 'rfx index' to build the cache first`, run `mcp__reflex__index_project` immediately, then retry.
+
+### First Commands After Clone
+
+```bash
+make setup          # enables repo-managed git hooks (.githooks/)
+make tailwind-install  # downloads Tailwind standalone CLI to ui/tailwindcss
+```
+
+### Development Commands
+
+| Command | What it does |
+|---------|-------------|
+| `make check` | clippy + fmt + nextest — run before every PR |
+| `make test` | `cargo nextest run --workspace` (PROTOC env var required) |
+| `make clippy` | `cargo clippy --all-targets -- -D warnings` |
+| `make fmt` | `cargo fmt --check` |
+| `make build` | Tailwind CSS + `cargo build` |
+| `make css` | Rebuilds `src/protocol/web/assets/app.css` from Tailwind |
+| `make css-check` | CI gate — fails if app.css is stale |
+| `bacon test` | TDD watch loop (configured in `bacon.toml`) |
+
+**Build prerequisites:**
+- `PROTOC` env var must point to `protoc` (or set `make PROTOC=protoc check`).
+- `buf` is optional unless editing `proto/**/*.proto`.
+- `ui/tailwindcss` must be present for CSS changes (`make tailwind-install`).
+- `hearth.yaml` is **gitignored** — copy from `hearth.example.yaml`.
+
+### Quick Start
+
+```bash
+cargo build --release
+./target/release/hearth serve --dev   # binds 127.0.0.1:8420, in-memory storage
+curl http://127.0.0.1:8420/health
+curl -X POST http://127.0.0.1:8420/admin/bootstrap  # dev-only, creates realm+admin+token
+```
 
 ## Reference Documents
 
-Read these before writing any code. They are the canonical source of truth:
+Read these before writing code. They are the canonical source of truth:
 
-- `docs/specs/ARCHITECTURE.md` — structural rules (MUST/SHOULD per RFC 2119). Violations of MUST-level rules block merge.
-- `docs/specs/AUTHORIZATION.md` — normative spec for the authorization model (roles, groups, permissions, JWT claims, SDK contract). Read before any change that touches `src/rbac/`, token issuance, or SDK authz surfaces.
+- `docs/specs/ARCHITECTURE.md` — structural rules (MUST/SHOULD per RFC 2119).
+- `docs/specs/AUTHORIZATION.md` — normative spec for roles, groups, permissions, JWT claims, SDK contract.
 - `docs/specs/TESTING.md` — eight testing layers, TDD workflow, tooling, CI tiers.
-- `docs/specs/TEST_SCENARIOS.md` — granular checkbox-tracked test scenario checklist by module and layer.
-- `docs/specs/IMPLEMENTATION_ORDER.md` — **mandatory build sequence for Phase 0.** Steps MUST be completed in order (1→18). Do not skip ahead or work out of sequence.
-- `docs/vision/VISION.md` — design rationale, performance targets, competitive positioning, roadmap. Read this to understand *why* decisions were made.
-- `docs/specs/THEME.md` — **mandatory design theme for all UI code.** See § UI Theme below.
+- `docs/specs/TEST_SCENARIOS.md` — granular checkbox-tracked scenario checklist.
+- `docs/specs/IMPLEMENTATION_ORDER.md` — **mandatory build sequence.** Do not skip ahead.
+- `docs/vision/VISION.md` — design rationale, performance targets, competitive positioning.
+- `docs/specs/THEME.md` — mandatory design theme for all UI code.
 
-## Implementation Order (MANDATORY)
+## Workspace Structure
 
-All implementation work MUST follow the sequence defined in `docs/specs/IMPLEMENTATION_ORDER.md`. This is not a suggestion — it is a strict dependency chain where each step depends on the ones before it.
+Two crates in the workspace:
 
-**Rules:**
-- Complete steps in order: 1 → 2 → 3 → ... → 18. Do not skip ahead.
-- Each step MUST pass verification (`cargo nextest run`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`) before proceeding to the next.
-- Within each step, tackle P0 `fast` scenarios first, then P0 `extended`, then P1.
-- Read the corresponding TEST_SCENARIOS.md section before starting each step to understand the full scope of tests required.
-- Do not create proto files, HTTP endpoints, or wire format code until step 15 (OIDC) demands it.
+| Crate | Path | Purpose |
+|-------|------|---------|
+| `hearth` | `.` | Main binary + library (`src/main.rs`, `src/lib.rs`) |
+| `hearth-simulation` | `simulation/` | Deterministic simulation tests (`madsim`), depends on `hearth` with `features = ["test-hooks"]` |
+
+Generated proto code lives at `src/protocol/generated/` (gitignored, produced by `build.rs` on every `cargo build`). Proto sources at `proto/` are the single source of truth.
+
+### Git Hooks
+
+The pre-commit hook (`.githooks/pre-commit`) auto-regenerates:
+- SDK types (TS + Go) when `proto/**/*.proto` is staged
+- `src/protocol/web/assets/app.css` when templates, `ui/input.css`, or `ui/tailwind.config.js` are staged
+
+It falls back cleanly if `buf` or `ui/tailwindcss` are missing (fails with instructions rather than silently skipping). CI still runs `make css-check` and `make proto-check` as belt-and-suspenders.
 
 ## Architecture
 
@@ -45,68 +86,37 @@ Six modules with strict downward dependency flow:
 |-------|------|------|
 | Core | `src/core/` | Shared types and traits only. No logic, no state, no I/O. |
 | Protocol | `src/protocol/` | Wire adapters (REST, gRPC, OIDC, SAML, SCIM). Stateless, thin. |
-| Identity Engine | `src/identity/` | Domain logic. Users, credentials, sessions, realms, tokens. |
-| RBAC Engine | `src/rbac/` | Claims-based RBAC: roles, groups, permissions, assignments. Resolves effective permissions for JWT claims. See `docs/specs/AUTHORIZATION.md`. |
+| Identity | `src/identity/` | Domain logic. Users, credentials, sessions, realms, tokens. |
+| RBAC | `src/rbac/` | Claims-based RBAC. Resolves effective permissions for JWT claims. |
 | Cluster | `src/cluster/` | Raft consensus via `openraft`. Invisible in single-node mode. |
-| Storage Engine | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |
+| Storage | `src/storage/` | WAL, memtable, SSTs, tiered storage. Leaf layer. |
 
-**Dependency rules:**
-- Dependencies MUST flow downward. No layer imports from above.
-- One lateral exception: `identity/` may call `rbac/` during token issuance to resolve effective permissions. Never the reverse.
-- Every layer MAY depend on `core/`.
-- `src/main.rs` wires layers together; it may import from any layer.
-
-### Inter-Layer Communication
-
-- `mod.rs` contains ONLY trait definitions, re-exports, and module declarations. No implementation logic.
-- Internal types MUST be `pub(crate)` or private. Default to private.
-- Identity Engine MUST NOT depend on any wire format or serialization framework.
-- See ARCHITECTURE.md § 1.3 for layer-specific encapsulation rules.
+**Rules:**
+- Dependencies flow strictly downward. No layer imports from above.
+- One lateral exception: `identity/` may call `rbac/` during token issuance. Never the reverse.
+- Every layer may depend on `core/`.
+- `mod.rs` contains ONLY trait definitions, re-exports, and module declarations. No implementation.
+- Internal types default to private. `pub(crate)` where necessary.
 
 ### Hot Path Rules
 
-Hot path = `validate_token()`, `lookup_session()`, `lookup_user()` when data is in hot tier. Authorization decisions are NOT on the hot path: permissions are resolved at token-issue time by the RBAC engine and embedded as JWT claims. Client- and server-side checks read from the verified token in-process.
+Hot path = `validate_token()`, `lookup_session()`, `lookup_user()` when data is in hot tier. Authorization is NOT on the hot path (permissions are embedded in the JWT at issue time).
 
 Hot path code MUST obey ALL of:
 1. **Zero heap allocations** — no `Box::new`, `Vec::new`, `String::from`, `format!()`, `to_string()`.
 2. **No syscalls for reads** — serve from memory-mapped structures or in-process data.
 3. **No locks on read path** — no mutexes, no `RwLock` write locks. Use epoch-based reclamation.
-4. **No yielding** — MUST NOT `.await` on I/O. Complete synchronously within async context.
+4. **No yielding** — MUST NOT `.await` on I/O. Complete synchronously.
 
-Everything else (user creation, hashing, token issuance, WAL writes, cold-tier promotion, admin ops) is off the hot path.
+Everything else (user creation, hashing, token issuance, WAL writes, admin ops) is off the hot path.
 
 ### Storage Engine
 
-- WAL MUST be `fsync`'d before acknowledging any write. Engine MUST survive `kill -9`. See ARCHITECTURE.md § 6.
-
-### Multi-Tenancy
-
-- Every storage operation MUST require a `RealmId` parameter (newtype, not raw string).
-- All keys MUST be prefixed with realm ID. No code path to construct a key without `RealmId`.
-- Scans MUST be bounded to a single realm's key space.
-
-### API Contracts
-
-- `.proto` files in `proto/` are the single source of truth for all API contracts (`prost` + `buf`). See ARCHITECTURE.md § 4.
-
-### UI Theme (MANDATORY)
-
-All UI templates, CSS, and front-end code MUST comply with `docs/specs/THEME.md`. This is not optional.
-
-**Rules:**
-- Read `docs/specs/THEME.md` before writing or modifying any template in `templates/ui/`.
-- **Dark-mode only.** No light mode, no `dark:` Tailwind prefixes, no theme toggle.
-- **Color tokens:** Use the graphite neutral scale (950–050), ember brand colors, accent ramps (teal, violet, rose, steel), and semantic states (success, warning, danger, info) defined in `ui/tailwind.config.js`. Never use raw hex outside the config.
-- **Typography:** Fraunces (display), Manrope (body/UI), JetBrains Mono (code/labels). No substitutions.
-- **Ember gradient** (`btn-ember` class) appears at most once per visible region. Text on the gradient is `graphite-950`, never white.
-- **Borders** use alpha-based white (`border-white/6`, `border-white/10`, `border-white/[0.18]`), not solid grays.
-- **Primary text** is `graphite-50` (`#f5f1e8`), never `#ffffff`. Secondary text is `graphite-300`.
-- **Shape tokens:** `rounded-sm` (6px inputs), `rounded` (10px buttons/cards), `rounded-lg` (14px panels), `rounded-xl` (20px hero).
-- After any template or CSS change, rebuild Tailwind: `cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify`
+- WAL MUST be `fsync`'d before acknowledging any write. Must survive `kill -9`.
+- Every storage operation requires a `RealmId` parameter (newtype, not raw string).
+- All keys are prefixed with realm ID. Scans bounded to a single realm.
 
 ## TDD Workflow (Mandatory)
-
-**Every feature and bug fix follows strict TDD — no exceptions:**
 
 1. Write a failing test that describes expected behavior.
 2. Run it — confirm it fails (red).
@@ -114,94 +124,65 @@ All UI templates, CSS, and front-end code MUST comply with `docs/specs/THEME.md`
 4. Refactor while keeping tests green.
 5. Add a black box test through the public API if applicable.
 
-A PR that adds functionality without a test written *before* the implementation is incomplete.
-
-### Eight Testing Layers
-
-Hearth uses eight testing layers (unit, integration, property, fuzz, simulation, adversarial, conformance, benchmarks). For each feature, consider which layers apply. See TESTING.md for the full matrix, locations, and conventions.
-
-### No Doctests — Ever
-
-Hearth does **not** use Rust doctests (runnable `///` example blocks). Do not write them. Do not introduce `\`\`\`` or `\`\`\`rust` fenced code blocks inside `///` or `//!` doc comments — rustdoc treats both as executable doctests. Illustrative snippets in doc comments MUST be fenced as `\`\`\`text`, `\`\`\`json`, `\`\`\`yaml`, or similar non-executable language, or omitted entirely. Runnable examples live under [`examples/`](examples/); behavioral tests live in `#[cfg(test)] mod tests` blocks or under `tests/`. `make test` / `cargo nextest run --workspace` is the single test entry point — there is no separate `cargo test --doc` step because there are no doctests to run.
+**A PR without a test written *before* the implementation is incomplete.**
 
 ### Testing Tooling
 
-- **Test runner**: `cargo-nextest` (not `cargo test`)
-- **Watch mode**: `bacon test` for TDD loop
-- **Property tests**: `proptest` (256 cases dev, 10k+ CI)
-- **Benchmarks**: `criterion`
-- **Coverage**: `cargo-llvm-cov`
-- **Simulation**: `madsim`
-- **Mocking**: Minimal. Real implementations preferred. DI only for clock, filesystem, randomness.
+- **Test runner**: `cargo nextest` only — never `cargo test`.
+- **Watch mode**: `bacon test` for TDD loop.
+- **No doctests — ever.** No `/// ```rust` fenced blocks in doc comments. Use `#[cfg(test)] mod tests` blocks or `tests/`. Runnable examples live under `examples/`.
+- **Property tests**: `proptest` (256 cases dev, 10k+ CI).
+- **Simulation**: `madsim` (simulation crate).
+- **Black box tests**: `TestHarness` (`tests/common/mod.rs`) — embedded + server modes.
 
-### TestHarness Pattern
+## Code Style
 
-Black box tests use `TestHarness` (`tests/common/mod.rs`) with embedded and server modes. See TESTING.md for the dual-mode pattern.
-
-### CI Tiers
-
-CI runs four tiers: Fast (every commit), Standard (merge), Extended (nightly), Full (weekly). See TESTING.md for triggers and time budgets.
-
-## Code Style & Conventions
-
-- `clippy::pedantic` MUST pass. Allowed lints documented in `Cargo.toml`/`clippy.toml`.
-- `rustfmt` with project `rustfmt.toml`. No formatting debates.
+- `clippy::pedantic` MUST pass (enforced via `-- -D warnings`). Allowed lints in `Cargo.toml`/`clippy.toml`.
+- `clippy::unwrap_used` is **denied**. `unwrap()` permitted ONLY with `#[allow(clippy::unwrap_used)]` + `// INVARIANT:` comment. `expect()` only in tests and startup.
+- `rustfmt` with `rustfmt.toml` (max_width=100, edition=2021).
 - All `pub`/`pub(crate)` items MUST have doc comments.
-- Follow the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/).
+- **No `println!`, `eprintln!`, or `log` crate.** Use `tracing` only.
+- Hot path MUST NOT log at `info` or above in steady state.
+- MUST NOT log passwords, tokens, keys, or PII.
+- Entity IDs are newtypes: `UserId(Uuid)`, `RealmId(Uuid)`, etc. No `Deref` — use `.as_uuid()`.
+- Sensitive data (passwords, tokens, keys) wraps in `Zeroize`-on-drop types; MUST NOT implement `Debug`/`Display`/`Serialize` revealing contents.
 
 ### Error Handling
 
-- Each layer defines its own error enum (`StorageError`, `IdentityError`, `RbacError`, etc.).
-- All error enums: `#[non_exhaustive]`, implement `std::error::Error` + `Display`.
+- Each layer defines its own error enum (`#[non_exhaustive]`, `Error` + `Display`).
 - Errors MUST NOT cross layer boundaries as concrete types — convert via `From`.
-- Error messages MUST NOT contain sensitive data (passwords, tokens, keys, PII).
+- Error messages MUST NOT contain sensitive data.
 
-### Panic Policy
+## Security
 
-- **No `unwrap()` or `expect()` in production code.** `#[deny(clippy::unwrap_used)]` enforced.
-- `unwrap()` permitted ONLY with `#[allow(clippy::unwrap_used)]` + `// INVARIANT:` comment.
-- `expect()` permitted in test code and one-time startup initialization.
-- Public functions MUST return `Result<T, LayerError>`.
-
-### Observability
-
-- `tracing` ONLY — no `println!`, `eprintln!`, or `log` crate.
-- Hot path MUST NOT log at `info` or above in steady state.
-- MUST NOT log passwords, tokens, keys, or PII.
-
-### Types
-
-- Entity IDs are distinct newtypes: `UserId(Uuid)`, `SessionId(Uuid)`, `RealmId(Uuid)`, etc.
-- Newtypes MUST NOT implement `Deref` to inner type. Use `.as_uuid()`.
-- Timestamps stored as UTC. Internal representation: Unix microseconds.
-- Clock injectable via `Clock` trait for deterministic testing.
-- Sensitive data (passwords, tokens, keys) MUST wrap in `Zeroize`-on-drop types. MUST NOT implement `Debug`/`Display`/`Serialize` revealing contents.
-
-## Security Rules
-
-- **Signing**: Ed25519 (asymmetric only). No HS256, no `alg:none`.
-- **Password hashing**: Argon2id, OWASP parameters. Off hot path, no latency compromise.
-- **Input validation**: Each layer validates its own invariants. MUST NOT assume upstream validated.
-- **Crypto**: `ring` or `RustCrypto` only. No hand-rolled crypto. Constant-time secret comparisons.
-- **Encryption at rest**: Per-realm keys. Keys MUST NOT appear in logs/errors/debug output.
-- **Audit**: Security-critical mutations emit structured `tracing` events at `info` level.
-
-### Concurrency & Safety
-
-- No global mutable state. Shared state passed explicitly or in `Arc<AppState>`.
-- `Mutex` MUST NOT be held across `.await` points.
-- `unsafe` minimized and isolated. Every `unsafe` block MUST have a `// SAFETY:` comment.
-- `unsafe` MUST NOT appear in protocol or identity layers.
+- **Signing**: Ed25519 only. No HS256, no `alg:none`.
+- **Password hashing**: Argon2id, OWASP parameters. Off hot path.
+- **Crypto**: `ring` or `RustCrypto`. No hand-rolled crypto. Constant-time secret comparisons.
+- **Input validation**: Each layer validates its own invariants. Must not assume upstream validated.
+- Every `unsafe` block MUST have a `// SAFETY:` comment. No `unsafe` in protocol or identity layers.
 - No `lazy_static` — use `std::sync::OnceLock` or `LazyLock`.
-- No `async-trait` on hot path (heap-allocates). Use RPITIT.
+- `Mutex` MUST NOT be held across `.await` points.
 
-## Dependency Policy
+## UI Theme (MANDATORY)
 
-- New deps MUST be justified in PR, pass `cargo-audit`, and have compatible license (Apache 2.0/MIT/BSD/MPL-2.0). Note: Hearth itself is dual-licensed AGPL-3.0 / Commercial, but *dependency* licenses must remain permissive to preserve the commercial license track.
-- Bans: no ORM, no `lazy_static`, no `async-trait` on hot path, no `reqwest` in prod. See ARCHITECTURE.md § 15 for approved crates.
+All UI code MUST comply with `docs/specs/THEME.md`. Read it before touching anything in `templates/ui/`.
+
+**Key rules:**
+- **Dark-mode only.** No light mode, no `dark:` Tailwind prefixes, no theme toggle.
+- **Color tokens** from `ui/tailwind.config.js`. Never use raw hex outside the config.
+- **Typography**: Fraunces (display), Manrope (body/UI), JetBrains Mono (code/labels).
+- **Ember gradient** (`btn-ember`) appears at most once per visible region.
+- **Borders**: alpha-based white (`border-white/6`), not solid grays.
+- **Primary text**: `graphite-50` (`#f5f1e8`), never `#ffffff`.
+- Rebuild Tailwind after CSS/template changes: `cd ui && ./tailwindcss -i input.css -o ../src/protocol/web/assets/app.css --minify`
 
 ## Async Model
 
 - **Tokio only.** No other async runtime.
-- Blocking operations (file I/O, crypto hashing, DNS) MUST use `spawn_blocking`.
-- Config is immutable after startup — loaded once into `Arc<Config>`.
+- Blocking operations (file I/O, crypto hashing) use `spawn_blocking`.
+- Config is immutable after startup — loaded into `Arc<Config>`.
+
+## Dependency Policy
+
+- New deps must be justified, pass `cargo-audit`, and have compatible license (Apache 2.0/MIT/BSD/MPL-2.0).
+- Bans: no ORM, no `lazy_static`, no `async-trait` on hot path, no `reqwest` in production.
