@@ -126,7 +126,11 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 - [x] Records not accessed within eviction window are demoted to cold tier `P0` `fast`
 - [x] Cold-tier read promotes record back to hot tier; subsequent reads hit hot tier `P0` `fast`
 - [x] Clock-based LRU approximation evicts least-recently-used records correctly `P0` `fast`
-- [x] Hot tier auto-sizes based on available system memory / cgroup memory limit `P1` `fast`
+- [x] Hot tier auto-sizes from /proc/meminfo MemAvailable `P0` `fast`
+- [x] Hot tier auto-sizes from cgroup v1 memory.limit_in_bytes `P0` `fast`
+- [x] Hot tier auto-sizes from cgroup v2 memory.max `P0` `fast`
+- [x] Explicit hot_tier_capacity overrides auto-sizing `P0` `fast`
+- [x] Explicit hot_tier_max_memory overrides detected memory budget `P0` `fast`
 
 #### Property
 

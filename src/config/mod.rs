@@ -160,7 +160,8 @@ impl Config {
                 data_dir: String::new(),
                 wal_max_size_bytes: 64 * 1024 * 1024,
                 memtable_flush_bytes: 16 * 1024 * 1024,
-                hot_tier_capacity: 1_000,
+                hot_tier_capacity: Some(1_000),
+                hot_tier_max_memory: None,
                 fsync: false,
             },
             observability: ObservabilityConfig {
@@ -1409,7 +1410,7 @@ operational:
         assert_eq!(config.storage.data_dir, "/var/lib/hearth");
         assert_eq!(config.storage.wal_max_size_bytes, 128 * 1024 * 1024);
         assert_eq!(config.storage.memtable_flush_bytes, 32 * 1024 * 1024);
-        assert_eq!(config.storage.hot_tier_capacity, 5000);
+        assert_eq!(config.storage.hot_tier_capacity, Some(5000));
         assert!(config.storage.fsync);
 
         assert_eq!(config.observability.log_level, "warn");
@@ -1437,7 +1438,8 @@ operational:
         assert_eq!(config.storage.data_dir, "./data");
         assert_eq!(config.storage.wal_max_size_bytes, 256 * 1024 * 1024);
         assert_eq!(config.storage.memtable_flush_bytes, 64 * 1024 * 1024);
-        assert_eq!(config.storage.hot_tier_capacity, 10_000);
+        assert_eq!(config.storage.hot_tier_capacity, None);
+        assert_eq!(config.storage.hot_tier_max_memory, None);
         assert!(config.storage.fsync);
 
         assert_eq!(config.observability.log_level, "info");

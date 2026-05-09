@@ -125,8 +125,16 @@ pub struct StorageSection {
     #[serde(default = "StorageSection::default_memtable_flush_bytes")]
     pub memtable_flush_bytes: u64,
     /// Maximum number of entries in the hot tier cache.
-    #[serde(default = "StorageSection::default_hot_tier_capacity")]
-    pub hot_tier_capacity: usize,
+    /// When `None` (default), auto-sizes from system memory or
+    /// `hot_tier_max_memory`. When `Some(n)`, uses this exact count,
+    /// bypassing auto-sizing.
+    #[serde(default)]
+    pub hot_tier_capacity: Option<usize>,
+    /// Hot tier memory budget in bytes. When set, overrides the
+    /// system-detected memory budget used during auto-sizing.
+    /// Ignored when `hot_tier_capacity` is `Some(n)`.
+    #[serde(default)]
+    pub hot_tier_max_memory: Option<usize>,
     /// Whether to fsync WAL writes. MUST be true in production.
     #[serde(default = "StorageSection::default_fsync")]
     pub fsync: bool,
@@ -145,10 +153,6 @@ impl StorageSection {
         64 * 1024 * 1024 // 64 MiB
     }
 
-    const fn default_hot_tier_capacity() -> usize {
-        10_000
-    }
-
     const fn default_fsync() -> bool {
         true
     }
@@ -160,7 +164,8 @@ impl Default for StorageSection {
             data_dir: Self::default_data_dir(),
             wal_max_size_bytes: Self::default_wal_max_size_bytes(),
             memtable_flush_bytes: Self::default_memtable_flush_bytes(),
-            hot_tier_capacity: Self::default_hot_tier_capacity(),
+            hot_tier_capacity: None,
+            hot_tier_max_memory: None,
             fsync: Self::default_fsync(),
         }
     }
@@ -1447,7 +1452,8 @@ mod tests {
         assert_eq!(cfg.data_dir, "./data");
         assert_eq!(cfg.wal_max_size_bytes, 256 * 1024 * 1024);
         assert_eq!(cfg.memtable_flush_bytes, 64 * 1024 * 1024);
-        assert_eq!(cfg.hot_tier_capacity, 10_000);
+        assert_eq!(cfg.hot_tier_capacity, None);
+        assert_eq!(cfg.hot_tier_max_memory, None);
         assert!(cfg.fsync);
     }
 

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "reflex": {
+      "type": "local",
+      "command": ["node_modules/.bin/rfx", "mcp"]
+    },
+    "plenum": {
+      "type": "local",
+      "command": ["node_modules/.bin/plenum", "mcp"]
+    }
+  }
+}

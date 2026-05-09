@@ -2,7 +2,7 @@
 
 Hearth is a purpose-built identity database: a single-binary Rust server for authentication, claims-based RBAC authorization, and session management with a custom embedded storage engine. It targets sub-millisecond p99 latency on the hot path.
 
-## Ground Rules (Claude: ALWAYS follow)
+## Ground Rules (Agents: ALWAYS follow)
 
 ### 🚨 CRITICAL: Tool Selection
 

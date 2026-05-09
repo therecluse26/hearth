@@ -9,6 +9,7 @@
 //! [`EmbeddedStorageEngine`] is the default implementation composing
 //! WAL, memtable, SST, and hot tier components.
 
+pub mod auto_size;
 #[allow(dead_code)]
 pub mod encryption;
 mod engine;

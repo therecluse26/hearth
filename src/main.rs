@@ -411,7 +411,25 @@ async fn run_serve(
         let storage_config = StorageConfig::dev(data_path);
         Arc::new(EmbeddedStorageEngine::open(storage_config)?)
     } else {
-        let storage_config = StorageConfig::dev(PathBuf::from(&config.storage.data_dir));
+        let hot_tier_capacity = config.storage.hot_tier_capacity.unwrap_or_else(|| {
+            let cap = hearth::storage::auto_size::auto_size_hot_tier_capacity(
+                config.storage.hot_tier_max_memory,
+            );
+            info!(
+                capacity = cap,
+                memory_budget = ?config.storage.hot_tier_max_memory,
+                "hot tier auto-sized",
+            );
+            cap
+        });
+
+        let storage_config = StorageConfig::production(
+            PathBuf::from(&config.storage.data_dir),
+            config.storage.wal_max_size_bytes,
+            config.storage.fsync,
+            config.storage.memtable_flush_bytes,
+            hot_tier_capacity,
+        );
         Arc::new(EmbeddedStorageEngine::open(storage_config)?)
     };
 

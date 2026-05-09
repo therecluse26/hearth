@@ -79,13 +79,18 @@ Embedded storage engine tuning. These control WAL, memtable, and hot tier behavi
 | `data_dir` | string | `"./data"` | Directory for WAL files, SSTs, and metadata. Created if it does not exist. |
 | `wal_max_size_bytes` | integer | `268435456` (256 MiB) | WAL file rotation threshold. |
 | `memtable_flush_bytes` | integer | `67108864` (64 MiB) | Memtable size threshold before flushing to an SST file. |
-| `hot_tier_capacity` | integer | `10000` | Maximum number of entries cached in the in-memory hot tier. |
+| `hot_tier_capacity` | integer | auto | When set, uses this exact number of hot tier entries. When omitted, auto-sizes from system memory (or `hot_tier_max_memory` if set). |
+| `hot_tier_max_memory` | integer | none | Maximum bytes to allocate for the hot tier. Overrides system memory detection during auto-sizing. Ignored when `hot_tier_capacity` is explicitly set. |
 | `fsync` | bool | `true` | Whether to `fsync` WAL writes. **MUST be `true` in production.** Dev mode disables this for faster iteration. |
 
 ```yaml
 storage:
   data_dir: "/var/lib/hearth/data"
   fsync: true
+  # Option A: explicit entry count
+  hot_tier_capacity: 500000
+  # Option B: memory budget (triggers auto-sizing, ignored when capacity is set)
+  hot_tier_max_memory: 4294967296  # 4 GiB
 ```
 
 ### `observability`

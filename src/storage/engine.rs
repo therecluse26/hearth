@@ -60,6 +60,44 @@ impl StorageConfig {
         }
     }
 
+    /// Creates a production storage configuration from operator-facing
+    /// settings.
+    ///
+    /// Wires the `[storage]` YAML section values into the internal
+    /// `WalConfig`, `MemtableConfig`, and `TieredConfig`. Callers should
+    /// pre-compute `hot_tier_capacity` — either from the explicit
+    /// `hot_tier_capacity` YAML field or via
+    /// [`crate::storage::auto_size::auto_size_hot_tier_capacity`].
+    pub fn production(
+        data_dir: PathBuf,
+        wal_max_size_bytes: u64,
+        fsync: bool,
+        memtable_flush_bytes: u64,
+        hot_tier_capacity: usize,
+    ) -> Self {
+        use crate::storage::wal::SyncMode;
+        Self {
+            data_dir,
+            wal_config: WalConfig {
+                max_size: wal_max_size_bytes,
+                sync_mode: if fsync {
+                    SyncMode::EveryWrite
+                } else {
+                    SyncMode::None
+                },
+            },
+            memtable_config: MemtableConfig {
+                flush_threshold_bytes: usize::try_from(memtable_flush_bytes)
+                    .unwrap_or(usize::MAX),
+            },
+            tiered_config: TieredConfig {
+                hot_tier_capacity,
+                eviction_batch_size: 64,
+            },
+            allow_missing_keks: false,
+        }
+    }
+
     /// Creates a test configuration with fast sync and small thresholds.
     #[cfg(test)]
     pub(crate) fn test_config(data_dir: PathBuf) -> Self {
