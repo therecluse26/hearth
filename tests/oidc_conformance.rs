@@ -292,10 +292,18 @@ async fn oidc_discovery_all_required_fields() {
         "userinfo_endpoint must start with issuer"
     );
 
-    // Dynamic registration removed — endpoint should not be advertised
+    // RFC 7591 Dynamic Client Registration endpoint.
     assert!(
-        doc.registration_endpoint.is_none(),
-        "registration_endpoint should not be present (dynamic registration removed)"
+        doc.registration_endpoint
+            .as_deref()
+            .is_some_and(|u| u.ends_with("/register")),
+        "registration_endpoint must end with /register"
+    );
+    assert!(
+        doc.registration_endpoint
+            .as_deref()
+            .is_some_and(|u| u.starts_with(&doc.issuer)),
+        "registration_endpoint must start with issuer"
     );
 
     // PKCE support
@@ -307,9 +315,9 @@ async fn oidc_discovery_all_required_fields() {
 }
 
 // ==========================================================================
-// Conformance Test 3: (Removed) Dynamic Client Registration
-// Dynamic registration was removed — applications are managed via YAML only.
-// The register_client() engine method is retained for reconciliation/migration.
+// Conformance Test 3: Dynamic Client Registration (RFC 7591)
+// The registration_endpoint is now advertised in discovery; per-realm
+// gating is enforced server-side by the dcr_policy config field.
 // ==========================================================================
 
 // ==========================================================================

@@ -325,6 +325,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/jwks", axum::routing::get(jwks))
         .route("/users", axum::routing::post(create_user))
         .route("/clients", axum::routing::post(register_client))
+        .route(
+            "/register",
+            axum::routing::post(register_client_dynamic)
+                .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+        )
         .route("/authorize", axum::routing::post(authorize))
         .route("/token", axum::routing::post(token_exchange))
         .route(
@@ -872,6 +877,145 @@ async fn register_client(
             .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+/// RFC 7591 Dynamic Client Registration response.
+#[derive(Debug, Serialize)]
+struct DcrResponse {
+    client_id: String,
+    client_secret: String,
+    client_name: String,
+    redirect_uris: Vec<String>,
+    grant_types: Vec<String>,
+    client_secret_expires_at: u64,
+    token_endpoint_auth_method: String,
+    client_id_issued_at: i64,
+}
+
+/// Dynamic Client Registration (RFC 7591) endpoint.
+///
+/// Accepts `POST /register` with `X-Realm-ID` header. The realm's
+/// `dcr_policy` must be `Open` — returns 403 otherwise. The server
+/// generates a random client secret and slug; the client does not
+/// supply these. Returns an RFC 7591-compatible JSON response.
+async fn register_client_dynamic(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<pb::RegisterClientRequest>,
+) -> impl IntoResponse {
+    let realm_id = match extract_realm_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    // Look up the realm to check DCR policy.
+    let realm = match state.identity.get_realm(&realm_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "realm not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+
+    let dcr_policy = realm.config().dcr_policy.clone().unwrap_or_default();
+
+    if !matches!(dcr_policy, crate::identity::DcrPolicy::Open) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "dynamic client registration is disabled for this realm"})),
+        )
+            .into_response();
+    }
+
+    // Strip any client-supplied secret — the server generates its own.
+    let mut request = crate::identity::RegisterClientRequest::from(body);
+    request.client_secret = None;
+
+    // Generate server-side random secret.
+    use base64::Engine as _;
+    use ring::rand::SecureRandom;
+    let rng = ring::rand::SystemRandom::new();
+    let mut secret_bytes = [0u8; 32];
+    #[allow(clippy::unwrap_used)]
+    // INVARIANT: SystemRandom::fill fails only on catastrophic OS RNG failure.
+    rng.fill(&mut secret_bytes).unwrap();
+    let generated_secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret_bytes);
+    request.client_secret = Some(generated_secret.clone());
+
+    // Force ThirdParty trust and consent for DCR-registered clients.
+    request.trust_level = crate::identity::ClientTrustLevel::ThirdParty;
+    request.require_consent = true;
+
+    // Generate a unique slug: base name + random hex suffix.
+    let base_slug = request.client_name.to_lowercase().replace(' ', "-");
+    let slug = generate_unique_slug(state.clone(), &realm_id, &base_slug).await;
+    request.slug = Some(slug);
+
+    match state.identity.register_client(&realm_id, &request) {
+        Ok(client) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                realm_id: realm_id.clone(),
+                actor: "anonymous".to_string(),
+                action: crate::audit::AuditAction::ClientRegistered,
+                resource_type: "client".to_string(),
+                resource_id: client.client_id().as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"via": "dynamic_registration"})),
+            });
+
+            let response = DcrResponse {
+                client_id: client.client_id().as_uuid().to_string(),
+                client_secret: generated_secret,
+                client_name: client.client_name().to_string(),
+                redirect_uris: client.redirect_uris().to_vec(),
+                grant_types: client.grant_types().to_vec(),
+                client_secret_expires_at: 0,
+                token_endpoint_auth_method: "client_secret_basic".to_string(),
+                #[allow(clippy::cast_possible_truncation)]
+                client_id_issued_at: client.created_at().as_micros() / 1_000_000,
+            };
+
+            (
+                StatusCode::CREATED,
+                Json(serde_json::to_value(response).unwrap_or_default()),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Generates a unique client slug for DCR by appending a random suffix to the
+/// base name. Scans existing clients to avoid collisions, retrying up to 5
+/// times.
+async fn generate_unique_slug(state: Arc<AppState>, realm_id: &RealmId, base: &str) -> String {
+    for _ in 0..5 {
+        let suffix = uuid::Uuid::new_v4().to_string();
+        let candidate = format!("{base}-{}", &suffix[..8]);
+
+        // Check for collision against existing clients.
+        match state.identity.list_clients(realm_id, None, 1000) {
+            Ok(page) => {
+                let collision = page.items.iter().any(|c| c.slug() == candidate);
+                if !collision {
+                    return candidate;
+                }
+            }
+            Err(_) => {
+                // If listing fails, use the candidate anyway — low collision
+                // probability makes this acceptable.
+                return candidate;
+            }
+        }
+    }
+
+    // After 5 retries, use the last attempt. The 8-hex-char suffix provides
+    // ~2^32 collision space — retries are a belt-and-suspenders guard.
+    let suffix = uuid::Uuid::new_v4().to_string();
+    format!("{base}-{}", &suffix[..8])
 }
 
 /// Initiate an OAuth 2.0 authorization code flow.
@@ -2287,14 +2431,15 @@ async fn admin_get_user_effective_permissions(
     };
     let scope = params.get("scope").cloned();
 
-    let resolved =
-        match state
-            .rbac
-            .resolve_permissions(&user_id, &auth.realm_id, org_id.as_ref(), scope.as_deref())
-        {
-            Ok(r) => r,
-            Err(e) => return rbac_error_to_response(&e).into_response(),
-        };
+    let resolved = match state.rbac.resolve_permissions(
+        &user_id,
+        &auth.realm_id,
+        org_id.as_ref(),
+        scope.as_deref(),
+    ) {
+        Ok(r) => r,
+        Err(e) => return rbac_error_to_response(&e).into_response(),
+    };
 
     (
         StatusCode::OK,

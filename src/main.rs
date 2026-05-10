@@ -671,8 +671,7 @@ async fn run_serve(
         let interval_secs = config.storage.compaction.interval_secs;
         let min_sst_count = config.storage.compaction.min_sst_count;
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(Duration::from_secs(interval_secs));
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
             // Skip the immediate first tick so the server finishes warm-up.
             interval.tick().await;
             loop {

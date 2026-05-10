@@ -7,7 +7,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 - **Phase 1 (Production Single-Node):** ~95% complete. P0 gaps closing.
 - **Phase 2 (Clustering):** Not started. Entire `src/cluster/` is a stub.
 
-### ~~Top 5 Production Blockers~~ (2 resolved, 3 remain)
+### ~~Top 5 Production Blockers~~ (all resolved)
 
 1. **~~Encryption at rest~~** — ✅ RESOLVED (2026-05-06).
 
@@ -42,7 +42,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 | 5 | **~~Background compaction~~** | — | ✅ RESOLVED (2026-05-08). Background `tokio::spawn` task periodically calls `compact_ssts()` at configurable interval (default 3600s). Writes to `.sst.tmp` + atomic rename for crash safety. Offloaded to `spawn_blocking`. Configurable via `[storage.compaction]` YAML section. |
 | 6 | **~~Token size cap enforcement~~** | AUTHZ §2.6, §5.4 | ✅ RESOLVED (2026-05-09). `validate_claim_payload()` enforces post-profile caps (permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB) with per-target limit names. Wired in `issue_tokens_with_context` and `exchange_authorization_code`. Five integration tests. |
 | 7 | **`/admin/users/{id}/effective-permissions` REST endpoint** | AUTHZ §8.2 | ✅ RESOLVED (2026-05-09). `GET /admin/users/{id}/effective-permissions` handler added to `src/protocol/http.rs`. Admin-authenticated via `extract_admin_auth` (Bearer token + `hearth.admin`). Accepts optional `org_id` (strips `org_` prefix, 400 on malformed) and `scope` query params. Returns identity-prechecked 404 for unknown users. Reuses `MePermissionsResponse`. Six integration tests in `tests/admin_effective_permissions.rs`. |
-| 8 | **Dynamic Client Registration (RFC 7591)** | AGENT_AUTH §2.7 | No `POST /register` endpoint. |
+| 8 | **Dynamic Client Registration (RFC 7591)** | AGENT_AUTH §2.7 | ✅ RESOLVED (2026-05-09). `POST /register` endpoint added to `src/protocol/http.rs`. Per-realm `DcrPolicy` gate (disabled/open) via `RealmConfig` and YAML config (`realms.<id>.auth.dcr.mode`). Server-generated client secret (32 bytes, base64url). Unique slug with collision-avoidance retry. ThirdParty trust, consent required. RFC 7591-compliant JSON response. Protocol-layer audit event (`via: dynamic_registration`). `registration_endpoint` advertised in OIDC discovery. Eight integration tests. Deferred: initial access token gating, RFC 7592 management endpoint, software statements, slug↔ClientId index. |
 | 9 | **Resolve-time cycle detection** | AUTHZ §3 | `resolve.rs:505` treats DAG cycles as diamonds (silent skip), not errors. Only self-edges error. |
 
 ---
@@ -125,7 +125,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 - [x] **[P0][M]** Add background compaction loop to `EmbeddedStorageEngine`: periodically merge accumulated SST files — resolves gaps #5 · _depends on: none_ ✅ DONE (2026-05-08)
 - [x] **[P0][S]** Implement `validate_claim_payload()` — enforce permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB; wired in `issue_tokens_with_context` and `exchange_authorization_code` (access + ID token) — resolves gaps #6 · _depends on: none_
 - [x] **[P0][S]** Add `GET /admin/users/{id}/effective-permissions` REST endpoint to `http.rs` — resolves gaps #7 · _depends on: none_ ✅ DONE (2026-05-09)
-- [ ] **[P0][M]** Implement Dynamic Client Registration (RFC 7591) `POST /register` endpoint — resolves gaps #8 · _depends on: none_
+- [x] **[P0][M]** Implement Dynamic Client Registration (RFC 7591) `POST /register` endpoint — resolves gaps #8 · _depends on: none_ ✅ DONE (2026-05-09)
 
 ### P1 — Should fix
 

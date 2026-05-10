@@ -11,10 +11,10 @@ pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
 pub use types::parse_duration_to_micros;
 pub use types::{
-    ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, CompactionSection, EmailConfig,
-    EmailTransport, FederationProviderYaml, FederationYamlConfig, LinkModeYaml, MailgunConfig,
-    MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig, OnboardingConfig,
-    OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
+    ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, CompactionSection,
+    EmailConfig, EmailTransport, FederationProviderYaml, FederationYamlConfig, LinkModeYaml,
+    MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig,
+    OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
     PermissionYamlConfig, PostmarkConfig, ProtectedResourceYamlConfig, RateLimitYaml,
     RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig, RoleYamlConfig,
     SamlServiceProviderYaml, ScopeBundleYamlConfig, SendgridConfig, ServerConfig, SmtpConfig,

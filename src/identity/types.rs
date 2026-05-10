@@ -417,6 +417,26 @@ impl Default for RegistrationPolicy {
     }
 }
 
+/// Controls whether Dynamic Client Registration (RFC 7591) is enabled for a realm.
+///
+/// When `None` is stored on `RealmConfig.dcr_policy`, the engine treats it as
+/// `Disabled` — a safe default so existing deployments don't silently open
+/// DCR after upgrade.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DcrPolicy {
+    /// Dynamic client registration is disabled. Only admins may create clients.
+    Disabled,
+    /// Any caller may register an OAuth client via `POST /register`.
+    Open,
+}
+
+impl Default for DcrPolicy {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
 /// Password complexity policy stored in a realm's configuration.
 ///
 /// These are *declarations* — enforcement is a separate concern in the identity
@@ -480,6 +500,8 @@ pub struct RealmConfig {
     pub passkey_requires_mfa: Option<bool>,
     /// Who may self-register in this realm. `None` means `Disabled`.
     pub registration_policy: Option<RegistrationPolicy>,
+    /// Whether dynamic client registration (RFC 7591) is enabled. `None` means `Disabled`.
+    pub dcr_policy: Option<DcrPolicy>,
     /// How external-IdP logins interact with an existing local user
     /// when the upstream asserts a matching verified email. `None`
     /// means [`LinkMode::Confirm`] — the Keycloak-equivalent safety

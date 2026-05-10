@@ -14,5 +14,11 @@
       "type": "local",
       "command": ["node", "node_modules/context-mode/start.mjs"]
     }
+  },
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "git *": "ask"
+    }
   }
 }

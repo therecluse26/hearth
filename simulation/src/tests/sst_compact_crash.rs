@@ -21,9 +21,9 @@ fn simulation_compaction_leaked_files_after_crash() {
         let mut config = StorageConfig::production(
             dir.path().to_path_buf(),
             64 * 1024 * 1024, // wal_max_size_bytes
-            false,             // fsync: false (test)
-            50,                // memtable_flush_bytes: small → forces flushes
-            100,               // hot_tier_capacity
+            false,            // fsync: false (test)
+            50,               // memtable_flush_bytes: small → forces flushes
+            100,              // hot_tier_capacity
         );
         config.compaction = CompactionConfig {
             enabled: false,

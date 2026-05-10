@@ -111,8 +111,7 @@ impl StorageConfig {
                 },
             },
             memtable_config: MemtableConfig {
-                flush_threshold_bytes: usize::try_from(memtable_flush_bytes)
-                    .unwrap_or(usize::MAX),
+                flush_threshold_bytes: usize::try_from(memtable_flush_bytes).unwrap_or(usize::MAX),
             },
             tiered_config: TieredConfig {
                 hot_tier_capacity,
@@ -487,9 +486,11 @@ impl EmbeddedStorageEngine {
 
         // Open reader from temp path before rename (SstReader is in-memory,
         // independent of the underlying file path)
-        let new_reader = SstReader::open_with_fs(&tmp_path, &*self.fs, sst_num, &dek)
-            .map_err(|e| StorageError::Crypto {
-                reason: format!("compacted SST failed to open reader: {e}"),
+        let new_reader =
+            SstReader::open_with_fs(&tmp_path, &*self.fs, sst_num, &dek).map_err(|e| {
+                StorageError::Crypto {
+                    reason: format!("compacted SST failed to open reader: {e}"),
+                }
             })?;
 
         // Atomic rename — crash-safe: partial writes leave a .tmp, not a corrupt .sst
@@ -976,13 +977,13 @@ mod tests {
             memtable_config: MemtableConfig {
                 flush_threshold_bytes: 100,
             },
-                tiered_config: TieredConfig::default(),
-                allow_missing_keks: false,
-                compaction: CompactionConfig::default(),
-            };
-            let engine = EmbeddedStorageEngine::open(config).expect("open");
+            tiered_config: TieredConfig::default(),
+            allow_missing_keks: false,
+            compaction: CompactionConfig::default(),
+        };
+        let engine = EmbeddedStorageEngine::open(config).expect("open");
 
-            // Write keys that will end up in SST (flush triggered by small threshold)
+        // Write keys that will end up in SST (flush triggered by small threshold)
         engine.put(&realm, b"aaa", b"sst-val").expect("put");
         engine.put(&realm, b"bbb", b"sst-val").expect("put");
         engine.put(&realm, b"ccc", b"sst-val").expect("put");

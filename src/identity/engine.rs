@@ -91,10 +91,9 @@ pub(crate) fn validate_claim_payload(
         "groups": groups,
         "permissions": permissions,
     });
-    let bytes = serde_json::to_vec(&payload)
-        .map_err(|e| IdentityError::Internal {
-            reason: format!("token size serialization failed: {e}"),
-        })?;
+    let bytes = serde_json::to_vec(&payload).map_err(|e| IdentityError::Internal {
+        reason: format!("token size serialization failed: {e}"),
+    })?;
     if bytes.len() > MAX_CLAIM_BYTES {
         return Err(IdentityError::TokenTooLarge {
             limit: format!("{target_prefix}_claims_bytes_per_token"),
@@ -3391,12 +3390,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             None,
             ClaimTarget::IdToken,
         );
-        validate_claim_payload(
-            ClaimTarget::IdToken,
-            &id_roles,
-            &id_groups,
-            &id_permissions,
-        )?;
+        validate_claim_payload(ClaimTarget::IdToken, &id_roles, &id_groups, &id_permissions)?;
 
         // 9. Mark the code as used
         stored_code.used = true;
@@ -3580,7 +3574,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 "client_credentials".to_string(),
                 "urn:ietf:params:oauth:grant-type:device_code".to_string(),
             ],
-            registration_endpoint: None,
+            registration_endpoint: Some(format!("{issuer}/register")),
             device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
             revocation_endpoint: Some(format!("{issuer}/revoke")),
             introspection_endpoint: Some(format!("{issuer}/introspect")),

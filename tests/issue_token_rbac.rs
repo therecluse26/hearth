@@ -7,7 +7,10 @@
 mod common;
 
 use hearth::core::RealmId;
-use hearth::identity::{AuthorizationRequest, CreateUserRequest, IdentityError, RegisterClientRequest, SessionContext, TokenExchangeRequest};
+use hearth::identity::{
+    AuthorizationRequest, CreateUserRequest, IdentityError, RegisterClientRequest, SessionContext,
+    TokenExchangeRequest,
+};
 use hearth::rbac::{
     AssignRoleRequest, CreateGroupRequest, CreateRoleRequest, GroupMember, Permission, Scope,
     Subject,

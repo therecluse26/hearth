@@ -660,6 +660,9 @@ pub struct RealmAuthYaml {
     /// Controls who may self-register. Defaults to `disabled` when absent.
     #[serde(default)]
     pub registration: Option<RegistrationPolicyYaml>,
+    /// Controls dynamic client registration (RFC 7591). Defaults to `disabled` when absent.
+    #[serde(default)]
+    pub dcr: Option<DcrPolicyYaml>,
 }
 
 /// Self-service registration policy in YAML.
@@ -709,6 +712,38 @@ impl RegistrationPolicyYaml {
                     self.allowed_domains.clone().unwrap_or_default(),
                 )
             }
+        }
+    }
+}
+
+/// Dynamic Client Registration policy in YAML.
+///
+/// Controls whether OAuth clients may self-register via `POST /register`
+/// (RFC 7591). Defaults to `disabled` when absent.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DcrPolicyYaml {
+    /// One of `disabled` (default) or `open`.
+    #[serde(default)]
+    pub mode: DcrModeYaml,
+}
+
+/// Valid values for `realms.<name>.auth.dcr.mode` in YAML.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DcrModeYaml {
+    /// Dynamic client registration is disabled. Only admins may create clients.
+    #[default]
+    Disabled,
+    /// Any caller may register an OAuth client via `POST /register`.
+    Open,
+}
+
+impl DcrPolicyYaml {
+    /// Projects the YAML declaration into the engine-level enum.
+    pub(crate) fn to_domain(&self) -> crate::identity::DcrPolicy {
+        match self.mode {
+            DcrModeYaml::Disabled => crate::identity::DcrPolicy::Disabled,
+            DcrModeYaml::Open => crate::identity::DcrPolicy::Open,
         }
     }
 }
@@ -1188,6 +1223,10 @@ impl RealmYamlConfig {
             .and_then(|a| a.registration.as_ref())
             .map(RegistrationPolicyYaml::to_domain);
 
+        let dcr_policy = auth
+            .and_then(|a| a.dcr.as_ref())
+            .map(DcrPolicyYaml::to_domain);
+
         // Accumulate all validation errors upfront so callers see the full
         // set of problems in one pass rather than stopping at the first error.
         let mut errors: Vec<RegistryError> = Vec::new();
@@ -1406,6 +1445,7 @@ impl RealmYamlConfig {
             lockout_duration_micros,
             passkey_requires_mfa,
             registration_policy,
+            dcr_policy,
             // Realm-level federation link mode. `None` → `Confirm`
             // (Keycloak-equivalent default). Connector records are
             // reconciled separately via `reconcile_federation_for_realm`.

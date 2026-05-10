@@ -124,7 +124,10 @@ async fn happy_path_returns_effective_permissions() {
 
     let (admin_token, _) = issue_token_for(&h, &realm, "admin@example.com", true).await;
     let app = build_app(&h).await;
-    let uri = format!("/admin/users/{}/effective-permissions", target_user.id().as_uuid());
+    let uri = format!(
+        "/admin/users/{}/effective-permissions",
+        target_user.id().as_uuid()
+    );
 
     let resp = app
         .oneshot(
@@ -156,8 +159,14 @@ async fn happy_path_returns_effective_permissions() {
         .map(|v| v.as_str().expect("str"))
         .collect();
 
-    assert!(roles.contains(&"docs.viewer"), "must include assigned role name");
-    assert!(perms.contains(&"docs.view"), "must include docs.view permission");
+    assert!(
+        roles.contains(&"docs.viewer"),
+        "must include assigned role name"
+    );
+    assert!(
+        perms.contains(&"docs.view"),
+        "must include docs.view permission"
+    );
 }
 
 #[tokio::test]

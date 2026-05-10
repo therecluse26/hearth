@@ -49,12 +49,12 @@ pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
     canonicalize_scopes, BulkResult, ConsentDecision, ConsentListEntry, ConsentRecord,
     CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest,
-    ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport, Organization,
-    OrganizationConfig, OrganizationInvitation, OrganizationMembership, OrganizationRole,
-    OrganizationStatus, Page, PasswordPolicy, PendingAuthorizationRequest, RawCredential, Realm,
-    RealmConfig, RealmStatus, RegisterUserRequest, RegisterUserResponse, RegistrationPolicy,
-    Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest,
-    User, UserStatus,
+    DcrPolicy, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
+    Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
+    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, PendingAuthorizationRequest,
+    RawCredential, Realm, RealmConfig, RealmStatus, RegisterUserRequest, RegisterUserResponse,
+    RegistrationPolicy, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
+    UpdateUserRequest, User, UserStatus,
 };
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
