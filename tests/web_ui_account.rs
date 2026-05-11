@@ -98,6 +98,7 @@ fn build_rig() -> TestRig {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

@@ -19,6 +19,7 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
                 display_name: "Test User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user")
@@ -130,6 +131,7 @@ async fn session_persists_across_restart() {
                     display_name: "Persist User".to_string(),
                     first_name: String::new(),
                     last_name: String::new(),
+                                attributes: Default::default(),
                 },
             )
             .expect("create user");
@@ -472,6 +474,7 @@ async fn enumeration_resistance() {
                 display_name: "Enum User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

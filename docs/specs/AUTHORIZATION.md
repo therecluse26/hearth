@@ -684,25 +684,24 @@ Operators MAY declaratively specify roles, permissions, groups, and scope mappin
 ```yaml
 realms:
   acme:
-    rbac:
-      permissions:
-        - docs.view
-        - docs.edit
-        - docs.delete
-      roles:
-        - name: docs.viewer
-          permissions: [docs.view]
-        - name: docs.editor
-          permissions: [docs.view, docs.edit]
-          parents: [docs.viewer]
-        - name: docs.admin
-          permissions: [docs.delete]
-          parents: [docs.editor]
-      groups:
-        - name: Engineering
-          slug: engineering
-      scopes:
-        docs: [docs.*]
+    permissions:
+      - docs.view
+      - docs.edit
+      - docs.delete
+    roles:
+      - name: docs.viewer
+        permissions: [docs.view]
+      - name: docs.editor
+        permissions: [docs.view, docs.edit]
+        parents: [docs.viewer]
+      - name: docs.admin
+        permissions: [docs.delete]
+        parents: [docs.editor]
+    groups:
+      - name: Engineering
+        slug: engineering
+    scopes:
+      docs: [docs.*]
 ```
 
 Declarative config is reconciled at startup: roles/groups declared in YAML are created if missing, updated if drifted. YAML-managed entities MUST NOT be edited via admin API; the admin API refuses mutations on them with a clear error referencing the YAML source of truth.

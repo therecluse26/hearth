@@ -36,6 +36,7 @@ async fn populates_roles_groups_permissions() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -116,6 +117,7 @@ async fn claims_empty_for_user_with_no_assignments() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -151,6 +153,7 @@ async fn permissions_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -220,6 +223,7 @@ async fn roles_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -288,6 +292,7 @@ async fn groups_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -346,6 +351,7 @@ async fn exact_limit_succeeds() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -459,6 +465,7 @@ async fn byte_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -536,6 +543,7 @@ async fn oauth_path_permissions_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

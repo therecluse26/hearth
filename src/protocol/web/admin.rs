@@ -343,6 +343,7 @@ pub async fn admin_user_create_submit(
         display_name: form.display_name.clone(),
         first_name: form.first_name.clone(),
         last_name: form.last_name.clone(),
+        attributes: Default::default(),
     };
 
     match state.identity.create_user(target.id(), &req) {

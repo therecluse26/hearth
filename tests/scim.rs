@@ -82,6 +82,7 @@ fn setup_admin(rig: &Rig) -> (RealmId, String) {
                 display_name: "Admin".to_string(),
                 first_name: "Admin".to_string(),
                 last_name: "User".to_string(),
+                        attributes: Default::default(),
             },
         )
         .expect("create admin");

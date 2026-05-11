@@ -243,6 +243,90 @@ pub fn default_claim_profile() -> Vec<ClaimMapping> {
             required_scopes: Some(vec!["profile".to_string()]),
             allowed_clients: None,
         },
+        ClaimMapping {
+            claim: "given_name".to_string(),
+            source: ClaimSource::CanonicalUserField {
+                field: CanonicalUserField::FirstName,
+            },
+            include_in_access_token: false,
+            include_in_id_token: true,
+            include_in_userinfo: true,
+            first_party_only: false,
+            required_scopes: Some(vec!["profile".to_string()]),
+            allowed_clients: None,
+        },
+        ClaimMapping {
+            claim: "family_name".to_string(),
+            source: ClaimSource::CanonicalUserField {
+                field: CanonicalUserField::LastName,
+            },
+            include_in_access_token: false,
+            include_in_id_token: true,
+            include_in_userinfo: true,
+            first_party_only: false,
+            required_scopes: Some(vec!["profile".to_string()]),
+            allowed_clients: None,
+        },
+        ClaimMapping {
+            claim: "picture".to_string(),
+            source: ClaimSource::CanonicalUserField {
+                field: CanonicalUserField::Picture,
+            },
+            include_in_access_token: false,
+            include_in_id_token: true,
+            include_in_userinfo: true,
+            first_party_only: false,
+            required_scopes: Some(vec!["profile".to_string()]),
+            allowed_clients: None,
+        },
+        ClaimMapping {
+            claim: "locale".to_string(),
+            source: ClaimSource::CanonicalUserField {
+                field: CanonicalUserField::Locale,
+            },
+            include_in_access_token: false,
+            include_in_id_token: true,
+            include_in_userinfo: true,
+            first_party_only: false,
+            required_scopes: Some(vec!["profile".to_string()]),
+            allowed_clients: None,
+        },
+        ClaimMapping {
+            claim: "zoneinfo".to_string(),
+            source: ClaimSource::CanonicalUserField {
+                field: CanonicalUserField::Zoneinfo,
+            },
+            include_in_access_token: false,
+            include_in_id_token: true,
+            include_in_userinfo: true,
+            first_party_only: false,
+            required_scopes: Some(vec!["profile".to_string()]),
+            allowed_clients: None,
+        },
+        ClaimMapping {
+            claim: "phone_number".to_string(),
+            source: ClaimSource::CanonicalUserField {
+                field: CanonicalUserField::PhoneNumber,
+            },
+            include_in_access_token: false,
+            include_in_id_token: true,
+            include_in_userinfo: true,
+            first_party_only: false,
+            required_scopes: Some(vec!["phone".to_string()]),
+            allowed_clients: None,
+        },
+        ClaimMapping {
+            claim: "address".to_string(),
+            source: ClaimSource::CanonicalUserField {
+                field: CanonicalUserField::Address,
+            },
+            include_in_access_token: false,
+            include_in_id_token: true,
+            include_in_userinfo: true,
+            first_party_only: false,
+            required_scopes: Some(vec!["address".to_string()]),
+            allowed_clients: None,
+        },
     ]
 }
 

@@ -754,12 +754,11 @@ impl RbacEngine for EmbeddedRbacEngine {
         let mut next_cursor = None;
         for entry in entries {
             if items.len() >= limit {
-                // Derive cursor from the previous entry's name (strip prefix).
-                let name_bytes = &items
-                    .last()
-                    .map(|r: &Role| r.name.clone())
-                    .unwrap_or_default();
-                next_cursor = Some(name_bytes.to_string());
+                // Derive cursor from the boundary entry's key (role name),
+                // not from items.last() — the boundary entry always exists
+                // and its key carries the correct sort position.
+                let name_bytes = &entry.key[prefix.len()..];
+                next_cursor = Some(String::from_utf8_lossy(name_bytes).to_string());
                 break;
             }
             let id: RoleId = Self::de(&entry.value)?;
@@ -920,16 +919,28 @@ impl RbacEngine for EmbeddedRbacEngine {
     fn list_groups(
         &self,
         realm_id: &RealmId,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Group>, RbacError> {
         let prefix = keys::group_slug_scan_prefix(realm_id);
         let end = keys::prefix_end(&prefix);
-        let entries = self.storage.scan(realm_id, &prefix, &end)?;
+        let start = match cursor {
+            Some(c) => {
+                let mut v = prefix.clone();
+                v.extend_from_slice(c.as_bytes());
+                v.push(0);
+                v
+            }
+            None => prefix.clone(),
+        };
+        let entries = self.storage.scan(realm_id, &start, &end)?;
 
         let mut items = Vec::new();
+        let mut next_cursor = None;
         for entry in entries {
             if items.len() >= limit {
+                let slug_bytes = &entry.key[prefix.len()..];
+                next_cursor = Some(String::from_utf8_lossy(slug_bytes).to_string());
                 break;
             }
             let gid: GroupId = Self::de(&entry.value)?;
@@ -939,7 +950,7 @@ impl RbacEngine for EmbeddedRbacEngine {
         }
         Ok(Page {
             items,
-            next_cursor: None,
+            next_cursor,
         })
     }
 
@@ -1120,15 +1131,27 @@ impl RbacEngine for EmbeddedRbacEngine {
         &self,
         realm_id: &RealmId,
         role_id: &RoleId,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<RoleSubject>, RbacError> {
         let prefix = keys::assign_role_scan_prefix(role_id);
         let end = keys::prefix_end(&prefix);
-        let entries = self.storage.scan(realm_id, &prefix, &end)?;
+        let start = match cursor {
+            Some(c) => {
+                let mut v = prefix.clone();
+                v.extend_from_slice(c.as_bytes());
+                v.push(0);
+                v
+            }
+            None => prefix.clone(),
+        };
+        let entries = self.storage.scan(realm_id, &start, &end)?;
         let mut items = Vec::new();
+        let mut next_cursor = None;
         for entry in entries {
             if items.len() >= limit {
+                let suffix = &entry.key[prefix.len()..];
+                next_cursor = Some(String::from_utf8_lossy(suffix).to_string());
                 break;
             }
             let aid: AssignmentId = Self::de(&entry.value)?;
@@ -1142,7 +1165,7 @@ impl RbacEngine for EmbeddedRbacEngine {
         }
         Ok(Page {
             items,
-            next_cursor: None,
+            next_cursor,
         })
     }
 
@@ -1361,8 +1384,8 @@ mod tests {
     }
 
     #[test]
-    fn reserved_namespace_rejected_for_operator_role() {
-        // Per AUTHZ_EXPANSION.md the global namespace is `system.*` —
+     fn reserved_namespace_rejected_for_operator_role() {
+        // Per AUTHZ_EXPANSION.md the global namespace is `hearth.*` —
         // operator-created roles may not include it directly.
         let (engine, realm) = mk_engine();
         let result = engine.create_role(
@@ -1370,14 +1393,14 @@ mod tests {
             &CreateRoleRequest {
                 name: "evil".to_string(),
                 description: None,
-                permissions: vec![perm("system.admin")],
+                permissions: vec![perm("hearth.admin")],
                 parent_roles: vec![],
                 ..Default::default()
             },
         );
         match result {
             Err(RbacError::ReservedNamespace { permission }) => {
-                assert_eq!(permission, "system.admin");
+                assert_eq!(permission, "hearth.admin");
             }
             other => panic!("expected ReservedNamespace, got {other:?}"),
         }

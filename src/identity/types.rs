@@ -314,6 +314,8 @@ pub struct CreateUserRequest {
     pub first_name: String,
     /// User's last (family) name. Empty string allowed.
     pub last_name: String,
+    /// Custom attribute key-value pairs.
+    pub attributes: BTreeMap<String, String>,
 }
 
 /// Request to self-register a new user via the public signup flow.
@@ -1042,6 +1044,8 @@ pub struct ImportUserRequest {
     pub status: UserStatus,
     /// Pre-hashed credential. `None` imports the user with no password.
     pub credential: Option<RawCredential>,
+    /// Custom attribute key-value pairs.
+    pub attributes: BTreeMap<String, String>,
 }
 
 /// Request to import an OAuth 2.0 client from an external provider.

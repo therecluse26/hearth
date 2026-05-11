@@ -91,6 +91,7 @@ fn build_rig() -> Rig {
             display_name: "Admin".to_string(),
             first_name: String::new(),
             last_name: String::new(),
+                attributes: Default::default(),
         })
         .expect("create admin user");
     identity
@@ -149,6 +150,7 @@ fn build_rig() -> Rig {
                 display_name: "Bob".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create member user");

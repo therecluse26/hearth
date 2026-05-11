@@ -92,6 +92,7 @@ fn build_rig() -> TestRig {
             display_name: "Admin".to_string(),
             first_name: String::new(),
             last_name: String::new(),
+                attributes: Default::default(),
         })
         .expect("create admin user");
     let pw = CleartextPassword::from_string("correct-horse-battery-staple".to_string());

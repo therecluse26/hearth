@@ -150,6 +150,7 @@ async fn create_user_rejects_system_realm() {
             display_name: "Sneaky".to_string(),
             first_name: String::new(),
             last_name: String::new(),
+                attributes: Default::default(),
         },
     );
     assert!(
@@ -169,6 +170,7 @@ async fn create_admin_user_succeeds_on_system_realm() {
             display_name: "Second Admin".to_string(),
             first_name: String::new(),
             last_name: String::new(),
+                attributes: Default::default(),
         })
         .expect("create_admin_user");
     // The user is persisted in the system realm.

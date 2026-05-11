@@ -64,6 +64,7 @@ fn setup_oidc() -> (
                 display_name: "Bench OIDC User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

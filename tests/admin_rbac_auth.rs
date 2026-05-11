@@ -38,6 +38,7 @@ async fn issue_token_for(
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

@@ -109,6 +109,7 @@ fn seed_realm(identity: &EmbeddedIdentityEngine, authz: &EmbeddedRbacEngine) -> 
                     display_name: format!("Crash User {i}"),
                     first_name: String::new(),
                     last_name: String::new(),
+                                attributes: Default::default(),
                 },
             )
             .expect("create user");

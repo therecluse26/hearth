@@ -160,6 +160,7 @@ async fn confirm_link_ticket_cannot_be_replayed() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -334,6 +335,7 @@ async fn link_external_identity_refuses_to_rehome_across_users() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -346,6 +348,7 @@ async fn link_external_identity_refuses_to_rehome_across_users() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();

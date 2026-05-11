@@ -241,6 +241,7 @@ async fn mfa_enrollment_plus_login() {
                 display_name: "E2E MFA User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -353,6 +354,7 @@ async fn passkey_only_authentication() {
                 display_name: "E2E Passkey User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -485,6 +487,7 @@ async fn multi_realm_isolation_roundtrip() {
                 display_name: "Alice A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user A");
@@ -498,6 +501,7 @@ async fn multi_realm_isolation_roundtrip() {
                 display_name: "Bob B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user B");

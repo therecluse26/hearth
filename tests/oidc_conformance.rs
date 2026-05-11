@@ -47,6 +47,7 @@ async fn setup_oidc_env() -> (
                 display_name: "Alice Smith".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

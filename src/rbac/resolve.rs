@@ -172,6 +172,7 @@ pub(crate) fn resolve_permissions<R: Resolver + ?Sized>(
     let mut role_names: BTreeSet<String> = BTreeSet::new();
     let mut perms: BTreeSet<Permission> = BTreeSet::new();
     let mut visited: HashSet<RoleId> = HashSet::new();
+    let mut path: HashSet<RoleId> = HashSet::new();
     for ra in &assignments {
         expand_role(
             resolver,
@@ -180,6 +181,7 @@ pub(crate) fn resolve_permissions<R: Resolver + ?Sized>(
             &mut role_names,
             &mut perms,
             &mut visited,
+            &mut path,
             0,
         )?;
     }
@@ -204,6 +206,7 @@ pub(crate) fn resolve_permissions<R: Resolver + ?Sized>(
                         &mut role_names,
                         &mut perms,
                         &mut visited,
+                        &mut path,
                         0,
                     )?;
                 }
@@ -493,6 +496,7 @@ fn expand_role<R: Resolver + ?Sized>(
     role_names: &mut BTreeSet<String>,
     perms: &mut BTreeSet<Permission>,
     visited: &mut HashSet<RoleId>,
+    path: &mut HashSet<RoleId>,
     depth: usize,
 ) -> Result<(), RbacError> {
     if depth > MAX_ROLE_DEPTH {
@@ -502,21 +506,27 @@ fn expand_role<R: Resolver + ?Sized>(
         });
     }
 
-    if !visited.insert(role_id.clone()) {
-        // Already expanded — this is not a cycle, just a diamond: two
-        // parents share a common ancestor. Safe to stop.
+    // Cycle detection must come before the diamond check:
+    // if the role is already on the current DFS path, it's a true
+    // cycle (e.g. A→B→C→A or self-edge A→A). The visited set
+    // handles diamonds (shared ancestors) correctly below.
+    if !path.insert(role_id.clone()) {
+        return Err(RbacError::CycleDetected {
+            kind: CycleKind::RoleComposition,
+            entity: role_id.to_string(),
+        });
+    }
+
+    // Diamond check: already fully expanded by another branch.
+    // Safe to stop — permissions are already collected.
+    if visited.contains(role_id) {
+        path.remove(role_id);
         return Ok(());
     }
 
     let Some(role) = resolver.get_role(realm_id, role_id)? else {
-        // Dangling parent: a parent role ID was set on another role but the
-        // target has since been deleted. Write-time checks normally prevent
-        // this; we tolerate at resolve time so a stale DAG doesn't fail the
-        // whole token issuance.
-        //
-        // Emit a rate-limited structured warning so operators can detect
-        // YAML-storage drift without log spam. See AUTHZ_EXPANSION.md
-        // §"Dangling references".
+        // Dangling parent: role was deleted after being set as a parent.
+        // Tolerate at resolve time; emit rate-limited warning.
         let ref_id = role_id.to_string();
         if should_emit_orphan(realm_id, &ref_id) {
             tracing::warn!(
@@ -526,8 +536,11 @@ fn expand_role<R: Resolver + ?Sized>(
                 "dangling role reference skipped during permission resolution"
             );
         }
+        path.remove(role_id);
         return Ok(());
     };
+
+    visited.insert(role_id.clone());
 
     role_names.insert(role.name.clone());
     for p in &role.permissions {
@@ -535,13 +548,6 @@ fn expand_role<R: Resolver + ?Sized>(
     }
 
     for parent in &role.parent_roles {
-        if parent == role_id {
-            // Self-edge.
-            return Err(RbacError::CycleDetected {
-                kind: CycleKind::RoleComposition,
-                entity: role.name.clone(),
-            });
-        }
         expand_role(
             resolver,
             realm_id,
@@ -549,10 +555,12 @@ fn expand_role<R: Resolver + ?Sized>(
             role_names,
             perms,
             visited,
+            path,
             depth + 1,
         )?;
     }
 
+    path.remove(role_id);
     Ok(())
 }
 
@@ -913,6 +921,49 @@ mod tests {
                 ..
             }) => {}
             other => panic!("expected role-composition cycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn role_cycle_three_hop_returns_cycle_error() {
+        let realm = RealmId::generate();
+        let alice = UserId::generate();
+        let id_a = RoleId::generate();
+        let id_b = RoleId::generate();
+        let id_c = RoleId::generate();
+
+        let mk = |id: &RoleId, name: &str, parent: &RoleId| Role {
+            id: id.clone(),
+            realm_id: realm.clone(),
+            name: name.to_string(),
+            description: None,
+            permissions: vec![],
+            parent_roles: vec![parent.clone()],
+            scope_kind: crate::rbac::RoleScopeKind::Realm,
+            created_at: Timestamp::from_micros(1),
+            updated_at: Timestamp::from_micros(1),
+        };
+
+        let mut fake = Fake::new();
+        fake.upsert_role(mk(&id_a, "a", &id_b));
+        fake.upsert_role(mk(&id_b, "b", &id_c));
+        fake.upsert_role(mk(&id_c, "c", &id_a));
+        fake.user_asgn.insert(
+            alice.clone(),
+            vec![mk_asgn(
+                &realm,
+                Subject::User(alice.clone()),
+                id_a,
+                Scope::Realm,
+            )],
+        );
+
+        match resolve_permissions(&fake, &alice, &realm, None, None) {
+            Err(RbacError::CycleDetected {
+                kind: CycleKind::RoleComposition,
+                ..
+            }) => {}
+            other => panic!("expected CycleDetected, got {other:?}"),
         }
     }
 

@@ -35,6 +35,7 @@ async fn admin_ctx() -> AdminCtx {
                 display_name: "A".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("user");
@@ -182,7 +183,7 @@ async fn reserved_permission_rejected() {
         Some(json!({
             "name": "sneaky",
             "description": null,
-            "permissions": ["system.admin"],
+            "permissions": ["hearth.admin"],
             "parent_roles": [],
         })),
     )
@@ -193,8 +194,8 @@ async fn reserved_permission_rejected() {
 
 #[tokio::test]
 async fn reserved_permission_rejected_on_nested_namespace() {
-    // Segment-boundary check: "system.admin.users" is still reserved
-    // because the prefix match is on the literal "system." segment.
+    // Segment-boundary check: "hearth.admin.users" is still reserved
+    // because the prefix match is on the literal "hearth." segment.
     let ctx = admin_ctx().await;
     let (status, body) = send(
         &ctx,
@@ -203,7 +204,7 @@ async fn reserved_permission_rejected_on_nested_namespace() {
         Some(json!({
             "name": "sneakier",
             "description": null,
-            "permissions": ["system.admin.users"],
+            "permissions": ["hearth.admin.users"],
             "parent_roles": [],
         })),
     )
@@ -240,7 +241,7 @@ async fn reserved_permission_rejected_on_update() {
         Some(json!({
             "name": null,
             "description": null,
-            "permissions": ["system.admin"],
+            "permissions": ["hearth.admin"],
             "parent_roles": null,
         })),
     )

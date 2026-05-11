@@ -426,6 +426,7 @@ impl KeycloakImporter {
             last_name,
             status,
             credential,
+            attributes: Default::default(),
         };
 
         let user = self.identity.import_user(realm_id, &request)?;

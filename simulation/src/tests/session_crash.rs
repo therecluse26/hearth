@@ -55,6 +55,7 @@ fn simulation_crash_recovery_sessions() {
                         display_name: format!("Crash User {i}"),
                         first_name: String::new(),
                         last_name: String::new(),
+                                        attributes: Default::default(),
                     },
                 )
                 .expect("create user");
@@ -145,6 +146,7 @@ fn simulation_ttl_clock_skew() {
                 display_name: "Clock Skew User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

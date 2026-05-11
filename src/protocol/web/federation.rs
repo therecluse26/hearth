@@ -219,6 +219,7 @@ async fn callback_impl(state: Arc<WebState>, realm_id: RealmId, q: CallbackQuery
                 display_name,
                 first_name: identity.first_name.clone(),
                 last_name: identity.last_name.clone(),
+                        attributes: Default::default(),
             };
             let new_user = match state.identity.create_user(&realm_id, &req) {
                 Ok(u) => u,

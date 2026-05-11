@@ -176,6 +176,7 @@ async fn link_external_identity_roundtrip() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -216,6 +217,7 @@ async fn link_refuses_to_rehome_to_different_user() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -228,6 +230,7 @@ async fn link_refuses_to_rehome_to_different_user() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -260,6 +263,7 @@ async fn unlink_is_idempotent_second_call_errors() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -300,6 +304,7 @@ async fn delete_user_cascades_both_federation_indexes() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -333,6 +338,7 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -345,6 +351,7 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();
@@ -388,6 +395,7 @@ async fn confirm_link_ticket_is_single_use() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .unwrap();

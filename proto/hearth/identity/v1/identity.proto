@@ -63,6 +63,7 @@ message CreateUserRequest {
   string display_name = 2;
   string first_name = 3;
   string last_name = 4;
+  map<string, string> attributes = 5;
 }
 
 // Request to update an existing user.

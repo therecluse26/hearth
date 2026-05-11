@@ -47,6 +47,7 @@ fn setup_session() -> (
                 display_name: "Bench Session User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

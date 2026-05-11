@@ -27,6 +27,7 @@ async fn first_user_gets_realm_admin_and_hearth_admin_permission() {
                 display_name: "Admin".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

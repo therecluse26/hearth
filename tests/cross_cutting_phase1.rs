@@ -99,6 +99,7 @@ async fn phase1_error_responses_leak_no_internal_state() {
                 display_name: "Cross-cutting".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -243,6 +244,7 @@ async fn phase1_sensitive_types_zero_on_drop() {
                 display_name: "Zero".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

@@ -505,6 +505,7 @@ type CreateUserRequest struct {
 	DisplayName   string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	FirstName     string                 `protobuf:"bytes,3,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`
 	LastName      string                 `protobuf:"bytes,4,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
+	Attributes    map[string]string      `protobuf:"bytes,5,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -565,6 +566,13 @@ func (x *CreateUserRequest) GetLastName() string {
 		return x.LastName
 	}
 	return ""
+}
+
+func (x *CreateUserRequest) GetAttributes() map[string]string {
+	if x != nil {
+		return x.Attributes
+	}
+	return nil
 }
 
 // Request to update an existing user.
@@ -1929,13 +1937,19 @@ const file_hearth_identity_v1_identity_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\x88\x01\n" +
+	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\x9e\x02\n" +
 	"\x11CreateUserRequest\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
 	"\n" +
 	"first_name\x18\x03 \x01(\tR\tfirstName\x12\x1b\n" +
-	"\tlast_name\x18\x04 \x01(\tR\blastName\"\x9c\x02\n" +
+	"\tlast_name\x18\x04 \x01(\tR\blastName\x12U\n" +
+	"\n" +
+	"attributes\x18\x05 \x03(\v25.hearth.identity.v1.CreateUserRequest.AttributesEntryR\n" +
+	"attributes\x1a=\n" +
+	"\x0fAttributesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9c\x02\n" +
 	"\x11UpdateUserRequest\x12\x19\n" +
 	"\x05email\x18\x01 \x01(\tH\x00R\x05email\x88\x01\x01\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x01R\vdisplayName\x88\x01\x01\x12;\n" +
@@ -2097,7 +2111,7 @@ func file_hearth_identity_v1_identity_proto_rawDescGZIP() []byte {
 }
 
 var file_hearth_identity_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_hearth_identity_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_hearth_identity_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_hearth_identity_v1_identity_proto_goTypes = []any{
 	(UserStatus)(0),                   // 0: hearth.identity.v1.UserStatus
 	(RealmStatus)(0),                  // 1: hearth.identity.v1.RealmStatus
@@ -2131,60 +2145,62 @@ var file_hearth_identity_v1_identity_proto_goTypes = []any{
 	(*DeleteOrganizationRequest)(nil), // 29: hearth.identity.v1.DeleteOrganizationRequest
 	(*UpdateOrganizationCall)(nil),    // 30: hearth.identity.v1.UpdateOrganizationCall
 	(*Empty)(nil),                     // 31: hearth.identity.v1.Empty
+	nil,                               // 32: hearth.identity.v1.CreateUserRequest.AttributesEntry
 }
 var file_hearth_identity_v1_identity_proto_depIdxs = []int32{
 	0,  // 0: hearth.identity.v1.User.status:type_name -> hearth.identity.v1.UserStatus
 	1,  // 1: hearth.identity.v1.Realm.status:type_name -> hearth.identity.v1.RealmStatus
 	5,  // 2: hearth.identity.v1.Realm.config:type_name -> hearth.identity.v1.RealmConfig
-	0,  // 3: hearth.identity.v1.UpdateUserRequest.status:type_name -> hearth.identity.v1.UserStatus
-	5,  // 4: hearth.identity.v1.CreateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
-	1,  // 5: hearth.identity.v1.UpdateRealmRequest.status:type_name -> hearth.identity.v1.RealmStatus
-	5,  // 6: hearth.identity.v1.UpdateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
-	3,  // 7: hearth.identity.v1.UserPage.items:type_name -> hearth.identity.v1.User
-	6,  // 8: hearth.identity.v1.RealmPage.items:type_name -> hearth.identity.v1.Realm
-	3,  // 9: hearth.identity.v1.BulkResultEntry.user:type_name -> hearth.identity.v1.User
-	13, // 10: hearth.identity.v1.BulkResult.results:type_name -> hearth.identity.v1.BulkResultEntry
-	2,  // 11: hearth.identity.v1.Organization.status:type_name -> hearth.identity.v1.OrganizationStatus
-	2,  // 12: hearth.identity.v1.UpdateOrganizationRequest.status:type_name -> hearth.identity.v1.OrganizationStatus
-	15, // 13: hearth.identity.v1.OrganizationPage.items:type_name -> hearth.identity.v1.Organization
-	8,  // 14: hearth.identity.v1.UpdateUserCall.body:type_name -> hearth.identity.v1.UpdateUserRequest
-	10, // 15: hearth.identity.v1.UpdateRealmCall.body:type_name -> hearth.identity.v1.UpdateRealmRequest
-	17, // 16: hearth.identity.v1.UpdateOrganizationCall.body:type_name -> hearth.identity.v1.UpdateOrganizationRequest
-	21, // 17: hearth.identity.v1.IdentityAdminService.ListUsers:input_type -> hearth.identity.v1.ListUsersRequest
-	19, // 18: hearth.identity.v1.IdentityAdminService.GetUser:input_type -> hearth.identity.v1.GetUserRequest
-	7,  // 19: hearth.identity.v1.IdentityAdminService.CreateUser:input_type -> hearth.identity.v1.CreateUserRequest
-	22, // 20: hearth.identity.v1.IdentityAdminService.UpdateUser:input_type -> hearth.identity.v1.UpdateUserCall
-	20, // 21: hearth.identity.v1.IdentityAdminService.DeleteUser:input_type -> hearth.identity.v1.DeleteUserRequest
-	23, // 22: hearth.identity.v1.IdentityAdminService.ListRealms:input_type -> hearth.identity.v1.ListRealmsRequest
-	24, // 23: hearth.identity.v1.IdentityAdminService.GetRealm:input_type -> hearth.identity.v1.GetRealmRequest
-	9,  // 24: hearth.identity.v1.IdentityAdminService.CreateRealm:input_type -> hearth.identity.v1.CreateRealmRequest
-	26, // 25: hearth.identity.v1.IdentityAdminService.UpdateRealm:input_type -> hearth.identity.v1.UpdateRealmCall
-	25, // 26: hearth.identity.v1.IdentityAdminService.DeleteRealm:input_type -> hearth.identity.v1.DeleteRealmRequest
-	27, // 27: hearth.identity.v1.IdentityAdminService.ListOrganizations:input_type -> hearth.identity.v1.ListOrganizationsRequest
-	28, // 28: hearth.identity.v1.IdentityAdminService.GetOrganization:input_type -> hearth.identity.v1.GetOrganizationRequest
-	16, // 29: hearth.identity.v1.IdentityAdminService.CreateOrganization:input_type -> hearth.identity.v1.CreateOrganizationRequest
-	30, // 30: hearth.identity.v1.IdentityAdminService.UpdateOrganization:input_type -> hearth.identity.v1.UpdateOrganizationCall
-	29, // 31: hearth.identity.v1.IdentityAdminService.DeleteOrganization:input_type -> hearth.identity.v1.DeleteOrganizationRequest
-	11, // 32: hearth.identity.v1.IdentityAdminService.ListUsers:output_type -> hearth.identity.v1.UserPage
-	3,  // 33: hearth.identity.v1.IdentityAdminService.GetUser:output_type -> hearth.identity.v1.User
-	3,  // 34: hearth.identity.v1.IdentityAdminService.CreateUser:output_type -> hearth.identity.v1.User
-	3,  // 35: hearth.identity.v1.IdentityAdminService.UpdateUser:output_type -> hearth.identity.v1.User
-	31, // 36: hearth.identity.v1.IdentityAdminService.DeleteUser:output_type -> hearth.identity.v1.Empty
-	12, // 37: hearth.identity.v1.IdentityAdminService.ListRealms:output_type -> hearth.identity.v1.RealmPage
-	6,  // 38: hearth.identity.v1.IdentityAdminService.GetRealm:output_type -> hearth.identity.v1.Realm
-	6,  // 39: hearth.identity.v1.IdentityAdminService.CreateRealm:output_type -> hearth.identity.v1.Realm
-	6,  // 40: hearth.identity.v1.IdentityAdminService.UpdateRealm:output_type -> hearth.identity.v1.Realm
-	31, // 41: hearth.identity.v1.IdentityAdminService.DeleteRealm:output_type -> hearth.identity.v1.Empty
-	18, // 42: hearth.identity.v1.IdentityAdminService.ListOrganizations:output_type -> hearth.identity.v1.OrganizationPage
-	15, // 43: hearth.identity.v1.IdentityAdminService.GetOrganization:output_type -> hearth.identity.v1.Organization
-	15, // 44: hearth.identity.v1.IdentityAdminService.CreateOrganization:output_type -> hearth.identity.v1.Organization
-	15, // 45: hearth.identity.v1.IdentityAdminService.UpdateOrganization:output_type -> hearth.identity.v1.Organization
-	31, // 46: hearth.identity.v1.IdentityAdminService.DeleteOrganization:output_type -> hearth.identity.v1.Empty
-	32, // [32:47] is the sub-list for method output_type
-	17, // [17:32] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	32, // 3: hearth.identity.v1.CreateUserRequest.attributes:type_name -> hearth.identity.v1.CreateUserRequest.AttributesEntry
+	0,  // 4: hearth.identity.v1.UpdateUserRequest.status:type_name -> hearth.identity.v1.UserStatus
+	5,  // 5: hearth.identity.v1.CreateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
+	1,  // 6: hearth.identity.v1.UpdateRealmRequest.status:type_name -> hearth.identity.v1.RealmStatus
+	5,  // 7: hearth.identity.v1.UpdateRealmRequest.config:type_name -> hearth.identity.v1.RealmConfig
+	3,  // 8: hearth.identity.v1.UserPage.items:type_name -> hearth.identity.v1.User
+	6,  // 9: hearth.identity.v1.RealmPage.items:type_name -> hearth.identity.v1.Realm
+	3,  // 10: hearth.identity.v1.BulkResultEntry.user:type_name -> hearth.identity.v1.User
+	13, // 11: hearth.identity.v1.BulkResult.results:type_name -> hearth.identity.v1.BulkResultEntry
+	2,  // 12: hearth.identity.v1.Organization.status:type_name -> hearth.identity.v1.OrganizationStatus
+	2,  // 13: hearth.identity.v1.UpdateOrganizationRequest.status:type_name -> hearth.identity.v1.OrganizationStatus
+	15, // 14: hearth.identity.v1.OrganizationPage.items:type_name -> hearth.identity.v1.Organization
+	8,  // 15: hearth.identity.v1.UpdateUserCall.body:type_name -> hearth.identity.v1.UpdateUserRequest
+	10, // 16: hearth.identity.v1.UpdateRealmCall.body:type_name -> hearth.identity.v1.UpdateRealmRequest
+	17, // 17: hearth.identity.v1.UpdateOrganizationCall.body:type_name -> hearth.identity.v1.UpdateOrganizationRequest
+	21, // 18: hearth.identity.v1.IdentityAdminService.ListUsers:input_type -> hearth.identity.v1.ListUsersRequest
+	19, // 19: hearth.identity.v1.IdentityAdminService.GetUser:input_type -> hearth.identity.v1.GetUserRequest
+	7,  // 20: hearth.identity.v1.IdentityAdminService.CreateUser:input_type -> hearth.identity.v1.CreateUserRequest
+	22, // 21: hearth.identity.v1.IdentityAdminService.UpdateUser:input_type -> hearth.identity.v1.UpdateUserCall
+	20, // 22: hearth.identity.v1.IdentityAdminService.DeleteUser:input_type -> hearth.identity.v1.DeleteUserRequest
+	23, // 23: hearth.identity.v1.IdentityAdminService.ListRealms:input_type -> hearth.identity.v1.ListRealmsRequest
+	24, // 24: hearth.identity.v1.IdentityAdminService.GetRealm:input_type -> hearth.identity.v1.GetRealmRequest
+	9,  // 25: hearth.identity.v1.IdentityAdminService.CreateRealm:input_type -> hearth.identity.v1.CreateRealmRequest
+	26, // 26: hearth.identity.v1.IdentityAdminService.UpdateRealm:input_type -> hearth.identity.v1.UpdateRealmCall
+	25, // 27: hearth.identity.v1.IdentityAdminService.DeleteRealm:input_type -> hearth.identity.v1.DeleteRealmRequest
+	27, // 28: hearth.identity.v1.IdentityAdminService.ListOrganizations:input_type -> hearth.identity.v1.ListOrganizationsRequest
+	28, // 29: hearth.identity.v1.IdentityAdminService.GetOrganization:input_type -> hearth.identity.v1.GetOrganizationRequest
+	16, // 30: hearth.identity.v1.IdentityAdminService.CreateOrganization:input_type -> hearth.identity.v1.CreateOrganizationRequest
+	30, // 31: hearth.identity.v1.IdentityAdminService.UpdateOrganization:input_type -> hearth.identity.v1.UpdateOrganizationCall
+	29, // 32: hearth.identity.v1.IdentityAdminService.DeleteOrganization:input_type -> hearth.identity.v1.DeleteOrganizationRequest
+	11, // 33: hearth.identity.v1.IdentityAdminService.ListUsers:output_type -> hearth.identity.v1.UserPage
+	3,  // 34: hearth.identity.v1.IdentityAdminService.GetUser:output_type -> hearth.identity.v1.User
+	3,  // 35: hearth.identity.v1.IdentityAdminService.CreateUser:output_type -> hearth.identity.v1.User
+	3,  // 36: hearth.identity.v1.IdentityAdminService.UpdateUser:output_type -> hearth.identity.v1.User
+	31, // 37: hearth.identity.v1.IdentityAdminService.DeleteUser:output_type -> hearth.identity.v1.Empty
+	12, // 38: hearth.identity.v1.IdentityAdminService.ListRealms:output_type -> hearth.identity.v1.RealmPage
+	6,  // 39: hearth.identity.v1.IdentityAdminService.GetRealm:output_type -> hearth.identity.v1.Realm
+	6,  // 40: hearth.identity.v1.IdentityAdminService.CreateRealm:output_type -> hearth.identity.v1.Realm
+	6,  // 41: hearth.identity.v1.IdentityAdminService.UpdateRealm:output_type -> hearth.identity.v1.Realm
+	31, // 42: hearth.identity.v1.IdentityAdminService.DeleteRealm:output_type -> hearth.identity.v1.Empty
+	18, // 43: hearth.identity.v1.IdentityAdminService.ListOrganizations:output_type -> hearth.identity.v1.OrganizationPage
+	15, // 44: hearth.identity.v1.IdentityAdminService.GetOrganization:output_type -> hearth.identity.v1.Organization
+	15, // 45: hearth.identity.v1.IdentityAdminService.CreateOrganization:output_type -> hearth.identity.v1.Organization
+	15, // 46: hearth.identity.v1.IdentityAdminService.UpdateOrganization:output_type -> hearth.identity.v1.Organization
+	31, // 47: hearth.identity.v1.IdentityAdminService.DeleteOrganization:output_type -> hearth.identity.v1.Empty
+	33, // [33:48] is the sub-list for method output_type
+	18, // [18:33] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_hearth_identity_v1_identity_proto_init() }
@@ -2212,7 +2228,7 @@ func file_hearth_identity_v1_identity_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hearth_identity_v1_identity_proto_rawDesc), len(file_hearth_identity_v1_identity_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   29,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

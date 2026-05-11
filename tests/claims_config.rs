@@ -46,6 +46,7 @@ async fn default_profile_emits_roles_for_first_party() {
                 display_name: "FP User".to_string(),
                 first_name: "FP".to_string(),
                 last_name: "User".to_string(),
+                        attributes: Default::default(),
             },
         )
         .expect("user");
@@ -114,6 +115,7 @@ async fn default_profile_suppresses_roles_for_third_party() {
                 display_name: "TP User".to_string(),
                 first_name: "TP".to_string(),
                 last_name: "User".to_string(),
+                        attributes: Default::default(),
             },
         )
         .expect("user");
@@ -182,6 +184,7 @@ async fn required_scopes_gate_uses_granted_not_requested() {
                 display_name: "Gate User".to_string(),
                 first_name: "Gate".to_string(),
                 last_name: "User".to_string(),
+                        attributes: Default::default(),
             },
         )
         .expect("user");
@@ -329,6 +332,7 @@ async fn yaml_override_fallback_to_default_when_gate_fails() {
                 display_name: "Fallback User".to_string(),
                 first_name: "Fallback".to_string(),
                 last_name: "User".to_string(),
+                        attributes: Default::default(),
             },
         )
         .expect("user");
@@ -420,6 +424,7 @@ async fn omit_source_suppresses_default_claim() {
                 display_name: "Omit User".to_string(),
                 first_name: "Omit".to_string(),
                 last_name: "User".to_string(),
+                        attributes: Default::default(),
             },
         )
         .expect("user");

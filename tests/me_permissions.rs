@@ -38,6 +38,7 @@ async fn returns_live_set_reflecting_post_issuance_changes() {
                 display_name: "U".into(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

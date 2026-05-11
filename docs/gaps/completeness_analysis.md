@@ -43,7 +43,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 | 6 | **~~Token size cap enforcement~~** | AUTHZ §2.6, §5.4 | ✅ RESOLVED (2026-05-09). `validate_claim_payload()` enforces post-profile caps (permissions≤100, roles≤50, groups≤50, claim bytes≤8KiB) with per-target limit names. Wired in `issue_tokens_with_context` and `exchange_authorization_code`. Five integration tests. |
 | 7 | **`/admin/users/{id}/effective-permissions` REST endpoint** | AUTHZ §8.2 | ✅ RESOLVED (2026-05-09). `GET /admin/users/{id}/effective-permissions` handler added to `src/protocol/http.rs`. Admin-authenticated via `extract_admin_auth` (Bearer token + `hearth.admin`). Accepts optional `org_id` (strips `org_` prefix, 400 on malformed) and `scope` query params. Returns identity-prechecked 404 for unknown users. Reuses `MePermissionsResponse`. Six integration tests in `tests/admin_effective_permissions.rs`. |
 | 8 | **Dynamic Client Registration (RFC 7591)** | AGENT_AUTH §2.7 | ✅ RESOLVED (2026-05-09). `POST /register` endpoint added to `src/protocol/http.rs`. Per-realm `DcrPolicy` gate (disabled/open) via `RealmConfig` and YAML config (`realms.<id>.auth.dcr.mode`). Server-generated client secret (32 bytes, base64url). Unique slug with collision-avoidance retry. ThirdParty trust, consent required. RFC 7591-compliant JSON response. Protocol-layer audit event (`via: dynamic_registration`). `registration_endpoint` advertised in OIDC discovery. Eight integration tests. Deferred: initial access token gating, RFC 7592 management endpoint, software statements, slug↔ClientId index. |
-| 9 | **Resolve-time cycle detection** | AUTHZ §3 | `resolve.rs:505` treats DAG cycles as diamonds (silent skip), not errors. Only self-edges error. |
+| 9 | **Resolve-time cycle detection** | AUTHZ §3 | ✅ RESOLVED (2026-05-10). `expand_role` now uses DFS path-tracking. True cycles (A→B→C→A) return `CycleDetected` with role name. Diamonds preserved. |
 
 ---
 
@@ -52,14 +52,14 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 | # | Gap | Detail |
 |---|-----|--------|
 | 10 | **Audience-scoped scope resolution** | `resolve_with_scopes` doesn't accept `resource: Option<Uri>`. Protected-resource scope precedence not implemented. |
-| 11 | **User.attributes on create/import requests** | Field exists on `User` struct but `CreateUserRequest`/`ImportUserRequest` don't expose it. |
-| 12 | **ArcSwap registry hot-swap not wired** | `PermissionRegistry` exists but SIGHUP reload in `main.rs` not wired. |
-| 13 | **Missing OIDC default claim mappings** | `default_claim_profile()` only emits `email`/`name`. Missing `given_name`, `family_name`, `picture`, `locale`, `zoneinfo`, `phone_number`, `address`. |
-| 14 | **Config structure: flat vs nested `rbac:`** | Spec says `realms.<id>.rbac.*`, implementation has flat fields on `RealmConfig`. |
+| 11 | **User.attributes on create/import requests** | ✅ RESOLVED (2026-05-10). `attributes` field added to `CreateUserRequest`, `ImportUserRequest`, proto, and engine wiring. |
+| 12 | **ArcSwap registry hot-swap not wired** | ✅ RESOLVED. SIGHUP handler at `main.rs:988` calls `run_config_reconciliation()` with registry param; `PermissionRegistry` atomically swapped at line 1345. |
+| 13 | **Missing OIDC default claim mappings** | ✅ RESOLVED (2026-05-10). Added 7 mappings: `given_name`, `family_name`, `picture`, `locale`, `zoneinfo`, `phone_number`, `address`. |
+| 14 | **Config structure: flat vs nested `rbac:`** | ✅ RESOLVED (2026-05-10). Flat structure confirmed; `RealmYamlConfig` keeps RBAC fields at top level. Spec updated in AUTHORIZATION.md §9.5. |
 | 15 | **No YAML-declared groups** | Groups are runtime-API only; no `groups` field in `RealmYamlConfig`. |
-| 16 | **`list_groups`/`list_role_members` cursor unused** | Cursor parameter accepted but never used; `next_cursor` never set. |
-| 17 | **`list_roles` cursor derivation flawed** | Captures last item's name from already-built list, not boundary entry. |
-| 18 | **RESERVED_PREFIX: `system.` vs `hearth.`** | Code uses `"system."`, spec says `hearth.*`. |
+| 16 | **`list_groups`/`list_role_members` cursor unused** | ✅ RESOLVED (2026-05-10). Cursor now used for scan offsets; `next_cursor` set from boundary entry. |
+| 17 | **`list_roles` cursor derivation flawed** | ✅ RESOLVED (2026-05-10). Cursor derived from boundary entry's key, not `items.last()`. |
+| 18 | **RESERVED_PREFIX: `system.` vs `hearth.`** | ✅ RESOLVED (2026-05-10). Constant updated to `"hearth."`. Tests updated. |
 | 19 | **No standalone WebAuthn REST API** | Passkey ceremonies browser-session only. |
 | 20 | **Only 2 of 8 SDKs exist** | TypeScript and Go implemented. Python, Rust, Java, PHP, C#, Ruby, Elixir missing. |
 | 21 | **Only 2 of 6 migration tools exist** | Keycloak and Auth0 implemented. Clerk, Cognito, Firebase Auth, Okta missing. |
@@ -107,8 +107,8 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 
 | # | Issue | Spec Says | Code Does | Recommendation |
 |---|-------|-----------|-----------|----------------|
-| D1 | RBAC config nesting | `realms.<id>.rbac.{permissions,roles,scopes,groups}` | Flat fields on `RealmConfig` | Update spec to match code (simpler) or nest config |
-| D2 | Reserved prefix | `hearth.*` | `system.` constant in `types.rs:21` | Align code to spec: change to `"hearth."` |
+| D1 | RBAC config nesting | `realms.<id>.rbac.{permissions,roles,scopes,groups}` | Flat fields on `RealmConfig` | ✅ RESOLVED (2026-05-10): Spec updated to flat structure. |
+| D2 | Reserved prefix | `hearth.*` | `system.` constant in `types.rs:21` | ✅ RESOLVED (2026-05-10): Code aligned to `"hearth."`. | |
 | D3 | Embedded mode support | VISION.md says supported; ARCHITECTURE.md appendix says not supported | Not implemented | Remove embedded-mode from VISION.md or update ARCHITECTURE.md |
 | D4 | `email_verified` claim | Spec shows it as supported | `User.email_verified` not a field | Compute from `UserStatus` (`status != PendingVerification`) |
 
@@ -130,18 +130,18 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 ### P1 — Should fix
 
 - [ ] **[P1][M]** Add `resource: Option<Uri>` parameter to `resolve_with_scopes()` and implement audience-scoped scope resolution — resolves gaps #10 · _depends on: none_
-- [ ] **[P1][S]** Add `attributes` field to `CreateUserRequest` and `ImportUserRequest` — resolves gaps #11 · _depends on: none_
-- [ ] **[P1][S]** Wire `ArcSwap` hot-swap for `PermissionRegistry` in `main.rs` on SIGHUP — resolves gaps #12 · _depends on: none_
-- [ ] **[P1][S]** Add missing OIDC default claim mappings to `default_claim_profile()` — resolves gaps #13 · _depends on: none_
-- [ ] **[P1][S]** Fix `list_groups` and `list_role_members` cursor usage — resolves gaps #16 · _depends on: none_
-- [ ] **[P1][S]** Fix `list_roles` cursor derivation — resolves gaps #17 · _depends on: none_
-- [ ] **[P1][S]** Align `RESERVED_PREFIX` to `"hearth."` — resolves gaps #18 · _depends on: none_
-- [ ] **[P1][S]** Decide: nest RBAC config under `realms.<id>.rbac.*` or update spec to flat structure — resolves gaps #14, D1 · _depends on: none_
+- [x] **[P1][S]** Add `attributes` field to `CreateUserRequest` and `ImportUserRequest` — resolves gaps #11 · _depends on: none_ ✅ DONE (2026-05-10)
+- [x] **[P1][S]** Wire `ArcSwap` hot-swap for `PermissionRegistry` in `main.rs` on SIGHUP — resolves gaps #12 · _depends on: none_ ✅ VERIFIED (2026-05-10) — already wired at `main.rs:988` and `main.rs:1345`
+- [x] **[P1][S]** Add missing OIDC default claim mappings to `default_claim_profile()` — resolves gaps #13 · _depends on: none_ ✅ DONE (2026-05-10)
+- [x] **[P1][S]** Fix `list_groups` and `list_role_members` cursor usage — resolves gaps #16 · _depends on: none_ ✅ DONE (2026-05-10)
+- [x] **[P1][S]** Fix `list_roles` cursor derivation — resolves gaps #17 · _depends on: none_ ✅ DONE (2026-05-10)
+- [x] **[P1][S]** Align `RESERVED_PREFIX` to `"hearth."` — resolves gaps #18 · _depends on: none_ ✅ DONE (2026-05-10)
+- [x] **[P1][S]** Decide: nest RBAC config under `realms.<id>.rbac.*` or update spec to flat structure — resolves gaps #14, D1 · _depends on: none_ ✅ DONE (2026-05-10) — flat structure confirmed, spec updated
 - [ ] **[P1][S]** Add YAML-declared groups — resolves gaps #15 · _depends on: above_
 - [ ] **[P1][M]** Add standalone REST WebAuthn/Passkey endpoint — resolves gaps #19 · _depends on: none_
 - [ ] **[P1][M]** Add Python SDK — resolves gaps #20 (partial) · _depends on: stable API surface_
 - [ ] **[P1][M]** Add Rust SDK — resolves gaps #20 (partial) · _depends on: stable API surface_
-- [ ] **[P1][S]** Add resolve-time cycle detection for role DAGs — resolves gaps #9 · _depends on: none_
+- [x] **[P1][S]** Add resolve-time cycle detection for role DAGs — resolves gaps #9 · _depends on: none_ ✅ DONE (2026-05-10)
 
 ### P2 — Polish
 

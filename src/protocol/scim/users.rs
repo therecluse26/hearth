@@ -187,6 +187,7 @@ pub async fn create_user(
         display_name,
         first_name,
         last_name,
+        attributes: Default::default(),
     };
 
     let user = match state.identity.create_user(&auth.realm_id, &req) {

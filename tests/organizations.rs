@@ -141,6 +141,7 @@ async fn membership_lifecycle() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create alice");
@@ -153,6 +154,7 @@ async fn membership_lifecycle() {
                 display_name: "Bob".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create bob");
@@ -245,6 +247,7 @@ async fn invitation_e2e_flow() {
                 display_name: "Admin".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create admin");
@@ -333,6 +336,7 @@ async fn cascading_delete_org_cleans_memberships_and_invitations() {
                 display_name: "Cascade User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -404,6 +408,7 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
                 display_name: "Owner".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create owner");
@@ -442,6 +447,7 @@ async fn last_owner_cannot_be_removed_or_downgraded() {
                 display_name: "Owner 2".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create owner2");
@@ -525,6 +531,7 @@ async fn member_limit_enforced() {
                 display_name: "User 1".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user1");
@@ -537,6 +544,7 @@ async fn member_limit_enforced() {
                 display_name: "User 2".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user2");
@@ -585,6 +593,7 @@ async fn delete_user_cascades_org_memberships() {
                 display_name: "Delete Me".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -598,6 +607,7 @@ async fn delete_user_cascades_org_memberships() {
                 display_name: "Stay Owner".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create owner");
@@ -654,6 +664,7 @@ async fn invitation_revocation() {
                 display_name: "Admin".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create admin");
@@ -795,6 +806,7 @@ mod proptests {
                             display_name: format!("User {i}"),
                             first_name: String::new(),
                             last_name: String::new(),
+                                                attributes: Default::default(),
                         },
                     )
                     .expect("create user");
@@ -950,6 +962,7 @@ async fn role_escalation_prevention() {
                 display_name: "Sole Owner".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create owner");

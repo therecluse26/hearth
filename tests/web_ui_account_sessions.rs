@@ -160,6 +160,7 @@ fn seed_active_user(
                 display_name: display_name.to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");

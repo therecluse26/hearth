@@ -52,6 +52,7 @@ impl From<pb::CreateUserRequest> for domain::CreateUserRequest {
             display_name: r.display_name,
             first_name: r.first_name,
             last_name: r.last_name,
+            attributes: r.attributes.into_iter().collect(),
         }
     }
 }

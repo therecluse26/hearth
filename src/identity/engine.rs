@@ -1038,7 +1038,7 @@ impl EmbeddedIdentityEngine {
 
         let user_id = UserId::generate();
         let now = self.clock.now();
-        let user = User::new(
+        let mut user = User::new(
             user_id.clone(),
             email.clone(),
             display_name,
@@ -1048,6 +1048,11 @@ impl EmbeddedIdentityEngine {
             now,
             now,
         );
+
+        if !request.attributes.is_empty() {
+            Self::validate_user_attributes(&request.attributes)?;
+            user.set_attributes(request.attributes.clone());
+        }
 
         let user_bytes = Self::serialize_user(&user)?;
         let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
@@ -6152,7 +6157,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         let now = self.clock.now();
-        let user = User::new(
+        let mut user = User::new(
             user_id.clone(),
             email.clone(),
             display_name,
@@ -6162,6 +6167,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             now,
             now,
         );
+
+        if !request.attributes.is_empty() {
+            Self::validate_user_attributes(&request.attributes)?;
+            user.set_attributes(request.attributes.clone());
+        }
+
         let user_bytes = Self::serialize_user(&user)?;
         let user_id_bytes = user_id.as_uuid().to_string().into_bytes();
 
@@ -12063,6 +12074,7 @@ mod tests {
                     display_name: "Alice".to_string(),
                     first_name: "Alice".to_string(),
                     last_name: "Example".to_string(),
+                                attributes: Default::default(),
                 },
             )
             .expect("create")

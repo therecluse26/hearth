@@ -18,7 +18,7 @@ use crate::core::{OrganizationId, RealmId, Timestamp, UserId};
 pub const MAX_PERMISSION_LENGTH: usize = 128;
 
 /// Reserved global permission namespace prefix.
-pub const RESERVED_PREFIX: &str = "system.";
+pub const RESERVED_PREFIX: &str = "hearth.";
 
 // ---------------------------------------------------------------------------
 // ID newtypes
@@ -627,14 +627,14 @@ mod tests {
     }
 
     #[test]
-    fn permission_is_reserved_detects_system_prefix() {
-        // Per AUTHZ_EXPANSION.md the global namespace prefix is `system.*`.
-        let p = Permission::new("system.admin").expect("valid");
+    fn permission_is_reserved_detects_hearth_prefix() {
+        // Per AUTHZ_EXPANSION.md the global namespace prefix is `hearth.*`.
+        let p = Permission::new("hearth.admin").expect("valid");
         assert!(p.is_reserved());
         let q = Permission::new("docs.edit").expect("valid");
         assert!(!q.is_reserved());
-        // Segment-boundary: `systemadmin.x` must NOT be reserved.
-        let r = Permission::new("systemadmin.x").expect("valid");
+        // Segment-boundary: `hearthadmin.x` must NOT be reserved.
+        let r = Permission::new("hearthadmin.x").expect("valid");
         assert!(!r.is_reserved());
     }
 

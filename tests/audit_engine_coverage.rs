@@ -29,6 +29,7 @@ async fn test_delete_user_audited() {
                 display_name: "Delete Me".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -77,6 +78,7 @@ async fn test_add_member_audited() {
                 display_name: "Member".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -120,6 +122,7 @@ async fn test_delete_realm_cascading_one_event() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user A");
@@ -133,6 +136,7 @@ async fn test_delete_realm_cascading_one_event() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user B");
@@ -224,6 +228,7 @@ async fn test_destructive_delete_fails_when_audit_down() {
                 display_name: "D".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
+                        attributes: Default::default(),
             },
         )
         .expect("create user");
