@@ -175,6 +175,27 @@ pub(crate) fn scope_scan_prefix(realm_id: &RealmId) -> Vec<u8> {
     format!("{SCOPE_PREFIX}{}:", realm_id.as_uuid()).into_bytes()
 }
 
+// ---------------------------------------------------------------------------
+// Resource-scoped scope bundles
+// ---------------------------------------------------------------------------
+
+pub(crate) const RESOURCE_SCOPE_PREFIX: &str = "rba:res_scope:";
+
+/// `rba:res_scope:{realm_id}:{sha256_12hex}:{scope_name}`
+pub(crate) fn encode_resource_scope(
+    realm_id: &RealmId,
+    uri_hash: &str,
+    scope_name: &str,
+) -> Vec<u8> {
+    format!("{RESOURCE_SCOPE_PREFIX}{}:{uri_hash}:{scope_name}", realm_id.as_uuid())
+        .into_bytes()
+}
+
+/// Scan prefix for all resource-scope entries under a given URI hash.
+pub(crate) fn resource_scope_scan_prefix(realm_id: &RealmId, uri_hash: &str) -> Vec<u8> {
+    format!("{RESOURCE_SCOPE_PREFIX}{}:{uri_hash}:", realm_id.as_uuid()).into_bytes()
+}
+
 fn scope_key(scope: &Scope) -> String {
     match scope {
         Scope::Realm => "_realm".to_string(),

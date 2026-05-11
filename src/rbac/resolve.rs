@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::core::{OrganizationId, RealmId, UserId};
+use crate::core::{OrganizationId, RealmId, UserId, Uri};
 use crate::identity::ClientTrustLevel;
 use crate::rbac::registry::{classify_scope_string, ScopeKind};
 
@@ -115,6 +115,25 @@ pub(crate) trait Resolver {
         realm_id: &RealmId,
         scope_name: &str,
     ) -> Result<Option<Vec<Permission>>, RbacError>;
+
+    /// Look up scope permissions for a bundle declared under a specific
+    /// protected resource. Returns `None` if the scope name is not declared
+    /// for the given resource.
+    fn resource_scope_permissions(
+        &self,
+        realm_id: &RealmId,
+        resource_uri: &Uri,
+        scope_name: &str,
+    ) -> Result<Option<Vec<Permission>>, RbacError>;
+
+    /// Returns the union of all permissions declared across a resource's
+    /// scope bundles. Used to check whether a raw permission scope belongs
+    /// to the resource's scope namespace.
+    fn resource_scope_permission_names(
+        &self,
+        realm_id: &RealmId,
+        resource_uri: &Uri,
+    ) -> Result<Vec<Permission>, RbacError>;
 
     /// Direct extra permissions granted to a user.
     fn user_permissions(
@@ -267,6 +286,7 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
     requested_scopes: &[String],
     client_trust_level: ClientTrustLevel,
     declared_scopes: &[String],
+    resource: Option<&Uri>,
 ) -> Result<ResolvedPermissions, RbacError> {
     // Step 1–4: resolve the user's full effective permission set (no scope
     // narrowing yet).
@@ -298,7 +318,8 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
         match classify_scope_string(scope_str) {
             Some(ScopeKind::OidcStandard) => {
                 // OIDC standard scopes are always grantable regardless of
-                // trust level. They apply no permission narrowing.
+                // trust level or resource indicator. They apply no
+                // permission narrowing.
                 granted_scopes.push(scope.clone());
                 any_oidc_standard_granted = true;
             }
@@ -311,48 +332,90 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
                         ),
                     });
                 }
-                // For FirstParty: check declaration if client has a non-empty list.
-                if !declared_set.is_empty() && !declared_set.contains(scope_str) {
-                    if client_trust_level == ClientTrustLevel::ThirdParty {
-                        return Err(RbacError::InvalidScope {
-                            reason: format!("scope '{scope_str}' not in client declared_scopes"),
-                        });
+                // When resource indicator is present, permission scopes must
+                // belong to the resource's scope bundles' permission lists.
+                if let Some(uri) = resource {
+                    let in_resource_bundles = permission_in_resource_bundles(
+                        resolver,
+                        realm_id,
+                        uri,
+                        scope_str,
+                    )?;
+                    if !in_resource_bundles {
+                        if client_trust_level == ClientTrustLevel::ThirdParty {
+                            return Err(RbacError::InvalidScope {
+                                reason: format!(
+                                    "permission scope '{scope_str}' is not in any scope bundle \
+                                     declared for resource '{}'",
+                                    uri.as_str()
+                                ),
+                            });
+                        }
+                        // FirstParty: silently skip.
+                        continue;
                     }
-                    // FirstParty: silently skip undeclared scope.
-                    continue;
+                } else {
+                    // No resource indicator: check declaration constraint.
+                    if !declared_set.is_empty() && !declared_set.contains(scope_str) {
+                        if client_trust_level == ClientTrustLevel::ThirdParty {
+                            return Err(RbacError::InvalidScope {
+                                reason: format!(
+                                    "scope '{scope_str}' not in client declared_scopes"
+                                ),
+                            });
+                        }
+                        // FirstParty: silently skip undeclared scope.
+                        continue;
+                    }
                 }
-                // Full-satisfiability check: scope_perms = [permission itself].
+                // Full-satisfiability check: user must hold the permission.
                 if let Ok(p) = Permission::new(scope_str) {
                     if effective.contains(&p) {
                         granted_scopes.push(scope.clone());
                         admitted.insert(p);
                     }
-                    // else: user does not have this permission; FirstParty silently skips.
                 }
             }
             Some(ScopeKind::Bundle) => {
-                // Check declaration constraint.
-                if !declared_set.is_empty() && !declared_set.contains(scope_str) {
-                    if client_trust_level == ClientTrustLevel::ThirdParty {
-                        return Err(RbacError::InvalidScope {
-                            reason: format!("scope '{scope_str}' not in client declared_scopes"),
-                        });
+                // Check declaration constraint (only when no resource indicator).
+                if resource.is_none() {
+                    if !declared_set.is_empty() && !declared_set.contains(scope_str) {
+                        if client_trust_level == ClientTrustLevel::ThirdParty {
+                            return Err(RbacError::InvalidScope {
+                                reason: format!(
+                                    "scope '{scope_str}' not in client declared_scopes"
+                                ),
+                            });
+                        }
+                        // FirstParty: silently skip undeclared scope.
+                        continue;
                     }
-                    // FirstParty: silently skip undeclared scope.
-                    continue;
                 }
-                // Load bundle permissions from storage.
-                match resolver.scope_permissions(realm_id, scope_str)? {
+
+                // Load bundle permissions — from the resource scope registry
+                // when a resource indicator is present, otherwise from the
+                // realm-level scope registry.
+                let bundle_result = if let Some(uri) = resource {
+                    resolver.resource_scope_permissions(realm_id, uri, scope_str)?
+                } else {
+                    resolver.scope_permissions(realm_id, scope_str)?
+                };
+
+                match bundle_result {
                     None => {
-                        // Resolver returns None for OIDC-passthrough scopes; bundles
-                        // should never hit this path, but treat as no narrowing.
-                        granted_scopes.push(scope.clone());
-                        any_oidc_standard_granted = true;
+                        // Scope name not found in the relevant registry.
+                        if client_trust_level == ClientTrustLevel::ThirdParty {
+                            return Err(RbacError::InvalidScope {
+                                reason: format!("undeclared scope '{scope_str}'"),
+                            });
+                        }
+                        // FirstParty: silently skip.
+                        continue;
                     }
                     Some(bundle_perms) => {
-                        // Full-satisfiability: user must have ALL of the bundle's
-                        // declared permissions.
-                        let fully_satisfied = bundle_perms.iter().all(|p| effective.contains(p));
+                        // Full-satisfiability: user must have ALL bundle permissions.
+                        let fully_satisfied =
+                            bundle_perms.iter().all(|p| effective.contains(p));
                         if fully_satisfied {
                             granted_scopes.push(scope.clone());
                             for p in bundle_perms {
@@ -389,17 +452,7 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
     }
 
     // Compute effective_for_token = effective ∩ ∪admitted.
-    // If any OIDC standard scope was granted, it contributes no narrowing, so
-    // the full effective set passes through (the spec says "no permission
-    // narrowing" for OIDC standard scopes). For pure permission/bundle grants,
-    // intersect.
     let permissions: Vec<Permission> = if any_oidc_standard_granted {
-        // OIDC standard scope present → no narrowing from that scope. The
-        // admitted set from bundles/permissions is still applied as an
-        // additional constraint only when the ONLY scopes are bundle/permission
-        // types. When mixed with OIDC standard, we follow the existing
-        // `narrow_by_scope` semantics: any non-filter scope passes through the
-        // full set.
         full.permissions
     } else {
         effective
@@ -414,6 +467,18 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
         permissions,
         granted_scopes,
     })
+}
+
+/// Checks whether a permission-scope string appears in any of a resource's
+/// scope bundles' permission lists.
+fn permission_in_resource_bundles<R: Resolver + ?Sized>(
+    resolver: &R,
+    realm_id: &RealmId,
+    resource_uri: &Uri,
+    permission: &str,
+) -> Result<bool, RbacError> {
+    let perms = resolver.resource_scope_permission_names(realm_id, resource_uri)?;
+    Ok(perms.iter().any(|p| p.as_str() == permission))
 }
 
 fn extra_applies(extra: &UserPermissionGrant, org_id: Option<&OrganizationId>) -> bool {
@@ -625,6 +690,7 @@ mod tests {
         group_slugs: HashMap<GroupId, String>,
         scopes: HashMap<String, Option<Vec<Permission>>>,
         user_perms: HashMap<UserId, Vec<UserPermissionGrant>>,
+        resource_scopes: HashMap<String, HashMap<String, Option<Vec<Permission>>>>,
     }
 
     impl Fake {
@@ -637,6 +703,7 @@ mod tests {
                 group_slugs: HashMap::new(),
                 scopes: HashMap::new(),
                 user_perms: HashMap::new(),
+                resource_scopes: HashMap::new(),
             }
         }
 
@@ -748,6 +815,38 @@ mod tests {
             _user_id: &UserId,
         ) -> Result<Vec<String>, RbacError> {
             Ok(Vec::new())
+        }
+
+        fn resource_scope_permissions(
+            &self,
+            _r: &RealmId,
+            resource_uri: &Uri,
+            scope_name: &str,
+        ) -> Result<Option<Vec<Permission>>, RbacError> {
+            Ok(self
+                .resource_scopes
+                .get(resource_uri.as_str())
+                .and_then(|scopes| scopes.get(scope_name))
+                .cloned()
+                .unwrap_or(None))
+        }
+
+        fn resource_scope_permission_names(
+            &self,
+            _r: &RealmId,
+            resource_uri: &Uri,
+        ) -> Result<Vec<Permission>, RbacError> {
+            Ok(self
+                .resource_scopes
+                .get(resource_uri.as_str())
+                .map(|scopes| {
+                    scopes
+                        .values()
+                        .filter_map(|v| v.as_ref())
+                        .flat_map(|perms| perms.iter().cloned())
+                        .collect()
+                })
+                .unwrap_or_default())
         }
     }
 

@@ -22,14 +22,16 @@ use crate::config::{
     ApplicationYamlConfig, AuthConfig, Config, FederationProviderYaml, FederationYamlConfig,
     OrganizationYamlConfig, RealmYamlConfig,
 };
-use crate::core::{ClientId, RealmId};
+use crate::core::{ClientId, RealmId, Timestamp};
 use crate::identity::error::IdentityError;
 use crate::identity::oidc::UpdateClientRequest;
 use crate::identity::{
     CreateOrganizationRequest, CreateRealmRequest, IdentityEngine, ImportClientRequest,
     OrganizationConfig, RealmConfig, RealmStatus, UpdateOrganizationRequest, UpdateRealmRequest,
 };
-use crate::rbac::RbacEngine;
+use crate::rbac::{
+    Group, GroupId, Permission, ProtectedResource, RbacEngine, ScopeBundle,
+};
 
 /// Report of what realm reconciliation did.
 #[derive(Debug, Default)]
@@ -215,6 +217,66 @@ fn reconcile_rbac_for_realm(
                 realm = realm_name,
                 error = %e,
                 "failed to reconcile YAML scope bundles"
+            );
+        }
+    }
+
+    if let Some(resources) = yaml_cfg.protected_resources.as_ref() {
+        let domain_resources: Vec<ProtectedResource> = resources
+            .iter()
+            .map(|r| ProtectedResource {
+                resource_uri: r.resource_uri.clone(),
+                display_name: r.display_name.clone(),
+                scopes: r
+                    .scopes
+                    .iter()
+                    .map(|b| ScopeBundle {
+                        name: b.name.clone(),
+                        display_name: b.display_name.clone(),
+                        description: b.description.clone(),
+                        permissions: b
+                            .permissions
+                            .iter()
+                            .filter_map(|p| Permission::new(p.clone()).ok())
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        if !domain_resources.is_empty() {
+            if let Err(e) = rbac.reconcile_protected_resources(realm_id, &domain_resources)
+            {
+                tracing::warn!(
+                    realm = realm_name,
+                    error = %e,
+                    "failed to reconcile YAML protected resources"
+                );
+            }
+        }
+    }
+
+    if let Some(groups) = yaml_cfg.groups.as_ref() {
+        let domain_groups: Vec<Group> = groups
+            .iter()
+            .map(|g| Group {
+                id: GroupId::generate(),
+                realm_id: realm_id.clone(),
+                name: g.name.clone(),
+                slug: g.slug.clone().unwrap_or_else(|| {
+                    let mut slug = g.name.to_lowercase().replace(' ', "-");
+                    slug.truncate(63);
+                    slug
+                }),
+                description: g.description.clone(),
+                created_at: Timestamp::from_micros(0),
+                updated_at: Timestamp::from_micros(0),
+            })
+            .collect();
+        if let Err(e) = rbac.reconcile_groups(realm_id, &domain_groups) {
+            tracing::warn!(
+                realm = realm_name,
+                error = %e,
+                "failed to reconcile YAML groups"
             );
         }
     }

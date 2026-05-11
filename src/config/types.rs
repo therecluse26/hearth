@@ -922,6 +922,17 @@ pub struct RealmEmailYaml {
     pub branding: Option<EmailBranding>,
 }
 
+/// YAML group declaration in a realm config block.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroupYamlConfig {
+    pub name: String,
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Optional human-readable description.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// Per-realm YAML configuration block.
 ///
 /// Fields are optional — `None` inherits from global `auth:` defaults.
@@ -980,6 +991,9 @@ pub struct RealmYamlConfig {
     /// Alias for `applications` matching AUTHZ_EXPANSION terminology.
     #[serde(default)]
     pub oauth_clients: Option<std::collections::HashMap<String, ApplicationYamlConfig>>,
+    /// Optional groups declared for this realm.
+    #[serde(default)]
+    pub groups: Option<Vec<GroupYamlConfig>>,
 }
 
 /// YAML for a single SAML SP registration (Hearth as IdP issues to this SP).
@@ -1400,6 +1414,24 @@ impl RealmYamlConfig {
                     updated_at: None,
                 });
 
+        // --- Groups --------------------------------------------------------
+
+        let groups: Vec<crate::rbac::Group> = self
+            .groups
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|g| crate::rbac::Group {
+                id: crate::rbac::GroupId::generate(),
+                realm_id: crate::core::RealmId::new(uuid::Uuid::nil()),
+                name: g.name.clone(),
+                slug: g.slug.unwrap_or_else(|| make_group_slug(&g.name)),
+                description: g.description.clone(),
+                created_at: crate::core::Timestamp::from_micros(0),
+                updated_at: crate::core::Timestamp::from_micros(0),
+            })
+            .collect();
+
         // --- Structural validation (cross-references, cycles, Tier 1) ------
         //
         // Bail early on grammar errors before running the structural checks
@@ -1459,8 +1491,34 @@ impl RealmYamlConfig {
             scopes,
             protected_resources,
             claim_profile,
+            groups,
         })
     }
+}
+
+/// Derives a URL-safe group slug from a display name.
+fn make_group_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut last_hyphen = true;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            last_hyphen = false;
+        } else if !last_hyphen {
+            out.push('-');
+            last_hyphen = true;
+        }
+    }
+    if out.len() > 63 {
+        out.truncate(63);
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        out = "group".to_string();
+    }
+    out
 }
 
 #[cfg(test)]

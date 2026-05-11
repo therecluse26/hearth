@@ -320,6 +320,7 @@ mod tests {
             expires_at: Timestamp::from_micros(T0 + TEN_MINUTES),
             used: false,
             nonce: None,
+            resource: None,
         };
         let key = keys::encode_oauth_code("hash1");
         s.put(&realm, &key, &serde_json::to_vec(&code).expect("serialize"))
@@ -349,6 +350,7 @@ mod tests {
             expires_at: Timestamp::from_micros(T0 + TEN_MINUTES),
             used: false,
             nonce: None,
+            resource: None,
         };
         let key = keys::encode_oauth_code("hash2");
         s.put(&realm, &key, &serde_json::to_vec(&code).expect("serialize"))
@@ -520,6 +522,7 @@ mod tests {
             created_at: Timestamp::from_micros(T0),
             expires_at: Timestamp::from_micros(T0 + TEN_MINUTES),
             client_id: None,
+            resources: Vec::new(),
         };
 
         let key = keys::encode_grant_family("fid1");
@@ -551,6 +554,7 @@ mod tests {
             created_at: Timestamp::from_micros(T0),
             expires_at: Timestamp::from_micros(T0 + TEN_MINUTES),
             client_id: None,
+            resources: Vec::new(),
         };
 
         let key = keys::encode_grant_family("fid2");
@@ -582,6 +586,7 @@ mod tests {
             created_at: Timestamp::from_micros(T0),
             expires_at: Timestamp::from_micros(T0 + ONE_HOUR),
             client_id: None,
+            resources: Vec::new(),
         };
 
         let key = keys::encode_grant_family("fid3");
@@ -619,6 +624,7 @@ mod tests {
                 expires_at: Timestamp::from_micros(T0 + TEN_MINUTES),
                 used: false,
                 nonce: None,
+                resource: None,
             };
             let key = keys::encode_oauth_code(&format!("expired_hash_{i}"));
             s.put(&realm, &key, &serde_json::to_vec(&code).expect("serialize"))

@@ -8,7 +8,7 @@ use crate::identity::claims_config::ClaimProfile;
 use crate::identity::credentials::CleartextPassword;
 use crate::identity::email::EmailBranding;
 use crate::identity::federation::LinkMode;
-use crate::rbac::{PermissionDefinition, ProtectedResource, Role, ScopeBundle};
+use crate::rbac::{Group, PermissionDefinition, ProtectedResource, Role, ScopeBundle};
 
 /// A cursor-based page of results.
 ///
@@ -521,6 +521,9 @@ pub struct RealmConfig {
     /// YAML-authored protected resources and their local scope namespaces.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protected_resources: Vec<ProtectedResource>,
+    /// YAML-declared groups for this realm.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
     /// YAML-authored claim profile overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_profile: Option<ClaimProfile>,

@@ -11,7 +11,7 @@ use base64::Engine as _;
 use ring::rand::SecureRandom;
 
 use crate::audit::{Actor, AuditAction, AuditContext, AuditEngine, CreateAuditEvent};
-use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, Uri, UserId};
 use crate::identity::claims_config::{
     resolve_claims_for_target, ClaimEvaluationContext, ClaimTarget,
 };
@@ -130,7 +130,7 @@ use crate::identity::oidc::{
     StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
 };
 use crate::identity::tokens::{
-    self, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
+    self, Audience, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
 };
 use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
@@ -173,6 +173,12 @@ pub struct TokenIssuanceContext {
     ///
     /// `None` means no org context.
     pub oid: Option<String>,
+    /// Optional RFC 8707 resource indicator. When present, the resource URI
+    /// is embedded in the access and refresh token `aud` claim and enables
+    /// audience-scoped scope resolution at token-issue time.
+    ///
+    /// `None` means no resource audience restriction.
+    pub resource: Option<crate::core::Uri>,
 }
 
 /// Configuration for credential rate limiting.
@@ -1305,10 +1311,23 @@ impl EmbeddedIdentityEngine {
         let signing_key = self.get_signing_key_or_default(realm_id);
         let iat = now_secs;
 
+        let aud = if family.resources.is_empty() {
+            Audience::single(self.config.token.audience.clone())
+        } else {
+            // Preserve the original resource set from the authorization
+            // grant. Per RFC 8707 §2, refresh tokens inherit the resource
+            // set; the client cannot widen or narrow via refresh. A new
+            // authorization request is required to change the resource set.
+            Audience::with_resource(
+                self.config.token.audience.clone(),
+                &family.resources[0],
+            )
+        };
+
         let new_access_claims = TokenClaims {
             sub: user_id.to_string(),
             iss: self.config.token.issuer.clone(),
-            aud: self.config.token.audience.clone(),
+            aud: aud.clone(),
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: session_id.to_string(),
@@ -1327,7 +1346,7 @@ impl EmbeddedIdentityEngine {
         let new_refresh_claims = TokenClaims {
             sub: user_id.to_string(),
             iss: self.config.token.issuer.clone(),
-            aud: self.config.token.audience.clone(),
+            aud,
             exp: iat + self.config.token.refresh_token_ttl_secs,
             iat,
             sid: session_id.to_string(),
@@ -2923,6 +2942,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 &permissions
             },
             custom,
+            resource: ctx.resource.as_ref(),
         })
     }
 
@@ -3272,6 +3292,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             expires_at,
             used: false,
             nonce: request.nonce.clone(),
+            resource: request.resource.clone(),
         };
 
         // 9. Persist the code
@@ -3418,10 +3439,24 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let iat = now.as_micros() / 1_000_000;
         let signing_key = self.get_signing_key_or_default(realm_id);
 
+        let resource_uri = stored_code
+            .resource
+            .as_ref()
+            .map(|s| {
+                Uri::try_from(s.clone()).map_err(|e| IdentityError::InvalidGrant {
+                    reason: format!("authorization code has invalid resource URI: {e}"),
+                })
+            })
+            .transpose()?;
+        let aud = match &resource_uri {
+            Some(r) => Audience::with_resource(self.config.token.audience.clone(), r),
+            None => Audience::single(self.config.token.audience.clone()),
+        };
+
         let access_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
             iss: self.config.token.issuer.clone(),
-            aud: self.config.token.audience.clone(),
+            aud: aud.clone(),
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: session.id().to_string(),
@@ -3440,7 +3475,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let refresh_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
             iss: self.config.token.issuer.clone(),
-            aud: self.config.token.audience.clone(),
+            aud,
             exp: iat + self.config.token.refresh_token_ttl_secs,
             iat,
             sid: session.id().to_string(),
@@ -3485,6 +3520,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // Store the client_id so the refresh path can perform a
             // consent digest re-check without a separate client lookup.
             client_id: Some(request.client_id.clone()),
+            resources: resource_uri.iter().cloned().collect(),
         };
         let family_bytes =
             serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
@@ -3500,7 +3536,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let id_token_claims = TokenClaims {
             sub: stored_code.user_id.to_string(),
             iss: self.config.oidc.issuer.clone(),
-            aud: request.client_id.to_string(),
+            aud: Audience::single(request.client_id.to_string()),
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: session.id().to_string(),
@@ -3583,6 +3619,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
             revocation_endpoint: Some(format!("{issuer}/revoke")),
             introspection_endpoint: Some(format!("{issuer}/introspect")),
+            resource_indicators_supported: true,
         }
     }
 
@@ -3633,7 +3670,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let access_claims = TokenClaims {
             sub: request.client_id.to_string(),
             iss: self.config.token.issuer.clone(),
-            aud: self.config.token.audience.clone(),
+            aud: Audience::single(self.config.token.audience.clone()),
             exp: iat + self.config.token.access_token_ttl_secs,
             iat,
             sid: "none".to_string(), // No session for client credentials
@@ -3877,7 +3914,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 let id_token_claims = TokenClaims {
                     sub: user_id.to_string(),
                     iss: self.config.oidc.issuer.clone(),
-                    aud: client_id.to_string(),
+                    aud: Audience::single(client_id.to_string()),
                     exp: iat + self.config.token.access_token_ttl_secs,
                     iat,
                     sid: session.id().to_string(),
@@ -4074,7 +4111,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             iat: Some(claims.iat),
             token_type: Some(claims.token_type),
             iss: Some(claims.iss),
-            aud: Some(claims.aud),
+            aud: Some(claims.aud.base().to_string()),
         })
     }
 
@@ -5139,6 +5176,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .collect();
         let client = claims
             .aud
+            .base()
             .strip_prefix("client_")
             .and_then(|uuid| uuid::Uuid::parse_str(uuid).ok())
             .and_then(|uuid| {

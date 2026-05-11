@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use zeroize::Zeroize;
 
 use crate::core::Timestamp;
+use crate::core::Uri;
 use crate::identity::error::IdentityError;
 
 /// The only supported JWT algorithm.
@@ -26,6 +27,49 @@ const JWT_TYPE: &str = "JWT";
 
 /// Microseconds per second, for timestamp conversion.
 const MICROS_PER_SEC: i64 = 1_000_000;
+
+/// JWT `aud` claim — either a single StringOrURI or a JSON array.
+///
+/// Per RFC 7519 §4.1.3. Serializes as a plain string when the audience
+/// contains one entry, or as a JSON array when multiple entries are present.
+///
+/// `#[serde(untagged)]` ensures backward compatibility: tokens issued
+/// before the multi-audience change (`"aud":"hearth"`) deserialize
+/// correctly into `Audience::Single`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Audience {
+    Single(String),
+    Multi(Vec<String>),
+}
+
+impl Audience {
+    /// Build an audience with a single entry.
+    pub fn single(s: impl Into<String>) -> Self {
+        Self::Single(s.into())
+    }
+
+    /// Build an audience with the base string plus a resource URI appended.
+    pub fn with_resource(base: impl Into<String>, resource: &Uri) -> Self {
+        Self::Multi(vec![base.into(), resource.as_str().to_string()])
+    }
+
+    /// Returns `true` if the audience includes `candidate`.
+    pub fn contains(&self, candidate: &str) -> bool {
+        match self {
+            Self::Single(a) => a == candidate,
+            Self::Multi(list) => list.iter().any(|a| a == candidate),
+        }
+    }
+
+    /// Returns the configured base audience string (first entry for Multi).
+    pub(crate) fn base(&self) -> &str {
+        match self {
+            Self::Single(a) => a,
+            Self::Multi(list) => list.first().map(String::as_str).unwrap_or(""),
+        }
+    }
+}
 
 /// Configuration for token issuance.
 #[derive(Debug, Clone)]
@@ -73,8 +117,8 @@ pub struct TokenClaims {
     pub sub: String,
     /// Issuer.
     pub iss: String,
-    /// Audience.
-    pub aud: String,
+    /// Audience — single string or JSON array per RFC 7519 §4.1.3.
+    pub aud: Audience,
     /// Expiration time (Unix seconds).
     pub exp: i64,
     /// Issued-at time (Unix seconds).
@@ -333,10 +377,15 @@ impl SigningKey {
     ) -> Result<TokenPair, IdentityError> {
         let iat = request.now.as_micros() / MICROS_PER_SEC;
 
+        let aud = match request.resource {
+            Some(res) => Audience::with_resource(&request.config.audience, res),
+            None => Audience::single(&request.config.audience),
+        };
+
         let access_claims = TokenClaims {
             sub: request.sub.to_string(),
             iss: request.config.issuer.clone(),
-            aud: request.config.audience.clone(),
+            aud: aud.clone(),
             exp: iat + request.config.access_token_ttl_secs,
             iat,
             sid: request.sid.to_string(),
@@ -356,7 +405,7 @@ impl SigningKey {
         let refresh_claims = TokenClaims {
             sub: request.sub.to_string(),
             iss: request.config.issuer.clone(),
-            aud: request.config.audience.clone(),
+            aud,
             exp: iat + request.config.refresh_token_ttl_secs,
             iat,
             sid: request.sid.to_string(),
@@ -409,6 +458,9 @@ pub struct IssueTokenRequest<'a> {
     pub permissions: &'a [String],
     /// Additional top-level custom claims.
     pub custom: BTreeMap<String, serde_json::Value>,
+    /// Optional RFC 8707 resource indicator. When present, the resource URI
+    /// is appended to the `aud` claim as a second entry.
+    pub resource: Option<&'a Uri>,
 }
 
 /// Validates a JWT's signature and returns the decoded claims.
@@ -676,7 +728,7 @@ mod tests {
         TokenClaims {
             sub: "user_550e8400-e29b-41d4-a716-446655440000".to_string(),
             iss: "hearth".to_string(),
-            aud: "hearth".to_string(),
+            aud: Audience::single("hearth"),
             exp: now_secs + 900, // 15 min
             iat: now_secs,
             sid: "session_660e8400-e29b-41d4-a716-446655440000".to_string(),
@@ -720,7 +772,7 @@ mod tests {
         let decoded: TokenClaims = serde_json::from_slice(&decoded_bytes).expect("claims parse");
         assert_eq!(decoded.sub, claims.sub, "sub mismatch");
         assert_eq!(decoded.iss, "hearth", "iss mismatch");
-        assert_eq!(decoded.aud, "hearth", "aud mismatch");
+        assert!(matches!(&decoded.aud, Audience::Single(a) if a == "hearth"), "aud mismatch");
         assert_eq!(decoded.exp, now_secs + 900, "exp mismatch");
         assert_eq!(decoded.iat, now_secs, "iat mismatch");
         assert_eq!(decoded.sid, claims.sid, "sid mismatch");
@@ -834,6 +886,7 @@ mod tests {
                 groups: &[],
                 permissions: &[],
                 custom: BTreeMap::new(),
+                resource: None,
             })
             .expect("issue pair");
 
@@ -870,6 +923,7 @@ mod tests {
                 groups: &[],
                 permissions: &[],
                 custom: BTreeMap::new(),
+                resource: None,
             })
             .expect("reissue pair");
 
@@ -1155,7 +1209,7 @@ mod tests {
 
         // Modify aud to target a different audience
         let mut modified_aud = claims.clone();
-        modified_aud.aud = "other-service".to_string();
+        modified_aud.aud = Audience::single("other-service");
         let aud_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&modified_aud).expect("ser"));
         let tampered_aud = format!("{}.{}.{}", parts[0], aud_b64, parts[2]);
         assert!(
@@ -1219,5 +1273,40 @@ mod tests {
                 "timed validation should reject garbage: {input:?}"
             );
         }
+    }
+
+    /// Backwards-compat: a JWT with "aud":"hearth" (string form) issued before the
+    /// multi-audience change still deserializes into Audience::Single and validates.
+    #[test]
+    fn audience_single_string_deserializes_from_old_tokens() {
+        let json = r#"{
+            "sub":"user_abc",
+            "iss":"hearth",
+            "aud":"hearth",
+            "exp":2000000000,
+            "iat":1700000000,
+            "sid":"session_xyz",
+            "tid":"realm_123",
+            "token_type":"access",
+            "permissions":[]
+        }"#;
+        let claims: TokenClaims = serde_json::from_str(json).expect("should deserialize old-format aud");
+        assert!(
+            matches!(&claims.aud, Audience::Single(a) if a == "hearth"),
+            "old single-string aud should deserialize into Audience::Single"
+        );
+        assert!(claims.aud.contains("hearth"));
+        assert!(!claims.aud.contains("other"));
+    }
+
+    /// New multi-audience tokens serialize as JSON arrays.
+    #[test]
+    fn audience_multi_serializes_as_array() {
+        let uri = Uri::try_from("https://api.example.com".to_string()).expect("valid URI");
+        let aud = Audience::with_resource("hearth", &uri);
+        let json = serde_json::to_string(&aud).expect("serialize");
+        assert!(json.starts_with('['), "multi-audience should serialize as JSON array, got: {json}");
+        assert!(json.contains("hearth"));
+        assert!(json.contains("https://api.example.com"));
     }
 }

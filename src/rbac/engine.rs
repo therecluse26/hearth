@@ -9,10 +9,10 @@
 //! token issuance; `resolve.rs` still tolerates a late-appearing cycle
 //! in case storage was corrupted out-of-band).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
-use crate::core::{Clock, OrganizationId, RealmId, UserId};
+use crate::core::{Clock, OrganizationId, RealmId, Uri, UserId};
 use crate::identity::ClientTrustLevel;
 use crate::storage::StorageEngine;
 
@@ -22,8 +22,8 @@ use super::resolve::{self, Resolver};
 use super::seed::{self, StoredScope};
 use super::types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
-    GroupId, GroupMember, GroupMembership, Page, Permission, ResolvedPermissions, Role,
-    RoleAssignment, RoleId, RoleSpec, RoleSubject, Scope, ScopeSpec, Subject, TraversalKind,
+    GroupId, GroupMember, GroupMembership, Page, Permission, ProtectedResource, ResolvedPermissions,
+    Role, RoleAssignment, RoleId, RoleSpec, RoleSubject, Scope, ScopeSpec, Subject, TraversalKind,
     UpdateGroupRequest, UpdateRoleRequest, UserPermissionGrant,
 };
 use super::RbacEngine;
@@ -329,6 +329,8 @@ impl EmbeddedRbacEngine {
         }
         Ok(out)
     }
+
+    // Resource-scope methods are implemented in the Resolver trait impl below.
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +430,43 @@ impl Resolver for EmbeddedRbacEngine {
         }
         Ok(out)
     }
+
+    fn resource_scope_permissions(
+        &self,
+        realm_id: &RealmId,
+        resource_uri: &Uri,
+        scope_name: &str,
+    ) -> Result<Option<Vec<Permission>>, RbacError> {
+        let hash = resource_uri.storage_hash();
+        let key = keys::encode_resource_scope(realm_id, &hash, scope_name);
+        match self.storage.get(realm_id, &key)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let s: StoredScope = Self::de(&bytes)?;
+                Ok(s.permissions)
+            }
+        }
+    }
+
+    fn resource_scope_permission_names(
+        &self,
+        realm_id: &RealmId,
+        resource_uri: &Uri,
+    ) -> Result<Vec<Permission>, RbacError> {
+        let hash = resource_uri.storage_hash();
+        let prefix = keys::resource_scope_scan_prefix(realm_id, &hash);
+        let end = keys::prefix_end(&prefix);
+        let mut out = BTreeSet::new();
+        for entry in self.storage.scan(realm_id, &prefix, &end)? {
+            let s: StoredScope = Self::de(&entry.value)?;
+            if let Some(perms) = s.permissions {
+                for p in perms {
+                    out.insert(p);
+                }
+            }
+        }
+        Ok(out.into_iter().collect())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +492,7 @@ impl RbacEngine for EmbeddedRbacEngine {
         requested_scopes: &[String],
         client_trust_level: ClientTrustLevel,
         declared_scopes: &[String],
+        resource: Option<&Uri>,
     ) -> Result<ResolvedPermissions, RbacError> {
         resolve::resolve_with_scopes(
             self,
@@ -462,6 +502,7 @@ impl RbacEngine for EmbeddedRbacEngine {
             requested_scopes,
             client_trust_level,
             declared_scopes,
+            resource,
         )
     }
 
@@ -1294,6 +1335,88 @@ impl RbacEngine for EmbeddedRbacEngine {
             };
             let key = keys::encode_scope(realm_id, &spec.name);
             self.storage.put(realm_id, &key, &Self::ser(&stored)?)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_protected_resources(
+        &self,
+        realm_id: &RealmId,
+        resources: &[ProtectedResource],
+    ) -> Result<(), RbacError> {
+        for resource in resources {
+            // Validate the resource URI.
+            let uri = Uri::try_from(resource.resource_uri.clone())
+                .map_err(|e| RbacError::Serialization {
+                    reason: format!("invalid resource URI '{}': {e}", resource.resource_uri),
+                })?;
+            let hash = uri.storage_hash();
+
+            for bundle in &resource.scopes {
+                let permissions: Option<Vec<Permission>> = if bundle.permissions.is_empty() {
+                    None
+                } else {
+                    Some(bundle.permissions.clone())
+                };
+                let stored = seed::StoredScope {
+                    name: bundle.name.clone(),
+                    permissions,
+                };
+                let key = keys::encode_resource_scope(realm_id, &hash, &bundle.name);
+                self.storage.put(realm_id, &key, &Self::ser(&stored)?)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile_groups(
+        &self,
+        realm_id: &RealmId,
+        groups: &[Group],
+    ) -> Result<(), RbacError> {
+        let now = self.clock.now();
+        for group in groups {
+            let slug = if group.slug.is_empty() {
+                continue;
+            } else {
+                &group.slug
+            };
+
+            match self.load_group_id_by_slug(realm_id, slug)? {
+                Some(gid) => {
+                    if let Some(mut existing) = self.load_group(realm_id, &gid)? {
+                        let drift = existing.name != group.name
+                            || existing.description != group.description;
+                        if drift {
+                            existing.name.clone_from(&group.name);
+                            existing.description.clone_from(&group.description);
+                            existing.updated_at = now;
+                            let group_key = keys::encode_group(&existing.id);
+                            self.storage.put(realm_id, &group_key, &Self::ser(&existing)?)?;
+                        }
+                    }
+                }
+                None => {
+                    let new_group = Group {
+                        id: GroupId::generate(),
+                        realm_id: realm_id.clone(),
+                        name: group.name.clone(),
+                        slug: slug.clone(),
+                        description: group.description.clone(),
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    let group_key = keys::encode_group(&new_group.id);
+                    let slug_key = keys::encode_group_slug(realm_id, slug);
+                    self.storage.put_batch(
+                        realm_id,
+                        &[
+                            (group_key, Self::ser(&new_group)?),
+                            (slug_key, Self::ser(&new_group.id)?),
+                        ],
+                    )?;
+                }
+            }
         }
         Ok(())
     }

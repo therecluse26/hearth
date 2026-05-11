@@ -285,6 +285,15 @@ email:
 #         permissions:
 #           - billing.read
 #           - billing.write
+#
+#     # YAML-declared groups — created at startup, updated if drifted.
+#     groups:
+#       - name: Engineering
+#         slug: engineering
+#         description: "All members of the engineering department."
+#       - name: Platform Team
+#         slug: platform
+#         description: "Platform infrastructure engineers."
 
 onboarding:
   # enabled: true  # set to false to permanently disable the /ui/setup flow

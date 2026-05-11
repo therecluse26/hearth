@@ -51,17 +51,17 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 
 | # | Gap | Detail |
 |---|-----|--------|
-| 10 | **Audience-scoped scope resolution** | `resolve_with_scopes` doesn't accept `resource: Option<Uri>`. Protected-resource scope precedence not implemented. |
+| 10 | **Audience-scoped scope resolution** | `resolve_with_scopes` doesn't accept `resource: Option<Uri>`. Protected-resource scope precedence not implemented. | ✅ RESOLVED (2026-05-11). `resolve_with_scopes` now accepts `resource: Option<&Uri>`. Permission scopes resolve against resource scope bundles. Bundle scopes lookup in `rba:res_scope:` storage. `Audience` enum for multi-audience `aud` claims. `Uri` newtype with normalization and SHA-256 storage keys. `reconcile_protected_resources` persists resource scopes. `resource_indicators_supported` in OIDC discovery. |
 | 11 | **User.attributes on create/import requests** | ✅ RESOLVED (2026-05-10). `attributes` field added to `CreateUserRequest`, `ImportUserRequest`, proto, and engine wiring. |
 | 12 | **ArcSwap registry hot-swap not wired** | ✅ RESOLVED. SIGHUP handler at `main.rs:988` calls `run_config_reconciliation()` with registry param; `PermissionRegistry` atomically swapped at line 1345. |
 | 13 | **Missing OIDC default claim mappings** | ✅ RESOLVED (2026-05-10). Added 7 mappings: `given_name`, `family_name`, `picture`, `locale`, `zoneinfo`, `phone_number`, `address`. |
 | 14 | **Config structure: flat vs nested `rbac:`** | ✅ RESOLVED (2026-05-10). Flat structure confirmed; `RealmYamlConfig` keeps RBAC fields at top level. Spec updated in AUTHORIZATION.md §9.5. |
-| 15 | **No YAML-declared groups** | Groups are runtime-API only; no `groups` field in `RealmYamlConfig`. |
+| 15 | **No YAML-declared groups** | ✅ RESOLVED (2026-05-11). `GroupYamlConfig` with `name`, `slug`, `description` fields. `groups` field on `RealmYamlConfig` and `RealmConfig`. `reconcile_groups` on `RbacEngine` trait upserts by slug. Wired into `reconcile_rbac_for_realm`. Example in `hearth.example.yaml`. |
 | 16 | **`list_groups`/`list_role_members` cursor unused** | ✅ RESOLVED (2026-05-10). Cursor now used for scan offsets; `next_cursor` set from boundary entry. |
 | 17 | **`list_roles` cursor derivation flawed** | ✅ RESOLVED (2026-05-10). Cursor derived from boundary entry's key, not `items.last()`. |
 | 18 | **RESERVED_PREFIX: `system.` vs `hearth.`** | ✅ RESOLVED (2026-05-10). Constant updated to `"hearth."`. Tests updated. |
-| 19 | **No standalone WebAuthn REST API** | Passkey ceremonies browser-session only. |
-| 20 | **Only 2 of 8 SDKs exist** | TypeScript and Go implemented. Python, Rust, Java, PHP, C#, Ruby, Elixir missing. |
+| 19 | **No standalone WebAuthn REST API** | ✅ RESOLVED (2026-05-11). 6 REST endpoints: `POST /webauthn/register/begin`, `POST /webauthn/register/complete`, `POST /webauthn/auth/begin`, `POST /webauthn/auth/complete`, `GET /webauthn/credentials`, `DELETE /webauthn/credentials/{id}`. Bearer-token auth for self-service; unauth for auth begin/complete. Supports discoverable and username-first flows. |
+| 20 | **Only 2 of 8 SDKs exist** | ✅ PARTIALLY RESOLVED (2026-05-11). Python and Rust SDKs added (`sdks/python/`, `sdks/rust/`). REST-only, matching Go/TS surface: HearthClient (OAuth flows, RBAC predicates, WebAuthn), AdminClient (user/realm CRUD), HearthError, all request/response types. Java, PHP, C#, Ruby, Elixir remain. |
 | 21 | **Only 2 of 6 migration tools exist** | Keycloak and Auth0 implemented. Clerk, Cognito, Firebase Auth, Okta missing. |
 | 22 | **No shadow mode** | Required for zero-downtime migration per VISION.md §5.5. |
 
@@ -129,7 +129,7 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 
 ### P1 — Should fix
 
-- [ ] **[P1][M]** Add `resource: Option<Uri>` parameter to `resolve_with_scopes()` and implement audience-scoped scope resolution — resolves gaps #10 · _depends on: none_
+- [x] **[P1][M]** Add `resource: Option<Uri>` parameter to `resolve_with_scopes()` and implement audience-scoped scope resolution — resolves gaps #10 · _depends on: none_ ✅ DONE (2026-05-11)
 - [x] **[P1][S]** Add `attributes` field to `CreateUserRequest` and `ImportUserRequest` — resolves gaps #11 · _depends on: none_ ✅ DONE (2026-05-10)
 - [x] **[P1][S]** Wire `ArcSwap` hot-swap for `PermissionRegistry` in `main.rs` on SIGHUP — resolves gaps #12 · _depends on: none_ ✅ VERIFIED (2026-05-10) — already wired at `main.rs:988` and `main.rs:1345`
 - [x] **[P1][S]** Add missing OIDC default claim mappings to `default_claim_profile()` — resolves gaps #13 · _depends on: none_ ✅ DONE (2026-05-10)
@@ -137,10 +137,10 @@ The system is single-node only. This is acceptable for Phase 1 but blocks v1.0 p
 - [x] **[P1][S]** Fix `list_roles` cursor derivation — resolves gaps #17 · _depends on: none_ ✅ DONE (2026-05-10)
 - [x] **[P1][S]** Align `RESERVED_PREFIX` to `"hearth."` — resolves gaps #18 · _depends on: none_ ✅ DONE (2026-05-10)
 - [x] **[P1][S]** Decide: nest RBAC config under `realms.<id>.rbac.*` or update spec to flat structure — resolves gaps #14, D1 · _depends on: none_ ✅ DONE (2026-05-10) — flat structure confirmed, spec updated
-- [ ] **[P1][S]** Add YAML-declared groups — resolves gaps #15 · _depends on: above_
-- [ ] **[P1][M]** Add standalone REST WebAuthn/Passkey endpoint — resolves gaps #19 · _depends on: none_
-- [ ] **[P1][M]** Add Python SDK — resolves gaps #20 (partial) · _depends on: stable API surface_
-- [ ] **[P1][M]** Add Rust SDK — resolves gaps #20 (partial) · _depends on: stable API surface_
+- [x] **[P1][S]** Add YAML-declared groups — resolves gaps #15 · _depends on: above_ ✅ DONE (2026-05-11)
+- [x] **[P1][M]** Add standalone REST WebAuthn/Passkey endpoint — resolves gaps #19 · _depends on: none_ ✅ DONE (2026-05-11)
+- [x] **[P1][M]** Add Python SDK — resolves gaps #20 (partial) · _depends on: stable API surface_ ✅ DONE (2026-05-11)
+- [x] **[P1][M]** Add Rust SDK — resolves gaps #20 (partial) · _depends on: stable API surface_ ✅ DONE (2026-05-11)
 - [x] **[P1][S]** Add resolve-time cycle detection for role DAGs — resolves gaps #9 · _depends on: none_ ✅ DONE (2026-05-10)
 
 ### P2 — Polish

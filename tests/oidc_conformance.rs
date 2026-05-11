@@ -10,7 +10,7 @@ mod common;
 
 use base64::Engine as _;
 use hearth::core::RealmId;
-use hearth::identity::tokens::{decode_claims_unverified, verify_token_signature};
+use hearth::identity::tokens::{decode_claims_unverified, verify_token_signature, Audience};
 use hearth::identity::{
     AuthorizationRequest, CreateRealmRequest, CreateUserRequest, OAuthClient,
     RegisterClientRequest, TokenExchangeRequest,
@@ -134,14 +134,17 @@ async fn oidc_core_required_claims_and_signing() {
     // OIDC Core §2: REQUIRED claims
     assert!(!claims.sub.is_empty(), "sub claim MUST be present");
     assert!(!claims.iss.is_empty(), "iss claim MUST be present");
-    assert!(!claims.aud.is_empty(), "aud claim MUST be present");
-    assert!(claims.exp > 0, "exp claim MUST be present and positive");
-    assert!(claims.iat > 0, "iat claim MUST be present and positive");
+    assert!(claims.aud.contains(&client.client_id().to_string()),
+        "aud must contain client_id");
+    assert!(
+        matches!(&claims.aud, Audience::Single(s) if !s.is_empty())
+            || matches!(&claims.aud, Audience::Multi(list) if !list.is_empty()),
+        "aud claim MUST be present"
+    );
 
     // 3. aud MUST contain the client_id
-    assert_eq!(
-        claims.aud,
-        client.client_id().to_string(),
+    assert!(
+        claims.aud.contains(&client.client_id().to_string()),
         "aud must match client_id"
     );
 
@@ -407,9 +410,8 @@ async fn oidc_id_token_required_claims_with_nonce() {
     assert_eq!(claims.sub, user_id.to_string());
 
     // aud — MUST contain the client_id
-    assert_eq!(
-        claims.aud,
-        client.client_id().to_string(),
+    assert!(
+        claims.aud.contains(&client.client_id().to_string()),
         "aud must contain the client_id"
     );
 

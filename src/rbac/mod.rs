@@ -34,7 +34,7 @@ pub use types::{
     UpdateRoleRequest, UserPermissionGrant,
 };
 
-use crate::core::{OrganizationId, RealmId, UserId};
+use crate::core::{OrganizationId, RealmId, UserId, Uri};
 use crate::identity::ClientTrustLevel;
 
 /// Trait defining the claims-based RBAC engine interface.
@@ -74,6 +74,10 @@ pub trait RbacEngine: Send + Sync {
     ///
     /// The returned `ResolvedPermissions::granted_scopes` is the space-delimited
     /// RFC 6749 `scope` value to embed in the token.
+    ///
+    /// When `resource` is `Some(uri)`, scope resolution is audience-scoped per
+    /// RFC 8707: permission scopes are resolved against the resource's scope
+    /// bundles, bundle scopes are looked up in the resource's scope registry.
     fn resolve_with_scopes(
         &self,
         user_id: &UserId,
@@ -82,6 +86,7 @@ pub trait RbacEngine: Send + Sync {
         requested_scopes: &[String],
         client_trust_level: ClientTrustLevel,
         declared_scopes: &[String],
+        resource: Option<&Uri>,
     ) -> Result<ResolvedPermissions, RbacError>;
 
     /// Grants a direct permission to a user outside any role.
@@ -296,4 +301,21 @@ pub trait RbacEngine: Send + Sync {
     /// that already exist are overwritten with the spec's permission list.
     /// Idempotent.
     fn reconcile_scopes(&self, realm_id: &RealmId, specs: &[ScopeSpec]) -> Result<(), RbacError>;
+
+    /// Persists each declared protected resource's scope bundles into per-realm
+    /// storage keyed by the resource URI hash. Idempotent — bundles already
+    /// present are overwritten.
+    fn reconcile_protected_resources(
+        &self,
+        realm_id: &RealmId,
+        resources: &[ProtectedResource],
+    ) -> Result<(), RbacError>;
+
+    /// Persists each declared group into per-realm storage by slug. Groups
+    /// that already exist are updated if drifted. Idempotent.
+    fn reconcile_groups(
+        &self,
+        realm_id: &RealmId,
+        groups: &[Group],
+    ) -> Result<(), RbacError>;
 }

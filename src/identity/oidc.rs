@@ -516,6 +516,9 @@ pub(crate) struct StoredAuthorizationCode {
     /// The nonce from the authorization request (echoed in ID token per OIDC Core §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) nonce: Option<String>,
+    /// Optional RFC 8707 resource indicator from the authorization request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resource: Option<String>,
 }
 
 /// OIDC Discovery document (`OpenID` Connect Discovery 1.0).
@@ -564,6 +567,9 @@ pub struct OidcDiscoveryDocument {
     /// URL of the token introspection endpoint (RFC 7662).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introspection_endpoint: Option<String>,
+    /// Whether RFC 8707 resource indicators are supported.
+    #[serde(default)]
+    pub resource_indicators_supported: bool,
 }
 
 // ===== Client Credentials Grant =====
@@ -732,6 +738,10 @@ pub(crate) struct StoredGrantFamily {
     /// digest re-checking on refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) client_id: Option<ClientId>,
+    /// RFC 8707 resource indicators from the authorization grant. Used
+    /// to preserve the resource binding across refresh token rotations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) resources: Vec<crate::core::Uri>,
 }
 
 // ===== Token Revocation (RFC 7009) =====
@@ -913,6 +923,7 @@ mod tests {
             expires_at: Timestamp::from_micros(2_000_000),
             used: false,
             nonce: Some("test-nonce-abc".to_string()),
+            resource: None,
         };
 
         let json = serde_json::to_string(&code).expect("serialize");
@@ -948,6 +959,7 @@ mod tests {
             ),
             revocation_endpoint: Some("https://hearth.local/revoke".to_string()),
             introspection_endpoint: Some("https://hearth.local/introspect".to_string()),
+            resource_indicators_supported: false,
         };
 
         let json = serde_json::to_string(&doc).expect("serialize");
