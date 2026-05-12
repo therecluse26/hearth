@@ -154,13 +154,19 @@ pub(crate) fn validate_name_part(name: &str, field: &str) -> Result<String, Iden
 
 /// Enforces a realm's [`PasswordPolicy`] against a candidate password.
 ///
+/// The `username` and `email` parameters are used for `not_username` /
+/// `not_email` checks. Pass `None` when the caller does not have that
+/// context (e.g., admin `set_password` without a user object loaded).
+///
 /// Complements `validate_password_length` (which only guards against the
-/// hashing `DoS` bound). Used by self-service registration; admin-created
-/// users bypass this check intentionally, because operators may set weak
-/// interim passwords that the user must rotate on first login.
+/// hashing DoS bound). Admin-created users bypass this check intentionally,
+/// because operators may set weak interim passwords that the user must rotate
+/// on first login.
 pub(crate) fn validate_password_against_policy(
     password_bytes: &[u8],
     policy: &PasswordPolicy,
+    username: Option<&str>,
+    email: Option<&str>,
 ) -> Result<(), IdentityError> {
     if let Some(min) = policy.min_length {
         if password_bytes.len() < min {
@@ -190,6 +196,39 @@ pub(crate) fn validate_password_against_policy(
         return Err(IdentityError::InvalidInput {
             reason: "password must contain a special character".to_string(),
         });
+    }
+    let pw_lower = as_str.to_lowercase();
+    if matches!(policy.not_username, Some(true)) {
+        if let Some(uname) = username {
+            let uname_lower = uname.to_lowercase();
+            if !uname_lower.is_empty()
+                && (pw_lower == uname_lower || pw_lower.contains(uname_lower.as_str()))
+            {
+                return Err(IdentityError::InvalidInput {
+                    reason: "password must not contain or match your username".to_string(),
+                });
+            }
+        }
+    }
+    if matches!(policy.not_email, Some(true)) {
+        if let Some(addr) = email {
+            // Compare against the full address and against just the local part.
+            let addr_lower = addr.to_lowercase();
+            let local_lower = addr_lower
+                .split('@')
+                .next()
+                .unwrap_or(&addr_lower)
+                .to_string();
+            if !local_lower.is_empty()
+                && (pw_lower == addr_lower
+                    || pw_lower.contains(addr_lower.as_str())
+                    || pw_lower.contains(local_lower.as_str()))
+            {
+                return Err(IdentityError::InvalidInput {
+                    reason: "password must not contain or match your email address".to_string(),
+                });
+            }
+        }
     }
     Ok(())
 }

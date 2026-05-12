@@ -6,8 +6,8 @@
    Required struct fields on the caller:
      - realm_name: String           // realm slug, used in path-based URLs
      - active_tab: &'static str     // "overview" | "users" | "organizations"
-                                    // | "groups" | "applications" | "sessions"
-                                    // | "audit" | "rbac_permissions"
+                                    // | "groups" | "applications" | "identity_providers"
+                                    // | "sessions" | "audit" | "rbac_permissions"
                                     // | "rbac_roles" | "rbac_scopes" | "rbac_debug"
 
    Per UI_ROUTING.md R-1, every realm-scoped URL is built as
@@ -35,6 +35,9 @@
   <a href="/ui/admin/realms/{{ realm_name }}/applications"
      {% if active_tab == "applications" %}aria-current="page"{% endif %}
      class="{% if active_tab == "applications" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Applications</a>
+  <a href="/ui/admin/realms/{{ realm_name }}/identity-providers"
+     {% if active_tab == "identity_providers" %}aria-current="page"{% endif %}
+     class="{% if active_tab == "identity_providers" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Identity Providers</a>
   <a href="/ui/admin/realms/{{ realm_name }}/sessions"
      {% if active_tab == "sessions" %}aria-current="page"{% endif %}
      class="{% if active_tab == "sessions" %}border-brand text-ht-content-primary{% else %}border-transparent text-ht-content-secondary hover:text-ht-content-primary{% endif %} border-b-2 px-3 py-2 text-sm font-medium">Sessions</a>

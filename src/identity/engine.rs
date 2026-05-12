@@ -4946,7 +4946,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let display_name = validation::validate_display_name(&request.display_name)?;
         validation::validate_password_length(request.password.as_bytes())?;
         if let Some(pw_policy) = realm.config().password_policy.as_ref() {
-            validation::validate_password_against_policy(request.password.as_bytes(), pw_policy)?;
+            validation::validate_password_against_policy(
+                request.password.as_bytes(),
+                pw_policy,
+                Some(&display_name),
+                Some(&email),
+            )?;
         }
 
         // 3. Enforce registration policy.

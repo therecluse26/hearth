@@ -91,6 +91,8 @@ pub struct WebAuthnCredentialInfo {
     pub(crate) algorithm: i64,
     /// Whether the credential is discoverable (resident key).
     pub(crate) discoverable: bool,
+    /// User-supplied display name for this credential.
+    pub(crate) name: Option<String>,
 }
 
 impl WebAuthnCredentialInfo {
@@ -113,6 +115,11 @@ impl WebAuthnCredentialInfo {
     pub fn discoverable(&self) -> bool {
         self.discoverable
     }
+
+    /// Returns the user-supplied display name, if any.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
 }
 
 /// A stored `WebAuthn` credential (persisted in storage engine).
@@ -132,6 +139,9 @@ pub(crate) struct StoredWebAuthnCredential {
     pub rp_id: String,
     /// When this credential was registered (Unix microseconds).
     pub created_at: i64,
+    /// User-supplied display name for this credential (e.g., "MacBook Touch ID").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Options for starting a `WebAuthn` registration ceremony.

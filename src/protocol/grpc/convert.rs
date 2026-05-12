@@ -96,7 +96,9 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::SlowDown
         | IdentityError::DeviceCodeExpired
         | IdentityError::DeviceCodeDenied
-        | IdentityError::TokenRevoked => (Code::FailedPrecondition, err.to_string()),
+        | IdentityError::TokenRevoked
+        | IdentityError::PasswordExpired
+        | IdentityError::PasswordReused => (Code::FailedPrecondition, err.to_string()),
         IdentityError::RateLimited
         | IdentityError::MemberLimitReached
         | IdentityError::TokenTooLarge { .. } => (Code::ResourceExhausted, err.to_string()),

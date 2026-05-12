@@ -351,6 +351,14 @@ pub enum IdentityError {
         /// Why the audit append failed.
         reason: String,
     },
+    /// The user's password has expired. They must set a new password
+    /// before creating a session.
+    PasswordExpired,
+    /// The new password matches a previously used password.
+    ///
+    /// Returned when `PasswordPolicy.history_depth` is set and the
+    /// candidate password matches one of the stored historical hashes.
+    PasswordReused,
 }
 
 impl fmt::Display for IdentityError {
@@ -502,6 +510,10 @@ impl fmt::Display for IdentityError {
                     "audit append failed for destructive action '{action}': {reason}"
                 )
             }
+            Self::PasswordExpired => write!(f, "password has expired and must be reset"),
+            Self::PasswordReused => {
+                write!(f, "password was recently used and cannot be reused")
+            }
         }
     }
 }
@@ -593,7 +605,9 @@ impl std::error::Error for IdentityError {
             | Self::Internal { .. }
             | Self::TokenTooLarge { .. }
             | Self::InvalidAttribute { .. }
-            | Self::AuditFailure { .. } => None,
+            | Self::AuditFailure { .. }
+            | Self::PasswordExpired
+            | Self::PasswordReused => None,
         }
     }
 }

@@ -7,6 +7,7 @@
 //! - **Session primary**: `ses:id:{uuid}` → JSON-serialized `Session`
 //! - **Session user index**: `ses:user:{user_uuid}:{session_uuid}` → empty
 //! - **Credential**: `cred:user:{uuid}` → JSON-serialized `StoredCredential`
+//! - **Credential history**: `cred:history:{uuid}` → JSON-serialized `Vec<StoredCredential>`
 //! - **OAuth client**: `oauth:client:{uuid}` → JSON-serialized `OAuthClient`
 //! - **OAuth code**: `oauth:code:{sha256_hex}` → JSON-serialized code
 //! - **Realm primary**: `realm:id:{uuid}` → JSON-serialized `Realm` (system realm scope)
@@ -24,6 +25,9 @@ const USER_EMAIL_PREFIX: &str = "usr:email:";
 
 /// Prefix for user credential keys.
 const CREDENTIAL_PREFIX: &str = "cred:user:";
+
+/// Prefix for credential history keys.
+const CREDENTIAL_HISTORY_PREFIX: &str = "cred:history:";
 
 /// Prefix for OAuth client keys.
 const OAUTH_CLIENT_PREFIX: &str = "oauth:client:";
@@ -238,6 +242,13 @@ pub(crate) fn user_id_scan_prefix() -> Vec<u8> {
 /// Format: `cred:user:{uuid}`
 pub(crate) fn encode_credential_key(user_id: &UserId) -> Vec<u8> {
     format!("{CREDENTIAL_PREFIX}{}", user_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the credential history key for a user.
+///
+/// Format: `cred:history:{uuid}`
+pub(crate) fn encode_credential_history_key(user_id: &UserId) -> Vec<u8> {
+    format!("{CREDENTIAL_HISTORY_PREFIX}{}", user_id.as_uuid()).into_bytes()
 }
 
 /// Encodes the primary key for a session record.

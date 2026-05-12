@@ -875,6 +875,8 @@ fn identity_error_to_response(
         }
         IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
         IdentityError::InvalidAttribute { .. } => (StatusCode::BAD_REQUEST, "invalid attribute"),
+        IdentityError::PasswordExpired => (StatusCode::UNAUTHORIZED, "password expired"),
+        IdentityError::PasswordReused => (StatusCode::UNPROCESSABLE_ENTITY, "password was recently used"),
         IdentityError::AuditFailure { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error: audit record failed",
@@ -3538,6 +3540,452 @@ async fn webauthn_delete_credential(
         .revoke_webauthn_credential(&realm_id, &user_id, &credential_id)
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// ===== Per-realm OIDC routes ============================================================
+//
+// Each handler resolves the realm by URL-path name and forwards to the same
+// underlying engine methods as the global routes. Token `iss` claims are
+// automatically scoped to `{base_issuer}/realms/{name}`.
+
+fn resolve_realm_by_name(
+    state: &AppState,
+    name: &str,
+) -> Result<RealmId, axum::response::Response> {
+    match state.identity.get_realm_by_name(name) {
+        Ok(Some(realm)) => Ok(realm.id().clone()),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "realm_not_found"})),
+        )
+            .into_response()),
+        Err(e) => {
+            tracing::warn!(error = %e, realm_name = %name, "realm lookup failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal_error"})),
+            )
+                .into_response())
+        }
+    }
+}
+
+async fn realm_oidc_discovery(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    match state.identity.realm_oidc_discovery(&realm_id) {
+        Ok(doc) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::OidcDiscoveryDocument::from(&doc))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_jwks(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    match state.identity.realm_jwks(&realm_id) {
+        Ok(doc) => (StatusCode::OK, Json(doc)).into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_authorize(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<pb::AuthorizationRequest>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let request = match proto_authorize_to_domain(body) {
+        Ok(r) => r,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response()
+        }
+    };
+    match state.identity.authorize(&realm_id, &request) {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::AuthorizationResponse::from(
+                &response,
+            ))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn realm_token_exchange(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<HttpTokenRequest>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
+    match grant_type {
+        "authorization_code" => {
+            let (Some(code), Some(redirect_uri)) = (body.code, body.redirect_uri) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "code and redirect_uri required"})),
+                )
+                    .into_response();
+            };
+            let proto_req = pb::TokenExchangeRequest {
+                client_id: body.client_id,
+                code,
+                redirect_uri,
+                code_verifier: body.code_verifier,
+            };
+            let request = match proto_token_exchange_to_domain(&proto_req) {
+                Ok(r) => r,
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": msg})),
+                    )
+                        .into_response()
+                }
+            };
+            match state
+                .identity
+                .exchange_authorization_code(&realm_id, &request)
+            {
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                )
+                    .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "refresh_token" => {
+            let Some(refresh_token) = body.refresh_token else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "refresh_token required"})),
+                )
+                    .into_response();
+            };
+            match state.identity.refresh_tokens(&realm_id, &refresh_token) {
+                Ok(tokens) => {
+                    let resp = pb::OidcTokenResponse {
+                        access_token: tokens.access_token().to_string(),
+                        id_token: String::new(),
+                        token_type: "Bearer".to_string(),
+                        expires_in: 900,
+                        refresh_token: tokens.refresh_token().to_string(),
+                    };
+                    (StatusCode::OK, Json(proto_to_rest_json(&resp))).into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "client_credentials" => {
+            let proto_req = pb::ClientCredentialsRequest {
+                client_id: body.client_id,
+                client_secret: body.client_secret.unwrap_or_default(),
+                scope: body.scope,
+            };
+            let request = match proto_client_creds_to_domain(&proto_req) {
+                Ok(r) => r,
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": msg})),
+                    )
+                        .into_response()
+                }
+            };
+            match state.identity.client_credentials_token(&realm_id, &request) {
+                Ok(response) => {
+                    let resp = pb::OidcTokenResponse {
+                        access_token: response.access_token().to_string(),
+                        id_token: String::new(),
+                        token_type: "Bearer".to_string(),
+                        expires_in: response.expires_in(),
+                        refresh_token: String::new(),
+                    };
+                    (StatusCode::OK, Json(proto_to_rest_json(&resp))).into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "urn:ietf:params:oauth:grant-type:device_code" => {
+            let Some(device_code) = body.device_code else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "device_code required"})),
+                )
+                    .into_response();
+            };
+            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+                Ok(u) => ClientId::new(u),
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "invalid client_id UUID"})),
+                    )
+                        .into_response()
+                }
+            };
+            match state
+                .identity
+                .poll_device_token(&realm_id, &device_code, &client_id)
+            {
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                )
+                    .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("unsupported grant_type: {other}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn realm_token_revocation(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let token = match body.get("token").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "token required"})),
+            )
+                .into_response()
+        }
+    };
+    let request = crate::identity::TokenRevocationRequest {
+        token,
+        token_type_hint: None,
+    };
+    match state.identity.revoke_token(&realm_id, &request) {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_token_introspection(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let token = match body.get("token").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "token required"})),
+            )
+                .into_response()
+        }
+    };
+    let request = crate::identity::TokenIntrospectionRequest {
+        token,
+        token_type_hint: None,
+    };
+    match state.identity.introspect_token(&realm_id, &request) {
+        Ok(info) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::IntrospectionResponse::from(&info))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_userinfo(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid_token"})),
+        )
+            .into_response();
+    };
+    match state.identity.userinfo(&realm_id, token) {
+        Ok(info) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::UserInfoResponse::from(&info))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_device_authorization(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let client_id_str = match body.get("client_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "client_id required"})),
+            )
+                .into_response()
+        }
+    };
+    let client_id = match client_id_str.parse::<uuid::Uuid>() {
+        Ok(u) => ClientId::new(u),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid client_id UUID"})),
+            )
+                .into_response()
+        }
+    };
+    let request = crate::identity::DeviceAuthorizationRequest {
+        client_id,
+        scope: body.get("scope").and_then(|v| v.as_str()).map(str::to_string),
+    };
+    match state.identity.device_authorize(&realm_id, &request) {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::DeviceAuthorizationResponse::from(
+                &response,
+            ))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_register_client_dynamic(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let realm = match state.identity.get_realm(&realm_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "realm not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+    let dcr_policy = realm.config().dcr_policy.clone().unwrap_or_default();
+    if !matches!(dcr_policy, crate::identity::DcrPolicy::Open) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "dynamic client registration is disabled for this realm"}),
+            ),
+        )
+            .into_response();
+    }
+    let client_name = body
+        .get("client_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Dynamic Client")
+        .to_string();
+    let redirect_uris: Vec<String> = body
+        .get("redirect_uris")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let base_slug = client_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let slug = generate_unique_slug(state.clone(), &realm_id, &base_slug).await;
+    let request = crate::identity::RegisterClientRequest {
+        client_name,
+        redirect_uris,
+        client_secret: None,
+        grant_types: vec!["authorization_code".to_string()],
+        require_consent: true,
+        client_logo_url: None,
+        slug: Some(slug),
+        trust_level: crate::identity::ClientTrustLevel::ThirdParty,
+        declared_scopes: vec![
+            "openid".to_string(),
+            "profile".to_string(),
+            "email".to_string(),
+        ],
+        consent_spans_orgs: false,
+    };
+    match state.identity.register_client(&realm_id, &request) {
+        Ok(client) => {
+            let resp = serde_json::json!({
+                "client_id": client.client_id().to_string(),
+                "client_name": client.client_name(),
+                "redirect_uris": client.redirect_uris(),
+                "grant_types": client.grant_types(),
+            });
+            (StatusCode::CREATED, Json(resp)).into_response()
+        }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }

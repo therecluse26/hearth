@@ -454,6 +454,14 @@ pub struct PasswordPolicy {
     pub require_number: Option<bool>,
     /// Require at least one special character.
     pub require_special: Option<bool>,
+    /// Password must not be equal to or contain the user's username/display name.
+    pub not_username: Option<bool>,
+    /// Password must not be equal to or contain the user's email address (local part).
+    pub not_email: Option<bool>,
+    /// Number of previous passwords to retain and reject on reuse. 0 or `None` disables.
+    pub history_depth: Option<usize>,
+    /// Maximum password age in days before the user must rotate. `None` disables expiry.
+    pub max_age_days: Option<u32>,
 }
 
 /// Per-realm configuration overrides.

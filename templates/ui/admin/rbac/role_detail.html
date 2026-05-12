@@ -1,0 +1,95 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · {{ role.name }}{% endblock %}
+{% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+<div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles"
+     class="hover:text-ht-content-primary">Roles</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">{{ role.name }}</span>
+</div>
+
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+  <div>
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">
+      <code class="font-mono text-2xl">{{ role.name }}</code>
+    </h1>
+    {% match role.description %}
+      {% when Some with (desc) %}
+        <p class="mt-1 text-sm text-ht-content-muted">{{ desc }}</p>
+      {% when None %}
+    {% endmatch %}
+  </div>
+  <div class="flex items-center gap-2" x-data="{ showDeleteDialog: false }">
+    <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles/{{ role.id.as_uuid() }}/edit"
+       class="inline-flex items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      Edit
+    </a>
+    <button @click="showDeleteDialog = true" type="button"
+            class="inline-flex items-center gap-1.5 rounded border border-danger/30 bg-danger/[0.06] px-4 py-2 text-sm font-medium text-danger-fg hover:bg-danger/[0.12]">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      Delete
+    </button>
+
+    <div x-show="showDeleteDialog" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown.escape.window="showDeleteDialog = false">
+      <div class="w-full max-w-sm rounded-md bg-ht-surface-elevated p-6 shadow-md" @click.outside="showDeleteDialog = false">
+        <h3 class="text-lg font-semibold text-ht-content-primary">Delete role?</h3>
+        <p class="mt-2 text-sm text-ht-content-muted">Deleting <strong>{{ role.name }}</strong> will remove all assignments that reference it. This cannot be undone.</p>
+        <div class="mt-6 flex justify-end gap-3">
+          <button @click="showDeleteDialog = false" type="button"
+                  class="rounded border border-strong px-4 py-2 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+            Cancel
+          </button>
+          <form method="post" action="/ui/admin/realms/{{ realm_name }}/rbac/roles/{{ role.id.as_uuid() }}/delete">
+            {% match csrf %}
+              {% when Some with (token) %}
+                <input type="hidden" name="_csrf" value="{{ token }}">
+              {% when None %}
+            {% endmatch %}
+            <button type="submit"
+                    class="rounded bg-danger px-4 py-2 text-sm font-semibold text-white hover:bg-danger-hover">
+              Delete
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <dl class="space-y-4">
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Role ID</dt>
+      <dd class="mt-1"><code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ role.id.as_uuid() }}</code></dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Scope</dt>
+      <dd class="mt-1">
+        {% if scope == "organization" %}
+          <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">Organization</span>
+        {% else if scope == "any" %}
+          <span class="inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-xs font-medium text-steel-fg">Any</span>
+        {% else %}
+          <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">Realm</span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Permissions</dt>
+      <dd class="mt-2">
+        {% if role.permissions.is_empty() %}
+          <span class="text-sm text-ht-content-muted">None</span>
+        {% else %}
+          <div class="flex flex-wrap gap-1.5">
+            {% for perm in role.permissions %}
+              <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary ring-1 ring-divider-subtle">{{ perm.as_str() }}</code>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
+</div>
+{% endblock %}

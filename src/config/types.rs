@@ -763,6 +763,18 @@ pub struct PasswordPolicyYaml {
     /// Require at least one special character.
     #[serde(default)]
     pub require_special: Option<bool>,
+    /// Password must not contain or equal the user's display name.
+    #[serde(default)]
+    pub not_username: Option<bool>,
+    /// Password must not contain or equal the user's email address.
+    #[serde(default)]
+    pub not_email: Option<bool>,
+    /// Number of previous passwords to remember; reuse is rejected.
+    #[serde(default)]
+    pub history_depth: Option<usize>,
+    /// Maximum password age in days before the user must reset.
+    #[serde(default)]
+    pub max_age_days: Option<u32>,
 }
 
 /// Per-realm token TTL overrides in YAML.
@@ -1211,6 +1223,10 @@ impl RealmYamlConfig {
                 require_uppercase: pp.require_uppercase,
                 require_number: pp.require_number,
                 require_special: pp.require_special,
+                not_username: pp.not_username,
+                not_email: pp.not_email,
+                history_depth: pp.history_depth,
+                max_age_days: pp.max_age_days,
             }
         });
 

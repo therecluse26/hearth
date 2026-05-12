@@ -1,0 +1,168 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Register Application{% endblock %}
+{% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+<div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="/ui/admin/realms/{{ realm_name }}/applications"
+     class="hover:text-ht-content-primary">Applications</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">New</span>
+</div>
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Register application</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">Create a new OAuth 2.0 / OIDC client for this realm.</p>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  {% match error %}
+    {% when Some with (msg) %}
+      <div class="mb-4 rounded-lg bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
+    {% when None %}
+  {% endmatch %}
+
+  <form method="post" action="/ui/admin/realms/{{ realm_name }}/applications/new" class="space-y-6" autocomplete="off">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+
+    <div>
+      <label for="client_name" class="block text-sm font-medium text-ht-content-secondary">Application name <span class="text-danger-fg">*</span></label>
+      <input type="text" id="client_name" name="client_name" required autofocus maxlength="128"
+             value="{{ form_client_name }}"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      <p class="mt-1 text-xs text-ht-content-muted">Displayed on the consent screen.</p>
+    </div>
+
+    <div>
+      <label for="slug" class="block text-sm font-medium text-ht-content-secondary">Slug <span class="text-ht-content-muted">(optional)</span></label>
+      <input type="text" id="slug" name="slug" maxlength="64" pattern="[a-z0-9_-]*"
+             value="{{ form_slug }}"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      <p class="mt-1 text-xs text-ht-content-muted">Stable identifier used in YAML references and mapper gates (lowercase, digits, hyphens, underscores).</p>
+    </div>
+
+    <fieldset class="space-y-2">
+      <legend class="text-sm font-medium text-ht-content-secondary">Client type</legend>
+      <label class="flex cursor-pointer items-start gap-3 rounded border border-divider bg-ht-bg-base px-4 py-3 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+        <input type="radio" name="client_type" value="public" {% if form_client_type == "public" %}checked{% endif %}
+               class="mt-0.5 h-4 w-4 text-ht-content-brand">
+        <span>
+          <span class="block text-sm font-medium text-ht-content-primary">Public</span>
+          <span class="block text-xs text-ht-content-muted">SPAs, mobile apps — no client secret. PKCE required.</span>
+        </span>
+      </label>
+      <label class="flex cursor-pointer items-start gap-3 rounded border border-divider bg-ht-bg-base px-4 py-3 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+        <input type="radio" name="client_type" value="confidential" {% if form_client_type == "confidential" %}checked{% endif %}
+               class="mt-0.5 h-4 w-4 text-ht-content-brand">
+        <span>
+          <span class="block text-sm font-medium text-ht-content-primary">Confidential</span>
+          <span class="block text-xs text-ht-content-muted">Server-side apps — uses a client secret. A secret is generated on creation.</span>
+        </span>
+      </label>
+    </fieldset>
+
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Redirect URIs <span class="text-danger-fg">*</span></label>
+      <p class="mb-1.5 text-xs text-ht-content-muted">One URI per line. Must match exactly what your app sends in the authorization request.</p>
+      <textarea id="redirect_uris" name="redirect_uris" rows="4" required
+                placeholder="https://app.example.com/callback&#10;https://app.example.com/auth/callback"
+                class="block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">{{ form_redirect_uris }}</textarea>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Grant types</label>
+      <div class="mt-2 space-y-2">
+        <label class="flex items-center gap-2 text-sm text-ht-content-secondary">
+          <input type="checkbox" name="grant_authorization_code" value="1"
+                 {% if form_grant_authorization_code %}checked{% endif %}
+                 class="h-4 w-4 rounded text-ht-content-brand">
+          <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 text-xs">authorization_code</code>
+          <span class="text-ht-content-muted">— user login flows</span>
+        </label>
+        <label class="flex items-center gap-2 text-sm text-ht-content-secondary">
+          <input type="checkbox" name="grant_client_credentials" value="1"
+                 {% if form_grant_client_credentials %}checked{% endif %}
+                 class="h-4 w-4 rounded text-ht-content-brand">
+          <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 text-xs">client_credentials</code>
+          <span class="text-ht-content-muted">— M2M / service tokens</span>
+        </label>
+        <label class="flex items-center gap-2 text-sm text-ht-content-secondary">
+          <input type="checkbox" name="grant_refresh_token" value="1"
+                 {% if form_grant_refresh_token %}checked{% endif %}
+                 class="h-4 w-4 rounded text-ht-content-brand">
+          <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 text-xs">refresh_token</code>
+          <span class="text-ht-content-muted">— allows token refresh</span>
+        </label>
+        <label class="flex items-center gap-2 text-sm text-ht-content-secondary">
+          <input type="checkbox" name="grant_device_code" value="1"
+                 {% if form_grant_device_code %}checked{% endif %}
+                 class="h-4 w-4 rounded text-ht-content-brand">
+          <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 text-xs">urn:ietf:params:oauth:grant-type:device_code</code>
+          <span class="text-ht-content-muted">— CLI / TV device flow</span>
+        </label>
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Trust level</label>
+      <div class="mt-2 space-y-2">
+        <label class="flex cursor-pointer items-start gap-3 rounded border border-divider bg-ht-bg-base px-4 py-3 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="trust_level" value="first_party" {% if form_trust_level == "first_party" %}checked{% endif %}
+                 class="mt-0.5 h-4 w-4 text-ht-content-brand">
+          <span>
+            <span class="block text-sm font-medium text-ht-content-primary">First party</span>
+            <span class="block text-xs text-ht-content-muted">Your own application — may skip the consent screen when <code>require_consent</code> is false.</span>
+          </span>
+        </label>
+        <label class="flex cursor-pointer items-start gap-3 rounded border border-divider bg-ht-bg-base px-4 py-3 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="trust_level" value="third_party" {% if form_trust_level == "third_party" %}checked{% endif %}
+                 class="mt-0.5 h-4 w-4 text-ht-content-brand">
+          <span>
+            <span class="block text-sm font-medium text-ht-content-primary">Third party</span>
+            <span class="block text-xs text-ht-content-muted">External app — always shows the consent screen.</span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <div>
+      <label class="flex items-center gap-2 text-sm font-medium text-ht-content-secondary">
+        <input type="checkbox" name="require_consent" value="1"
+               {% if form_require_consent %}checked{% endif %}
+               class="h-4 w-4 rounded text-ht-content-brand">
+        Require user consent
+      </label>
+      <p class="mt-1 text-xs text-ht-content-muted pl-6">Show the OAuth consent screen before issuing authorization codes. Uncheck only for trusted first-party clients.</p>
+    </div>
+
+    <div>
+      <label for="declared_scopes" class="block text-sm font-medium text-ht-content-secondary">Declared scopes <span class="text-ht-content-muted">(optional)</span></label>
+      <input type="text" id="declared_scopes" name="declared_scopes"
+             value="{{ form_declared_scopes }}"
+             placeholder="openid profile email"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      <p class="mt-1 text-xs text-ht-content-muted">Space-separated list of scopes this client may request.</p>
+    </div>
+
+    <div>
+      <label for="client_logo_url" class="block text-sm font-medium text-ht-content-secondary">Logo URL <span class="text-ht-content-muted">(optional)</span></label>
+      <input type="url" id="client_logo_url" name="client_logo_url"
+             value="{{ form_client_logo_url }}"
+             placeholder="https://app.example.com/logo.png"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      <p class="mt-1 text-xs text-ht-content-muted">Displayed on the consent screen.</p>
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+      <button type="submit"
+              class="btn-ember rounded px-4 py-2 text-sm font-semibold">
+        Register application
+      </button>
+      <a href="/ui/admin/realms/{{ realm_name }}/applications"
+         class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

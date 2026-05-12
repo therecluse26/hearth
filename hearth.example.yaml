@@ -146,6 +146,8 @@ email:
 #   password_time_cost: 3           # Argon2id time parameter (iterations)
 #   mfa_required: false             # require MFA for all users (global default)
 #   passkey_requires_mfa: false     # enforce TOTP even after passkey login (global default)
+#   audit_log_retention: "365d"     # how long audit events are retained (default: forever)
+#                                   # SOC 2 Type II typically requires 90d; ISO 27001 often 1y
 
 # --- Realms ----------------------------------------------------------------
 # Realms are managed declaratively in this file. On startup, Hearth

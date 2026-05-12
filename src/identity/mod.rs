@@ -367,6 +367,18 @@ pub trait IdentityEngine: Send + Sync {
     /// types, signing algorithms, and PKCE methods.
     fn oidc_discovery(&self) -> OidcDiscoveryDocument;
 
+    /// Returns a per-realm OIDC Discovery document.
+    ///
+    /// The `issuer` in the returned document is `{base_issuer}/realms/{name}`,
+    /// enabling distinct OIDC issuers per realm. All endpoint URLs are prefixed
+    /// with the per-realm issuer.
+    ///
+    /// Returns `RealmNotFound` when the realm does not exist.
+    fn realm_oidc_discovery(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<OidcDiscoveryDocument, IdentityError>;
+
     // ===== OAuth 2.0 Extended (Step 22) =====
 
     /// Issues an access token via the Client Credentials Grant (RFC 6749 §4.4).

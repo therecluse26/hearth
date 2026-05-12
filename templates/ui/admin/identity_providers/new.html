@@ -1,0 +1,152 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · New Identity Provider{% endblock %}
+{% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+<div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="/ui/admin/realms/{{ realm_name }}/identity-providers"
+     class="hover:text-ht-content-primary">Identity Providers</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">New</span>
+</div>
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Add identity provider</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">Configure an upstream provider for social or enterprise login.</p>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  {% match error %}
+    {% when Some with (msg) %}
+      <div class="mb-4 rounded-lg bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
+    {% when None %}
+  {% endmatch %}
+
+  <form method="post" action="/ui/admin/realms/{{ realm_name }}/identity-providers/new"
+        class="space-y-6" autocomplete="off">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+
+    {# Protocol selection #}
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Protocol <span class="text-danger-fg">*</span></label>
+      <div class="mt-2 grid grid-cols-3 gap-3">
+        <label class="flex cursor-pointer flex-col items-center gap-2 rounded border border-divider bg-ht-bg-base p-4 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="kind" value="oidc" {% if form_kind == "oidc" %}checked{% endif %}
+                 class="h-4 w-4 text-ht-content-brand">
+          <span class="text-sm font-semibold text-ht-content-primary">OIDC</span>
+          <span class="text-center text-xs text-ht-content-muted">Standard OpenID Connect</span>
+        </label>
+        <label class="flex cursor-pointer flex-col items-center gap-2 rounded border border-divider bg-ht-bg-base p-4 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="kind" value="github" {% if form_kind == "github" %}checked{% endif %}
+                 class="h-4 w-4 text-ht-content-brand">
+          <span class="text-sm font-semibold text-ht-content-primary">GitHub</span>
+          <span class="text-center text-xs text-ht-content-muted">GitHub OAuth App</span>
+        </label>
+        <label class="flex cursor-pointer flex-col items-center gap-2 rounded border border-divider bg-ht-bg-base p-4 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="kind" value="saml" {% if form_kind == "saml" %}checked{% endif %}
+                 class="h-4 w-4 text-ht-content-brand">
+          <span class="text-sm font-semibold text-ht-content-primary">SAML 2.0</span>
+          <span class="text-center text-xs text-ht-content-muted">Enterprise SSO</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="name" class="block text-sm font-medium text-ht-content-secondary">Name <span class="text-danger-fg">*</span></label>
+        <input type="text" id="name" name="name" required autofocus
+               value="{{ form_name }}"
+               pattern="[a-z0-9_-]+"
+               placeholder="google"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        <p class="mt-1 text-xs text-ht-content-muted">URL-safe identifier (lowercase, digits, hyphens, underscores).</p>
+      </div>
+      <div>
+        <label for="display_name" class="block text-sm font-medium text-ht-content-secondary">Display name <span class="text-danger-fg">*</span></label>
+        <input type="text" id="display_name" name="display_name" required
+               value="{{ form_display_name }}"
+               placeholder="Sign in with Google"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        <p class="mt-1 text-xs text-ht-content-muted">Shown on the login button.</p>
+      </div>
+    </div>
+
+    <div>
+      <label for="issuer" class="block text-sm font-medium text-ht-content-secondary">Issuer URL <span class="text-danger-fg">*</span></label>
+      <input type="url" id="issuer" name="issuer" required
+             value="{{ form_issuer }}"
+             placeholder="https://accounts.google.com"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      <p class="mt-1 text-xs text-ht-content-muted">The <code>iss</code> claim value. For OIDC providers, this is also used to build the discovery URL.</p>
+    </div>
+
+    <div>
+      <label for="authorization_endpoint" class="block text-sm font-medium text-ht-content-secondary">Authorization endpoint <span class="text-danger-fg">*</span></label>
+      <input type="url" id="authorization_endpoint" name="authorization_endpoint" required
+             value="{{ form_authorization_endpoint }}"
+             placeholder="https://accounts.google.com/o/oauth2/v2/auth"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+    </div>
+
+    <div>
+      <label for="token_endpoint" class="block text-sm font-medium text-ht-content-secondary">Token endpoint <span class="text-danger-fg">*</span></label>
+      <input type="url" id="token_endpoint" name="token_endpoint" required
+             value="{{ form_token_endpoint }}"
+             placeholder="https://oauth2.googleapis.com/token"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="userinfo_endpoint" class="block text-sm font-medium text-ht-content-secondary">UserInfo endpoint <span class="text-ht-content-muted">(optional)</span></label>
+        <input type="url" id="userinfo_endpoint" name="userinfo_endpoint"
+               value="{{ form_userinfo_endpoint }}"
+               placeholder="https://openidconnect.googleapis.com/v1/userinfo"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      </div>
+      <div>
+        <label for="jwks_uri" class="block text-sm font-medium text-ht-content-secondary">JWKS URI <span class="text-ht-content-muted">(optional)</span></label>
+        <input type="url" id="jwks_uri" name="jwks_uri"
+               value="{{ form_jwks_uri }}"
+               placeholder="https://www.googleapis.com/oauth2/v3/certs"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="client_id" class="block text-sm font-medium text-ht-content-secondary">Client ID <span class="text-danger-fg">*</span></label>
+        <input type="text" id="client_id" name="client_id" required
+               value="{{ form_client_id }}"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      </div>
+      <div>
+        <label for="client_secret" class="block text-sm font-medium text-ht-content-secondary">Client secret <span class="text-danger-fg">*</span></label>
+        <input type="password" id="client_secret" name="client_secret" required
+               autocomplete="new-password"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      </div>
+    </div>
+
+    <div>
+      <label for="scopes" class="block text-sm font-medium text-ht-content-secondary">Scopes</label>
+      <input type="text" id="scopes" name="scopes"
+             value="{{ form_scopes }}"
+             placeholder="openid email profile"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      <p class="mt-1 text-xs text-ht-content-muted">Space-separated list. Defaults: <code class="font-mono">openid email profile</code>.</p>
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+      <button type="submit"
+              class="btn-ember rounded px-4 py-2 text-sm font-semibold">
+        Add provider
+      </button>
+      <a href="/ui/admin/realms/{{ realm_name }}/identity-providers"
+         class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
