@@ -281,10 +281,16 @@ impl From<&domain::OidcDiscoveryDocument> for pb::OidcDiscoveryDocument {
 
 impl From<&domain::Jwk> for pb::JsonWebKey {
     fn from(j: &domain::Jwk) -> Self {
+        // The proto `JsonWebKey` schema predates multi-algorithm JWKS
+        // and only carries the OKP/Ed25519 field set. RSA `n`/`e` and EC
+        // `y` are not representable here; consumers needing RFC 7517
+        // entries for RS256/ES256 must use the HTTP `/certs` endpoint,
+        // which bypasses this proto and emits the wider `domain::Jwk`
+        // directly as JSON.
         Self {
             kty: j.kty.clone(),
-            crv: j.crv.clone(),
-            x: j.x.clone(),
+            crv: j.crv.clone().unwrap_or_default(),
+            x: j.x.clone().unwrap_or_default(),
             kid: j.kid.clone(),
             r#use: j.use_.clone(),
             alg: j.alg.clone(),

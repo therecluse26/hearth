@@ -71,14 +71,18 @@ async fn token_issuance_and_validation_roundtrip() {
     assert_eq!(claims.tid, realm.to_string());
     assert_eq!(claims.token_type, "access");
 
-    // JWKS should have the key that signed the token
+    // JWKS should contain the Ed25519 signing key that issued the token
+    // (plus RS256/ES256 ecosystem-compat entries from HEA-51 — those are
+    // verification-only and not the signer for this access token).
     let jwks = harness.identity().jwks();
-    assert_eq!(jwks.keys.len(), 1, "JWKS should have one key");
-
-    // Verify the token cryptographically using JWKS public key
-    let jwk = &jwks.keys[0];
+    let jwk = jwks
+        .keys
+        .iter()
+        .find(|j| j.alg == "EdDSA")
+        .expect("JWKS should include the EdDSA signer");
+    let x_b64 = jwk.x.as_deref().expect("Ed25519 JWK must include x");
     let pub_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&jwk.x)
+        .decode(x_b64)
         .expect("decode JWKS public key");
     let verified_claims = verify_token_signature(pair.access_token(), &pub_bytes)
         .expect("cryptographic verification should succeed");

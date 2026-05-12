@@ -323,6 +323,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(oidc_discovery),
         )
         .route("/jwks", axum::routing::get(jwks))
+        .route("/certs", axum::routing::get(jwks))
+        .route("/.well-known/jwks.json", axum::routing::get(jwks))
         .route("/users", axum::routing::post(create_user))
         .route("/clients", axum::routing::post(register_client))
         .route(
@@ -616,16 +618,21 @@ async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse
     )
 }
 
-/// JWKS endpoint.
+/// JWKS endpoint (`/jwks`, `/certs`, and `/.well-known/jwks.json`).
 ///
 /// Returns the JSON Web Key Set containing the server's public signing
-/// keys for external token verification.
+/// keys for external token verification, per RFC 7517. Includes one entry
+/// per supported algorithm — Ed25519 (`EdDSA`) as the primary signer,
+/// plus RSA-2048 (`RS256`) and EC P-256 (`ES256`) for ecosystem
+/// compatibility with OIDC clients (e.g. `jose` / `python-jose`).
+///
+/// Renders the domain [`crate::identity::tokens::JwksDocument`] directly
+/// as JSON, bypassing the proto `JsonWebKey` type — that proto only
+/// carries the OKP/Ed25519 field set and would drop RSA `n`/`e` and EC
+/// `y` coordinates.
 async fn jwks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let doc = state.identity.jwks();
-    (
-        StatusCode::OK,
-        Json(proto_to_rest_json(&pb::JwksDocument::from(&doc))),
-    )
+    (StatusCode::OK, Json(doc))
 }
 
 // === User management endpoints ===

@@ -161,7 +161,10 @@ async fn oidc_core_required_claims_and_signing() {
     // 6. ID token MUST be signed with EdDSA (verify signature)
     let jwks = harness.identity().realm_jwks(&realm_id).expect("jwks");
     assert!(!jwks.keys.is_empty(), "JWKS must have at least one key");
-    let pub_key_b64 = &jwks.keys[0].x;
+    let pub_key_b64 = jwks.keys[0]
+        .x
+        .as_deref()
+        .expect("Ed25519 JWK must include x");
     let pub_key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(pub_key_b64)
         .expect("decode public key");
@@ -430,8 +433,12 @@ async fn oidc_id_token_required_claims_with_nonce() {
 
     // 3. Verify cryptographic signature
     let jwks = harness.identity().realm_jwks(&realm_id).expect("jwks");
+    let x_b64 = jwks.keys[0]
+        .x
+        .as_deref()
+        .expect("Ed25519 JWK must include x");
     let pub_key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&jwks.keys[0].x)
+        .decode(x_b64)
         .expect("decode public key");
     let verified_claims =
         verify_token_signature(id_token, &pub_key_bytes).expect("signature must verify");
