@@ -302,6 +302,22 @@ pub struct EmbeddedIdentityEngine {
     /// Lazily loaded. Regeneration happens only on first SAML operation in
     /// a realm that has no prior key — not on every startup.
     realm_saml_keys: Mutex<HashMap<String, Arc<crate::identity::tokens::RsaSigningKey>>>,
+    /// Server-wide RSA-2048 signing key advertised at `/certs` for RS256
+    /// (HEA-51 / OIDC M1).
+    ///
+    /// Lazily initialized on first JWKS access — RSA keygen is slow
+    /// (~0.5-1s), so we don't pay that cost in tests that never touch
+    /// `/certs` or in startup paths that don't need OIDC. The key has
+    /// the same lifetime as the engine instance (in-memory only in M1);
+    /// persistent storage + rotation are deferred to follow-ups.
+    oidc_rsa_key: std::sync::OnceLock<Arc<crate::identity::tokens::RsaSigningKey>>,
+    /// Server-wide ECDSA P-256 signing key advertised at `/certs` for
+    /// ES256 (HEA-51 / OIDC M1).
+    ///
+    /// Same lazy/in-memory caveats as `oidc_rsa_key`. EC keygen is fast
+    /// but we follow the same pattern for symmetry and to keep both keys'
+    /// initialization order coupled to the first JWKS request.
+    oidc_ecdsa_key: std::sync::OnceLock<Arc<crate::identity::tokens::EcdsaSigningKey>>,
     /// Per-user failed attempt trackers for rate limiting.
     ///
     /// Key is `(RealmId, UserId)` serialized as a string to avoid
@@ -562,6 +578,8 @@ impl EmbeddedIdentityEngine {
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
             realm_saml_keys: Mutex::new(HashMap::new()),
+            oidc_rsa_key: std::sync::OnceLock::new(),
+            oidc_ecdsa_key: std::sync::OnceLock::new(),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
@@ -598,6 +616,8 @@ impl EmbeddedIdentityEngine {
             signing_key,
             realm_signing_keys: Mutex::new(HashMap::new()),
             realm_saml_keys: Mutex::new(HashMap::new()),
+            oidc_rsa_key: std::sync::OnceLock::new(),
+            oidc_ecdsa_key: std::sync::OnceLock::new(),
             attempt_trackers: Mutex::new(HashMap::new()),
             mfa_attempt_trackers: Mutex::new(HashMap::new()),
             magic_link_rate_trackers: Mutex::new(HashMap::new()),
@@ -1450,6 +1470,58 @@ impl EmbeddedIdentityEngine {
     fn get_signing_key_or_default(&self, realm_id: &RealmId) -> Arc<SigningKey> {
         self.get_or_load_realm_signing_key(realm_id)
             .unwrap_or_else(|_| Arc::clone(&self.signing_key))
+    }
+
+    /// Returns the server-wide RSA-2048 signing key used to publish the
+    /// RS256 entry in the `/certs` JWKS.
+    ///
+    /// Generates the key the first time it is requested and caches it for
+    /// the life of the engine. Future M1 follow-ups will replace this with
+    /// a storage-backed lookup so `kid`s remain stable across restarts.
+    fn oidc_rsa_signing_key(
+        &self,
+    ) -> Result<Arc<crate::identity::tokens::RsaSigningKey>, IdentityError> {
+        if let Some(existing) = self.oidc_rsa_key.get() {
+            return Ok(Arc::clone(existing));
+        }
+        let generated = Arc::new(crate::identity::tokens::RsaSigningKey::generate(
+            "hearth-oidc",
+            3650,
+        )?);
+        // Race: if another thread initialized in parallel, prefer the
+        // already-stored value so all callers observe the same `kid`.
+        let _ = self.oidc_rsa_key.set(Arc::clone(&generated));
+        Ok(Arc::clone(
+            self.oidc_rsa_key
+                .get()
+                .expect("oidc_rsa_key set above or by racing thread"),
+        ))
+    }
+
+    fn oidc_rsa_jwk(&self) -> Result<crate::identity::tokens::Jwk, IdentityError> {
+        self.oidc_rsa_signing_key()?.to_jwk()
+    }
+
+    /// Returns the server-wide ECDSA P-256 signing key used to publish the
+    /// ES256 entry in the `/certs` JWKS. See `oidc_rsa_signing_key` for
+    /// the same caching / persistence caveats.
+    fn oidc_ecdsa_signing_key(
+        &self,
+    ) -> Result<Arc<crate::identity::tokens::EcdsaSigningKey>, IdentityError> {
+        if let Some(existing) = self.oidc_ecdsa_key.get() {
+            return Ok(Arc::clone(existing));
+        }
+        let generated = Arc::new(crate::identity::tokens::EcdsaSigningKey::generate()?);
+        let _ = self.oidc_ecdsa_key.set(Arc::clone(&generated));
+        Ok(Arc::clone(
+            self.oidc_ecdsa_key
+                .get()
+                .expect("oidc_ecdsa_key set above or by racing thread"),
+        ))
+    }
+
+    fn oidc_ecdsa_jwk(&self) -> Result<crate::identity::tokens::Jwk, IdentityError> {
+        Ok(self.oidc_ecdsa_signing_key()?.to_jwk())
     }
 
     /// Retrieves (or lazily loads from storage) the signing key for a realm.
@@ -3047,7 +3119,21 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     fn jwks(&self) -> JwksDocument {
-        self.signing_key.to_jwks()
+        let mut keys = vec![self.signing_key.to_jwk()];
+        // RS256 + ES256 advertised for ecosystem compatibility per
+        // ARCHITECTURE.md §8.1 and HEA-51 OIDC M1. Lazily generated on
+        // first JWKS access; failures here would only fire if `ring`
+        // entropy collection failed, which is unrecoverable. We log and
+        // serve a partial JWKS rather than 500 the endpoint.
+        match self.oidc_rsa_jwk() {
+            Ok(jwk) => keys.push(jwk),
+            Err(err) => tracing::error!(error = %err, "failed to materialize RS256 JWKS entry"),
+        }
+        match self.oidc_ecdsa_jwk() {
+            Ok(jwk) => keys.push(jwk),
+            Err(err) => tracing::error!(error = %err, "failed to materialize ES256 JWKS entry"),
+        }
+        JwksDocument { keys }
     }
 
     // ===== OIDC / OAuth 2.0 =====
@@ -4335,6 +4421,50 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             Some(state) => Ok(state.enabled),
             None => Ok(false),
         }
+    }
+
+    fn load_pending_recovery_codes(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Option<Vec<String>>, IdentityError> {
+        match self.load_mfa_state(realm_id, user_id)? {
+            Some(state) if !state.enabled => Ok(state.pending_recovery_codes),
+            _ => Ok(None),
+        }
+    }
+
+    fn regenerate_recovery_codes(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<String>, IdentityError> {
+        let mut state = self
+            .load_mfa_state(realm_id, user_id)?
+            .ok_or(IdentityError::MfaNotEnabled)?;
+
+        if !state.enabled {
+            return Err(IdentityError::MfaNotEnabled);
+        }
+
+        let codes = totp::generate_recovery_codes()?;
+        let hashes = totp::hash_recovery_codes(&codes, &self.config.credential)?;
+        state.recovery_code_hashes = hashes;
+        state.pending_recovery_codes = None;
+        self.save_mfa_state(realm_id, user_id, &state)?;
+
+        self.record_audit(
+            realm_id,
+            Some(&AuditContext {
+                actor: Actor::User(user_id.clone()),
+                metadata: None,
+            }),
+            AuditAction::CredentialChanged,
+            "credential",
+            &user_id.as_uuid().to_string(),
+        )?;
+
+        Ok(codes)
     }
 
     // ===== WebAuthn / Passkeys (Step 24) =====

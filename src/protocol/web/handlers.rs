@@ -344,6 +344,61 @@ impl VerifyInvalidTemplate {
     }
 }
 
+/// Forced MFA enrollment template — shown when the realm requires MFA but the
+/// user has not yet enrolled. Mirrors the account enrollment UI but uses the
+/// narrow, chrome-free layout (no nav) because the user has no session yet.
+#[derive(Template)]
+#[template(path = "ui/mfa_enroll_required.html")]
+struct MfaEnrollRequiredTemplate {
+    error: Option<String>,
+    secret_base32: String,
+    provisioning_uri: String,
+    qr_svg: String,
+    recovery_codes: Vec<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl MfaEnrollRequiredTemplate {
+    fn new(
+        error: Option<String>,
+        secret_base32: String,
+        provisioning_uri: String,
+        qr_svg: String,
+        recovery_codes: Vec<String>,
+        product_name: String,
+        logo_url: String,
+    ) -> Self {
+        Self {
+            error,
+            secret_base32,
+            provisioning_uri,
+            qr_svg,
+            recovery_codes,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+            product_name,
+            logo_url,
+            theme_css: String::new(),
+            realm_theme_css: None,
+        }
+    }
+}
+
 /// MFA challenge template — shown after password verification when MFA is
 /// enabled. Accepts a TOTP code or recovery code.
 #[derive(Template)]
@@ -848,6 +903,7 @@ fn login_submit_impl(
         .identity
         .mfa_enabled(realm.id(), user.id())
         .unwrap_or(false);
+    let realm_requires_mfa = realm.config().mfa_required.unwrap_or(false);
     if mfa_on {
         let cookie = issue_mfa_pending_cookie(
             &state.cookie_secret,
@@ -857,6 +913,19 @@ fn login_submit_impl(
         );
         state.set_current_realm(realm.id().clone());
         let mut response = Redirect::to(&mfa_url).into_response();
+        append_cookie(&mut response, &cookie);
+        return response;
+    } else if realm_requires_mfa {
+        // Realm mandates MFA but this user has none enrolled. Issue the same
+        // pending cookie (proves identity) and redirect to forced enrollment.
+        let cookie = issue_mfa_pending_cookie(
+            &state.cookie_secret,
+            realm.id(),
+            user.id(),
+            return_to.as_deref(),
+        );
+        state.set_current_realm(realm.id().clone());
+        let mut response = Redirect::to("/ui/mfa-enroll-required").into_response();
         append_cookie(&mut response, &cookie);
         return response;
     }
@@ -1406,6 +1475,181 @@ fn mfa_expired_response(product_name: String, logo_url: String, theme_css: &str)
     );
     tmpl.theme_css = theme_css.to_string();
     render_status(&tmpl, StatusCode::UNAUTHORIZED)
+}
+
+// ============================================================================
+// Forced MFA enrollment (realm policy: mfa_required = true)
+// ============================================================================
+
+/// Renders the forced MFA enrollment page.
+///
+/// Reached when a realm's `mfa_required` policy is enabled and the user has
+/// no TOTP enrolled. Requires a valid MFA pending cookie (proves password was
+/// verified). Initiates a fresh enrollment ceremony and shows the QR code and
+/// recovery codes.
+pub async fn mfa_enroll_required_form(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+    let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+
+    let realm_id = pending.realm_id.clone();
+    let user_id = pending.user_id.clone();
+    let identity = state.identity.clone();
+    let enroll_result =
+        tokio::task::spawn_blocking(move || identity.enroll_totp(&realm_id, &user_id)).await;
+
+    let enroll_result = match enroll_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "forced enroll_totp spawn_blocking panicked");
+            Err(IdentityError::Storage(Box::new(e)))
+        }
+    };
+
+    match enroll_result {
+        Ok(enrollment) => {
+            use super::account::generate_qr_svg;
+            let qr_svg = generate_qr_svg(&enrollment.provisioning_uri);
+            let mut tmpl = MfaEnrollRequiredTemplate::new(
+                None,
+                enrollment.secret_base32,
+                enrollment.provisioning_uri,
+                qr_svg,
+                enrollment.recovery_codes.as_slice().to_vec(),
+                state.product_name.clone(),
+                state.logo_url.clone(),
+            );
+            tmpl.theme_css.clone_from(&state.theme_css);
+            render(&tmpl)
+        }
+        Err(IdentityError::MfaAlreadyEnabled) => {
+            // User somehow got here with MFA already set up — send to challenge.
+            Redirect::to("/ui/mfa-challenge").into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "forced enroll_totp failed");
+            let mut tmpl = MfaEnrollRequiredTemplate::new(
+                Some("Unable to start MFA enrollment. Please try signing in again.".to_string()),
+                String::new(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+                state.product_name.clone(),
+                state.logo_url.clone(),
+            );
+            tmpl.theme_css.clone_from(&state.theme_css);
+            render_status(&tmpl, StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Form body for `POST /ui/mfa-enroll-required/activate`.
+#[derive(Debug, Deserialize)]
+pub struct MfaEnrollRequiredForm {
+    #[serde(default)]
+    pub code: String,
+}
+
+/// Verifies the TOTP code during forced enrollment and completes the login.
+///
+/// Reads the MFA pending cookie, confirms the enrollment code, enables MFA,
+/// then issues full session + CSRF cookies (same as a successful MFA challenge).
+pub async fn mfa_enroll_required_submit(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Form(form): Form<MfaEnrollRequiredForm>,
+) -> Response {
+    let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+    let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+
+    let realm_id = pending.realm_id.clone();
+    let user_id = pending.user_id.clone();
+    let code = form.code.trim().to_string();
+    let identity = state.identity.clone();
+    let verify_result = tokio::task::spawn_blocking(move || {
+        identity.verify_totp_enrollment(&realm_id, &user_id, &code)
+    })
+    .await;
+
+    let verify_result = match verify_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "forced verify_totp_enrollment panicked");
+            Err(IdentityError::Storage(Box::new(e)))
+        }
+    };
+
+    let err_response = |msg: &str| {
+        let mut tmpl = MfaEnrollRequiredTemplate::new(
+            Some(msg.to_string()),
+            String::new(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+            state.product_name.clone(),
+            state.logo_url.clone(),
+        );
+        tmpl.theme_css.clone_from(&state.theme_css);
+        render_status(&tmpl, StatusCode::UNPROCESSABLE_ENTITY)
+    };
+
+    match verify_result {
+        Ok(()) => {}
+        Err(IdentityError::InvalidMfaCode) => {
+            return err_response(
+                "Invalid code. Please re-scan the QR code and try again.",
+            );
+        }
+        Err(IdentityError::MfaNotEnabled) => {
+            return Redirect::to("/ui/mfa-enroll-required").into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "forced verify_totp_enrollment failed");
+            return err_response("Unable to activate MFA right now. Please try again.");
+        }
+    }
+
+    // Enrollment confirmed — complete login.
+    match state
+        .identity
+        .create_session(&pending.realm_id, &pending.user_id, &session_ctx)
+    {
+        Ok(session) => {
+            let IssuedCookies {
+                session_cookie,
+                csrf_cookie,
+            } = issue_auth_cookies(&state.cookie_secret, &pending.realm_id, session.id());
+
+            let location = pending.return_to.as_deref().unwrap_or("/ui");
+            let mut response = Redirect::to(location).into_response();
+            append_cookie(&mut response, &session_cookie);
+            append_cookie(&mut response, &csrf_cookie);
+            append_cookie(&mut response, &clear_mfa_pending_cookie());
+            append_cookie(
+                &mut response,
+                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
+                    state.identity.as_ref(),
+                    &pending.realm_id,
+                )),
+            );
+            response
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "forced enrollment: create_session failed");
+            internal_error_response()
+        }
+    }
 }
 
 // ============================================================================

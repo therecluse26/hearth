@@ -483,6 +483,25 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns whether MFA is currently enabled for a user.
     fn mfa_enabled(&self, realm_id: &RealmId, user_id: &UserId) -> Result<bool, IdentityError>;
 
+    /// Generates a new set of recovery codes, replacing any existing ones.
+    ///
+    /// Requires MFA to be already enabled. Returns the new plaintext codes
+    /// (shown once; hashes are stored immediately).
+    fn regenerate_recovery_codes(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<String>, IdentityError>;
+
+    /// Returns the plaintext pending recovery codes if the user has a pending
+    /// enrollment (codes not yet confirmed/hashed). Returns `None` if MFA is
+    /// already enabled or there is no pending enrollment.
+    fn load_pending_recovery_codes(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Option<Vec<String>>, IdentityError>;
+
     // ===== WebAuthn / Passkeys (Step 24) =====
 
     /// Starts a `WebAuthn` registration ceremony.

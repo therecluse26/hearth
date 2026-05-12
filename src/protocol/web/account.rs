@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
@@ -290,7 +291,7 @@ fn audit_password_changed(
 /// Returns an empty string on error (the template falls back to showing
 /// only the manual secret). This is a presentation concern and belongs
 /// in the protocol layer — the identity engine only produces the URI.
-fn generate_qr_svg(provisioning_uri: &str) -> String {
+pub fn generate_qr_svg(provisioning_uri: &str) -> String {
     if provisioning_uri.is_empty() {
         return String::new();
     }
@@ -581,6 +582,98 @@ pub async fn totp_disable(
             render_totp_error(&state, &session, "Unable to disable MFA right now.")
         }
     }
+}
+
+/// `GET /ui/account/totp/recovery-codes.txt`
+///
+/// Serves the pending plaintext recovery codes as a downloadable text file.
+/// Only available during the enrollment window (before the codes are hashed).
+/// Returns 404 if MFA is already enabled or no enrollment is pending.
+pub async fn totp_download_recovery_codes(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+) -> Response {
+    use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+
+    let mfa_state = match state
+        .identity
+        .load_pending_recovery_codes(&session.realm_id, &session.user_id)
+    {
+        Ok(Some(codes)) => codes,
+        Ok(None) => return super::handlers_common::not_found("No pending recovery codes"),
+        Err(e) => {
+            tracing::warn!(error = %e, "load_pending_recovery_codes failed");
+            return super::handlers_common::not_found("No pending recovery codes");
+        }
+    };
+
+    let body = mfa_state.join("\n") + "\n";
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(
+            CONTENT_DISPOSITION,
+            "attachment; filename=\"hearth-recovery-codes.txt\"",
+        )
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| super::handlers_common::not_found("error"))
+}
+
+/// `POST /ui/account/totp/regenerate-codes`
+///
+/// Generates a new set of recovery codes for an already-enrolled user,
+/// invalidating any existing codes. Shows the new codes once.
+pub async fn totp_regenerate_codes(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    Form(form): Form<DisableTotpForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let realm_id = session.realm_id.clone();
+    let user_id = session.user_id.clone();
+    let identity = state.identity.clone();
+    let result =
+        tokio::task::spawn_blocking(move || identity.regenerate_recovery_codes(&realm_id, &user_id))
+            .await;
+
+    let codes = match result {
+        Ok(Ok(c)) => c,
+        Ok(Err(IdentityError::MfaNotEnabled)) => {
+            return Redirect::to("/ui/account/totp").into_response();
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "regenerate_recovery_codes failed");
+            return render_totp_error(&state, &session, "Unable to regenerate codes right now.");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "regenerate_recovery_codes panicked");
+            return render_totp_error(&state, &session, "Unable to regenerate codes right now.");
+        }
+    };
+
+    let admin = super::handlers::is_admin(&state, &session);
+    let mut tmpl = TotpEnrollTemplate::new(
+        &session,
+        false,
+        String::new(),
+        String::new(),
+        String::new(),
+        codes,
+        None,
+        admin,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    );
+    // Render in "codes only" mode: mfa_enabled = false shows the enrollment
+    // form but we pass empty secret/uri so only the recovery codes section
+    // is meaningful. The template's activate form is a no-op here since the
+    // user is already enrolled.
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.realm_theme_css = state.realm_theme_css();
+    render(&tmpl)
 }
 
 /// Re-renders the TOTP enrolment page with an inline error above the

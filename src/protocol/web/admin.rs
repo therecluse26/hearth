@@ -38,18 +38,20 @@ use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::config::{Config, ValidationIssue};
-use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId};
+use crate::core::{ClientId, IdpId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp};
 use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
     IdentityError, OAuthClient, Organization, OrganizationConfig, OrganizationInvitation,
     OrganizationMembership, OrganizationRole, OrganizationStatus, Page, Realm, RealmStatus,
     Session, UpdateOrganizationRequest, UpdateUserRequest, User, UserStatus,
 };
+use crate::identity::federation::{IdpConfig, IdpKind, FederationSecret};
+use crate::identity::oidc::{ClientTrustLevel, RegisterClientRequest, UpdateClientRequest};
 
 use crate::identity::claims_config::ClaimSource;
 use crate::rbac::{
-    CreateGroupRequest, Group, GroupId, GroupMember, RoleScopeKind, Scope as RbacScope,
-    UpdateGroupRequest,
+    CreateGroupRequest, CreateRoleRequest, Group, GroupId, GroupMember, Permission, Role, RoleId,
+    RoleScopeKind, Scope as RbacScope, UpdateGroupRequest, UpdateRoleRequest,
 };
 
 use super::auth::{verify_csrf_form_field, RequireAdmin, TargetRealm};
@@ -976,6 +978,93 @@ pub async fn admin_user_disable_mfa(
     .into_response()
 }
 
+/// Template showing new recovery codes after an admin reset.
+#[derive(askama::Template)]
+#[template(path = "ui/admin/mfa_codes_reset.html")]
+struct AdminMfaCodesResetTemplate {
+    codes: Vec<String>,
+    user_id: String,
+    realm_name: String,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// `POST /ui/admin/users/:id/reset-mfa-codes` — regenerates recovery codes for the user.
+///
+/// Generates a new set of Argon2id-hashed recovery codes (invalidating any
+/// existing ones) and renders them once on a confirmation page.
+pub async fn admin_user_reset_mfa_codes(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(admin_session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, user_id)): AxumPath<(String, String)>,
+) -> Response {
+    let uid = match user_id.parse::<uuid::Uuid>() {
+        Ok(u) => crate::core::UserId::new(u),
+        Err(_) => return super::handlers_common::not_found("User not found"),
+    };
+    let uid_str = uid.as_uuid().to_string();
+
+    let realm_id = target.id().clone();
+    let identity = state.identity.clone();
+    let result =
+        tokio::task::spawn_blocking(move || identity.regenerate_recovery_codes(&realm_id, &uid))
+            .await;
+
+    match result {
+        Ok(Ok(codes)) => {
+            tracing::info!(user_id = %uid_str, admin = %admin_session.user_email, "admin reset MFA recovery codes");
+            let tmpl = AdminMfaCodesResetTemplate {
+                codes,
+                user_id: user_id.clone(),
+                realm_name: target.0.name().to_string(),
+                chrome: true,
+                active: "admin",
+                user_email: Some(admin_session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: None,
+                narrow: false,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: state.realm_theme_css(),
+            };
+            render(&tmpl)
+        }
+        Ok(Err(IdentityError::MfaNotEnabled)) => Redirect::to(&format!(
+            "/ui/admin/realms/{}/users/{user_id}?flash=mfa_not_enabled",
+            target.0.name()
+        ))
+        .into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "admin reset_mfa_codes failed");
+            Redirect::to(&format!(
+                "/ui/admin/realms/{}/users/{user_id}?flash=mfa_reset_error",
+                target.0.name()
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "admin reset_mfa_codes panicked");
+            Redirect::to(&format!(
+                "/ui/admin/realms/{}/users/{user_id}?flash=mfa_reset_error",
+                target.0.name()
+            ))
+            .into_response()
+        }
+    }
+}
+
 /// `POST /ui/admin/users/:id/sessions/:sid/revoke` — revokes a single session.
 pub async fn admin_user_revoke_session(
     State(state): State<Arc<WebState>>,
@@ -1860,6 +1949,544 @@ fn audit_app_event(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Application create
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "ui/admin/applications/new.html")]
+struct AppNewTemplate {
+    error: Option<String>,
+    realm_name: String,
+    form_client_name: String,
+    form_slug: String,
+    form_client_type: String,
+    form_redirect_uris: String,
+    form_grant_authorization_code: bool,
+    form_grant_client_credentials: bool,
+    form_grant_refresh_token: bool,
+    form_grant_device_code: bool,
+    form_trust_level: String,
+    form_require_consent: bool,
+    form_declared_scopes: String,
+    form_client_logo_url: String,
+    active_tab: &'static str,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl AppNewTemplate {
+    fn blank(
+        realm_name: String,
+        session: &super::auth::UiSession,
+        state: &Arc<WebState>,
+    ) -> Self {
+        Self {
+            error: None,
+            realm_name,
+            form_client_name: String::new(),
+            form_slug: String::new(),
+            form_client_type: "public".to_string(),
+            form_redirect_uris: String::new(),
+            form_grant_authorization_code: true,
+            form_grant_client_credentials: false,
+            form_grant_refresh_token: false,
+            form_grant_device_code: false,
+            form_trust_level: "third_party".to_string(),
+            form_require_consent: true,
+            form_declared_scopes: String::new(),
+            form_client_logo_url: String::new(),
+            active_tab: "applications",
+            chrome: true,
+            active: "realm-workspace",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        }
+    }
+}
+
+/// `GET /ui/admin/realms/{realm}/applications/new`
+pub async fn admin_app_create_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+) -> Response {
+    render(&AppNewTemplate::blank(target.0.name().to_string(), &session, &state))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AppCreateForm {
+    #[serde(default)]
+    pub client_name: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub client_type: String,
+    #[serde(default)]
+    pub redirect_uris: String,
+    #[serde(default)]
+    pub grant_authorization_code: String,
+    #[serde(default)]
+    pub grant_client_credentials: String,
+    #[serde(default)]
+    pub grant_refresh_token: String,
+    #[serde(default)]
+    pub grant_device_code: String,
+    #[serde(default)]
+    pub trust_level: String,
+    #[serde(default)]
+    pub require_consent: String,
+    #[serde(default)]
+    pub declared_scopes: String,
+    #[serde(default)]
+    pub client_logo_url: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+fn parse_app_create_form(form: &AppCreateForm) -> RegisterClientRequest {
+    let redirect_uris: Vec<String> = form
+        .redirect_uris
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let mut grant_types = Vec::new();
+    if form.grant_authorization_code == "1" {
+        grant_types.push("authorization_code".to_string());
+    }
+    if form.grant_client_credentials == "1" {
+        grant_types.push("client_credentials".to_string());
+    }
+    if form.grant_refresh_token == "1" {
+        grant_types.push("refresh_token".to_string());
+    }
+    if form.grant_device_code == "1" {
+        grant_types.push("urn:ietf:params:oauth:grant-type:device_code".to_string());
+    }
+    if grant_types.is_empty() {
+        grant_types.push("authorization_code".to_string());
+    }
+
+    let client_secret = if form.client_type == "confidential" {
+        Some(uuid::Uuid::new_v4().to_string())
+    } else {
+        None
+    };
+
+    let trust_level = if form.trust_level == "first_party" {
+        ClientTrustLevel::FirstParty
+    } else {
+        ClientTrustLevel::ThirdParty
+    };
+
+    let declared_scopes: Vec<String> = form
+        .declared_scopes
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    let slug = if form.slug.is_empty() {
+        None
+    } else {
+        Some(form.slug.clone())
+    };
+
+    let client_logo_url = if form.client_logo_url.is_empty() {
+        None
+    } else {
+        Some(form.client_logo_url.clone())
+    };
+
+    RegisterClientRequest {
+        client_name: form.client_name.clone(),
+        redirect_uris,
+        client_secret,
+        grant_types,
+        require_consent: form.require_consent == "1",
+        client_logo_url,
+        slug,
+        trust_level,
+        declared_scopes,
+        consent_spans_orgs: false,
+    }
+}
+
+/// `POST /ui/admin/realms/{realm}/applications/new`
+pub async fn admin_app_create_submit(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+    FriendlyForm(form): FriendlyForm<AppCreateForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let req = parse_app_create_form(&form);
+    let client_secret = req.client_secret.clone();
+    let realm_name = target.0.name().to_string();
+
+    match state.identity.register_client(target.id(), &req) {
+        Ok(client) => {
+            audit_app_event(&state, &session, &target.0, client.client_id(), "create");
+            let secret_param = client_secret
+                .map(|_s| format!("?secret_shown=1"))
+                .unwrap_or_default();
+            Redirect::to(&format!(
+                "/ui/admin/realms/{}/applications/{}{}",
+                realm_name,
+                client.client_id().as_uuid(),
+                secret_param,
+            ))
+            .into_response()
+        }
+        Err(IdentityError::InvalidInput { reason }) => {
+            let mut tpl = AppNewTemplate::blank(realm_name, &session, &state);
+            tpl.error = Some(reason);
+            tpl.form_client_name = form.client_name.clone();
+            tpl.form_slug = form.slug.clone();
+            tpl.form_client_type = form.client_type.clone();
+            tpl.form_redirect_uris = form.redirect_uris.clone();
+            tpl.form_grant_authorization_code = form.grant_authorization_code == "1";
+            tpl.form_grant_client_credentials = form.grant_client_credentials == "1";
+            tpl.form_grant_refresh_token = form.grant_refresh_token == "1";
+            tpl.form_grant_device_code = form.grant_device_code == "1";
+            tpl.form_trust_level = form.trust_level.clone();
+            tpl.form_require_consent = form.require_consent == "1";
+            tpl.form_declared_scopes = form.declared_scopes.clone();
+            tpl.form_client_logo_url = form.client_logo_url.clone();
+            render(&tpl)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "register_client failed");
+            let mut tpl = AppNewTemplate::blank(realm_name, &session, &state);
+            tpl.error = Some("Unable to register application right now.".to_string());
+            render(&tpl)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Application edit
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "ui/admin/applications/edit.html")]
+struct AppEditTemplate {
+    app: OAuthClient,
+    error: Option<String>,
+    realm_name: String,
+    form_client_name: String,
+    form_slug: String,
+    form_redirect_uris: String,
+    form_grant_authorization_code: bool,
+    form_grant_client_credentials: bool,
+    form_grant_refresh_token: bool,
+    form_grant_device_code: bool,
+    form_trust_level: String,
+    form_require_consent: bool,
+    form_declared_scopes: String,
+    form_client_logo_url: String,
+    active_tab: &'static str,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl AppEditTemplate {
+    fn from_client(
+        app: OAuthClient,
+        realm_name: String,
+        session: &super::auth::UiSession,
+        state: &Arc<WebState>,
+    ) -> Self {
+        let redirect_uris = app.redirect_uris().join("\n");
+        let grant_authorization_code = app
+            .grant_types()
+            .contains(&"authorization_code".to_string());
+        let grant_client_credentials = app
+            .grant_types()
+            .contains(&"client_credentials".to_string());
+        let grant_refresh_token = app.grant_types().contains(&"refresh_token".to_string());
+        let grant_device_code = app.grant_types().contains(
+            &"urn:ietf:params:oauth:grant-type:device_code".to_string(),
+        );
+        let trust_level = if format!("{:?}", app.trust_level()) == "FirstParty" {
+            "first_party".to_string()
+        } else {
+            "third_party".to_string()
+        };
+        let declared_scopes = app.declared_scopes().join(" ");
+        let client_logo_url = app.client_logo_url().unwrap_or("").to_string();
+        let slug = app.slug().to_string();
+        let require_consent = app.require_consent();
+
+        Self {
+            app,
+            error: None,
+            realm_name,
+            form_client_name: String::new(),
+            form_slug: slug,
+            form_redirect_uris: redirect_uris,
+            form_grant_authorization_code: grant_authorization_code,
+            form_grant_client_credentials: grant_client_credentials,
+            form_grant_refresh_token: grant_refresh_token,
+            form_grant_device_code: grant_device_code,
+            form_trust_level: trust_level,
+            form_require_consent: require_consent,
+            form_declared_scopes: declared_scopes,
+            form_client_logo_url: client_logo_url,
+            active_tab: "applications",
+            chrome: true,
+            active: "realm-workspace",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        }
+    }
+}
+
+/// `GET /ui/admin/realms/{realm}/applications/{id}/edit`
+pub async fn admin_app_edit_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, cid)): AxumPath<(String, String)>,
+) -> Response {
+    let client_id = match cid.parse::<uuid::Uuid>() {
+        Ok(u) => ClientId::new(u),
+        Err(_) => return super::handlers_common::not_found("Application not found"),
+    };
+    match state.identity.get_client(target.id(), &client_id) {
+        Ok(Some(app)) => {
+            let realm_name = target.0.name().to_string();
+            let mut tpl = AppEditTemplate::from_client(app.clone(), realm_name, &session, &state);
+            tpl.form_client_name = app.client_name().to_string();
+            render(&tpl)
+        }
+        Ok(None) => super::handlers_common::not_found("Application not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_client failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AppEditForm {
+    #[serde(default)]
+    pub client_name: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub redirect_uris: String,
+    #[serde(default)]
+    pub grant_authorization_code: String,
+    #[serde(default)]
+    pub grant_client_credentials: String,
+    #[serde(default)]
+    pub grant_refresh_token: String,
+    #[serde(default)]
+    pub grant_device_code: String,
+    #[serde(default)]
+    pub trust_level: String,
+    #[serde(default)]
+    pub require_consent: String,
+    #[serde(default)]
+    pub declared_scopes: String,
+    #[serde(default)]
+    pub client_logo_url: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/realms/{realm}/applications/{id}/edit`
+pub async fn admin_app_edit_submit(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, cid)): AxumPath<(String, String)>,
+    FriendlyForm(form): FriendlyForm<AppEditForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let client_id = match cid.parse::<uuid::Uuid>() {
+        Ok(u) => ClientId::new(u),
+        Err(_) => return super::handlers_common::not_found("Application not found"),
+    };
+
+    let redirect_uris: Vec<String> = form
+        .redirect_uris
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let mut grant_types = Vec::new();
+    if form.grant_authorization_code == "1" {
+        grant_types.push("authorization_code".to_string());
+    }
+    if form.grant_client_credentials == "1" {
+        grant_types.push("client_credentials".to_string());
+    }
+    if form.grant_refresh_token == "1" {
+        grant_types.push("refresh_token".to_string());
+    }
+    if form.grant_device_code == "1" {
+        grant_types.push("urn:ietf:params:oauth:grant-type:device_code".to_string());
+    }
+    if grant_types.is_empty() {
+        grant_types.push("authorization_code".to_string());
+    }
+
+    let trust_level = if form.trust_level == "first_party" {
+        Some(ClientTrustLevel::FirstParty)
+    } else {
+        Some(ClientTrustLevel::ThirdParty)
+    };
+
+    let declared_scopes: Vec<String> = form
+        .declared_scopes
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    let client_logo_url = if form.client_logo_url.is_empty() {
+        Some(None)
+    } else {
+        Some(Some(form.client_logo_url.clone()))
+    };
+
+    let slug = if form.slug.is_empty() {
+        None
+    } else {
+        Some(form.slug.clone())
+    };
+
+    let req = UpdateClientRequest {
+        client_name: if form.client_name.is_empty() {
+            None
+        } else {
+            Some(form.client_name.clone())
+        },
+        redirect_uris: Some(redirect_uris),
+        grant_types: Some(grant_types),
+        require_consent: Some(form.require_consent == "1"),
+        client_logo_url,
+        slug,
+        trust_level,
+        declared_scopes: Some(declared_scopes),
+        consent_spans_orgs: None,
+    };
+
+    let realm_name = target.0.name().to_string();
+
+    match state.identity.update_client(target.id(), &client_id, &req) {
+        Ok(_client) => {
+            audit_app_event(&state, &session, &target.0, &client_id, "update");
+            Redirect::to(&format!(
+                "/ui/admin/realms/{}/applications/{}",
+                realm_name,
+                client_id.as_uuid(),
+            ))
+            .into_response()
+        }
+        Err(IdentityError::InvalidClient) => {
+            super::handlers_common::not_found("Application not found")
+        }
+        Err(IdentityError::InvalidInput { reason }) => {
+            match state.identity.get_client(target.id(), &client_id) {
+                Ok(Some(app)) => {
+                    let mut tpl =
+                        AppEditTemplate::from_client(app, realm_name, &session, &state);
+                    tpl.error = Some(reason);
+                    tpl.form_client_name = form.client_name.clone();
+                    render(&tpl)
+                }
+                _ => super::handlers_common::server_error(),
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "update_client failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// `POST /ui/admin/realms/{realm}/applications/{id}/delete`
+pub async fn admin_app_delete(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, cid)): AxumPath<(String, String)>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let client_id = match cid.parse::<uuid::Uuid>() {
+        Ok(u) => ClientId::new(u),
+        Err(_) => return super::handlers_common::not_found("Application not found"),
+    };
+
+    let realm_name = target.0.name().to_string();
+
+    match state.identity.delete_client(target.id(), &client_id) {
+        Ok(()) => {
+            audit_app_event(&state, &session, &target.0, &client_id, "delete");
+            Redirect::to(&format!(
+                "/ui/admin/realms/{}/applications",
+                realm_name,
+            ))
+            .into_response()
+        }
+        Err(IdentityError::InvalidClient) => {
+            super::handlers_common::not_found("Application not found")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "delete_client failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
 // =========================================================================
 // Sessions
 // =========================================================================
@@ -2700,6 +3327,148 @@ pub async fn admin_audit_verify_integrity(
         }),
         Err(e) => {
             tracing::warn!(error = %e, "audit verify_integrity failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audit log REST API + JSON export
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/api/realms/{realm}/audit/events` — filterable JSON query API.
+///
+/// Accepts the same query parameters as the UI audit view (`actor`, `action`,
+/// `start_date`, `end_date`, `limit`) and returns a JSON object suitable for
+/// programmatic access, monitoring dashboards, and SIEM ingestion scripts.
+///
+/// Response body: `{"events": [...], "realm_id": "...", "count": N}`
+pub async fn admin_api_audit_events(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+    Query(params): Query<AuditFilterParams>,
+) -> Response {
+    let action = params
+        .action
+        .as_deref()
+        .and_then(|s| s.parse::<crate::audit::AuditAction>().ok());
+    let start_time = params
+        .start_date
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(parse_date_to_timestamp);
+    let end_time = params
+        .end_date
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|d| parse_date_to_timestamp(d).map(|t| t.add_micros(86_400 * 1_000_000)));
+
+    let limit = params.limit.unwrap_or(200).min(1000);
+    let query = crate::audit::AuditQuery {
+        realm_id: target.id().clone(),
+        start_time,
+        end_time,
+        actor: params.actor.filter(|s| !s.is_empty()),
+        action,
+        limit: Some(limit),
+    };
+
+    match state.audit.query(&query) {
+        Ok(events) => {
+            let count = events.len();
+            axum::response::Json(serde_json::json!({
+                "realm_id": target.id().as_uuid().to_string(),
+                "count": count,
+                "events": events,
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "audit api query failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// `GET /admin/realms/{realm}/audit/export` — downloads audit events as a
+/// JSON file with `Content-Disposition: attachment`.
+///
+/// Accepts the same filter parameters as the UI view. The downloaded file is
+/// named `audit-{realm}-{date}.json` and contains all matched events (up to
+/// 10 000) as a JSON array, suitable for offline analysis or archiving.
+pub async fn admin_audit_export(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+    Query(params): Query<AuditFilterParams>,
+) -> Response {
+    let action = params
+        .action
+        .as_deref()
+        .and_then(|s| s.parse::<crate::audit::AuditAction>().ok());
+    let start_time = params
+        .start_date
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(parse_date_to_timestamp);
+    let end_time = params
+        .end_date
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|d| parse_date_to_timestamp(d).map(|t| t.add_micros(86_400 * 1_000_000)));
+
+    let limit = params.limit.unwrap_or(10_000).min(10_000);
+    let query = crate::audit::AuditQuery {
+        realm_id: target.id().clone(),
+        start_time,
+        end_time,
+        actor: params.actor.filter(|s| !s.is_empty()),
+        action,
+        limit: Some(limit),
+    };
+
+    match state.audit.query(&query) {
+        Ok(events) => {
+            let body = match serde_json::to_vec_pretty(&events) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(error = %e, "audit export serialize failed");
+                    return super::handlers_common::server_error();
+                }
+            };
+            let realm_slug = target.0.name().to_string();
+            // ISO date for the filename (YYYY-MM-DD).
+            let today = {
+                let now = crate::core::Timestamp::now().as_micros();
+                let secs = now / 1_000_000;
+                let days = secs / 86_400;
+                // Simplified calendar calculation (accurate 2000–2099).
+                let z = days + 719_468;
+                let era = z / 146_097;
+                let doe = z - era * 146_097;
+                let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+                let y = yoe + era * 400;
+                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                let mp = (5 * doy + 2) / 153;
+                let d = doy - (153 * mp + 2) / 5 + 1;
+                let m = if mp < 10 { mp + 3 } else { mp - 9 };
+                let y = if m <= 2 { y + 1 } else { y };
+                format!("{y:04}-{m:02}-{d:02}")
+            };
+            let filename = format!("audit-{realm_slug}-{today}.json");
+            let disposition = format!("attachment; filename=\"{filename}\"");
+            axum::response::Response::builder()
+                .status(200)
+                .header("Content-Type", "application/json")
+                .header("Content-Disposition", disposition)
+                .body(axum::body::Body::from(body))
+                .unwrap_or_else(|_| super::handlers_common::server_error())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "audit export query failed");
             super::handlers_common::server_error()
         }
     }
@@ -8549,11 +9318,487 @@ pub async fn admin_rbac_permissions(
 }
 
 // =========================================================================
+// RBAC role CRUD (create / detail / edit / delete)
+// =========================================================================
+
+// ---------------------------------------------------------------------------
+// Role create
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "ui/admin/rbac/role_new.html")]
+struct RoleNewTemplate {
+    error: Option<String>,
+    realm_name: String,
+    form_name: String,
+    form_description: String,
+    form_scope_kind: String,
+    form_permissions: String,
+    active_tab: &'static str,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl RoleNewTemplate {
+    fn blank(realm_name: String, session: &super::auth::UiSession, state: &Arc<WebState>) -> Self {
+        Self {
+            error: None,
+            realm_name,
+            form_name: String::new(),
+            form_description: String::new(),
+            form_scope_kind: "realm".to_string(),
+            form_permissions: String::new(),
+            active_tab: "rbac_roles",
+            chrome: true,
+            active: "rbac_roles",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        }
+    }
+}
+
+/// `GET /ui/admin/realms/{realm}/rbac/roles/new`
+pub async fn admin_role_create_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+) -> Response {
+    render(&RoleNewTemplate::blank(
+        target.0.name().to_string(),
+        &session,
+        &state,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RoleCreateForm {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub scope_kind: String,
+    #[serde(default)]
+    pub permissions: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+fn parse_permissions_field(raw: &str) -> Result<Vec<Permission>, String> {
+    raw.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|p| Permission::new(p).map_err(|e| format!("Invalid permission '{p}': {e}")))
+        .collect()
+}
+
+fn parse_scope_kind(s: &str) -> RoleScopeKind {
+    match s {
+        "organization" => RoleScopeKind::Organization,
+        "any" => RoleScopeKind::Any,
+        _ => RoleScopeKind::Realm,
+    }
+}
+
+/// `POST /ui/admin/realms/{realm}/rbac/roles/new`
+pub async fn admin_role_create_submit(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+    FriendlyForm(form): FriendlyForm<RoleCreateForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let realm_name = target.0.name().to_string();
+
+    let permissions = match parse_permissions_field(&form.permissions) {
+        Ok(p) => p,
+        Err(msg) => {
+            let mut tpl = RoleNewTemplate::blank(realm_name, &session, &state);
+            tpl.error = Some(msg);
+            tpl.form_name = form.name.clone();
+            tpl.form_description = form.description.clone();
+            tpl.form_scope_kind = form.scope_kind.clone();
+            tpl.form_permissions = form.permissions.clone();
+            return render(&tpl);
+        }
+    };
+
+    let req = CreateRoleRequest {
+        name: form.name.clone(),
+        description: if form.description.is_empty() {
+            None
+        } else {
+            Some(form.description.clone())
+        },
+        permissions,
+        parent_roles: Vec::new(),
+        scope_kind: parse_scope_kind(&form.scope_kind),
+    };
+
+    match state.rbac.create_role(target.id(), &req) {
+        Ok(role) => Redirect::to(&format!(
+            "/ui/admin/realms/{}/rbac/roles/{}",
+            realm_name,
+            role.id.as_uuid(),
+        ))
+        .into_response(),
+        Err(crate::rbac::RbacError::DuplicateRoleName) => {
+            let mut tpl = RoleNewTemplate::blank(realm_name, &session, &state);
+            tpl.error = Some("A role with that name already exists in this realm.".to_string());
+            tpl.form_name = form.name.clone();
+            tpl.form_description = form.description.clone();
+            tpl.form_scope_kind = form.scope_kind.clone();
+            tpl.form_permissions = form.permissions.clone();
+            render(&tpl)
+        }
+        Err(crate::rbac::RbacError::InvalidRoleName { reason }) => {
+            let mut tpl = RoleNewTemplate::blank(realm_name, &session, &state);
+            tpl.error = Some(reason);
+            tpl.form_name = form.name.clone();
+            tpl.form_description = form.description.clone();
+            tpl.form_scope_kind = form.scope_kind.clone();
+            tpl.form_permissions = form.permissions.clone();
+            render(&tpl)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "create_role failed");
+            let mut tpl = RoleNewTemplate::blank(realm_name, &session, &state);
+            tpl.error = Some("Unable to create role right now.".to_string());
+            render(&tpl)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Role detail
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "ui/admin/rbac/role_detail.html")]
+struct RoleDetailTemplate {
+    role: Role,
+    scope: String,
+    realm_name: String,
+    active_tab: &'static str,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// `GET /ui/admin/realms/{realm}/rbac/roles/{id}`
+pub async fn admin_role_detail(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, rid)): AxumPath<(String, String)>,
+) -> Response {
+    let role_id = match rid.parse::<uuid::Uuid>() {
+        Ok(u) => RoleId::new(u),
+        Err(_) => return super::handlers_common::not_found("Role not found"),
+    };
+    match state.rbac.get_role(target.id(), &role_id) {
+        Ok(Some(role)) => {
+            let scope = match role.scope_kind {
+                RoleScopeKind::Organization => "organization".to_string(),
+                RoleScopeKind::Any => "any".to_string(),
+                RoleScopeKind::Realm => "realm".to_string(),
+            };
+            render(&RoleDetailTemplate {
+                role,
+                scope,
+                realm_name: target.0.name().to_string(),
+                active_tab: "rbac_roles",
+                chrome: true,
+                active: "rbac_roles",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: false,
+                product_name: state.product_name.clone(),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: state.realm_theme_css(),
+            })
+        }
+        Ok(None) => super::handlers_common::not_found("Role not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_role failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Role edit
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "ui/admin/rbac/role_edit.html")]
+struct RoleEditTemplate {
+    role: Role,
+    error: Option<String>,
+    realm_name: String,
+    form_name: String,
+    form_description: String,
+    form_scope_kind: String,
+    form_permissions: String,
+    active_tab: &'static str,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl RoleEditTemplate {
+    fn from_role(
+        role: Role,
+        realm_name: String,
+        session: &super::auth::UiSession,
+        state: &Arc<WebState>,
+    ) -> Self {
+        let form_permissions = role
+            .permissions
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let form_scope_kind = match role.scope_kind {
+            RoleScopeKind::Organization => "organization".to_string(),
+            RoleScopeKind::Any => "any".to_string(),
+            RoleScopeKind::Realm => "realm".to_string(),
+        };
+        let form_name = role.name.clone();
+        let form_description = role.description.clone().unwrap_or_default();
+        Self {
+            role,
+            error: None,
+            realm_name,
+            form_name,
+            form_description,
+            form_scope_kind,
+            form_permissions,
+            active_tab: "rbac_roles",
+            chrome: true,
+            active: "rbac_roles",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+            product_name: state.product_name.clone(),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        }
+    }
+}
+
+/// `GET /ui/admin/realms/{realm}/rbac/roles/{id}/edit`
+pub async fn admin_role_edit_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, rid)): AxumPath<(String, String)>,
+) -> Response {
+    let role_id = match rid.parse::<uuid::Uuid>() {
+        Ok(u) => RoleId::new(u),
+        Err(_) => return super::handlers_common::not_found("Role not found"),
+    };
+    match state.rbac.get_role(target.id(), &role_id) {
+        Ok(Some(role)) => render(&RoleEditTemplate::from_role(
+            role,
+            target.0.name().to_string(),
+            &session,
+            &state,
+        )),
+        Ok(None) => super::handlers_common::not_found("Role not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "get_role failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RoleEditForm {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub scope_kind: String,
+    #[serde(default)]
+    pub permissions: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/realms/{realm}/rbac/roles/{id}/edit`
+pub async fn admin_role_edit_submit(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, rid)): AxumPath<(String, String)>,
+    FriendlyForm(form): FriendlyForm<RoleEditForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let role_id = match rid.parse::<uuid::Uuid>() {
+        Ok(u) => RoleId::new(u),
+        Err(_) => return super::handlers_common::not_found("Role not found"),
+    };
+
+    let realm_name = target.0.name().to_string();
+
+    let permissions = match parse_permissions_field(&form.permissions) {
+        Ok(p) => p,
+        Err(msg) => {
+            return match state.rbac.get_role(target.id(), &role_id) {
+                Ok(Some(role)) => {
+                    let mut tpl =
+                        RoleEditTemplate::from_role(role, realm_name, &session, &state);
+                    tpl.error = Some(msg);
+                    tpl.form_name = form.name.clone();
+                    tpl.form_description = form.description.clone();
+                    tpl.form_scope_kind = form.scope_kind.clone();
+                    tpl.form_permissions = form.permissions.clone();
+                    render(&tpl)
+                }
+                _ => super::handlers_common::server_error(),
+            };
+        }
+    };
+
+    let req = UpdateRoleRequest {
+        name: if form.name.is_empty() {
+            None
+        } else {
+            Some(form.name.clone())
+        },
+        description: Some(if form.description.is_empty() {
+            None
+        } else {
+            Some(form.description.clone())
+        }),
+        permissions: Some(permissions),
+        parent_roles: None,
+        scope_kind: Some(parse_scope_kind(&form.scope_kind)),
+    };
+
+    match state.rbac.update_role(target.id(), &role_id, &req) {
+        Ok(_) => Redirect::to(&format!(
+            "/ui/admin/realms/{}/rbac/roles/{}",
+            realm_name,
+            role_id.as_uuid(),
+        ))
+        .into_response(),
+        Err(crate::rbac::RbacError::RoleNotFound) => {
+            super::handlers_common::not_found("Role not found")
+        }
+        Err(crate::rbac::RbacError::DuplicateRoleName) => {
+            match state.rbac.get_role(target.id(), &role_id) {
+                Ok(Some(role)) => {
+                    let mut tpl =
+                        RoleEditTemplate::from_role(role, realm_name, &session, &state);
+                    tpl.error =
+                        Some("A role with that name already exists in this realm.".to_string());
+                    tpl.form_name = form.name.clone();
+                    tpl.form_description = form.description.clone();
+                    tpl.form_scope_kind = form.scope_kind.clone();
+                    tpl.form_permissions = form.permissions.clone();
+                    render(&tpl)
+                }
+                _ => super::handlers_common::server_error(),
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "update_role failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// `POST /ui/admin/realms/{realm}/rbac/roles/{id}/delete`
+pub async fn admin_role_delete(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath((_realm_name, rid)): AxumPath<(String, String)>,
+    FriendlyForm(form): FriendlyForm<DeleteForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let role_id = match rid.parse::<uuid::Uuid>() {
+        Ok(u) => RoleId::new(u),
+        Err(_) => return super::handlers_common::not_found("Role not found"),
+    };
+
+    let realm_name = target.0.name().to_string();
+
+    match state.rbac.delete_role(target.id(), &role_id) {
+        Ok(()) => Redirect::to(&format!(
+            "/ui/admin/realms/{}/rbac/roles",
+            realm_name,
+        ))
+        .into_response(),
+        Err(crate::rbac::RbacError::RoleNotFound) => {
+            super::handlers_common::not_found("Role not found")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "delete_role failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+// =========================================================================
 // RBAC roles list
 // =========================================================================
 
 /// Row data for a role in the roles list template.
 struct RoleRow {
+    id: String,
     name: String,
     scope: String,
     /// Direct permission names granted by this role (sorted, deduped).
@@ -8568,6 +9813,8 @@ struct RoleRow {
 struct RbacRolesTemplate {
     /// Rows for each role in the current realm.
     roles: Vec<RoleRow>,
+    realm_name: String,
+    active_tab: &'static str,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -8581,7 +9828,7 @@ struct RbacRolesTemplate {
     realm_theme_css: Option<String>,
 }
 
-/// `GET /ui/admin/rbac/roles` — read-only list of defined roles.
+/// `GET /ui/admin/rbac/roles` — list of defined roles with links to detail.
 pub async fn admin_rbac_roles(
     State(state): State<Arc<WebState>>,
     RequireAdmin(session): RequireAdmin,
@@ -8605,6 +9852,7 @@ pub async fn admin_rbac_roles(
             permissions.sort();
             permissions.dedup();
             RoleRow {
+                id: r.id.as_uuid().to_string(),
                 name: r.name.clone(),
                 scope: match r.scope_kind {
                     RoleScopeKind::Realm => "realm".to_string(),
@@ -8619,6 +9867,8 @@ pub async fn admin_rbac_roles(
 
     render(&RbacRolesTemplate {
         roles,
+        realm_name: target.0.name().to_string(),
+        active_tab: "rbac_roles",
         chrome: true,
         active: "rbac_roles",
         user_email: Some(session.user_email.clone()),

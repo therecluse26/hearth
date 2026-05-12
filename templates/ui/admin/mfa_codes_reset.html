@@ -1,0 +1,31 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · MFA Recovery Codes Reset{% endblock %}
+{% block body %}
+<div class="mb-8">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">MFA recovery codes reset</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">
+    New recovery codes have been generated for this user.
+    <strong>Copy or share them now — they will not be shown again.</strong>
+  </p>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  <div class="mb-4 rounded-lg bg-warning/[0.12] px-4 py-3 text-sm font-medium text-warning-fg" role="alert">
+    All previous recovery codes for this user have been invalidated.
+  </div>
+
+  <p class="mb-3 text-sm font-medium text-ht-content-primary">New recovery codes</p>
+  <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    {% for code in codes %}
+    <code class="rounded-md bg-elevated-half px-3 py-1.5 text-center font-mono text-sm text-ht-content-secondary">{{ code }}</code>
+    {% endfor %}
+  </div>
+
+  <div class="mt-6 flex items-center gap-3">
+    <a href="/ui/admin/realms/{{ realm_name }}/users/{{ user_id }}"
+       class="btn-ember rounded px-4 py-2 text-sm font-semibold">
+      Return to user
+    </a>
+  </div>
+</div>
+{% endblock %}

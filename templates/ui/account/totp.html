@@ -70,12 +70,19 @@
           <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-muted text-xs font-bold text-ht-content-brand">2</div>
           <div class="min-w-0 flex-1">
             <p class="text-sm font-medium text-ht-content-primary">Save these recovery codes</p>
-            <p class="mt-1 text-sm text-ht-content-muted">Each code can be used once if you lose your authenticator.</p>
+            <p class="mt-1 text-sm text-ht-content-muted">Each code can be used once if you lose your authenticator. Store them safely — they will not be shown again.</p>
             <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
               {% for code in recovery_codes %}
               <code class="rounded-md bg-elevated-half px-3 py-1.5 text-center font-mono text-sm text-ht-content-secondary">{{ code }}</code>
               {% endfor %}
             </div>
+            {% if recovery_codes.len() > 0 %}
+            <p class="mt-2">
+              <a href="/ui/account/totp/recovery-codes.txt"
+                 class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep"
+                 download="hearth-recovery-codes.txt">Download recovery codes</a>
+            </p>
+            {% endif %}
           </div>
         </div>
 
