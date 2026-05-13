@@ -359,6 +359,15 @@ pub enum IdentityError {
     /// Returned when `PasswordPolicy.history_depth` is set and the
     /// candidate password matches one of the stored historical hashes.
     PasswordReused,
+    /// The requested authentication method is not permitted by the realm's
+    /// `allowed_auth_methods` policy.
+    ///
+    /// Returned when a login or credential flow uses a method (e.g. `"password"`,
+    /// `"passkey"`, `"magic_link"`) that is not in the realm's allow-list.
+    AuthMethodNotAllowed {
+        /// The method that was attempted (e.g. `"password"`, `"passkey"`, `"magic_link"`).
+        method: &'static str,
+    },
 }
 
 impl fmt::Display for IdentityError {
@@ -514,6 +523,9 @@ impl fmt::Display for IdentityError {
             Self::PasswordReused => {
                 write!(f, "password was recently used and cannot be reused")
             }
+            Self::AuthMethodNotAllowed { method } => {
+                write!(f, "authentication method '{method}' is not permitted by realm policy")
+            }
         }
     }
 }
@@ -607,7 +619,8 @@ impl std::error::Error for IdentityError {
             | Self::InvalidAttribute { .. }
             | Self::AuditFailure { .. }
             | Self::PasswordExpired
-            | Self::PasswordReused => None,
+            | Self::PasswordReused
+            | Self::AuthMethodNotAllowed { .. } => None,
         }
     }
 }

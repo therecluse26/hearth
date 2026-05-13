@@ -951,6 +951,14 @@ fn login_submit_impl(
         }
     };
 
+    // Enforce realm policy: password auth must be in the allow-list.
+    if let Some(ref methods) = realm.config().allowed_auth_methods {
+        if !methods.iter().any(|m| m == "password") {
+            tracing::warn!(realm = %realm.id(), "login: password auth blocked by realm policy");
+            return generic_error();
+        }
+    }
+
     // Per-IP rate limit check. Must happen before user lookup so a blocked
     // IP cannot probe which email addresses exist.
     if state
@@ -1340,6 +1348,14 @@ fn passkey_complete_for_user(
     session_ctx: &SessionContext,
 ) -> Response {
     let _ = user_id;
+
+    // Enforce realm policy: passkey auth must be in the allow-list.
+    if let Some(ref methods) = realm.config().allowed_auth_methods {
+        if !methods.iter().any(|m| m == "passkey") {
+            tracing::warn!(realm = %realm.id(), "passkey-login: blocked by realm policy");
+            return (StatusCode::FORBIDDEN, "Authentication method not permitted").into_response();
+        }
+    }
 
     let params = CompleteAuthenticationParams {
         credential_id,

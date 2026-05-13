@@ -54,7 +54,8 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::ConsentRequired
         | IdentityError::LastOwner
         | IdentityError::NotAMember
-        | IdentityError::UserNotVerified => (Code::PermissionDenied, err.to_string()),
+        | IdentityError::UserNotVerified
+        | IdentityError::AuthMethodNotAllowed { .. } => (Code::PermissionDenied, err.to_string()),
         IdentityError::InvalidInput { .. }
         | IdentityError::InvalidAttribute { .. }
         | IdentityError::InvalidRedirectUri
