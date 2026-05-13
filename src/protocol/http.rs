@@ -424,6 +424,37 @@ pub fn router(state: Arc<AppState>) -> Router {
         .nest("/admin", admin_routes)
         .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
         .nest("/scim/v2", crate::protocol::scim::router())
+        .nest(
+            "/realms/{realm_name}",
+            Router::new()
+                .route(
+                    "/.well-known/openid-configuration",
+                    axum::routing::get(realm_oidc_discovery),
+                )
+                .route("/.well-known/jwks.json", axum::routing::get(realm_jwks))
+                .route("/authorize", axum::routing::post(realm_authorize))
+                .route("/token", axum::routing::post(realm_token_exchange))
+                .route(
+                    "/revoke",
+                    axum::routing::post(realm_token_revocation)
+                        .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+                )
+                .route(
+                    "/introspect",
+                    axum::routing::post(realm_token_introspection)
+                        .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+                )
+                .route(
+                    "/device_authorization",
+                    axum::routing::post(realm_device_authorization),
+                )
+                .route("/userinfo", axum::routing::get(realm_userinfo))
+                .route(
+                    "/register",
+                    axum::routing::post(realm_register_client_dynamic)
+                        .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+                ),
+        )
         .route_layer(axum::middleware::from_fn(track_metrics))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
         .with_state(state)
@@ -4108,7 +4139,6 @@ async fn webauthn_delete_credential(
 // underlying engine methods as the global routes. Token `iss` claims are
 // automatically scoped to `{base_issuer}/realms/{name}`.
 
-#[allow(dead_code)]
 fn resolve_realm_by_name(
     state: &AppState,
     name: &str,
@@ -4131,7 +4161,6 @@ fn resolve_realm_by_name(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_oidc_discovery(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4150,7 +4179,6 @@ async fn realm_oidc_discovery(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_jwks(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4165,7 +4193,6 @@ async fn realm_jwks(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_authorize(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4197,7 +4224,7 @@ async fn realm_authorize(
     }
 }
 
-#[allow(clippy::too_many_lines, dead_code)]
+#[allow(clippy::too_many_lines)]
 async fn realm_token_exchange(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4335,7 +4362,6 @@ async fn realm_token_exchange(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_token_revocation(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4365,7 +4391,6 @@ async fn realm_token_revocation(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_token_introspection(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4399,7 +4424,6 @@ async fn realm_token_introspection(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_userinfo(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4430,7 +4454,6 @@ async fn realm_userinfo(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_device_authorization(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4479,7 +4502,6 @@ async fn realm_device_authorization(
     }
 }
 
-#[allow(dead_code)]
 async fn realm_register_client_dynamic(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
