@@ -10,10 +10,12 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde::Serialize;
@@ -349,6 +351,9 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", axum::routing::get(health))
+        .route("/healthz", axum::routing::get(healthz))
+        .route("/readyz", axum::routing::get(readyz))
+        .route("/metrics", axum::routing::get(metrics_handler))
         .route(
             "/.well-known/openid-configuration",
             axum::routing::get(oidc_discovery),
@@ -413,6 +418,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .nest("/admin", admin_routes)
         .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
         .nest("/scim/v2", crate::protocol::scim::router())
+        .route_layer(axum::middleware::from_fn(track_metrics))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
         .with_state(state)
 }
@@ -627,12 +633,98 @@ fn coerce_string_ints(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
+// === Observability middleware ===
+
+/// Tower middleware that records HTTP request latency into the Prometheus
+/// `hearth_http_request_duration_seconds` histogram.
+///
+/// Must be applied via [`Router::route_layer`] so that [`MatchedPath`] is
+/// already populated by the router before this middleware runs. Routes without
+/// a matched pattern (e.g. 404s) fall back to the raw URI path.
+pub(crate) async fn track_metrics(request: Request, next: Next) -> Response {
+    let path = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|mp| mp.as_str().to_owned())
+        .unwrap_or_else(|| request.uri().path().to_owned());
+    let method = request.method().as_str().to_owned();
+
+    let start = Instant::now();
+    let response = next.run(request).await;
+    let elapsed = start.elapsed().as_secs_f64();
+
+    let status = response.status().as_u16().to_string();
+    crate::metrics::metrics()
+        .http_request_duration_seconds
+        .with_label_values(&[&method, &path, &status])
+        .observe(elapsed);
+
+    response
+}
+
 // === Route handlers ===
+
+/// Liveness probe endpoint.
+///
+/// Returns `200 OK` immediately — if the process can serve HTTP it is alive.
+/// Kubernetes uses this to decide when to restart a crashed or deadlocked pod.
+/// Unlike `/readyz`, this endpoint does **not** check external dependencies.
+async fn healthz() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
+}
+
+/// Readiness probe endpoint.
+///
+/// Returns `200 OK` when the storage engine is accessible and the server is
+/// prepared to handle traffic. Returns `503 Service Unavailable` when the
+/// storage layer is unreachable (e.g. during startup or after a corruption
+/// event). Kubernetes gates inbound traffic behind this check.
+async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let identity = Arc::clone(&state.identity);
+    let healthy = tokio::task::spawn_blocking(move || identity.is_storage_healthy())
+        .await
+        .unwrap_or(false);
+
+    if healthy {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ready", "storage": "ok"})),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "not_ready", "storage": "unavailable"})),
+        )
+    }
+}
+
+/// Prometheus metrics scrape endpoint (`/metrics`).
+///
+/// Returns the current metric snapshot in the Prometheus text exposition
+/// format (version 0.0.4). Operators should point their Prometheus scrape
+/// config at this path.
+///
+/// No authentication is required by default — operators SHOULD firewall this
+/// endpoint from the public internet if the metric cardinality reveals
+/// sensitive business data (e.g. realm names in label sets).
+async fn metrics_handler() -> impl IntoResponse {
+    let body = crate::metrics::metrics().render();
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+}
 
 /// Health check endpoint.
 ///
 /// Returns 200 OK with a JSON body indicating the server is healthy.
 /// Used by load balancers, monitoring, and CLI integration tests.
+///
+/// Prefer `/healthz` (liveness) or `/readyz` (readiness) for Kubernetes probes.
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
 }
@@ -1176,11 +1268,21 @@ async fn token_exchange(
                 .identity
                 .exchange_authorization_code(&realm_id, &request)
             {
-                Ok(response) => (
-                    StatusCode::OK,
-                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
-                )
-                    .into_response(),
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[
+                            &realm_id.as_uuid().to_string(),
+                            "authorization_code",
+                        ])
+                        .inc();
+                    crate::metrics::metrics().active_sessions.inc();
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                    )
+                        .into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -1195,6 +1297,13 @@ async fn token_exchange(
 
             match state.identity.refresh_tokens(&realm_id, &refresh_token) {
                 Ok(tokens) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[
+                            &realm_id.as_uuid().to_string(),
+                            "refresh_token",
+                        ])
+                        .inc();
                     let resp = pb::OidcTokenResponse {
                         access_token: tokens.access_token().to_string(),
                         id_token: String::new(),
@@ -1225,15 +1334,32 @@ async fn token_exchange(
                 }
             };
 
+            let realm_str = realm_id.as_uuid().to_string();
             match state.identity.client_credentials_token(&realm_id, &request) {
-                Ok(response) => (
-                    StatusCode::OK,
-                    Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(
-                        &response,
-                    ))),
-                )
-                    .into_response(),
-                Err(e) => identity_error_to_response(&e).into_response(),
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .auth_attempts_total
+                        .with_label_values(&[&realm_str, "success"])
+                        .inc();
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[&realm_str, "client_credentials"])
+                        .inc();
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(
+                            &response,
+                        ))),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    crate::metrics::metrics()
+                        .auth_attempts_total
+                        .with_label_values(&[&realm_str, "failure"])
+                        .inc();
+                    identity_error_to_response(&e).into_response()
+                }
             }
         }
         "urn:ietf:params:oauth:grant-type:device_code" => {
@@ -1262,11 +1388,21 @@ async fn token_exchange(
                 .identity
                 .poll_device_token(&realm_id, &device_code, &client_id)
             {
-                Ok(response) => (
-                    StatusCode::OK,
-                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
-                )
-                    .into_response(),
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[
+                            &realm_id.as_uuid().to_string(),
+                            "urn:ietf:params:oauth:grant-type:device_code",
+                        ])
+                        .inc();
+                    crate::metrics::metrics().active_sessions.inc();
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                    )
+                        .into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -1297,7 +1433,12 @@ async fn token_revocation(
     let request = crate::identity::TokenRevocationRequest::from(body);
 
     match state.identity.revoke_token(&realm_id, &request) {
-        Ok(()) | Err(crate::identity::IdentityError::InvalidToken) => {
+        Ok(()) => {
+            // A successful revoke ends a session; keep the gauge consistent.
+            crate::metrics::metrics().active_sessions.dec();
+            StatusCode::OK.into_response()
+        }
+        Err(crate::identity::IdentityError::InvalidToken) => {
             // RFC 7009: always return 200 OK
             StatusCode::OK.into_response()
         }

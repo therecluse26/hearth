@@ -61,7 +61,7 @@ pub use webauthn::{
     WebAuthnAuthResult, WebAuthnCredentialInfo,
 };
 
-use crate::core::{InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
 
 /// Trait defining the identity engine interface.
 ///
@@ -305,12 +305,9 @@ pub trait IdentityEngine: Send + Sync {
         ctx: &TokenIssuanceContext,
     ) -> Result<TokenPair, IdentityError>;
 
-    /// Validates a token via session lookup (internal hot path).
-    ///
-    /// Extracts the session ID from the token without verifying the
-    /// signature (Hearth trusts its own tokens). Looks up the session
-    /// and checks validity. Returns the decoded claims only if the
-    /// session is still active.
+    /// Validates an access token: verifies the Ed25519 signature, enforces
+    /// `exp`, checks the realm binding (`tid`), and confirms the session is
+    /// still active. Returns decoded claims only when all checks pass.
     fn validate_token(&self, realm_id: &RealmId, token: &str)
         -> Result<TokenClaims, IdentityError>;
 
@@ -391,6 +388,17 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         request: &ClientCredentialsRequest,
     ) -> Result<ClientCredentialsResponse, IdentityError>;
+
+    /// Authenticates an OAuth confidential client using its client secret.
+    ///
+    /// Returns `Ok(())` only when the client exists in the target realm,
+    /// is confidential, and the provided secret matches the stored hash.
+    fn authenticate_oauth_client(
+        &self,
+        realm_id: &RealmId,
+        client_id: &ClientId,
+        client_secret: &str,
+    ) -> Result<(), IdentityError>;
 
     /// Initiates a Device Authorization Grant (RFC 8628).
     ///
@@ -1347,4 +1355,16 @@ pub trait IdentityEngine: Send + Sync {
         &self,
         realm_id: &RealmId,
     ) -> Result<crate::identity::cleanup::CleanupStats, IdentityError>;
+
+    /// Probes the underlying storage engine for basic liveness.
+    ///
+    /// Performs a minimal read (`get` on a probe key) and returns `true`
+    /// when the storage layer responds without error. Used by the `/readyz`
+    /// endpoint to gate inbound traffic until storage is confirmed healthy.
+    ///
+    /// The default implementation returns `true` (suitable for in-memory or
+    /// mock engines used in tests).
+    fn is_storage_healthy(&self) -> bool {
+        true
+    }
 }

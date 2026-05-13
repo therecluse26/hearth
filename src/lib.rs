@@ -9,6 +9,7 @@ pub mod cluster;
 pub mod config;
 pub mod core;
 pub mod identity;
+pub mod metrics;
 pub mod protocol;
 pub mod rbac;
 pub mod storage;

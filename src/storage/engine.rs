@@ -566,6 +566,11 @@ impl StorageEngine for EmbeddedStorageEngine {
     }
 
     fn put(&self, realm_id: &RealmId, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
+        let _timer = crate::metrics::metrics()
+            .storage_operation_duration_seconds
+            .with_label_values(&["put"])
+            .start_timer();
+
         // 1. WAL append + fsync
         let entry = WalEntry {
             timestamp: crate::core::Timestamp::now(),
@@ -591,6 +596,11 @@ impl StorageEngine for EmbeddedStorageEngine {
     }
 
     fn delete(&self, realm_id: &RealmId, key: &[u8]) -> Result<(), StorageError> {
+        let _timer = crate::metrics::metrics()
+            .storage_operation_duration_seconds
+            .with_label_values(&["delete"])
+            .start_timer();
+
         // 1. WAL append + fsync
         let entry = WalEntry {
             timestamp: crate::core::Timestamp::now(),
@@ -625,6 +635,11 @@ impl StorageEngine for EmbeddedStorageEngine {
         if entries.is_empty() {
             return Ok(());
         }
+
+        let _timer = crate::metrics::metrics()
+            .storage_operation_duration_seconds
+            .with_label_values(&["put_batch"])
+            .start_timer();
 
         // 1. Build and append a single WAL record containing all entries.
         //    The existing `[len][payload][crc32]` framing + `read_all()`'s
@@ -672,6 +687,11 @@ impl StorageEngine for EmbeddedStorageEngine {
         start: &[u8],
         end: &[u8],
     ) -> Result<Vec<ScanEntry>, StorageError> {
+        let _timer = crate::metrics::metrics()
+            .storage_operation_duration_seconds
+            .with_label_values(&["scan"])
+            .start_timer();
+
         // Merge results from memtable and all SST files.
         // Use a BTreeMap to deduplicate — memtable entries (newest) win.
         let mut merged: std::collections::BTreeMap<Vec<u8>, MemtableValue> =

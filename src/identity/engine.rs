@@ -1198,6 +1198,40 @@ impl EmbeddedIdentityEngine {
         })
     }
 
+    /// Resolves per-realm password policy overrides.
+    ///
+    /// Returns `None` when the realm has no password policy configured or
+    /// when the realm record does not exist (legacy/test realms that rely on
+    /// storage namespace-only isolation).
+    fn password_policy_for_realm(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<Option<crate::identity::PasswordPolicy>, IdentityError> {
+        Ok(self
+            .get_realm(realm_id)?
+            .and_then(|r| r.config().password_policy.clone()))
+    }
+
+    /// Resolves the effective Argon2id settings for a realm.
+    ///
+    /// Starts with engine defaults and applies per-realm `password_memory_cost`
+    /// and `password_time_cost` overrides when present.
+    fn credential_config_for_realm(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<CredentialConfig, IdentityError> {
+        let mut cfg = self.config.credential.clone();
+        if let Some(realm) = self.get_realm(realm_id)? {
+            if let Some(memory_cost) = realm.config().password_memory_cost {
+                cfg.memory_cost_kib = memory_cost;
+            }
+            if let Some(time_cost) = realm.config().password_time_cost {
+                cfg.time_cost = time_cost;
+            }
+        }
+        Ok(cfg)
+    }
+
     /// Serializes a session to JSON bytes.
     fn serialize_session(session: &Session) -> Result<Vec<u8>, IdentityError> {
         serde_json::to_vec(session).map_err(|e| IdentityError::Serialization {
@@ -1486,6 +1520,55 @@ impl EmbeddedIdentityEngine {
             .unwrap_or_else(|_| Arc::clone(&self.signing_key))
     }
 
+    /// Verifies a JWT signature against the realm key, with a fallback to
+    /// the legacy global key for backward compatibility.
+    fn verify_token_signature_for_realm(
+        &self,
+        realm_id: &RealmId,
+        token: &str,
+    ) -> Result<TokenClaims, IdentityError> {
+        let global_verify =
+            || tokens::verify_token_signature(token, self.signing_key.public_key_bytes());
+
+        match self.get_or_load_realm_signing_key(realm_id) {
+            Ok(realm_key) => {
+                match tokens::verify_token_signature(token, realm_key.public_key_bytes()) {
+                    Ok(claims) => Ok(claims),
+                    Err(IdentityError::InvalidToken) => global_verify(),
+                    Err(other) => Err(other),
+                }
+            }
+            Err(IdentityError::RealmNotFound) => global_verify(),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Parses a `session_`-prefixed session ID claim.
+    ///
+    /// Returns `Ok(None)` for sessionless tokens (`sid == "none"`).
+    fn parse_session_id_claim(claims: &TokenClaims) -> Result<Option<SessionId>, IdentityError> {
+        if claims.sid == "none" {
+            return Ok(None);
+        }
+
+        let sid_str = claims
+            .sid
+            .strip_prefix("session_")
+            .ok_or(IdentityError::InvalidToken)?;
+        let sid_uuid = uuid::Uuid::parse_str(sid_str).map_err(|_| IdentityError::InvalidToken)?;
+        Ok(Some(SessionId::new(sid_uuid)))
+    }
+
+    /// Parses a `user_`-prefixed subject claim.
+    fn parse_user_id_claim(claims: &TokenClaims) -> Result<UserId, IdentityError> {
+        let sub_str = claims
+            .sub
+            .strip_prefix("user_")
+            .ok_or(IdentityError::InvalidToken)?;
+        let sub_uuid = uuid::Uuid::parse_str(sub_str).map_err(|_| IdentityError::InvalidToken)?;
+        Ok(UserId::new(sub_uuid))
+    }
+
     /// Returns the server-wide RSA-2048 signing key used to publish the
     /// RS256 entry in the `/certs` JWKS.
     ///
@@ -1700,6 +1783,27 @@ impl EmbeddedIdentityEngine {
             introspection_endpoint: Some(format!("{issuer}/introspect")),
             resource_indicators_supported: true,
         }
+    }
+
+    /// Verifies a client_credentials (sessionless) token by checking the JTI
+    /// blocklist. Returns `Ok(())` if the token is not revoked.
+    fn verify_client_credentials_token(
+        &self,
+        realm_id: &RealmId,
+        claims: &TokenClaims,
+    ) -> Result<(), IdentityError> {
+        if let Some(ref jti) = claims.jti {
+            let jti_key = keys::encode_revoked_jti(jti);
+            if self
+                .storage
+                .get(realm_id, &jti_key)
+                .map_err(Self::storage_err)?
+                .is_some()
+            {
+                return Err(IdentityError::InvalidToken);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2639,23 +2743,39 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Validate password length
         validation::validate_password_length(password.as_bytes())?;
 
-        // Ensure the user exists
-        self.get_user(realm_id, user_id)?
+        // Ensure the user exists.
+        let user = self
+            .get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
+        let policy = self.password_policy_for_realm(realm_id)?;
+        if let Some(policy) = policy.as_ref() {
+            validation::validate_password_against_policy(
+                password.as_bytes(),
+                policy,
+                Some(user.display_name()),
+                Some(user.email()),
+            )?;
+        }
+
         // Resolve history depth from the realm's password policy.
-        let history_depth = self
-            .get_realm(realm_id)?
-            .and_then(|r| {
-                r.config()
-                    .password_policy
-                    .as_ref()
-                    .and_then(|p| p.history_depth)
-            })
-            .unwrap_or(0);
+        let history_depth = policy.as_ref().and_then(|p| p.history_depth).unwrap_or(0);
 
         // Check history before hashing to avoid the expensive hash on likely reuse.
         if history_depth > 0 {
+            // Reject immediate reuse of the current password.
+            let current_key = keys::encode_credential_key(user_id);
+            if let Some(bytes) = self
+                .storage
+                .get(realm_id, &current_key)
+                .map_err(Self::storage_err)?
+            {
+                let current_cred = Self::deserialize_credential(&bytes)?;
+                if credentials::verify_hash(password, &current_cred.hash)? {
+                    return Err(IdentityError::PasswordReused);
+                }
+            }
+
             let hist_key = keys::encode_credential_history_key(user_id);
             let hist_bytes = self
                 .storage
@@ -2672,7 +2792,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         let now = self.clock.now().as_micros();
-        let cred = credentials::hash_password(password, &self.config.credential, now)?;
+        let credential_cfg = self.credential_config_for_realm(realm_id)?;
+        let cred = credentials::hash_password(password, &credential_cfg, now)?;
         let cred_bytes = Self::serialize_credential(&cred)?;
         let cred_key = keys::encode_credential_key(user_id);
 
@@ -2764,29 +2885,31 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // Clear failed attempts on success
             self.clear_attempts(realm_id, user_id);
 
-            // Auto-upgrade legacy algorithms on successful verification
-            if cred.algorithm != credentials::PasswordAlgorithm::Argon2id {
-                let now = self.clock.now().as_micros();
-                let upgraded = credentials::hash_password(password, &self.config.credential, now)?;
-                let upgraded_bytes = Self::serialize_credential(&upgraded)?;
-                self.storage
-                    .put(realm_id, &cred_key, &upgraded_bytes)
-                    .map_err(Self::storage_err)?;
-            }
-
-            // Enforce password expiry policy.
-            let max_age_days = self.get_realm(realm_id)?.and_then(|r| {
-                r.config()
-                    .password_policy
-                    .as_ref()
-                    .and_then(|p| p.max_age_days)
-            });
+            // Enforce password expiry policy before any mutation. Expired
+            // credentials should not be upgraded in place.
+            let max_age_days = self
+                .password_policy_for_realm(realm_id)?
+                .and_then(|p| p.max_age_days);
             if let Some(days) = max_age_days {
                 let max_age_micros = i64::from(days) * 24 * 60 * 60 * 1_000_000;
                 let now = self.clock.now().as_micros();
                 if now - cred.created_at > max_age_micros {
                     return Err(IdentityError::PasswordExpired);
                 }
+            }
+
+            // Auto-upgrade legacy algorithms on successful verification
+            if cred.algorithm != credentials::PasswordAlgorithm::Argon2id {
+                let now = self.clock.now().as_micros();
+                let credential_cfg = self.credential_config_for_realm(realm_id)?;
+                let mut upgraded = credentials::hash_password(password, &credential_cfg, now)?;
+                // Rehash must preserve original credential age so expiry
+                // semantics stay stable across algorithm migrations.
+                upgraded.created_at = cred.created_at;
+                let upgraded_bytes = Self::serialize_credential(&upgraded)?;
+                self.storage
+                    .put(realm_id, &cred_key, &upgraded_bytes)
+                    .map_err(Self::storage_err)?;
             }
         } else {
             self.record_failed_attempt(realm_id, user_id);
@@ -3091,9 +3214,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
-        // Verify session exists and is valid
-        if self.get_session(realm_id, session_id)?.is_none() {
-            return Err(IdentityError::SessionNotFound);
+        // Verify session exists and is owned by the given user (defense-in-depth:
+        // prevents callers from accidentally or maliciously cross-minting tokens
+        // for a user_id that doesn't own the referenced session).
+        let session = self
+            .get_session(realm_id, session_id)?
+            .ok_or(IdentityError::SessionNotFound)?;
+        if session.user_id() != user_id {
+            return Err(IdentityError::InvalidToken);
         }
 
         let now = self.clock.now();
@@ -3167,26 +3295,43 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         token: &str,
     ) -> Result<TokenClaims, IdentityError> {
-        // Hot path: extract claims without signature verification
-        let claims = tokens::decode_claims_unverified(token)?;
+        // Verify Ed25519 signature against realm key (with global-key fallback
+        // for Phase 0 realms). Rejects forged, tampered, and alg=none tokens
+        // at the cryptographic layer before any claim inspection.
+        let claims = self.verify_token_signature_for_realm(realm_id, token)?;
 
-        // Verify the token was issued for this realm
+        // Only accept access tokens — refresh tokens must not be accepted here.
+        if claims.token_type != "access" {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        // Enforce expiration before any session or permission check.
+        let now = self.clock.now();
+        let now_secs = now.as_micros() / 1_000_000;
+        if now_secs >= claims.exp {
+            return Err(IdentityError::TokenExpired);
+        }
+
+        // Verify the token was issued for this realm.
         if claims.tid != realm_id.to_string() {
             return Err(IdentityError::InvalidToken);
         }
 
-        // Parse session ID from claims
-        let session_id_str = claims
-            .sid
-            .strip_prefix("session_")
-            .ok_or(IdentityError::InvalidToken)?;
-        let session_uuid =
-            uuid::Uuid::parse_str(session_id_str).map_err(|_| IdentityError::InvalidToken)?;
-        let session_id = SessionId::new(session_uuid);
+        // Parse session ID from claims. Sessionless tokens (client_credentials,
+        // sid == "none") skip sub-session binding.
+        let session_id = Self::parse_session_id_claim(&claims)?;
+        let Some(sid) = session_id else {
+            self.verify_client_credentials_token(realm_id, &claims)?;
+            return Ok(claims);
+        };
 
-        // Look up session — this is the actual validation
-        let session = self.get_session(realm_id, &session_id)?;
-        if session.is_none() {
+        // Look up session — this is the actual session-validity check.
+        let session = self.get_session(realm_id, &sid)?.ok_or(IdentityError::InvalidToken)?;
+
+        // Bind claims.sub to session owner (defense-in-depth against sub
+        // spoofing via a stolen-but-validly-signed token from another user).
+        let user_id = Self::parse_user_id_claim(&claims)?;
+        if session.user_id() != &user_id {
             return Err(IdentityError::InvalidToken);
         }
 
@@ -3198,8 +3343,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         refresh_token: &str,
     ) -> Result<TokenPair, IdentityError> {
-        // Decode the refresh token (unverified — we trust our own tokens)
-        let claims = tokens::decode_claims_unverified(refresh_token)?;
+        // Verify Ed25519 signature against realm key (with global-key fallback
+        // for Phase 0 realms). Rejects forged/tampered tokens at the crypto
+        // layer before any claim or session inspection.
+        let claims = self.verify_token_signature_for_realm(realm_id, refresh_token)?;
 
         // Must be a refresh token
         if claims.token_type != "refresh" {
@@ -3236,6 +3383,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             uuid::Uuid::parse_str(user_id_str).map_err(|_| IdentityError::InvalidToken)?;
         let user_id = UserId::new(user_uuid);
 
+        // Bind token subject to the referenced session. This prevents a
+        // mismatched `sub` from minting tokens for a different principal.
+        let session = self
+            .get_session(realm_id, &session_id)?
+            .ok_or(IdentityError::InvalidToken)?;
+        if session.user_id() != &user_id {
+            return Err(IdentityError::InvalidToken);
+        }
+
         self.record_audit(
             realm_id,
             None,
@@ -3256,7 +3412,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 &claims,
             )
         } else {
-            // Legacy path (no grant family — Phase 0 tokens)
+            // Legacy path: Phase-0 session tokens (fid == None).
+            // This branch is only reachable by tokens that already passed
+            // `verify_token_signature_for_realm` above. A tampered payload
+            // with fid stripped cannot reach here — the signature check at the
+            // top of this function rejects it first. The session↔user ownership
+            // binding enforced above prevents cross-user token issuance on this
+            // path.
             self.refresh_session(realm_id, &session_id)?;
             self.issue_tokens(realm_id, &user_id, &session_id)
         }
@@ -4156,9 +4318,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &crate::identity::oidc::TokenRevocationRequest,
     ) -> Result<(), IdentityError> {
-        // Decode claims (unverified — we trust our own tokens)
-        // RFC 7009: invalid tokens → 200 OK (no error)
-        let Ok(claims) = tokens::decode_claims_unverified(&request.token) else {
+        // RFC 7009: invalid tokens → 200 OK (no error). Signature
+        // verification prevents forged tokens from targeting real sessions
+        // or grant families for revocation.
+        let Ok(claims) = self.verify_token_signature_for_realm(realm_id, &request.token) else {
             return Ok(());
         };
 
@@ -4238,8 +4401,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     ) -> Result<crate::identity::oidc::IntrospectionResponse, IdentityError> {
         use crate::identity::oidc::IntrospectionResponse;
 
-        // 1. Decode claims (unverified — hot path)
-        let Ok(claims) = tokens::decode_claims_unverified(&request.token) else {
+        // 1. Verify Ed25519 signature against realm key (with global-key
+        // fallback for Phase 0 realms). Forged or tampered tokens are
+        // cryptographically rejected; RFC 7662 semantics: return inactive.
+        let Ok(claims) = self.verify_token_signature_for_realm(realm_id, &request.token) else {
             return Ok(IntrospectionResponse::inactive());
         };
 
@@ -5659,6 +5824,32 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         };
 
         Ok(Page { items, next_cursor })
+    }
+
+    fn authenticate_oauth_client(
+        &self,
+        realm_id: &RealmId,
+        client_id: &ClientId,
+        client_secret: &str,
+    ) -> Result<(), IdentityError> {
+        let client_key = keys::encode_oauth_client(client_id);
+        let client_bytes = self
+            .storage
+            .get(realm_id, &client_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::InvalidClient)?;
+        let client: OAuthClient =
+            serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let secret_hash = client
+            .client_secret_hash()
+            .ok_or(IdentityError::InvalidClientSecret)?;
+        let valid = credentials::verify_raw_secret(client_secret.as_bytes(), secret_hash)?;
+        if !valid {
+            return Err(IdentityError::InvalidClientSecret);
+        }
+        Ok(())
     }
 
     fn list_clients(
@@ -8446,6 +8637,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
         Ok(out)
     }
+
+    fn is_storage_healthy(&self) -> bool {
+        // Probe the storage engine with a get on a known-absent sentinel key.
+        // Success (even returning None) confirms the storage layer is live.
+        let probe_realm = keys::system_realm_id();
+        self.storage.get(&probe_realm, b"health:probe").is_ok()
+    }
 }
 
 /// Classifies a PHC-formatted hash string into a [`PasswordAlgorithm`].
@@ -11149,6 +11347,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn refresh_token_subject_must_match_session_user() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm_id = create_test_realm(&engine);
+        let session_user = create_test_user(&engine, &realm_id);
+        let forged_subject = create_test_user(&engine, &realm_id);
+
+        let session = engine
+            .create_session(&realm_id, session_user.id(), &SessionContext::default())
+            .expect("create session");
+        let token_pair = engine
+            .issue_tokens(&realm_id, session_user.id(), session.id())
+            .expect("issue token pair");
+
+        // Re-sign with a mismatched subject to ensure refresh validates that
+        // session ownership matches the token subject, even for legacy tokens.
+        let mut forged_claims = tokens::decode_claims_unverified(token_pair.refresh_token())
+            .expect("decode refresh claims");
+        forged_claims.sub = forged_subject.id().to_string();
+        let signing_key = engine
+            .get_or_load_realm_signing_key(&realm_id)
+            .expect("load signing key");
+        let forged_token = signing_key
+            .issue_token(&forged_claims)
+            .expect("issue forged token");
+
+        let result = engine.refresh_tokens(&realm_id, &forged_token);
+        assert!(
+            matches!(result, Err(IdentityError::InvalidToken)),
+            "subject/session mismatch must be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn refresh_token_rejects_forged_legacy_payload_without_fid() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
+        let client = engine
+            .register_client(
+                &realm_id,
+                &RegisterClientRequest {
+                    client_name: "Forgery App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                    ..Default::default()
+                },
+            )
+            .expect("register client");
+
+        let auth = engine
+            .authorize(
+                &realm_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "forgery-state".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                    resource: None,
+                },
+            )
+            .expect("authorize");
+        let token_pair = engine
+            .exchange_authorization_code(
+                &realm_id,
+                &TokenExchangeRequest {
+                    client_id: client.client_id().clone(),
+                    code: auth.code().to_string(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange code");
+
+        let mut forged_claims = tokens::decode_claims_unverified(token_pair.refresh_token())
+            .expect("decode refresh claims");
+        assert!(forged_claims.fid.is_some(), "expected grant-family refresh token");
+        forged_claims.fid = None;
+
+        let parts: Vec<&str> = token_pair.refresh_token().split('.').collect();
+        assert_eq!(parts.len(), 3, "refresh token should be JWT compact form");
+        let forged_payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&forged_claims).expect("serialize forged refresh claims"),
+        );
+        let forged_token = format!("{}.{}.{}", parts[0], forged_payload, parts[2]);
+
+        let result = engine.refresh_tokens(&realm_id, &forged_token);
+        assert!(
+            matches!(result, Err(IdentityError::InvalidToken)),
+            "forged no-fid payload must be rejected, got: {result:?}"
+        );
+    }
+
     // ===== B4: Token revocation =====
 
     #[test]
@@ -12579,6 +12878,256 @@ mod tests {
                 .expect("some")
                 .id(),
             &u2
+        );
+    }
+
+    // ===== HEA-123: JWT signature verification regression tests =====
+
+    /// Regression: forged access token with escalated permissions rejected
+    ///
+    /// Vulnerability class: Missing JWT signature verification (CWE-347).
+    /// An attacker with no access to Hearth's Ed25519 signing key crafts a
+    /// valid-looking JWT that claims admin permissions. With
+    /// `decode_claims_unverified` this would succeed; after HEA-123,
+    /// `verify_token_signature_for_realm` cryptographically rejects it.
+    #[test]
+    fn forged_access_token_with_escalated_permissions_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
+        let session = engine
+            .create_session(&realm_id, user.id(), &SessionContext::default())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&realm_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        // Real token validates
+        engine
+            .validate_token(&realm_id, tokens.access_token())
+            .expect("real token should validate");
+
+        // Craft a forged token with escalated permissions, signed by an
+        // attacker-controlled key (not Hearth's key).
+        let attacker_key =
+            SigningKey::generate().expect("attacker keygen");
+        let real_claims =
+            tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
+        let forged_claims = TokenClaims {
+            permissions: vec!["admin".to_string(), "*".to_string()],
+            roles: vec!["superadmin".to_string()],
+            ..real_claims
+        };
+        let forged_token = attacker_key
+            .issue_token(&forged_claims)
+            .expect("issue forged");
+
+        let result = engine.validate_token(&realm_id, &forged_token);
+        assert!(
+            result.is_err(),
+            "forged token with escalated permissions must be rejected"
+        );
+    }
+
+    /// Regression: forged refresh token without valid signature rejected
+    ///
+    /// Vulnerability class: Missing JWT signature verification on refresh
+    /// (CWE-347). An attacker with a stolen-but-expired refresh token could
+    /// re-sign it with a new key and mint new tokens. HEA-123 ensures
+    /// `verify_token_signature_for_realm` blocks forged refresh tokens.
+    #[test]
+    fn forged_refresh_token_rejected() {
+        use crate::identity::oidc::AuthorizationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
+        let client = engine
+            .register_client(
+                &realm_id,
+                &RegisterClientRequest {
+                    client_name: "Forged Refresh App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec![
+                        "authorization_code".to_string(),
+                        "refresh_token".to_string(),
+                    ],
+                    require_consent: false,
+                    client_logo_url: None,
+                    ..Default::default()
+                },
+            )
+            .expect("register client");
+
+        let auth = engine
+            .authorize(
+                &realm_id,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    state: "csrf-state".to_string(),
+                    response_type: "code".to_string(),
+                    scope: "openid".to_string(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    user_id: user.id().clone(),
+                    nonce: None,
+                    resource: None,
+                },
+            )
+            .expect("authorize");
+
+        let response = engine
+            .exchange_authorization_code(
+                &realm_id,
+                &crate::identity::oidc::TokenExchangeRequest {
+                    code: auth.code().to_string(),
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/cb".to_string(),
+                    code_verifier: None,
+                },
+            )
+            .expect("exchange");
+
+        // Real refresh works
+        engine
+            .refresh_tokens(&realm_id, response.refresh_token())
+            .expect("legitimate refresh should succeed");
+
+        // Craft a forged refresh token with a different signing key
+        let attacker_key =
+            SigningKey::generate().expect("attacker keygen");
+        let real_claims =
+            tokens::decode_claims_unverified(response.refresh_token()).expect("decode");
+        let forged_claims = TokenClaims {
+            exp: real_claims.exp + 86400, // extend lifetime
+            token_type: "refresh".to_string(),
+            ..real_claims
+        };
+        let forged_token = attacker_key
+            .issue_token(&forged_claims)
+            .expect("issue forged refresh");
+
+        let result = engine.refresh_tokens(&realm_id, &forged_token);
+        assert!(
+            result.is_err(),
+            "forged refresh token must be rejected"
+        );
+    }
+
+    /// Regression: forged revoke token silently ignored (RFC 7009)
+    ///
+    /// Vulnerability class: Missing JWT signature verification on revocation
+    /// (CWE-347). An attacker with a forged token containing a real `sid`
+    /// could revoke a victim's session without ever knowing their credentials.
+    /// HEA-123 ensures forged tokens produce silent 200 OK without action.
+    #[test]
+    fn forged_revoke_token_silently_ignored() {
+        use crate::identity::oidc::TokenRevocationRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
+        let session = engine
+            .create_session(&realm_id, user.id(), &SessionContext::default())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&realm_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        // Craft a forged revocation token targeting a real session
+        let attacker_key =
+            SigningKey::generate().expect("attacker keygen");
+        let real_claims =
+            tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
+        let forged_claims = TokenClaims {
+            token_type: "access".to_string(),
+            ..real_claims
+        };
+        let forged_token = attacker_key
+            .issue_token(&forged_claims)
+            .expect("issue forged revoke");
+
+        // RFC 7009: forged token revocation should silently succeed
+        engine
+            .revoke_token(
+                &realm_id,
+                &TokenRevocationRequest {
+                    token: forged_token,
+                    token_type_hint: Some("access_token".to_string()),
+                },
+            )
+            .expect("forged revoke should silently succeed per RFC 7009");
+
+        // The real session must NOT be revoked
+        let result = engine.validate_token(&realm_id, tokens.access_token());
+        assert!(
+            result.is_ok(),
+            "real session must not be revoked by forged token"
+        );
+    }
+
+    /// Regression: forged token introspection shows inactive (RFC 7662)
+    ///
+    /// Vulnerability class: Missing JWT signature verification on introspection
+    /// (CWE-347). An attacker could craft a token that appears active to the
+    /// introspection endpoint, bypassing resource-server authorization checks.
+    /// HEA-123 ensures forged tokens return `active: false`.
+    #[test]
+    fn forged_introspection_shows_inactive() {
+        use crate::identity::oidc::TokenIntrospectionRequest;
+
+        let (_dir, engine, _clock) = setup_engine();
+        let realm_id = create_test_realm(&engine);
+        let user = create_test_user(&engine, &realm_id);
+        let session = engine
+            .create_session(&realm_id, user.id(), &SessionContext::default())
+            .expect("session");
+        let tokens = engine
+            .issue_tokens(&realm_id, user.id(), session.id())
+            .expect("issue tokens");
+
+        // Real introspection shows active
+        let real_response = engine
+            .introspect_token(
+                &realm_id,
+                &TokenIntrospectionRequest {
+                    token: tokens.access_token().to_string(),
+                    token_type_hint: Some("access_token".to_string()),
+                },
+            )
+            .expect("real introspection");
+        assert!(real_response.active, "real token should be active");
+
+        // Craft a forged token with valid-looking claims but wrong key
+        let attacker_key =
+            SigningKey::generate().expect("attacker keygen");
+        let real_claims =
+            tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
+        let forged_claims = TokenClaims {
+            exp: real_claims.exp + 86400,
+            token_type: "access".to_string(),
+            permissions: vec!["admin".to_string()],
+            ..real_claims
+        };
+        let forged_token = attacker_key
+            .issue_token(&forged_claims)
+            .expect("issue forged introspect");
+
+        let response = engine
+            .introspect_token(
+                &realm_id,
+                &TokenIntrospectionRequest {
+                    token: forged_token,
+                    token_type_hint: Some("access_token".to_string()),
+                },
+            )
+            .expect("forged introspection should not error");
+
+        assert!(
+            !response.active,
+            "forged token introspection must return inactive"
         );
     }
 }
