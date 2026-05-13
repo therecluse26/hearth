@@ -412,6 +412,81 @@ async fn login_page_locale_fallback_prefers_accept_language() {
     );
 }
 
+/// Spanish locale renders all translated labels, not just the heading.
+#[tokio::test]
+async fn login_page_spanish_locale_renders_all_labels() {
+    let app = web::router(minimal_web_state());
+
+    let req = Request::builder()
+        .uri("/ui/login?locale=es")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_bytes(resp, 64 * 1024).await;
+    let html = std::str::from_utf8(&body).expect("UTF-8 html");
+
+    for (label, expected) in [
+        ("email_label", "Correo electrónico"),
+        ("password_label", "Contraseña"),
+        ("submit_label", "Iniciar sesión"),
+        ("forgot_password_label", "¿Olvidaste tu contraseña?"),
+    ] {
+        assert!(
+            html.contains(expected),
+            "expected localized {label} '{expected}' not found in HTML"
+        );
+    }
+}
+
+/// Hidden locale input is rendered in the form so the locale is preserved on submit.
+#[tokio::test]
+async fn login_page_locale_hidden_input_present() {
+    let app = web::router(minimal_web_state());
+
+    let req = Request::builder()
+        .uri("/ui/login?locale=es")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_bytes(resp, 64 * 1024).await;
+    let html = std::str::from_utf8(&body).expect("UTF-8 html");
+
+    assert!(
+        html.contains(r#"name="locale" value="es""#),
+        "hidden locale input not found in login form"
+    );
+}
+
+/// Accept-Language with Spanish produces Spanish labels via fallback.
+#[tokio::test]
+async fn login_page_accept_language_renders_spanish_labels() {
+    let app = web::router(minimal_web_state());
+
+    let req = Request::builder()
+        .uri("/ui/login")
+        .header(header::ACCEPT_LANGUAGE, "es,en;q=0.9")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_bytes(resp, 64 * 1024).await;
+    let html = std::str::from_utf8(&body).expect("UTF-8 html");
+
+    assert!(
+        html.contains("Correo electrónico"),
+        "expected Spanish email label via Accept-Language"
+    );
+    assert!(
+        html.contains("Contraseña"),
+        "expected Spanish password label via Accept-Language"
+    );
+}
+
 /// Known realm id returns 200 with the correct CSS content.
 #[tokio::test]
 async fn realm_theme_found_returns_css() {
