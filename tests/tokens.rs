@@ -476,7 +476,9 @@ async fn engine_with_fake_clock() -> (
             .expect("storage"),
     );
     // Start the clock at a realistic Unix timestamp so exp values are sensible.
-    let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_700_000_000_000_000)));
+    let clock = Arc::new(FakeClock::new(Timestamp::from_micros(
+        1_700_000_000_000_000,
+    )));
     let audit = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -563,7 +565,9 @@ async fn validate_token_rejects_refresh_token_as_access_token() {
         .issue_tokens(&realm, user.id(), session.id())
         .expect("issue tokens");
 
-    let result = harness.identity().validate_token(&realm, pair.refresh_token());
+    let result = harness
+        .identity()
+        .validate_token(&realm, pair.refresh_token());
     assert!(
         result.is_err(),
         "refresh token must be rejected by validate_token"

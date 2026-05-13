@@ -511,6 +511,7 @@ pub(crate) fn reconcile_applications(
                             trust_level: app_cfg.trust_level,
                             declared_scopes: app_cfg.declared_scopes.clone(),
                             consent_spans_orgs: app_cfg.consent_spans_orgs,
+                            ..Default::default()
                         },
                     )?;
                     info!(
@@ -566,6 +567,7 @@ pub(crate) fn reconcile_applications(
                             trust_level: app_cfg.trust_level,
                             declared_scopes: app_cfg.declared_scopes.clone(),
                             consent_spans_orgs: app_cfg.consent_spans_orgs,
+                            ..Default::default()
                         },
                     )?;
                 }

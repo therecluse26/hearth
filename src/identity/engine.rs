@@ -151,6 +151,7 @@ use crate::identity::webauthn::{
     WebAuthnChallengeStore, WebAuthnCredentialInfo,
 };
 use crate::identity::IdentityEngine;
+use crate::rbac::error::RbacError;
 use crate::rbac::registry::{classify_scope_string, ScopeKind};
 use crate::storage::StorageEngine;
 
@@ -3417,8 +3418,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let resolved = self
             .rbac
             .resolve_permissions(user_id, realm_id, None, None)
-            .map_err(|e| IdentityError::Internal {
-                reason: format!("rbac resolve failed: {e}"),
+            .map_err(|e| match e {
+                RbacError::TokenSizeExceeded {
+                    limit,
+                    limit_value,
+                    actual,
+                } => IdentityError::TokenTooLarge {
+                    limit: format!("access_token_{limit}"),
+                    limit_value,
+                    actual,
+                },
+                e => IdentityError::Internal {
+                    reason: format!("rbac resolve failed: {e}"),
+                },
             })?;
         let perm_strs: Vec<String> = resolved
             .permissions
@@ -3972,8 +3984,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let resolved = self
             .rbac
             .resolve_permissions(&stored_code.user_id, realm_id, None, scope_for_resolver)
-            .map_err(|e| IdentityError::Internal {
-                reason: format!("rbac resolve failed: {e}"),
+            .map_err(|e| match e {
+                RbacError::TokenSizeExceeded {
+                    limit,
+                    limit_value,
+                    actual,
+                } => IdentityError::TokenTooLarge {
+                    limit: format!("access_token_{limit}"),
+                    limit_value,
+                    actual,
+                },
+                e => IdentityError::Internal {
+                    reason: format!("rbac resolve failed: {e}"),
+                },
             })?;
         let granted_scopes: BTreeSet<String> =
             scope_value.split_whitespace().map(str::to_string).collect();
@@ -5844,8 +5867,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let resolved = self
             .rbac
             .resolve_permissions(&user_id, realm_id, None, None)
-            .map_err(|e| IdentityError::Internal {
-                reason: format!("rbac resolve failed: {e}"),
+            .map_err(|e| match e {
+                RbacError::TokenSizeExceeded {
+                    limit,
+                    limit_value,
+                    actual,
+                } => IdentityError::TokenTooLarge {
+                    limit: format!("userinfo_{limit}"),
+                    limit_value,
+                    actual,
+                },
+                e => IdentityError::Internal {
+                    reason: format!("rbac resolve failed: {e}"),
+                },
             })?;
         let (_roles, _groups, _permissions, custom) = self.apply_claim_profile(
             realm_id,

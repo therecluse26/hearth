@@ -40,7 +40,6 @@ pub async fn service_provider_config(
     if let Err(err) = authenticate(&headers, &state) {
         return err.into_response();
     }
-
     Json(json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
         "documentationUri": "https://hearth.dev/docs/scim",

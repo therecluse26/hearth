@@ -385,7 +385,7 @@ async fn login_page_locale_query_selects_spanish_copy() {
     let html = std::str::from_utf8(&body).expect("UTF-8 html");
 
     assert!(
-        html.contains("Inicia sesi&#xF3;n en tu cuenta"),
+        html.contains("Inicia sesión en tu cuenta"),
         "expected localized heading in Spanish"
     );
 }
@@ -407,7 +407,7 @@ async fn login_page_locale_fallback_prefers_accept_language() {
     let html = std::str::from_utf8(&body).expect("UTF-8 html");
 
     assert!(
-        html.contains("Inicia sesi&#xF3;n en tu cuenta"),
+        html.contains("Inicia sesión en tu cuenta"),
         "expected fallback to Spanish via Accept-Language"
     );
 }
