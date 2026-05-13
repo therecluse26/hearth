@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hearth.fullname" . }}
+  labels:
+    {{- include "hearth.labels" . | nindent 4 }}
+data:
+  hearth.yaml: |
+    {{- .Values.config | toYaml | nindent 4 }}

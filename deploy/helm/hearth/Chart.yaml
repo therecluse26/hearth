@@ -1,0 +1,17 @@
+apiVersion: v2
+name: hearth
+description: Hearth — single-binary identity database (OIDC/OAuth 2.0)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - identity
+  - auth
+  - oidc
+  - oauth2
+home: https://github.com/hearth-rs/hearth
+sources:
+  - https://github.com/hearth-rs/hearth
+maintainers:
+  - name: Hearth maintainers
+    url: https://github.com/hearth-rs/hearth
