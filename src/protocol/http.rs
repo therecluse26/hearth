@@ -21,7 +21,10 @@ use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
-use crate::core::{ClientId, RealmId, UserId};
+use crate::core::{ClientId, RealmId, UserId, WebhookId};
+use crate::webhook::{
+    CreateWebhookRequest, DeliveryQuery, UpdateWebhookRequest, WebhookEngine, WebhookQuery,
+};
 use crate::identity::IdentityEngine;
 use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
 use crate::protocol::convert::identity::{
@@ -61,6 +64,9 @@ pub struct AppState {
     pub rbac: Arc<dyn RbacEngine>,
     /// The audit engine for mutation logging.
     pub audit: Arc<dyn AuditEngine>,
+    /// Webhook subscription and delivery engine (optional; absent in test
+    /// harnesses that don't configure outbound delivery).
+    pub webhook: Option<Arc<dyn WebhookEngine>>,
     /// Whether the server is running in development mode.
     ///
     /// Enables the `POST /admin/bootstrap` endpoint for SDK integration
@@ -83,6 +89,7 @@ impl AppState {
             identity,
             rbac,
             audit,
+            webhook: None,
             dev_mode: false,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
         }
@@ -100,6 +107,7 @@ impl AppState {
             identity,
             rbac,
             audit,
+            webhook: None,
             dev_mode: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
         }
@@ -119,9 +127,16 @@ impl AppState {
             identity,
             rbac,
             audit,
+            webhook: None,
             dev_mode: false,
             admin_rate_limiter,
         }
+    }
+
+    /// Attaches a webhook engine, enabling the webhook management endpoints.
+    pub fn with_webhook(mut self, webhook: Arc<dyn WebhookEngine>) -> Self {
+        self.webhook = Some(webhook);
+        self
     }
 }
 
@@ -314,6 +329,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/assignments/{id}",
             axum::routing::delete(admin_unassign_role),
+        )
+        .route(
+            "/webhooks",
+            axum::routing::get(admin_list_webhooks).post(admin_create_webhook),
+        )
+        .route(
+            "/webhooks/{id}",
+            axum::routing::get(admin_get_webhook)
+                .put(admin_update_webhook)
+                .delete(admin_delete_webhook),
+        )
+        .route(
+            "/webhooks/{id}/deliveries",
+            axum::routing::get(admin_list_webhook_deliveries),
         );
 
     Router::new()
@@ -3988,6 +4017,348 @@ async fn realm_register_client_dynamic(
         }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+// === Webhook management (admin) ===
+
+/// JSON body for `POST /admin/webhooks`.
+#[derive(Debug, Deserialize)]
+struct CreateWebhookBody {
+    url: String,
+    secret: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    event_filters: Vec<String>,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// JSON body for `PUT /admin/webhooks/{id}`.
+#[derive(Debug, Deserialize)]
+struct UpdateWebhookBody {
+    url: Option<String>,
+    secret: Option<String>,
+    enabled: Option<bool>,
+    event_filters: Option<Vec<String>>,
+}
+
+/// Query params for `GET /admin/webhooks`.
+#[derive(Debug, Deserialize, Default)]
+struct WebhookListParams {
+    enabled_only: Option<bool>,
+}
+
+/// Query params for `GET /admin/webhooks/{id}/deliveries`.
+#[derive(Debug, Deserialize, Default)]
+struct DeliveryListParams {
+    limit: Option<usize>,
+}
+
+fn require_webhook_engine(
+    state: &AppState,
+) -> Result<Arc<dyn WebhookEngine>, (StatusCode, Json<serde_json::Value>)> {
+    state.webhook.clone().ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(serde_json::json!({"error": "webhooks not configured"})),
+        )
+    })
+}
+
+fn parse_event_filters(
+    raw: &[String],
+) -> Result<Vec<crate::audit::AuditAction>, (StatusCode, Json<serde_json::Value>)> {
+    raw.iter()
+        .map(|s| {
+            s.parse::<crate::audit::AuditAction>().map_err(|_| {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({"error": format!("unknown event type: {s}")})),
+                )
+            })
+        })
+        .collect()
+}
+
+/// `GET /admin/webhooks` — list webhook subscriptions for the authenticated realm.
+async fn admin_list_webhooks(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<WebhookListParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+
+    let query = WebhookQuery {
+        realm_id: auth.realm_id,
+        enabled_only: params.enabled_only.unwrap_or(false),
+    };
+
+    match engine.list(&query) {
+        Ok(subs) => (StatusCode::OK, Json(serde_json::json!({ "webhooks": subs }))).into_response(),
+        Err(e) => {
+            error!("list webhooks failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "list webhooks failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /admin/webhooks` — create a webhook subscription.
+async fn admin_create_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CreateWebhookBody>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+
+    let event_filters = match parse_event_filters(&body.event_filters) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
+
+    let req = CreateWebhookRequest {
+        realm_id: auth.realm_id,
+        url: body.url,
+        secret: body.secret,
+        enabled: body.enabled,
+        event_filters,
+    };
+
+    match engine.create(&req) {
+        Ok(sub) => (StatusCode::CREATED, Json(sub)).into_response(),
+        Err(crate::webhook::WebhookError::InvalidUrl { reason }) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": reason})),
+        )
+            .into_response(),
+        Err(crate::webhook::WebhookError::SecretTooShort) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "secret must be at least 16 bytes"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("create webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "create webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /admin/webhooks/{id}` — fetch a single webhook subscription.
+async fn admin_get_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    match engine.get(&auth.realm_id, &webhook_id) {
+        Ok(sub) => (StatusCode::OK, Json(sub)).into_response(),
+        Err(crate::webhook::WebhookError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "webhook not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("get webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "get webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `PUT /admin/webhooks/{id}` — update a webhook subscription.
+async fn admin_update_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateWebhookBody>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let event_filters = match body.event_filters.as_deref() {
+        Some(raw) => match parse_event_filters(raw) {
+            Ok(f) => Some(f),
+            Err(e) => return e.into_response(),
+        },
+        None => None,
+    };
+
+    let req = UpdateWebhookRequest {
+        url: body.url,
+        secret: body.secret,
+        enabled: body.enabled,
+        event_filters,
+    };
+
+    match engine.update(&auth.realm_id, &webhook_id, &req) {
+        Ok(sub) => (StatusCode::OK, Json(sub)).into_response(),
+        Err(crate::webhook::WebhookError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "webhook not found"})),
+        )
+            .into_response(),
+        Err(crate::webhook::WebhookError::InvalidUrl { reason }) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": reason})),
+        )
+            .into_response(),
+        Err(crate::webhook::WebhookError::SecretTooShort) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "secret must be at least 16 bytes"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("update webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "update webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `DELETE /admin/webhooks/{id}` — delete a webhook subscription.
+async fn admin_delete_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    match engine.delete(&auth.realm_id, &webhook_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(crate::webhook::WebhookError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "webhook not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("delete webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "delete webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /admin/webhooks/{id}/deliveries` — list delivery log for a subscription.
+async fn admin_list_webhook_deliveries(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(params): Query<DeliveryListParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let query = DeliveryQuery {
+        realm_id: auth.realm_id,
+        webhook_id: Some(webhook_id),
+        limit: Some(params.limit.unwrap_or(50).min(200)),
+    };
+
+    match engine.list_deliveries(&query) {
+        Ok(deliveries) => {
+            (StatusCode::OK, Json(serde_json::json!({ "deliveries": deliveries }))).into_response()
+        }
+        Err(e) => {
+            error!("list webhook deliveries failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "list deliveries failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn parse_webhook_id(
+    s: &str,
+) -> Result<WebhookId, (StatusCode, Json<serde_json::Value>)> {
+    // IDs arrive either as bare UUIDs or as "wh_{uuid}" — strip the prefix.
+    let uuid_str = s.strip_prefix("wh_").unwrap_or(s);
+    uuid_str
+        .parse::<uuid::Uuid>()
+        .map(WebhookId::new)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid webhook id"})),
+            )
+        })
 }
 
 #[cfg(test)]

@@ -10,5 +10,5 @@ pub use error::CoreError;
 pub use time::{Clock, FakeClock, SystemClock, Timestamp};
 pub use types::{
     AuditEventId, ClientId, IdpId, InvitationId, OrganizationId, RealmId, SessionId, Uri,
-    UriError, UserId,
+    UriError, UserId, WebhookDeliveryId, WebhookId,
 };

@@ -694,10 +694,24 @@ async fn run_serve(
         });
     }
 
-    let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
+    // Build webhook engine and broadcast channel before wrapping the audit
+    // engine, so the dispatcher receives every successful audit append.
+    let webhook_engine: Arc<dyn hearth::webhook::WebhookEngine> =
+        Arc::new(hearth::webhook::EmbeddedWebhookEngine::new(
+            Arc::clone(&storage) as Arc<dyn StorageEngine>,
+            Arc::clone(&clock),
+        ));
+    let (webhook_tx, webhook_rx) =
+        hearth::webhook::dispatcher::audit_event_channel();
+
+    // Wrap the raw audit engine so every append broadcasts to the dispatcher.
+    let raw_audit: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
         Arc::clone(&storage) as Arc<dyn StorageEngine>,
-        clock,
+        Arc::clone(&clock),
     ));
+    let audit_engine: Arc<dyn hearth::audit::AuditEngine> = Arc::new(
+        hearth::webhook::NotifyingAuditEngine::new(Arc::clone(&raw_audit), webhook_tx),
+    );
 
     let onboarding_service = Arc::new(OnboardingService::new(
         Arc::clone(&identity_engine),
@@ -711,13 +725,13 @@ async fn run_serve(
             Arc::clone(&identity_engine),
             Arc::clone(&rbac_engine),
             Arc::clone(&audit_engine),
-        ))
+        ).with_webhook(Arc::clone(&webhook_engine)))
     } else {
         Arc::new(AppState::new(
             Arc::clone(&identity_engine),
             Arc::clone(&rbac_engine),
             Arc::clone(&audit_engine),
-        ))
+        ).with_webhook(Arc::clone(&webhook_engine)))
     };
 
     // Build server address
@@ -907,6 +921,23 @@ async fn run_serve(
 
     let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
 
+    // Spawn the webhook dispatcher. Uses a watch channel so we can signal
+    // clean shutdown after the HTTP server exits.
+    let (wh_shutdown_tx, wh_shutdown_rx) = tokio::sync::watch::channel(());
+    {
+        let wh_engine = Arc::clone(&webhook_engine);
+        let wh_clock = Arc::clone(&clock);
+        tokio::spawn(async move {
+            hearth::webhook::dispatcher::run_dispatcher(
+                wh_engine,
+                wh_clock,
+                webhook_rx,
+                wh_shutdown_rx,
+            )
+            .await;
+        });
+    }
+
     // Spawn the gRPC management API alongside the HTTP server. Both share
     // the `AdminRateLimiter` so rate limits apply across protocols.
     let grpc_shutdown = if let Some(grpc_port) = config.server.grpc_port {
@@ -1010,6 +1041,9 @@ async fn run_serve(
         let _ = tx.send(());
         let _ = handle.await;
     }
+
+    // Signal the webhook dispatcher to stop.
+    let _ = wh_shutdown_tx.send(());
 
     // Clean up PID file on exit.
     let _ = std::fs::remove_file(&pid_file_path);

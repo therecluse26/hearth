@@ -93,6 +93,16 @@ define_id_type!(
     IdpId, "idp_"
 );
 
+define_id_type!(
+    /// Unique identifier for a webhook subscription within a realm.
+    WebhookId, "wh_"
+);
+
+define_id_type!(
+    /// Unique identifier for a single webhook delivery attempt.
+    WebhookDeliveryId, "whd_"
+);
+
 /// Validated RFC 8707 resource URI.
 ///
 /// Must be absolute (scheme present), non-empty, and MUST NOT contain a

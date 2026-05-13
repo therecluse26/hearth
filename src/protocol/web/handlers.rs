@@ -181,6 +181,21 @@ struct LoginTemplate {
     /// Endpoint prefix for passkey AJAX calls, scope-matched.
     passkey_begin_url: String,
     passkey_complete_url: String,
+    locale: String,
+    heading_text: &'static str,
+    email_label: &'static str,
+    password_label: &'static str,
+    submit_label: &'static str,
+    or_continue_with_label: &'static str,
+    or_label: &'static str,
+    sign_in_with_label: &'static str,
+    forgot_password_label: &'static str,
+    create_account_label: &'static str,
+    passkey_sign_in_label: &'static str,
+    passkey_authenticating_label: &'static str,
+    passkey_unavailable_error: &'static str,
+    passkey_cancelled_error: &'static str,
+    passkey_failed_error: &'static str,
     /// Federation sign-in buttons, one per configured connector.
     federation_buttons: Vec<FederationButton>,
     chrome: bool,
@@ -202,19 +217,36 @@ impl LoginTemplate {
         return_to: Option<String>,
         action_prefix: &str,
         show_register: bool,
+        locale: &str,
         product_name: String,
         logo_url: String,
     ) -> Self {
+        let text = login_locale_text(locale);
         Self {
             error,
             return_to,
             email: String::new(),
             form_action: format!("{action_prefix}/login"),
-            forgot_url: format!("{action_prefix}/forgot-password"),
-            register_url: format!("{action_prefix}/register"),
+            forgot_url: with_locale_query(&format!("{action_prefix}/forgot-password"), locale),
+            register_url: with_locale_query(&format!("{action_prefix}/register"), locale),
             show_register,
             passkey_begin_url: format!("{action_prefix}/login/passkey-begin"),
             passkey_complete_url: format!("{action_prefix}/login/passkey-complete"),
+            locale: locale.to_string(),
+            heading_text: text.heading_text,
+            email_label: text.email_label,
+            password_label: text.password_label,
+            submit_label: text.submit_label,
+            or_continue_with_label: text.or_continue_with_label,
+            or_label: text.or_label,
+            sign_in_with_label: text.sign_in_with_label,
+            forgot_password_label: text.forgot_password_label,
+            create_account_label: text.create_account_label,
+            passkey_sign_in_label: text.passkey_sign_in_label,
+            passkey_authenticating_label: text.passkey_authenticating_label,
+            passkey_unavailable_error: text.passkey_unavailable_error,
+            passkey_cancelled_error: text.passkey_cancelled_error,
+            passkey_failed_error: text.passkey_failed_error,
             federation_buttons: Vec::new(),
             chrome: false,
             active: "",
@@ -700,37 +732,51 @@ fn verify_email_impl(state: Arc<WebState>, query: VerifyQuery, source: RealmSour
 pub struct LoginQuery {
     /// Relative path to redirect back to after a successful sign-in.
     pub return_to: Option<String>,
+    /// Optional locale tag for login UI copy (for example: `en`, `es`).
+    pub locale: Option<String>,
 }
 
 /// Renders the login form at the bare `/ui/login` URL.
 pub async fn login_form(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, RealmSource::Path(None))
+    login_form_impl(state, headers, query, RealmSource::Path(None))
 }
 
 /// Renders the login form under `/ui/realms/<name>/login`.
 pub async fn login_form_scoped(
     State(state): State<Arc<WebState>>,
     axum::extract::Path(realm_name): axum::extract::Path<String>,
+    headers: HeaderMap,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, RealmSource::Path(Some(realm_name)))
+    login_form_impl(state, headers, query, RealmSource::Path(Some(realm_name)))
 }
 
 /// Renders the admin login form at `/ui/admin/login`. The session
 /// created by a successful submit is always bound to the system realm.
 pub async fn admin_login_form(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, RealmSource::Admin)
+    login_form_impl(state, headers, query, RealmSource::Admin)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn login_form_impl(state: Arc<WebState>, query: LoginQuery, source: RealmSource) -> Response {
+fn login_form_impl(
+    state: Arc<WebState>,
+    headers: HeaderMap,
+    query: LoginQuery,
+    source: RealmSource,
+) -> Response {
     let return_to = query.return_to.as_deref().and_then(sanitize_return_to);
+    let locale = resolve_login_locale(
+        query.locale.as_deref(),
+        headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()),
+    );
     let (realm, action_prefix) = match resolve_for_source(&state, source, false) {
         PreAuthRealm::Ok {
             realm,
@@ -738,13 +784,15 @@ fn login_form_impl(state: Arc<WebState>, query: LoginQuery, source: RealmSource)
         } => (realm, action_prefix),
         PreAuthRealm::Handled(resp) => return resp,
     };
+    let product_name = state.product_name_for(realm.id());
     let show_register = registration_enabled(&realm);
     let mut tmpl = LoginTemplate::new(
         None,
         return_to,
         &action_prefix,
         show_register,
-        state.product_name.clone(),
+        locale,
+        product_name,
         state.logo_url.clone(),
     );
     tmpl.theme_css.clone_from(&state.theme_css);
@@ -790,6 +838,9 @@ pub struct LoginForm {
     /// Optional `return_to` path submitted via hidden field.
     #[serde(default)]
     pub return_to: Option<String>,
+    /// Optional locale submitted via hidden field.
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 /// Handles login submission at the bare `/ui/login` URL.
@@ -835,6 +886,10 @@ fn login_submit_impl(
 ) -> Response {
     let email = form.email.trim();
     let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
+    let locale = resolve_login_locale(
+        form.locale.as_deref(),
+        headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()),
+    );
     let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
 
     let (realm, action_prefix) = match resolve_for_source(&state, source, true) {
@@ -845,7 +900,7 @@ fn login_submit_impl(
         PreAuthRealm::Handled(resp) => return resp,
     };
 
-    let product_name = state.product_name.clone();
+    let product_name = state.product_name_for(realm.id());
     let logo_url = state.logo_url.clone();
     let theme_css = state.theme_css.clone();
     let realm_theme = state.realm_theme_css_for(realm.id());
@@ -860,12 +915,14 @@ fn login_submit_impl(
         let return_to = return_to.clone();
         let realm_theme = realm_theme.clone();
         let submitted_email = email.to_string();
+        let product_name = product_name.clone();
         move || {
             let mut tmpl = LoginTemplate::new(
                 Some("Sign-in failed. Check your credentials and try again.".to_string()),
                 return_to.clone(),
                 &action_prefix,
                 show_register,
+                locale,
                 product_name.clone(),
                 logo_url.clone(),
             );
@@ -965,7 +1022,8 @@ fn login_submit_impl(
                 return_to.clone(),
                 &action_prefix,
                 show_register,
-                state.product_name.clone(),
+                locale,
+                product_name.clone(),
                 state.logo_url.clone(),
             );
             tmpl.email = email.to_string();
@@ -1072,10 +1130,16 @@ fn passkey_login_begin_with_realm(
         }
     };
 
+    let user_verification = realm
+        .config()
+        .webauthn_user_verification
+        .as_deref()
+        .unwrap_or("preferred");
+
     let body = serde_json::json!({
         "challenge": challenge,
         "rpId": rp_id,
-        "userVerification": "preferred",
+        "userVerification": user_verification,
         "timeout": 300_000,
     });
     axum::Json(body).into_response()
@@ -1894,6 +1958,109 @@ fn derive_base_url(headers: &HeaderMap) -> String {
         .filter(|s| *s == "https")
         .map_or("http", |_| "https");
     format!("{scheme}://{host}")
+}
+
+const DEFAULT_LOGIN_LOCALE: &str = "en";
+
+#[derive(Clone, Copy)]
+struct LoginLocaleText {
+    heading_text: &'static str,
+    email_label: &'static str,
+    password_label: &'static str,
+    submit_label: &'static str,
+    or_continue_with_label: &'static str,
+    or_label: &'static str,
+    sign_in_with_label: &'static str,
+    forgot_password_label: &'static str,
+    create_account_label: &'static str,
+    passkey_sign_in_label: &'static str,
+    passkey_authenticating_label: &'static str,
+    passkey_unavailable_error: &'static str,
+    passkey_cancelled_error: &'static str,
+    passkey_failed_error: &'static str,
+}
+
+const LOGIN_LOCALE_EN: LoginLocaleText = LoginLocaleText {
+    heading_text: "Sign in to your account",
+    email_label: "Email",
+    password_label: "Password",
+    submit_label: "Sign in",
+    or_continue_with_label: "or continue with",
+    or_label: "or",
+    sign_in_with_label: "Sign in with",
+    forgot_password_label: "Forgot password?",
+    create_account_label: "Create account",
+    passkey_sign_in_label: "Sign in with passkey",
+    passkey_authenticating_label: "Authenticating…",
+    passkey_unavailable_error: "Passkey authentication is not available.",
+    passkey_cancelled_error: "Authentication was cancelled.",
+    passkey_failed_error: "Passkey authentication failed.",
+};
+
+const LOGIN_LOCALE_ES: LoginLocaleText = LoginLocaleText {
+    heading_text: "Inicia sesión en tu cuenta",
+    email_label: "Correo electrónico",
+    password_label: "Contraseña",
+    submit_label: "Iniciar sesión",
+    or_continue_with_label: "o continúa con",
+    or_label: "o",
+    sign_in_with_label: "Iniciar sesión con",
+    forgot_password_label: "¿Olvidaste tu contraseña?",
+    create_account_label: "Crear cuenta",
+    passkey_sign_in_label: "Iniciar sesión con passkey",
+    passkey_authenticating_label: "Autenticando…",
+    passkey_unavailable_error: "La autenticación con passkey no está disponible.",
+    passkey_cancelled_error: "La autenticación fue cancelada.",
+    passkey_failed_error: "La autenticación con passkey falló.",
+};
+
+fn login_locale_text(locale: &str) -> LoginLocaleText {
+    if locale == "es" {
+        LOGIN_LOCALE_ES
+    } else {
+        LOGIN_LOCALE_EN
+    }
+}
+
+fn resolve_login_locale(requested: Option<&str>, accept_language: Option<&str>) -> &'static str {
+    if let Some(locale) = requested.and_then(normalize_login_locale) {
+        return locale;
+    }
+
+    if let Some(header) = accept_language {
+        for candidate in header.split(',') {
+            if let Some(locale) = normalize_login_locale(candidate) {
+                return locale;
+            }
+        }
+    }
+
+    DEFAULT_LOGIN_LOCALE
+}
+
+fn normalize_login_locale(input: &str) -> Option<&'static str> {
+    let raw = input.trim().split(';').next()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let normalized = raw.to_ascii_lowercase().replace('_', "-");
+    if normalized == "es" || normalized.starts_with("es-") {
+        return Some("es");
+    }
+    if normalized == "en" || normalized.starts_with("en-") {
+        return Some("en");
+    }
+
+    None
+}
+
+fn with_locale_query(path: &str, locale: &str) -> String {
+    if locale == DEFAULT_LOGIN_LOCALE {
+        return path.to_string();
+    }
+    let encoded = form_urlencoded::byte_serialize(locale.as_bytes()).collect::<String>();
+    format!("{path}?locale={encoded}")
 }
 
 // ============================================================================

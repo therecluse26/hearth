@@ -12,3 +12,4 @@ pub mod identity;
 pub mod protocol;
 pub mod rbac;
 pub mod storage;
+pub mod webhook;
