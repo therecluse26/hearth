@@ -784,6 +784,45 @@ impl EmbeddedIdentityEngine {
         )
     }
 
+    /// Returns the effective `(access_ttl_secs, refresh_ttl_secs)` for the
+    /// given realm, preferring per-realm overrides over global defaults.
+    fn effective_token_ttl_secs(&self, realm_id: &RealmId) -> (i64, i64) {
+        if let Ok(Some(realm)) = self.get_realm(realm_id) {
+            let cfg = realm.config();
+            let access = cfg
+                .access_token_ttl_micros
+                .map(|m| m / 1_000_000)
+                .unwrap_or(self.config.token.access_token_ttl_secs);
+            let refresh = cfg
+                .refresh_token_ttl_micros
+                .map(|m| m / 1_000_000)
+                .unwrap_or(self.config.token.refresh_token_ttl_secs);
+            return (access, refresh);
+        }
+        (
+            self.config.token.access_token_ttl_secs,
+            self.config.token.refresh_token_ttl_secs,
+        )
+    }
+
+    /// Checks whether `method` is permitted by the realm's `allowed_auth_methods`
+    /// policy. Returns `Ok(())` when allowed (or when no restriction is configured),
+    /// `Err(AuthMethodNotAllowed)` when the method is explicitly excluded.
+    fn check_allowed_auth_method(
+        &self,
+        realm_id: &RealmId,
+        method: &'static str,
+    ) -> Result<(), IdentityError> {
+        if let Ok(Some(realm)) = self.get_realm(realm_id) {
+            if let Some(allowed) = realm.config().allowed_auth_methods.as_ref() {
+                if !allowed.iter().any(|m| m == method) {
+                    return Err(IdentityError::AuthMethodNotAllowed { method });
+                }
+            }
+        }
+        Ok(())
+    }
+
     // ===== Per-IP login rate limiting helpers =====
 
     /// Max failed login attempts per IP per realm before the IP is rate-limited.
@@ -1503,6 +1542,9 @@ impl EmbeddedIdentityEngine {
         let signing_key = self.get_signing_key_or_default(realm_id);
         let iat = now_secs;
 
+        // Apply per-realm token TTL overrides for the rotated pair.
+        let (access_ttl_secs, refresh_ttl_secs) = self.effective_token_ttl_secs(realm_id);
+
         let aud = if family.resources.is_empty() {
             Audience::single(self.config.token.audience.clone())
         } else {
@@ -1517,7 +1559,7 @@ impl EmbeddedIdentityEngine {
             sub: user_id.to_string(),
             iss: self.config.token.issuer.clone(),
             aud: aud.clone(),
-            exp: iat + self.config.token.access_token_ttl_secs,
+            exp: iat + access_ttl_secs,
             iat,
             sid: session_id.to_string(),
             tid: realm_id.to_string(),
@@ -1536,7 +1578,7 @@ impl EmbeddedIdentityEngine {
             sub: user_id.to_string(),
             iss: self.config.token.issuer.clone(),
             aud,
-            exp: iat + self.config.token.refresh_token_ttl_secs,
+            exp: iat + refresh_ttl_secs,
             iat,
             sid: session_id.to_string(),
             tid: realm_id.to_string(),
@@ -1559,7 +1601,7 @@ impl EmbeddedIdentityEngine {
         family.current_refresh_hash = Self::sha256_hex(new_refresh.as_bytes());
         // Extend family expiration to match the new refresh token (sliding).
         family.expires_at = crate::core::Timestamp::from_micros(
-            self.clock.now().as_micros() + self.config.token.refresh_token_ttl_secs * 1_000_000,
+            self.clock.now().as_micros() + refresh_ttl_secs * 1_000_000,
         );
         let updated = serde_json::to_vec(&family).map_err(|e| IdentityError::Serialization {
             reason: e.to_string(),
@@ -3476,6 +3518,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             "token",
             &session_id.as_uuid().to_string(),
         )?;
+        // Apply per-realm token TTL overrides if configured.
+        let (access_ttl_secs, refresh_ttl_secs) = self.effective_token_ttl_secs(realm_id);
+        let effective_token_cfg = TokenConfig {
+            access_token_ttl_secs: access_ttl_secs,
+            refresh_token_ttl_secs: refresh_ttl_secs,
+            ..self.config.token.clone()
+        };
         let realm_issuer = self.realm_issuer_url(realm_id);
         self.signing_key.issue_token_pair(&IssueTokenRequest {
             sub: &user_id.to_string(),
@@ -3483,7 +3532,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             tid: &realm_id.to_string(),
             oid: oid_ref,
             now,
-            config: &self.config.token,
+            config: &effective_token_cfg,
             issuer_override: Some(realm_issuer),
             roles: &roles,
             groups: &groups,
@@ -3532,6 +3581,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::InvalidToken);
         }
 
+        // RFC 7519 §4.1.3 — audience must include the configured value.
+        if !claims.aud.contains(&self.config.token.audience) {
+            return Err(IdentityError::InvalidToken);
+        }
+
         // Parse session ID from claims. Sessionless tokens (client_credentials,
         // sid == "none") skip sub-session binding.
         let session_id = Self::parse_session_id_claim(&claims)?;
@@ -3572,6 +3626,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Verify realm matches
         if claims.tid != realm_id.to_string() {
+            return Err(IdentityError::InvalidToken);
+        }
+
+        // RFC 7519 §4.1.3 — audience must include the configured value.
+        if !claims.aud.contains(&self.config.token.audience) {
             return Err(IdentityError::InvalidToken);
         }
 
@@ -4069,6 +4128,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let iat = now.as_micros() / 1_000_000;
         let signing_key = self.get_signing_key_or_default(realm_id);
 
+        // Apply per-realm token TTL overrides.
+        let (access_ttl_secs, refresh_ttl_secs) = self.effective_token_ttl_secs(realm_id);
+
         let resource_uri = stored_code
             .resource
             .as_ref()
@@ -4087,7 +4149,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             sub: stored_code.user_id.to_string(),
             iss: self.config.token.issuer.clone(),
             aud: aud.clone(),
-            exp: iat + self.config.token.access_token_ttl_secs,
+            exp: iat + access_ttl_secs,
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
@@ -4106,7 +4168,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             sub: stored_code.user_id.to_string(),
             iss: self.config.token.issuer.clone(),
             aud,
-            exp: iat + self.config.token.refresh_token_ttl_secs,
+            exp: iat + refresh_ttl_secs,
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
@@ -4145,7 +4207,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             revoked: false,
             created_at: now,
             expires_at: crate::core::Timestamp::from_micros(
-                now.as_micros() + self.config.token.refresh_token_ttl_secs * 1_000_000,
+                now.as_micros() + refresh_ttl_secs * 1_000_000,
             ),
             // Store the client_id so the refresh path can perform a
             // consent digest re-check without a separate client lookup.
@@ -4172,7 +4234,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             sub: stored_code.user_id.to_string(),
             iss: self.config.oidc.issuer.clone(),
             aud: Audience::single(request.client_id.to_string()),
-            exp: iat + self.config.token.access_token_ttl_secs,
+            exp: iat + access_ttl_secs,
             iat,
             sid: session.id().to_string(),
             tid: realm_id.to_string(),
@@ -4206,7 +4268,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             access_token,
             id_token,
             "Bearer".to_string(),
-            self.config.token.access_token_ttl_secs,
+            access_ttl_secs,
             refresh_token,
         ))
     }
@@ -4653,6 +4715,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // 2. Verify realm matches
         if claims.tid != realm_id.to_string() {
+            return Ok(IntrospectionResponse::inactive());
+        }
+
+        // 2a. RFC 7519 §4.1.3 — audience must include the configured value.
+        if !claims.aud.contains(&self.config.token.audience) {
             return Ok(IntrospectionResponse::inactive());
         }
 
@@ -5374,6 +5441,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         email: &str,
     ) -> Result<MagicLinkResponse, IdentityError> {
+        // Enforce realm policy before any user-visible work.
+        self.check_allowed_auth_method(realm_id, "magic_link")?;
+
         // 1. Normalize email
         let normalized = validation::validate_email(email)?;
 

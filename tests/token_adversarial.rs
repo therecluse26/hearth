@@ -16,13 +16,11 @@
 //! | Tampered payload        | tokens.rs      | tokens.rs      | tokens.rs        | tokens.rs    |
 //! | Revoked JTI (cc)        | oauth.rs       | —              | tested           | —            |
 //!
-//! ## Accepted risk — aud claim not validated (finding HEA-196)
+//! ## aud claim validation (HEA-239 — resolved)
 //!
-//! `validate_token` checks `tid` (realm ID) and the Ed25519 signature but does
-//! NOT verify the `aud` claim against a configured audience. Within a single
-//! Hearth deployment the per-realm signing keys provide effective isolation, but
-//! explicit `aud` enforcement is a JWT best-practice requirement (RFC 7519 §4.1.3).
-//! A follow-up issue has been filed; see issue comment for details.
+//! `validate_token`, `refresh_tokens`, and `introspect_token` now all enforce
+//! RFC 7519 §4.1.3: `claims.aud.contains(&config.token.audience)` is checked
+//! after `tid`. Tests in the `wrong_aud_*` section verify this enforcement.
 
 mod common;
 
@@ -818,34 +816,221 @@ async fn token_within_clock_skew_accepted() {
     );
 }
 
-// ── V1: aud claim not validated (High severity — pending SecurityAuditor input) ─
+// ── aud claim enforcement (HEA-239) ──────────────────────────────────────────
 
-/// TRACKING TEST — `#[ignore]`: `aud` claim is not validated (V1, High severity).
+/// Builds an identity engine with a custom token audience, sharing `storage`
+/// and `clock` so the realm Ed25519 keys are identical across both engines.
 ///
-/// Hearth currently checks `tid` (realm) and Ed25519 signature, but NOT the
-/// `aud` claim on internal tokens. RFC 7519 §4.1.3 requires recipients to
-/// verify that the intended audience is present.
-///
-/// **Do not implement** until SecurityAuditor confirms expected audience values
-/// and target endpoints on [HEA-196]. This test is intentionally left as a
-/// todo so that implementing it requires a deliberate, documented decision.
-///
-/// Once confirmed:
-/// - Add `expected_aud` parameter to `validate_token` or a new overload
-/// - Check `claims.aud.contains(expected_aud)` before returning Ok
-/// - Remove `#[ignore]` and implement the assertion below
-#[ignore = "V1: aud enforcement blocked on SecurityAuditor confirmation — see HEA-196"]
-#[tokio::test]
-async fn aud_mismatch_rejected_by_validate_token() {
-    // A token issued for audience "hearth" must be rejected when the
-    // validator expects audience "other-service". Implementation TBD once
-    // SecurityAuditor confirms expected aud values for Hearth-internal tokens.
-    todo!("implement after SecurityAuditor confirms expected aud values on HEA-196")
+/// This lets tests issue a token with audience "hearth" from one engine and
+/// present it to a second engine expecting "other-service" — the signature
+/// is cryptographically valid, so any rejection comes from the aud check.
+fn build_engine_for_aud_test(
+    storage: std::sync::Arc<dyn hearth::storage::StorageEngine>,
+    clock: std::sync::Arc<dyn hearth::core::Clock>,
+    audience: impl Into<String>,
+) -> impl hearth::identity::IdentityEngine {
+    use hearth::audit::EmbeddedAuditEngine;
+    use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, TokenConfig};
+    use hearth::rbac::EmbeddedRbacEngine;
+    let audit = std::sync::Arc::new(EmbeddedAuditEngine::new(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+    ));
+    let rbac = std::sync::Arc::new(EmbeddedRbacEngine::new(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+    ));
+    EmbeddedIdentityEngine::with_rbac(
+        storage,
+        clock,
+        IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            token: TokenConfig {
+                audience: audience.into(),
+                ..TokenConfig::default()
+            },
+            ..IdentityConfig::default()
+        },
+        rbac as std::sync::Arc<dyn hearth::rbac::RbacEngine>,
+        audit as std::sync::Arc<dyn hearth::audit::AuditEngine>,
+    )
+    .expect("engine")
 }
 
-/// TRACKING TEST — same as above but for introspect_token.
-#[ignore = "V1: aud enforcement blocked on SecurityAuditor confirmation — see HEA-196"]
+/// RFC 7519 §4.1.3 — wrong audience access token rejected by validate_token.
+///
+/// Engine A issues a token (aud="hearth"). Engine B expects aud="other-service".
+/// Both share the same storage so the realm key is identical — the token is
+/// cryptographically valid; rejection comes solely from the semantic aud check.
 #[tokio::test]
-async fn aud_mismatch_introspects_inactive() {
-    todo!("implement after SecurityAuditor confirms expected aud values on HEA-196")
+async fn wrong_aud_rejected_by_validate_token() {
+    use hearth::core::{FakeClock, Timestamp};
+    use hearth::identity::IdentityEngine;
+    use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let storage = std::sync::Arc::new(
+        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf()))
+            .expect("storage"),
+    ) as std::sync::Arc<dyn StorageEngine>;
+    let clock = std::sync::Arc::new(FakeClock::new(Timestamp::from_micros(
+        1_700_000_000_000_000,
+    ))) as std::sync::Arc<dyn hearth::core::Clock>;
+
+    let engine_a = build_engine_for_aud_test(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+        "hearth",
+    );
+    let engine_b = build_engine_for_aud_test(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+        "other-service",
+    );
+
+    let realm = RealmId::generate();
+    let user = engine_a
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: format!("aud-mismatch-{}@test.example", uuid::Uuid::new_v4()),
+                display_name: "U".into(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create user");
+    let session = engine_a
+        .create_session(&realm, user.id(), &SessionContext::default())
+        .expect("session");
+    let pair = engine_a
+        .issue_tokens(&realm, user.id(), session.id())
+        .expect("tokens");
+
+    assert!(
+        engine_a.validate_token(&realm, pair.access_token()).is_ok(),
+        "token must be valid for its own engine (aud=hearth)"
+    );
+    let result = engine_b.validate_token(&realm, pair.access_token());
+    assert!(
+        result.is_err(),
+        "aud=hearth must be rejected by engine expecting aud=other-service: {result:?}"
+    );
+}
+
+/// RFC 7519 §4.1.3 — wrong audience refresh token rejected by refresh_tokens.
+#[tokio::test]
+async fn wrong_aud_rejected_by_refresh_tokens() {
+    use hearth::core::{FakeClock, Timestamp};
+    use hearth::identity::IdentityEngine;
+    use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let storage = std::sync::Arc::new(
+        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf()))
+            .expect("storage"),
+    ) as std::sync::Arc<dyn StorageEngine>;
+    let clock = std::sync::Arc::new(FakeClock::new(Timestamp::from_micros(
+        1_700_000_000_000_000,
+    ))) as std::sync::Arc<dyn hearth::core::Clock>;
+
+    let engine_a = build_engine_for_aud_test(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+        "hearth",
+    );
+    let engine_b = build_engine_for_aud_test(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+        "other-service",
+    );
+
+    let realm = RealmId::generate();
+    let user = engine_a
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: format!("aud-mismatch-ref-{}@test.example", uuid::Uuid::new_v4()),
+                display_name: "U".into(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create user");
+    let session = engine_a
+        .create_session(&realm, user.id(), &SessionContext::default())
+        .expect("session");
+    let pair = engine_a
+        .issue_tokens(&realm, user.id(), session.id())
+        .expect("tokens");
+
+    let result = engine_b.refresh_tokens(&realm, pair.refresh_token());
+    assert!(
+        result.is_err(),
+        "aud=hearth refresh token must be rejected by engine expecting aud=other-service: {result:?}"
+    );
+}
+
+/// RFC 7519 §4.1.3 — wrong audience access token introspects as inactive.
+#[tokio::test]
+async fn wrong_aud_introspects_inactive() {
+    use hearth::core::{FakeClock, Timestamp};
+    use hearth::identity::IdentityEngine;
+    use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let storage = std::sync::Arc::new(
+        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf()))
+            .expect("storage"),
+    ) as std::sync::Arc<dyn StorageEngine>;
+    let clock = std::sync::Arc::new(FakeClock::new(Timestamp::from_micros(
+        1_700_000_000_000_000,
+    ))) as std::sync::Arc<dyn hearth::core::Clock>;
+
+    let engine_a = build_engine_for_aud_test(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+        "hearth",
+    );
+    let engine_b = build_engine_for_aud_test(
+        std::sync::Arc::clone(&storage),
+        std::sync::Arc::clone(&clock),
+        "other-service",
+    );
+
+    let realm = RealmId::generate();
+    let user = engine_a
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: format!("aud-mismatch-intr-{}@test.example", uuid::Uuid::new_v4()),
+                display_name: "U".into(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create user");
+    let session = engine_a
+        .create_session(&realm, user.id(), &SessionContext::default())
+        .expect("session");
+    let pair = engine_a
+        .issue_tokens(&realm, user.id(), session.id())
+        .expect("tokens");
+
+    let response = engine_b
+        .introspect_token(
+            &realm,
+            &TokenIntrospectionRequest {
+                token: pair.access_token().to_string(),
+                token_type_hint: None,
+            },
+        )
+        .expect("introspect must not error");
+    assert!(
+        !response.active,
+        "aud=hearth token must introspect as inactive when engine expects aud=other-service"
+    );
 }
