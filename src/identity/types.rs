@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
 use crate::identity::claims_config::ClaimProfile;
 use crate::identity::credentials::CleartextPassword;
+use crate::identity::email::stored_templates::LocalizedEmailTemplate;
 use crate::identity::email::EmailBranding;
 use crate::identity::federation::LinkMode;
 use crate::rbac::{Group, PermissionDefinition, ProtectedResource, Role, ScopeBundle};
@@ -477,6 +478,19 @@ pub struct RealmConfig {
     pub password_time_cost: Option<u32>,
     /// Per-realm email branding overrides.
     pub email_branding: Option<EmailBranding>,
+    /// Per-realm logo URL override. When set, overrides the global
+    /// `branding.logo_url` in outbound emails for this realm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
+    /// Per-realm primary/accent color (hex, e.g. `"#E85D04"`).
+    /// Overrides `EmailBranding.accent_color` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_color: Option<String>,
+    /// Per-realm email template overrides keyed by template kind
+    /// (`"verification"`, `"password_reset"`, `"welcome"`, `"invitation"`).
+    /// Each value holds a default body plus optional locale variants.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub email_templates: std::collections::HashMap<String, LocalizedEmailTemplate>,
     /// Composed CSS block (named theme + optional custom file contents) served
     /// as the realm-specific theme stylesheet. `None` means no per-realm
     /// theme is configured — the global theme applies.

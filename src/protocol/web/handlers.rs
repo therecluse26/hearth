@@ -2370,10 +2370,17 @@ fn forgot_password_submit_impl(
             let reset_url = format!("{base}{action_prefix}/reset-password?token={token}");
             if let Some(ref email_service) = state.email {
                 let realm_branding = realm.config().email_branding.clone();
+                let stored = realm
+                    .config()
+                    .email_templates
+                    .get("password_reset")
+                    .cloned();
                 if let Err(e) = email_service.send_password_reset_email(
                     email,
                     &reset_url,
                     realm_branding.as_ref(),
+                    stored.as_ref(),
+                    None,
                 ) {
                     tracing::warn!(error = %e, "forgot_password: failed to send email");
                 }
@@ -2921,9 +2928,18 @@ fn register_submit_impl(
             response.verification_token
         );
         let branding = realm.config().email_branding.clone();
-        if let Err(e) =
-            email_service.send_verification_email(&form.email, &verify_url, branding.as_ref())
-        {
+        let stored_verification = realm
+            .config()
+            .email_templates
+            .get("verification")
+            .cloned();
+        if let Err(e) = email_service.send_verification_email(
+            &form.email,
+            &verify_url,
+            branding.as_ref(),
+            stored_verification.as_ref(),
+            None,
+        ) {
             tracing::warn!(error = %e, "register_submit: failed to send verification email");
         }
     } else {

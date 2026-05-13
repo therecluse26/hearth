@@ -501,7 +501,7 @@ impl OnboardingService {
         //    token is already removed so restarts won't re-trigger the
         //    "first-run setup required" warning.
         self.email
-            .send_verification_email(admin_email, &verification_url, None)?;
+            .send_verification_email(admin_email, &verification_url, None, None, None)?;
 
         Ok(SetupOutcome {
             realm_id,

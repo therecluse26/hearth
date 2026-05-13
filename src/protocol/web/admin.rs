@@ -4785,12 +4785,20 @@ pub async fn admin_org_invite(
                     .flatten()
                     .and_then(|t| t.config().email_branding.clone());
 
+                let stored_invitation = state
+                    .identity
+                    .get_realm(target.id())
+                    .ok()
+                    .flatten()
+                    .and_then(|t| t.config().email_templates.get("invitation").cloned());
                 if let Err(e) = email_service.send_invitation_email(
                     &form.email,
                     &accept_url,
                     &org_name,
                     &session.user_email,
                     realm_branding.as_ref(),
+                    stored_invitation.as_ref(),
+                    None,
                 ) {
                     tracing::warn!(error = %e, "failed to send invitation email");
                 }
@@ -5027,12 +5035,20 @@ pub async fn admin_org_resend_invite(
                     .ok()
                     .flatten()
                     .and_then(|t| t.config().email_branding.clone());
+                let stored_invitation = state
+                    .identity
+                    .get_realm(target.id())
+                    .ok()
+                    .flatten()
+                    .and_then(|t| t.config().email_templates.get("invitation").cloned());
                 if let Err(e) = email_service.send_invitation_email(
                     &email,
                     &accept_url,
                     &org_name,
                     &session.user_email,
                     realm_branding.as_ref(),
+                    stored_invitation.as_ref(),
+                    None,
                 ) {
                     tracing::warn!(error = %e, "failed to send resend invitation email");
                 }
