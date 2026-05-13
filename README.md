@@ -33,7 +33,7 @@ Hearth resolves effective permissions at token-issue time and embeds them direct
 
 ### Your data, your rules
 
-Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home telemetry. Your users' data stays on your infrastructure.
+AGPL-3.0-only, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home telemetry. Your users' data stays on your infrastructure.
 
 ---
 
@@ -59,7 +59,11 @@ Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home t
 
 **Protocols**
 - OIDC Core 1.0 + Discovery 1.0 + Dynamic Client Registration (RFC 7591 / 7592)
-- Token Introspection (RFC 7662), Revocation (RFC 7009)
+- Token Introspection (RFC 7662), Revocation (RFC 7009), RP-initiated logout
+- SAML 2.0 (SP-initiated and IdP-initiated)
+- SCIM 2.0 provisioning (Users, Groups, Service Provider Config)
+- Signed webhook subscriptions for auth and admin events
+- gRPC management API (RBAC admin surface)
 - REST/JSON over HTTP/1.1 and HTTP/2
 
 **Operations**
@@ -67,6 +71,7 @@ Apache-2.0, self-hosted, no per-seat pricing, no vendor lock-in, no phone-home t
 - Embedded WAL + memtable + SST storage with hot/cold tiering
 - TLS 1.3 + mTLS, SIGHUP cert hot-reload, HTTP→HTTPS redirect
 - Audit log with SHA-256 hash chain and per-realm integrity verification
+- Prometheus `/metrics`, `/healthz`, `/readyz` endpoints
 
 **Migration**
 - Keycloak realm-export import (`hearth migrate keycloak`) — users, clients, realm roles, and PBKDF2-SHA256 credentials imported natively so existing passwords keep working without a forced reset
@@ -90,7 +95,7 @@ Identity infrastructure has zero tolerance for data loss and low tolerance for i
 
 **CI tiers:** Fast (every commit) · Standard (merge) · Extended (nightly) · Full (weekly).
 
-**Current status.** Phase 0 complete (148/148 scenarios); Phase 1 complete (135/135 scenarios). 671 Rust tests + 27 simulation tests + TypeScript and Go SDK tests passing.
+**Current status.** Phase 0 complete (148/148 scenarios); Phase 1 complete (135/135 scenarios). 900+ Rust tests + 27 simulation tests + TypeScript and Go SDK tests passing.
 
 ---
 
@@ -161,13 +166,13 @@ Response (JSON):
 }
 ```
 
-In production mode the endpoint returns `404 Not Found` (`src/protocol/http.rs:1794`).
+In production mode the endpoint returns `404 Not Found`.
 
 ---
 
 ## Configuration
 
-`hearth serve` resolves configuration in this order (`src/main.rs:308-327`):
+`hearth serve` resolves configuration in this order:
 
 1. `--dev` flag → in-memory dev defaults (overrides everything else).
 2. `-c, --config <path>` → load the specified YAML file.
@@ -202,13 +207,19 @@ Copy [`hearth.example.yaml`](hearth.example.yaml) to `hearth.yaml` and edit. Eve
 | `operational` | `shutdown_timeout_secs` | u64 | `10` | |
 | `operational` | `max_connections` | u32 | `1024` | |
 | `operational` | `queue_depth` | u32 | `4096` | |
-| `email` | `transport` | string | `log` | `log` \| `smtp` |
-| `email` | `from` | string? | — | `From:` header; required when `transport: smtp` |
+| `email` | `transport` | string | `log` | `log` \| `smtp` \| `sendgrid` \| `postmark` \| `mailgun` \| `mailtrap` |
+| `email` | `from` | string? | — | `From:` header; required for all transports except `log` |
 | `email.smtp` | `host` | string | — | SMTP server hostname; required when `transport: smtp` |
 | `email.smtp` | `port` | u16 | — | SMTP server port (e.g. `587`, `465`, `1025`) |
 | `email.smtp` | `encryption` | string | `starttls` | `none` \| `starttls` \| `tls` |
 | `email.smtp` | `username` | string? | — | SMTP AUTH username (pair with `password`) |
 | `email.smtp` | `password` | string? | — | SMTP AUTH password (pair with `username`) |
+| `email.sendgrid` | `api_key` | string | — | SendGrid v3 API key; required when `transport: sendgrid` |
+| `email.postmark` | `server_token` | string | — | Postmark server token; required when `transport: postmark` |
+| `email.mailgun` | `api_key` | string | — | Mailgun API key; required when `transport: mailgun` |
+| `email.mailgun` | `domain` | string | — | Mailgun sending domain |
+| `email.mailgun` | `region` | string | `us` | `us` \| `eu` |
+| `email.mailtrap` | `api_token` | string | — | Mailtrap Sending API token; required when `transport: mailtrap` |
 
 ---
 
@@ -455,7 +466,7 @@ There will never be an admin UI for adding federation connectors. This is Infras
 
 An end-to-end walkthrough with a local OIDC upstream lives at [`examples/federation-flow/`](examples/federation-flow/) — two processes (Hearth + a `node-oidc-provider`-based upstream) that reproduce JIT provisioning, confirm-to-link, auto-link, and self-service unlinking without any external credentials.
 
-For the complete feature spec + file map see [`docs/gaps/FEATURE_GAPS.md §5`](docs/gaps/FEATURE_GAPS.md).
+For the full feature spec see [`docs/specs/ARCHITECTURE.md`](docs/specs/ARCHITECTURE.md).
 
 ---
 
@@ -474,16 +485,55 @@ For the complete feature spec + file map see [`docs/gaps/FEATURE_GAPS.md §5`](d
 | OAuth/OIDC | `POST` | `/device_authorization` | RFC 8628 device code start |
 | OAuth/OIDC | `POST` | `/register` | RFC 7591 dynamic client registration |
 | OAuth/OIDC | `POST` | `/clients` | Static client registration (used by `hearth app create`) |
+| OAuth/OIDC | `GET`/`POST` | `/end_session` | OIDC RP-initiated logout; fans out to back-channel and front-channel URIs |
 | Admin | `GET`/`POST` | `/admin/users` | List / create users |
 | Admin | `POST` | `/admin/users/bulk` | Bulk user creation |
+| Admin | `POST` | `/admin/users/import` | Import users from JSON |
+| Admin | `GET` | `/admin/users/export` | Export users as JSON |
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/users/{id}` | CRUD a user |
+| Admin | `GET`/`POST` | `/admin/users/{id}/roles` | List / assign roles to a user |
+| Admin | `GET` | `/admin/users/{id}/consents` | List a user's active OAuth consents |
+| Admin | `DELETE` | `/admin/users/{id}/consents/{client_id}` | Revoke a user's consent for a client |
+| Admin | `GET` | `/admin/users/{id}/effective-permissions` | Resolved permission set for a user |
+| Admin | `DELETE` | `/admin/assignments/{id}` | Remove a role assignment |
 | Admin | `GET`/`POST` | `/admin/realms` | List / create realms |
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/realms/{id}` | CRUD a realm |
 | Admin | `GET`/`POST` | `/admin/applications` | List / register OAuth clients |
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/applications/{id}` | CRUD a client |
-| Admin | `POST` | `/admin/bootstrap` | Dev-only bootstrap (404 in prod) |
+| Admin | `GET`/`POST` | `/admin/roles` | List / create RBAC roles |
+| Admin | `GET`/`PUT`/`DELETE` | `/admin/roles/{id}` | CRUD a role |
+| Admin | `GET`/`POST` | `/admin/groups` | List / create groups |
+| Admin | `GET`/`PUT`/`DELETE` | `/admin/groups/{id}` | CRUD a group |
+| Admin | `GET`/`POST` | `/admin/groups/{id}/members` | List / add group members |
+| Admin | `DELETE` | `/admin/groups/{id}/members/{member_id}` | Remove a group member |
+| Admin | `GET` | `/admin/audit` | Query the audit log |
+| Admin | `GET`/`POST` | `/admin/webhooks` | List / create webhook subscriptions |
+| Admin | `GET`/`PUT`/`DELETE` | `/admin/webhooks/{id}` | CRUD a webhook subscription |
+| Admin | `GET` | `/admin/webhooks/{id}/deliveries` | Delivery log for a subscription |
+| Admin | `POST` | `/admin/bootstrap` | Dev-only bootstrap — returns 404 in production |
+| Self-service | `GET` | `/v1/me/permissions` | Caller's live RBAC claim set |
+| Self-service | `GET` | `/oauth/consents` | List the caller's granted OAuth consents |
+| Self-service | `DELETE` | `/oauth/consents/{client_id}` | Revoke consent for a specific client |
+| WebAuthn | `POST` | `/webauthn/register/begin` | Start passkey registration ceremony |
+| WebAuthn | `POST` | `/webauthn/register/complete` | Complete passkey registration |
+| WebAuthn | `POST` | `/webauthn/auth/begin` | Start passkey authentication ceremony |
+| WebAuthn | `POST` | `/webauthn/auth/complete` | Complete passkey authentication |
+| WebAuthn | `GET` | `/webauthn/credentials` | List the caller's registered credentials |
+| WebAuthn | `DELETE` | `/webauthn/credentials/{credential_id}` | Remove a passkey credential |
+| SCIM 2.0 | `GET` | `/scim/v2/ServiceProviderConfig` | SCIM capability advertisement |
+| SCIM 2.0 | `GET` | `/scim/v2/ResourceTypes` | Supported SCIM resource types |
+| SCIM 2.0 | `GET` | `/scim/v2/Schemas` | SCIM schema definitions |
+| SCIM 2.0 | `GET`/`POST` | `/scim/v2/Users` | List / provision users |
+| SCIM 2.0 | `GET`/`PUT`/`PATCH`/`DELETE` | `/scim/v2/Users/{id}` | CRUD / partial update a SCIM user |
+| SCIM 2.0 | `GET`/`POST` | `/scim/v2/Groups` | List / provision groups |
+| SCIM 2.0 | `GET`/`PUT`/`PATCH`/`DELETE` | `/scim/v2/Groups/{id}` | CRUD / partial update a SCIM group |
+| Observability | `GET` | `/healthz` | Kubernetes liveness probe |
+| Observability | `GET` | `/readyz` | Kubernetes readiness probe (storage + engine checks) |
+| Observability | `GET` | `/metrics` | Prometheus-compatible metrics |
 
-All `/admin/*` routes require a bearer token whose `permissions` claim contains `hearth.admin` for the target realm (typically via the seed `realm.admin` role).
+All `/admin/*` routes require a bearer token whose `permissions` claim contains `hearth.admin` for the target realm (typically via the seed `realm.admin` role). SCIM routes use a realm-scoped bearer token.
+
+Per-realm variants of the core OAuth/OIDC endpoints are available at `/realms/{realm_name}/{endpoint}` for multi-realm deployments where callers cannot send `X-Realm-ID`.
 
 ---
 
@@ -505,13 +555,13 @@ import "github.com/anthropics/hearth/sdks/go/hearth"
 client := hearth.NewClient("https://auth.example.com", realmID)
 ```
 
-Dedicated SDK READMEs with full API docs are planned.
+Each SDK has a README with full API docs: [`sdks/typescript/README.md`](sdks/typescript/README.md) and [`sdks/go/README.md`](sdks/go/README.md).
 
 ---
 
 ## TLS and mTLS
 
-Enable TLS by setting **both** `server.tls_cert_path` and `server.tls_key_path` — either both or neither (`src/config/mod.rs:108-123`). When TLS is active, Hearth spawns an HTTP → HTTPS redirect listener on `port - 1` (or `80` if the TLS port is `443`).
+Enable TLS by setting **both** `server.tls_cert_path` and `server.tls_key_path` — either both or neither. When TLS is active, Hearth spawns an HTTP → HTTPS redirect listener on `port - 1` (or `80` if the TLS port is `443`).
 
 For mTLS, add `server.tls_client_ca_path` and set `server.tls_require_client_cert: true`. Sending `SIGHUP` to the process reloads the cert + key from disk without dropping connections.
 
@@ -624,6 +674,32 @@ Groups, composite roles, client roles, federated identity providers, and require
 
 ## Architecture at a glance
 
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     Single binary process                     │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │  Protocol   REST · gRPC · OIDC · SAML · SCIM · WebUI   │ │
+│  └────────────────────────┬────────────────────────────────┘ │
+│                            │                                  │
+│  ┌─────────────────────────▼──────────────────────────────┐  │
+│  │  Identity   Users · Sessions · Realms · OAuth · Email  │  │
+│  │                          │ (token issuance only)        │  │
+│  │  ┌───────────────────────▼──────────────────────────┐  │  │
+│  │  │  RBAC   Roles · Groups · Assignments · Claims    │  │  │
+│  │  └──────────────────────────────────────────────────┘  │  │
+│  └────────────────────────┬───────────────────────────────┘  │
+│                            │                                  │
+│  ┌─────────────────────────▼──────────────────────────────┐  │
+│  │  Storage   WAL → Memtable → SST · Hot/cold tiering     │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Cluster   openraft (invisible in single-node mode)  │   │
+│  └──────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────┘
+```
+
 | Layer | Path | Role |
 |---|---|---|
 | Core | `src/core/` | Shared types and traits only. No logic, no state. |
@@ -635,6 +711,8 @@ Groups, composite roles, client roles, federated identity providers, and require
 
 Dependencies flow strictly downward; `identity/` is the only layer allowed to call `rbac/` (to resolve permissions at token-issue time).
 
+**Guides:** [RBAC](docs/guides/rbac.md) · [SCIM Provisioning](docs/guides/scim-provisioning.md) · [Webhooks](docs/guides/webhooks.md) · [Organizations](docs/guides/organizations.md) · [Client-Scoped Roles](docs/guides/client-scoped-roles.md)
+
 ---
 
 ## Development
@@ -645,4 +723,4 @@ After cloning, run `make setup` to install the repo-managed git hooks, then `mak
 
 ## License
 
-Apache-2.0 (declared in [`Cargo.toml`](Cargo.toml)). A formal `LICENSE` file at the repo root is pending.
+AGPL-3.0-only (declared in [`Cargo.toml`](Cargo.toml)). Commercial licenses are available for organizations that need different terms — see the [Vision doc](docs/vision/VISION.md) for the dual-licensing rationale. A formal `LICENSE` file at the repo root is pending.

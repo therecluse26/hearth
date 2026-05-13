@@ -2928,11 +2928,7 @@ fn register_submit_impl(
             response.verification_token
         );
         let branding = realm.config().email_branding.clone();
-        let stored_verification = realm
-            .config()
-            .email_templates
-            .get("verification")
-            .cloned();
+        let stored_verification = realm.config().email_templates.get("verification").cloned();
         if let Err(e) = email_service.send_verification_email(
             &form.email,
             &verify_url,

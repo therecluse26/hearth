@@ -699,8 +699,7 @@ async fn webauthn_rp_id_mismatch_rejected() {
 
     // Build authenticator data with evil.com's RP-ID hash instead of example.com
     // RP-ID check happens before signature verification, so any signature bytes work.
-    let evil_auth_data =
-        webauthn_helper::auth_data_for_rp("evil.com", 1);
+    let evil_auth_data = webauthn_helper::auth_data_for_rp("evil.com", 1);
     let cdj = webauthn_helper::get_client_data_json(&auth_challenge, origin);
     let fake_sig = vec![0u8; 64]; // irrelevant — RP-ID check fires first
 
@@ -777,8 +776,7 @@ async fn webauthn_tampered_client_data_json_rejected() {
         )
         .expect("start authentication");
 
-    let tampered_cdj =
-        webauthn_helper::get_client_data_json(&auth_challenge, "https://evil.com");
+    let tampered_cdj = webauthn_helper::get_client_data_json(&auth_challenge, "https://evil.com");
     let (_, auth_data, _, _) =
         authenticator.build_authentication_response(&auth_challenge, origin, 1, None);
     let fake_sig = vec![0u8; 64]; // origin check fires before signature verification

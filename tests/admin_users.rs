@@ -1100,13 +1100,15 @@ async fn filter_users_by_status_returns_only_matching_status() {
     let body = resp_json(resp).await;
     let items = body["items"].as_array().expect("items array");
     assert!(
-        items.iter().all(|u| {
-            u["email"].as_str() != Some("status-active@example.com")
-        }),
+        items
+            .iter()
+            .all(|u| { u["email"].as_str() != Some("status-active@example.com") }),
         "active user must not appear in disabled filter results"
     );
     assert!(
-        items.iter().any(|u| u["email"] == "status-disabled@example.com"),
+        items
+            .iter()
+            .any(|u| u["email"] == "status-disabled@example.com"),
         "disabled user must appear in results"
     );
 }

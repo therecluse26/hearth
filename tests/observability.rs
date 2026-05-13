@@ -14,7 +14,9 @@ use hearth::audit::{AuditAction, CreateAuditEvent};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
 use hearth::protocol::http::{router, AppState};
-use hearth::storage::{EmbeddedStorageEngine, ScanEntry, StorageConfig, StorageEngine, StorageError};
+use hearth::storage::{
+    EmbeddedStorageEngine, ScanEntry, StorageConfig, StorageEngine, StorageError,
+};
 use tower::ServiceExt as _;
 
 // ── Fault-injectable storage wrapper ─────────────────────────────────────────
@@ -31,23 +33,16 @@ struct PartialFaultEngine {
 }
 
 impl StorageEngine for PartialFaultEngine {
-    fn get(
-        &self,
-        realm_id: &RealmId,
-        key: &[u8],
-    ) -> Result<Option<Vec<u8>>, StorageError> {
+    fn get(&self, realm_id: &RealmId, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         if self.block_reads.load(Ordering::Relaxed) {
-            return Err(StorageError::Io(std::io::Error::other("injected storage fault")));
+            return Err(StorageError::Io(std::io::Error::other(
+                "injected storage fault",
+            )));
         }
         self.inner.get(realm_id, key)
     }
 
-    fn put(
-        &self,
-        realm_id: &RealmId,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), StorageError> {
+    fn put(&self, realm_id: &RealmId, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
         self.inner.put(realm_id, key, value)
     }
 
@@ -103,7 +98,10 @@ async fn healthz_returns_200_always() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_string(resp).await;
-    assert!(body.contains("\"ok\""), "healthz body should contain ok; got: {body}");
+    assert!(
+        body.contains("\"ok\""),
+        "healthz body should contain ok; got: {body}"
+    );
 }
 
 /// `/readyz` returns `200 OK` when storage is accessible.
@@ -124,7 +122,10 @@ async fn readyz_returns_200_when_storage_healthy() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_to_string(resp).await;
-    assert!(body.contains("ready"), "body should indicate ready state; got: {body}");
+    assert!(
+        body.contains("ready"),
+        "body should indicate ready state; got: {body}"
+    );
 }
 
 /// `/readyz` returns `503 Service Unavailable` when the storage probe errors.
@@ -282,7 +283,10 @@ async fn metrics_audit_integrity_failure_increments() {
         .storage()
         .scan(&realm, b"audit:evt:", b"audit:evt;")
         .expect("scan audit event keys");
-    assert!(!entries.is_empty(), "should have at least one stored audit event");
+    assert!(
+        !entries.is_empty(),
+        "should have at least one stored audit event"
+    );
 
     let mut event_json: serde_json::Value =
         serde_json::from_slice(&entries[0].value).expect("deserialize stored event");
@@ -299,7 +303,10 @@ async fn metrics_audit_integrity_failure_increments() {
         .audit()
         .verify_integrity(&realm, None, None)
         .expect("verify_integrity should not I/O-error on tampered data");
-    assert!(!ok, "verify_integrity should return false for tampered chain");
+    assert!(
+        !ok,
+        "verify_integrity should return false for tampered chain"
+    );
 
     // The counter must have gone up by at least one.
     let failures_after = hearth::metrics::metrics()

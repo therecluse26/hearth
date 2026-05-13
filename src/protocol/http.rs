@@ -788,7 +788,12 @@ async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// sensitive business data (e.g. realm names in label sets).
 async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if !state.metrics_enabled {
-        return (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/plain")], String::new()).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            String::new(),
+        )
+            .into_response();
     }
     let body = crate::metrics::metrics().render();
     (
@@ -798,7 +803,8 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
             "text/plain; version=0.0.4; charset=utf-8",
         )],
         body,
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// Health check endpoint.
@@ -2646,22 +2652,17 @@ struct RealmBrandingResponse {
 
 /// Parses a realm UUID from a path segment, returning 400 on bad input.
 fn parse_realm_id(id: &str) -> Result<RealmId, Response> {
-    id.parse::<uuid::Uuid>()
-        .map(RealmId::new)
-        .map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid realm ID"})),
-            )
-                .into_response()
-        })
+    id.parse::<uuid::Uuid>().map(RealmId::new).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid realm ID"})),
+        )
+            .into_response()
+    })
 }
 
 /// Resolves a live realm by ID, returning 404 when absent.
-fn require_realm(
-    state: &AppState,
-    realm_id: &RealmId,
-) -> Result<crate::identity::Realm, Response> {
+fn require_realm(state: &AppState, realm_id: &RealmId) -> Result<crate::identity::Realm, Response> {
     match state.identity.get_realm(realm_id) {
         Ok(Some(r)) => Ok(r),
         Ok(None) => Err((

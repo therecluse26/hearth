@@ -870,8 +870,7 @@ async fn wrong_aud_rejected_by_validate_token() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let storage = std::sync::Arc::new(
-        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf()))
-            .expect("storage"),
+        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf())).expect("storage"),
     ) as std::sync::Arc<dyn StorageEngine>;
     let clock = std::sync::Arc::new(FakeClock::new(Timestamp::from_micros(
         1_700_000_000_000_000,
@@ -928,8 +927,7 @@ async fn wrong_aud_rejected_by_refresh_tokens() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let storage = std::sync::Arc::new(
-        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf()))
-            .expect("storage"),
+        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf())).expect("storage"),
     ) as std::sync::Arc<dyn StorageEngine>;
     let clock = std::sync::Arc::new(FakeClock::new(Timestamp::from_micros(
         1_700_000_000_000_000,
@@ -982,8 +980,7 @@ async fn wrong_aud_introspects_inactive() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let storage = std::sync::Arc::new(
-        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf()))
-            .expect("storage"),
+        EmbeddedStorageEngine::open(StorageConfig::dev(tmp.path().to_path_buf())).expect("storage"),
     ) as std::sync::Arc<dyn StorageEngine>;
     let clock = std::sync::Arc::new(FakeClock::new(Timestamp::from_micros(
         1_700_000_000_000_000,

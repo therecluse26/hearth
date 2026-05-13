@@ -433,7 +433,7 @@ curl -fsSL https://hearth.dev/install | sh
 hearth serve --dev
 
 # Open the admin console
-open http://localhost:9090
+open http://localhost:8420
 
 # Or: create a realm and application programmatically
 hearth realm create --name "my-app"

@@ -524,7 +524,10 @@ impl fmt::Display for IdentityError {
                 write!(f, "password was recently used and cannot be reused")
             }
             Self::AuthMethodNotAllowed { method } => {
-                write!(f, "authentication method '{method}' is not permitted by realm policy")
+                write!(
+                    f,
+                    "authentication method '{method}' is not permitted by realm policy"
+                )
             }
         }
     }

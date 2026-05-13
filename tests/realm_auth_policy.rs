@@ -73,10 +73,7 @@ async fn magic_link_allowed_when_in_allowed_methods() {
     let realm = create_realm_with_config(
         &harness,
         RealmConfig {
-            allowed_auth_methods: Some(vec![
-                "password".to_string(),
-                "magic_link".to_string(),
-            ]),
+            allowed_auth_methods: Some(vec!["password".to_string(), "magic_link".to_string()]),
             ..RealmConfig::default()
         },
     );
@@ -161,7 +158,11 @@ async fn password_complexity_enforced_on_set_password() {
     // Too short — should fail with a policy violation.
     let err = harness
         .identity()
-        .set_password(realm.id(), user.id(), &CleartextPassword::from_string("short1A".to_string()))
+        .set_password(
+            realm.id(),
+            user.id(),
+            &CleartextPassword::from_string("short1A".to_string()),
+        )
         .expect_err("short password should fail");
     assert!(
         matches!(err, IdentityError::InvalidInput { .. }),

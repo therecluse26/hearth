@@ -9,9 +9,10 @@ make setup
 ```
 
 This points git at the repo-managed hook directory
-(`git config core.hooksPath .githooks`). The only hook today is a
-**pre-commit** that auto-regenerates SDK types when you stage any
-`proto/**/*.proto` file:
+(`git config core.hooksPath .githooks`). The pre-commit hook handles
+two auto-regeneration tasks:
+
+**Proto/SDK regeneration** — when you stage any `proto/**/*.proto` file:
 
 - Runs `buf generate` (outputs to `sdks/typescript/src/generated/`
   and `sdks/go/generated/`).
@@ -26,6 +27,18 @@ drifts from the proto source of truth.
 CI still runs `make proto-check` as a belt-and-suspenders guard: if
 someone bypasses the hook with `git commit --no-verify` and pushes
 stale generated files, the merge is blocked.
+
+**CSS regeneration** — when you stage any template file, `ui/input.css`,
+or `ui/tailwind.config.js`:
+
+- Rebuilds `src/protocol/web/assets/app.css` via the Tailwind standalone
+  CLI at `ui/tailwindcss`.
+- Re-stages `app.css` so it lands in the same commit.
+- No-op when a commit touches no UI files.
+
+Run `make tailwind-install` once after cloning to download the Tailwind
+CLI. If it's missing the hook fails with instructions. CI runs
+`make css-check` as a belt-and-suspenders guard.
 
 ## Before you commit
 

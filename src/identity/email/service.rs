@@ -159,13 +159,7 @@ impl EmailService {
                 body,
                 &vars,
                 "password_reset",
-                || {
-                    templates::render_password_reset(
-                        url,
-                        &branding,
-                        self.custom_templates.as_ref(),
-                    )
-                },
+                || templates::render_password_reset(url, &branding, self.custom_templates.as_ref()),
                 || templates::render_password_reset(url, &branding, None),
             )?
         } else {
