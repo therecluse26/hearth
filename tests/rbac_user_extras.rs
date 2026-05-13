@@ -1,11 +1,11 @@
-//! Tests for user-level permission grant/revoke paths (AUTHZ_EXPANSION gap #6)
+//! Tests for user-level permission grant/revoke paths (`AUTHZ_EXPANSION` gap #6)
 //! and `AuditAction` variants `UserPermissionGranted` / `UserPermissionRevoked`.
 
 mod common;
 
 use hearth::audit::AuditAction;
 use hearth::core::{RealmId, Timestamp, UserId};
-use hearth::rbac::{Permission, RbacEngine, Scope, UserPermissionGrant};
+use hearth::rbac::{Permission, Scope, UserPermissionGrant};
 
 // ---------------------------------------------------------------------------
 // AuditAction round-trips

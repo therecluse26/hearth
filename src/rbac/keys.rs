@@ -187,8 +187,11 @@ pub(crate) fn encode_resource_scope(
     uri_hash: &str,
     scope_name: &str,
 ) -> Vec<u8> {
-    format!("{RESOURCE_SCOPE_PREFIX}{}:{uri_hash}:{scope_name}", realm_id.as_uuid())
-        .into_bytes()
+    format!(
+        "{RESOURCE_SCOPE_PREFIX}{}:{uri_hash}:{scope_name}",
+        realm_id.as_uuid()
+    )
+    .into_bytes()
 }
 
 /// Scan prefix for all resource-scope entries under a given URI hash.
@@ -246,6 +249,7 @@ pub(crate) fn user_permission_scan_prefix(realm_id: &RealmId, user_id: &UserId) 
 }
 
 /// Scan prefix for users holding an extra permission at a given scope.
+#[allow(dead_code)]
 pub(crate) fn user_permission_by_perm_scan_prefix(
     realm_id: &RealmId,
     permission: &str,

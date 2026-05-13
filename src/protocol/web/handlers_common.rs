@@ -204,7 +204,7 @@ pub(crate) fn server_error() -> Response {
 /// losing visual context.
 ///
 /// The wrapped form data is retrievable via `.0`, mirroring `Form<T>`.
-pub(crate) struct FriendlyForm<T>(pub(crate) T);
+pub struct FriendlyForm<T>(pub T);
 
 impl<T, S> axum::extract::FromRequest<S> for FriendlyForm<T>
 where
@@ -216,8 +216,8 @@ where
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
         match axum::Form::<T>::from_request(req, state).await {
             Ok(axum::Form(value)) => Ok(Self(value)),
-            Err(rej) => {
-                tracing::warn!(error = %rej, "form deserialization failed");
+            Err(rejection) => {
+                tracing::warn!(error = %rejection, "form deserialization failed");
                 Err(bad_request(
                     "We couldn't read that form. Please go back and try again.",
                 ))

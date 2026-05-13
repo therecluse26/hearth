@@ -33,7 +33,11 @@ pub(crate) fn sub_scan_prefix() -> Vec<u8> {
 /// Primary key for a delivery log entry.
 ///
 /// Format: `wh:dlv:{webhook_uuid}:{timestamp_19d}:{delivery_uuid}`
-pub(crate) fn dlv_key(webhook_id: &WebhookId, ts: Timestamp, delivery_id: &WebhookDeliveryId) -> Vec<u8> {
+pub(crate) fn dlv_key(
+    webhook_id: &WebhookId,
+    ts: Timestamp,
+    delivery_id: &WebhookDeliveryId,
+) -> Vec<u8> {
     format!(
         "{DLV_PREFIX}{}:{}:{}",
         webhook_id.as_uuid(),
@@ -74,7 +78,7 @@ mod tests {
     fn sub_key_format() {
         let id = WebhookId::generate();
         let key = sub_key(&id);
-        let s = std::str::from_utf8(&key).unwrap();
+        let s = std::str::from_utf8(&key).expect("valid utf8");
         assert!(s.starts_with("wh:sub:"));
         assert!(s.contains(&id.as_uuid().to_string()));
     }
@@ -91,7 +95,7 @@ mod tests {
         let did = WebhookDeliveryId::generate();
         let ts = Timestamp::from_micros(1_700_000_000_000_000);
         let key = dlv_key(&wid, ts, &did);
-        let s = std::str::from_utf8(&key).unwrap();
+        let s = std::str::from_utf8(&key).expect("valid utf8");
         assert!(s.starts_with("wh:dlv:"));
         assert!(s.contains(&wid.as_uuid().to_string()));
         assert!(s.contains(&did.as_uuid().to_string()));

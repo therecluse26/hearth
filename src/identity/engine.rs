@@ -130,7 +130,8 @@ use crate::identity::oidc::{
     StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
 };
 use crate::identity::tokens::{
-    self, Audience, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig, TokenPair,
+    self, Audience, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig,
+    TokenPair,
 };
 use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
@@ -1181,6 +1182,22 @@ impl EmbeddedIdentityEngine {
         })
     }
 
+    fn serialize_credential_history(
+        history: &[StoredCredential],
+    ) -> Result<Vec<u8>, IdentityError> {
+        serde_json::to_vec(history).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
+    }
+
+    fn deserialize_credential_history(
+        bytes: &[u8],
+    ) -> Result<Vec<StoredCredential>, IdentityError> {
+        serde_json::from_slice(bytes).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })
+    }
+
     /// Serializes a session to JSON bytes.
     fn serialize_session(session: &Session) -> Result<Vec<u8>, IdentityError> {
         serde_json::to_vec(session).map_err(|e| IdentityError::Serialization {
@@ -1338,10 +1355,7 @@ impl EmbeddedIdentityEngine {
             // grant. Per RFC 8707 §2, refresh tokens inherit the resource
             // set; the client cannot widen or narrow via refresh. A new
             // authorization request is required to change the resource set.
-            Audience::with_resource(
-                self.config.token.audience.clone(),
-                &family.resources[0],
-            )
+            Audience::with_resource(self.config.token.audience.clone(), &family.resources[0])
         };
 
         let new_access_claims = TokenClaims {
@@ -1628,6 +1642,64 @@ impl EmbeddedIdentityEngine {
         }
 
         Ok(None)
+    }
+}
+
+impl EmbeddedIdentityEngine {
+    /// Returns `{base_issuer}/realms/{name}` for per-realm OIDC scoping.
+    /// Falls back to `base_issuer` when the realm cannot be loaded.
+    fn realm_issuer_url(&self, realm_id: &RealmId) -> String {
+        let base = &self.config.oidc.issuer;
+        match self.get_realm(realm_id) {
+            Ok(Some(realm)) => format!("{base}/realms/{}", realm.name()),
+            _ => base.clone(),
+        }
+    }
+
+    fn build_discovery_document(&self, issuer: &str) -> OidcDiscoveryDocument {
+        OidcDiscoveryDocument {
+            issuer: issuer.to_string(),
+            authorization_endpoint: format!("{issuer}/authorize"),
+            token_endpoint: format!("{issuer}/token"),
+            jwks_uri: format!("{issuer}/.well-known/jwks.json"),
+            userinfo_endpoint: format!("{issuer}/userinfo"),
+            response_types_supported: vec!["code".to_string()],
+            response_modes_supported: vec!["query".to_string(), "fragment".to_string()],
+            subject_types_supported: vec!["public".to_string()],
+            id_token_signing_alg_values_supported: vec!["EdDSA".to_string()],
+            scopes_supported: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+            ],
+            claims_supported: vec![
+                "sub".to_string(),
+                "iss".to_string(),
+                "aud".to_string(),
+                "exp".to_string(),
+                "iat".to_string(),
+                "nonce".to_string(),
+                "email".to_string(),
+                "email_verified".to_string(),
+                "name".to_string(),
+            ],
+            token_endpoint_auth_methods_supported: vec![
+                "none".to_string(),
+                "client_secret_post".to_string(),
+            ],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            grant_types_supported: vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+                "client_credentials".to_string(),
+                "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+            ],
+            registration_endpoint: Some(format!("{issuer}/register")),
+            device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
+            revocation_endpoint: Some(format!("{issuer}/revoke")),
+            introspection_endpoint: Some(format!("{issuer}/introspect")),
+            resource_indicators_supported: true,
+        }
     }
 }
 
@@ -2571,11 +2643,66 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.get_user(realm_id, user_id)?
             .ok_or(IdentityError::UserNotFound)?;
 
-        // Hash and store
+        // Resolve history depth from the realm's password policy.
+        let history_depth = self
+            .get_realm(realm_id)?
+            .and_then(|r| {
+                r.config()
+                    .password_policy
+                    .as_ref()
+                    .and_then(|p| p.history_depth)
+            })
+            .unwrap_or(0);
+
+        // Check history before hashing to avoid the expensive hash on likely reuse.
+        if history_depth > 0 {
+            let hist_key = keys::encode_credential_history_key(user_id);
+            let hist_bytes = self
+                .storage
+                .get(realm_id, &hist_key)
+                .map_err(Self::storage_err)?;
+            if let Some(bytes) = hist_bytes {
+                let history = Self::deserialize_credential_history(&bytes)?;
+                for old_cred in &history {
+                    if credentials::verify_hash(password, &old_cred.hash)? {
+                        return Err(IdentityError::PasswordReused);
+                    }
+                }
+            }
+        }
+
         let now = self.clock.now().as_micros();
         let cred = credentials::hash_password(password, &self.config.credential, now)?;
         let cred_bytes = Self::serialize_credential(&cred)?;
         let cred_key = keys::encode_credential_key(user_id);
+
+        // Rotate the current credential into history before overwriting it.
+        if history_depth > 0 {
+            let old_bytes = self
+                .storage
+                .get(realm_id, &cred_key)
+                .map_err(Self::storage_err)?;
+            if let Some(bytes) = old_bytes {
+                let old_cred = Self::deserialize_credential(&bytes)?;
+                let hist_key = keys::encode_credential_history_key(user_id);
+                let hist_bytes = self
+                    .storage
+                    .get(realm_id, &hist_key)
+                    .map_err(Self::storage_err)?;
+                let mut history = if let Some(b) = hist_bytes {
+                    Self::deserialize_credential_history(&b)?
+                } else {
+                    Vec::new()
+                };
+                history.insert(0, old_cred);
+                history.truncate(history_depth);
+                let new_hist_bytes = Self::serialize_credential_history(&history)?;
+                self.storage
+                    .put(realm_id, &hist_key, &new_hist_bytes)
+                    .map_err(Self::storage_err)?;
+            }
+        }
+
         self.storage
             .put(realm_id, &cred_key, &cred_bytes)
             .map_err(Self::storage_err)?;
@@ -2645,6 +2772,21 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 self.storage
                     .put(realm_id, &cred_key, &upgraded_bytes)
                     .map_err(Self::storage_err)?;
+            }
+
+            // Enforce password expiry policy.
+            let max_age_days = self.get_realm(realm_id)?.and_then(|r| {
+                r.config()
+                    .password_policy
+                    .as_ref()
+                    .and_then(|p| p.max_age_days)
+            });
+            if let Some(days) = max_age_days {
+                let max_age_micros = i64::from(days) * 24 * 60 * 60 * 1_000_000;
+                let now = self.clock.now().as_micros();
+                if now - cred.created_at > max_age_micros {
+                    return Err(IdentityError::PasswordExpired);
+                }
             }
         } else {
             self.record_failed_attempt(realm_id, user_id);
@@ -2999,6 +3141,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             "token",
             &session_id.as_uuid().to_string(),
         )?;
+        let realm_issuer = self.realm_issuer_url(realm_id);
         self.signing_key.issue_token_pair(&IssueTokenRequest {
             sub: &user_id.to_string(),
             sid: &session_id.to_string(),
@@ -3006,6 +3149,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             oid: oid_ref,
             now,
             config: &self.config.token,
+            issuer_override: Some(realm_issuer),
             roles: &roles,
             groups: &groups,
             permissions: if permissions.is_empty() {
@@ -3663,50 +3807,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     fn oidc_discovery(&self) -> OidcDiscoveryDocument {
-        let issuer = &self.config.oidc.issuer;
-        OidcDiscoveryDocument {
-            issuer: issuer.clone(),
-            authorization_endpoint: format!("{issuer}/authorize"),
-            token_endpoint: format!("{issuer}/token"),
-            jwks_uri: format!("{issuer}/.well-known/jwks.json"),
-            userinfo_endpoint: format!("{issuer}/userinfo"),
-            response_types_supported: vec!["code".to_string()],
-            response_modes_supported: vec!["query".to_string(), "fragment".to_string()],
-            subject_types_supported: vec!["public".to_string()],
-            id_token_signing_alg_values_supported: vec!["EdDSA".to_string()],
-            scopes_supported: vec![
-                "openid".to_string(),
-                "profile".to_string(),
-                "email".to_string(),
-            ],
-            claims_supported: vec![
-                "sub".to_string(),
-                "iss".to_string(),
-                "aud".to_string(),
-                "exp".to_string(),
-                "iat".to_string(),
-                "nonce".to_string(),
-                "email".to_string(),
-                "email_verified".to_string(),
-                "name".to_string(),
-            ],
-            token_endpoint_auth_methods_supported: vec![
-                "none".to_string(),
-                "client_secret_post".to_string(),
-            ],
-            code_challenge_methods_supported: vec!["S256".to_string()],
-            grant_types_supported: vec![
-                "authorization_code".to_string(),
-                "refresh_token".to_string(),
-                "client_credentials".to_string(),
-                "urn:ietf:params:oauth:grant-type:device_code".to_string(),
-            ],
-            registration_endpoint: Some(format!("{issuer}/register")),
-            device_authorization_endpoint: Some(format!("{issuer}/device/authorize")),
-            revocation_endpoint: Some(format!("{issuer}/revoke")),
-            introspection_endpoint: Some(format!("{issuer}/introspect")),
-            resource_indicators_supported: true,
-        }
+        self.build_discovery_document(&self.config.oidc.issuer.clone())
+    }
+
+    fn realm_oidc_discovery(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<OidcDiscoveryDocument, IdentityError> {
+        let realm = self
+            .get_realm(realm_id)?
+            .ok_or(IdentityError::RealmNotFound)?;
+        let issuer = format!("{}/realms/{}", self.config.oidc.issuer, realm.name());
+        Ok(self.build_discovery_document(&issuer))
     }
 
     // ===== OAuth 2.0 Extended (Step 22) =====
@@ -4548,6 +4660,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             credential_id: info.credential_id().to_vec(),
             algorithm: info.algorithm(),
             discoverable,
+            name: None,
         };
         stored.discoverable = discoverable;
 
@@ -4743,6 +4856,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 credential_id: cred_id,
                 algorithm: stored.algorithm,
                 discoverable: stored.discoverable,
+                name: stored.name.clone(),
             });
         }
 
@@ -4797,6 +4911,44 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             "credential",
             &user_id.as_uuid().to_string(),
         )?;
+
+        Ok(())
+    }
+
+    fn rename_webauthn_credential(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        credential_id: &[u8],
+        name: &str,
+    ) -> Result<(), IdentityError> {
+        let cred_id_b64 = URL_SAFE_NO_PAD.encode(credential_id);
+        let cred_key = keys::encode_webauthn_credential(user_id, &cred_id_b64);
+
+        let existing = self
+            .storage
+            .get(realm_id, &cred_key)
+            .map_err(Self::storage_err)?
+            .ok_or(IdentityError::WebAuthnCredentialNotFound)?;
+
+        let mut stored: StoredWebAuthnCredential =
+            serde_json::from_slice(&existing).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+
+        let trimmed = name.trim();
+        stored.name = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+
+        let bytes = serde_json::to_vec(&stored).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(realm_id, &cred_key, &bytes)
+            .map_err(Self::storage_err)?;
 
         Ok(())
     }
@@ -12247,7 +12399,7 @@ mod tests {
                     display_name: "Alice".to_string(),
                     first_name: "Alice".to_string(),
                     last_name: "Example".to_string(),
-                                attributes: Default::default(),
+                    attributes: Default::default(),
                 },
             )
             .expect("create")

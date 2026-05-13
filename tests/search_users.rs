@@ -32,7 +32,7 @@ async fn search_users_by_email_prefix() {
                 display_name: "Alice Smith".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create alice");
@@ -44,7 +44,7 @@ async fn search_users_by_email_prefix() {
                 display_name: "Bob Jones".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create bob");
@@ -70,7 +70,7 @@ async fn search_users_by_display_name() {
                 display_name: "Charlie Brown".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -96,7 +96,7 @@ async fn search_users_case_insensitive() {
                 display_name: "ALICE SMITH".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -128,7 +128,7 @@ async fn search_users_respects_limit() {
                     display_name: format!("User {i}"),
                     first_name: String::new(),
                     last_name: String::new(),
-                                attributes: Default::default(),
+                    attributes: Default::default(),
                 },
             )
             .expect("create user");
@@ -154,7 +154,7 @@ async fn search_users_empty_query_returns_empty() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -181,7 +181,7 @@ async fn search_users_no_matches_returns_empty() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");

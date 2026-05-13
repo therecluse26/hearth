@@ -5,6 +5,7 @@
 //! means partial YAML files work seamlessly.
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 use crate::identity::claims_config::ClaimMapping;
@@ -968,6 +969,9 @@ pub struct RealmYamlConfig {
     /// Per-realm auth policy overrides (MFA, password policy, rate limits, token TTLs).
     #[serde(default)]
     pub auth: Option<RealmAuthYaml>,
+    /// SCIM 2.0 provisioning settings for this realm.
+    #[serde(default)]
+    pub scim: Option<RealmScimYaml>,
     /// Declarative OAuth 2.0 application (client) definitions.
     /// Reconciled with storage at startup.
     #[serde(default)]
@@ -1006,6 +1010,17 @@ pub struct RealmYamlConfig {
     /// Optional groups declared for this realm.
     #[serde(default)]
     pub groups: Option<Vec<GroupYamlConfig>>,
+}
+
+/// YAML for `realms.{name}.scim.*`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RealmScimYaml {
+    /// Static bearer token accepted by `/scim/v2/*` for this realm.
+    ///
+    /// Supports `${ENV_VAR}` substitution. The plaintext token is hashed
+    /// before it is persisted into the runtime realm config.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
 }
 
 /// YAML for a single SAML SP registration (Hearth as IdP issues to this SP).
@@ -1110,6 +1125,15 @@ pub struct FederationProviderYaml {
     /// Scopes override. Default is the preset's or `["openid","email","profile"]`.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    /// Per-claim renames for OIDC/OAuth2 connectors: maps a Hearth field
+    /// name (e.g. `"email"`, `"name"`) to the upstream claim name the IdP
+    /// actually sends (e.g. `"upn"`, `"preferred_username"`).
+    ///
+    /// Used for IdPs that don't follow the standard OIDC claim names, such
+    /// as Azure AD (`"email": "upn"`) or custom Okta apps.
+    /// Ignored for `type: saml` (use `attribute_map` instead).
+    #[serde(default)]
+    pub claim_mappings: Option<std::collections::BTreeMap<String, String>>,
 
     // --- SAML-specific fields (when `type: saml`) ---
     /// SAML IdP entity ID (SAML issuer).
@@ -1133,6 +1157,32 @@ pub struct FederationProviderYaml {
     /// Attribute mapping: Hearth field → SAML attribute URI.
     #[serde(default)]
     pub attribute_map: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl FederationProviderYaml {
+    /// Returns a blank OIDC provider config with all optional fields unset.
+    pub fn default_oidc() -> Self {
+        Self {
+            kind: "oidc".to_string(),
+            display_name: None,
+            issuer: None,
+            authorization_endpoint: None,
+            token_endpoint: None,
+            userinfo_endpoint: None,
+            jwks_uri: None,
+            client_id: None,
+            client_secret: None,
+            scopes: None,
+            claim_mappings: None,
+            entity_id: None,
+            sso_url: None,
+            slo_url: None,
+            idp_certificate_pem: None,
+            sign_authn_requests: None,
+            want_assertions_signed: None,
+            attribute_map: None,
+        }
+    }
 }
 
 /// Parses a human-readable duration string into microseconds.
@@ -1169,6 +1219,13 @@ pub fn parse_duration_to_micros(s: &str) -> Result<i64, String> {
         .map_err(|e| format!("invalid duration number '{num_str}': {e}"))?;
 
     Ok(value * multiplier)
+}
+
+fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl RealmYamlConfig {
@@ -1209,6 +1266,13 @@ impl RealmYamlConfig {
 
         // Map auth policy fields from the YAML `auth:` block (if present).
         let auth = self.auth.as_ref();
+        let scim_bearer_token_hash = self
+            .scim
+            .as_ref()
+            .and_then(|s| s.bearer_token.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(sha256_hex);
 
         let mfa_required = auth.and_then(|a| a.mfa_required).or(global.mfa_required);
         let mfa_methods = auth.and_then(|a| a.mfa_methods.clone());
@@ -1492,6 +1556,9 @@ impl RealmYamlConfig {
             max_failed_logins,
             lockout_duration_micros,
             passkey_requires_mfa,
+            webauthn_required: None,
+            webauthn_resident_key: None,
+            webauthn_user_verification: None,
             registration_policy,
             dcr_policy,
             // Realm-level federation link mode. `None` → `Confirm`
@@ -1508,6 +1575,7 @@ impl RealmYamlConfig {
             protected_resources,
             claim_profile,
             groups,
+            scim_bearer_token_hash,
         })
     }
 }
@@ -1598,6 +1666,23 @@ mod tests {
             .to_realm_config(&AuthConfig::default(), None)
             .expect("to_realm_config");
         assert!(cfg.web_theme_name.is_none());
+    }
+
+    #[test]
+    fn to_realm_config_hashes_scim_bearer_token() {
+        let yaml = RealmYamlConfig {
+            scim: Some(RealmScimYaml {
+                bearer_token: Some("scim-secret-token".to_string()),
+            }),
+            ..RealmYamlConfig::default()
+        };
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert_eq!(
+            cfg.scim_bearer_token_hash.as_deref(),
+            Some("31c5b57bb0a5e7b9a064b0d08eaa2a74d532e36a261d02510120e45466187272")
+        );
     }
 
     #[test]

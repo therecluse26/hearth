@@ -118,7 +118,7 @@ pub fn parse_logout_request(xml: &[u8]) -> Result<LogoutRequest, IdentityError> 
     loop {
         let ev = reader.read_event_into(&mut buf);
         match ev {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) => {
                 if is_element(e, ns::SAMLP, "LogoutRequest") {
                     id = attr(e, "ID");
                     issue_instant = attr(e, "IssueInstant");
@@ -177,7 +177,7 @@ pub fn parse_logout_response(xml: &[u8]) -> Result<LogoutResponse, IdentityError
     loop {
         let ev = reader.read_event_into(&mut buf);
         match ev {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) => {
                 if is_element(e, ns::SAMLP, "LogoutResponse") {
                     id = attr(e, "ID");
                     in_response_to = attr(e, "InResponseTo");

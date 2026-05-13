@@ -84,7 +84,7 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<AuthnRequest, IdentityError> {
     loop {
         let ev = reader.read_event_into(&mut buf);
         match ev {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) => {
                 if is_element(e, ns::SAMLP, "AuthnRequest") {
                     id = attr(e, "ID");
                     issue_instant = attr(e, "IssueInstant");

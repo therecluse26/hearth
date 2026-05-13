@@ -8,7 +8,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::TestHarness;
-use hearth::core::{IdpId, RealmId, Timestamp};
+use hearth::core::{IdpId, Timestamp};
 use hearth::identity::federation::saml::{
     build_post_form_html, build_response_xml, sign_element, verify_signed_element, ResponseBuilder,
     SamlIdpConfig, SamlNameIdFormat, SamlServiceProvider, SamlSpOutcome, SamlSpService,
@@ -22,7 +22,7 @@ fn cert_der_to_pem(der: &[u8]) -> String {
     let b64 = B64.encode(der);
     let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
     for chunk in b64.as_bytes().chunks(64) {
-        out.push_str(std::str::from_utf8(chunk).unwrap());
+        out.push_str(std::str::from_utf8(chunk).expect("base64 is valid utf8"));
         out.push('\n');
     }
     out.push_str("-----END CERTIFICATE-----\n");
@@ -34,7 +34,7 @@ async fn sp_happy_path_accepts_well_formed_assertion() {
     let h = TestHarness::embedded().await.expect("harness");
 
     // Set up: create a realm to host the SP side.
-    let realm = h
+    let _realm = h
         .identity()
         .create_realm(&CreateRealmRequest {
             name: "acme".into(),
@@ -134,7 +134,10 @@ async fn sp_rejects_tampered_assertion() {
     let mut signed = sign_element(xml.as_bytes(), "_r", &idp_key).expect("sign");
 
     // Tamper: replace the email character.
-    let pos = signed.windows(1).position(|w| w == b"a").unwrap();
+    let pos = signed
+        .windows(1)
+        .position(|w| w == b"a")
+        .expect("byte found");
     signed[pos] = b'X';
 
     let outcome = SamlSpService::complete(

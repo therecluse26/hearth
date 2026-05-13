@@ -55,9 +55,11 @@ impl WebhookEngine for EmbeddedWebhookEngine {
     fn get(&self, realm_id: &RealmId, id: &WebhookId) -> Result<WebhookSubscription, WebhookError> {
         let key = keys::sub_key(id);
         match self.storage.get(realm_id, &key)? {
-            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| WebhookError::Serialization {
-                reason: e.to_string(),
-            }),
+            Some(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| WebhookError::Serialization {
+                    reason: e.to_string(),
+                })
+            }
             None => Err(WebhookError::NotFound { id: id.clone() }),
         }
     }
@@ -211,9 +213,7 @@ mod tests {
         let config = crate::storage::StorageConfig::dev(temp_dir.path().to_path_buf());
         // Leak the temp_dir so the storage files outlive this function.
         std::mem::forget(temp_dir);
-        let storage = Arc::new(
-            EmbeddedStorageEngine::open(config).expect("storage"),
-        );
+        let storage = Arc::new(EmbeddedStorageEngine::open(config).expect("storage"));
         let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
         EmbeddedWebhookEngine::new(storage, clock)
     }
@@ -249,7 +249,10 @@ mod tests {
             enabled: true,
             event_filters: vec![],
         };
-        assert!(matches!(engine.create(&req), Err(WebhookError::SecretTooShort)));
+        assert!(matches!(
+            engine.create(&req),
+            Err(WebhookError::SecretTooShort)
+        ));
     }
 
     #[test]
@@ -263,7 +266,10 @@ mod tests {
             enabled: true,
             event_filters: vec![],
         };
-        assert!(matches!(engine.create(&req), Err(WebhookError::InvalidUrl { .. })));
+        assert!(matches!(
+            engine.create(&req),
+            Err(WebhookError::InvalidUrl { .. })
+        ));
     }
 
     #[test]
@@ -320,12 +326,18 @@ mod tests {
             engine.create(&req).expect("create");
         }
         let all = engine
-            .list(&WebhookQuery { realm_id: realm.clone(), enabled_only: false })
+            .list(&WebhookQuery {
+                realm_id: realm.clone(),
+                enabled_only: false,
+            })
             .expect("list");
         assert_eq!(all.len(), 3);
 
         let active = engine
-            .list(&WebhookQuery { realm_id: realm, enabled_only: true })
+            .list(&WebhookQuery {
+                realm_id: realm,
+                enabled_only: true,
+            })
             .expect("list enabled");
         assert_eq!(active.len(), 2);
     }

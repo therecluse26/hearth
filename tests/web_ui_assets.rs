@@ -22,7 +22,7 @@ use hearth::protocol::web::{
     self, assert_app_css_sane, assert_bytes_sane, etag_for_bytes, CookieSecret, WebState,
     APP_CSS_FALLBACK, APP_CSS_MIN_BYTES, APP_CSS_SENTINEL,
 };
-use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
+use hearth::rbac::EmbeddedRbacEngine;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig};
 use tower::ServiceExt;
 

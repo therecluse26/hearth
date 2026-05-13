@@ -67,7 +67,7 @@ pub fn build_response_xml(b: &ResponseBuilder<'_>) -> String {
         ));
         for v in values {
             attrs_xml.push_str(&format!(
-                r#"<saml:AttributeValue>{v}</saml:AttributeValue>"#,
+                r"<saml:AttributeValue>{v}</saml:AttributeValue>",
                 v = escape_text(v)
             ));
         }
@@ -136,7 +136,7 @@ pub fn parse_response(xml: &[u8]) -> Result<SamlResponse, IdentityError> {
     loop {
         let ev = reader.read_event_into(&mut buf);
         match ev {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) => {
                 if is_element(e, ns::SAMLP, "Response") {
                     response_id = attr(e, "ID");
                     in_response_to = attr(e, "InResponseTo");

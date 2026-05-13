@@ -60,7 +60,7 @@ async fn full_realm_lifecycle() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -130,7 +130,7 @@ async fn multi_realm_token_isolation() {
                 display_name: "Alice A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user A");
@@ -246,7 +246,7 @@ async fn adversarial_cross_realm_session_injection() {
                 display_name: "Victim".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -299,7 +299,7 @@ async fn adversarial_realm_id_spoofing() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");

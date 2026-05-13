@@ -722,12 +722,11 @@ impl RsaSigningKey {
         use rsa::pkcs8::DecodePrivateKey as _;
         use rsa::traits::PublicKeyParts as _;
 
-        let priv_key =
-            rsa::RsaPrivateKey::from_pkcs8_der(&self.pkcs8_doc.0).map_err(|e| {
-                IdentityError::SigningError {
-                    reason: format!("RSA PKCS#8 decode for JWK failed: {e}"),
-                }
-            })?;
+        let priv_key = rsa::RsaPrivateKey::from_pkcs8_der(&self.pkcs8_doc.0).map_err(|e| {
+            IdentityError::SigningError {
+                reason: format!("RSA PKCS#8 decode for JWK failed: {e}"),
+            }
+        })?;
         let n_bytes = priv_key.n().to_bytes_be();
         let e_bytes = priv_key.e().to_bytes_be();
 
@@ -948,7 +947,10 @@ mod tests {
         let decoded: TokenClaims = serde_json::from_slice(&decoded_bytes).expect("claims parse");
         assert_eq!(decoded.sub, claims.sub, "sub mismatch");
         assert_eq!(decoded.iss, "hearth", "iss mismatch");
-        assert!(matches!(&decoded.aud, Audience::Single(a) if a == "hearth"), "aud mismatch");
+        assert!(
+            matches!(&decoded.aud, Audience::Single(a) if a == "hearth"),
+            "aud mismatch"
+        );
         assert_eq!(decoded.exp, now_secs + 900, "exp mismatch");
         assert_eq!(decoded.iat, now_secs, "iat mismatch");
         assert_eq!(decoded.sid, claims.sid, "sid mismatch");
@@ -1156,9 +1158,7 @@ mod tests {
         let jwks = key.to_jwks();
         let jwk = &jwks.keys[0];
         let x_b64 = jwk.x.as_deref().expect("Ed25519 JWK must include x");
-        let pub_bytes = URL_SAFE_NO_PAD
-            .decode(x_b64)
-            .expect("decode pub from JWKS");
+        let pub_bytes = URL_SAFE_NO_PAD.decode(x_b64).expect("decode pub from JWKS");
 
         // Verify the token using the JWKS-provided public key
         let validated = verify_token_signature(&token, &pub_bytes).expect("should verify");
@@ -1470,7 +1470,8 @@ mod tests {
             "token_type":"access",
             "permissions":[]
         }"#;
-        let claims: TokenClaims = serde_json::from_str(json).expect("should deserialize old-format aud");
+        let claims: TokenClaims =
+            serde_json::from_str(json).expect("should deserialize old-format aud");
         assert!(
             matches!(&claims.aud, Audience::Single(a) if a == "hearth"),
             "old single-string aud should deserialize into Audience::Single"
@@ -1485,7 +1486,10 @@ mod tests {
         let uri = Uri::try_from("https://api.example.com".to_string()).expect("valid URI");
         let aud = Audience::with_resource("hearth", &uri);
         let json = serde_json::to_string(&aud).expect("serialize");
-        assert!(json.starts_with('['), "multi-audience should serialize as JSON array, got: {json}");
+        assert!(
+            json.starts_with('['),
+            "multi-audience should serialize as JSON array, got: {json}"
+        );
         assert!(json.contains("hearth"));
         assert!(json.contains("https://api.example.com"));
     }

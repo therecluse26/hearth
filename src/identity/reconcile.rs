@@ -29,9 +29,7 @@ use crate::identity::{
     CreateOrganizationRequest, CreateRealmRequest, IdentityEngine, ImportClientRequest,
     OrganizationConfig, RealmConfig, RealmStatus, UpdateOrganizationRequest, UpdateRealmRequest,
 };
-use crate::rbac::{
-    Group, GroupId, Permission, ProtectedResource, RbacEngine, ScopeBundle,
-};
+use crate::rbac::{Group, GroupId, Permission, ProtectedResource, RbacEngine, ScopeBundle};
 
 /// Report of what realm reconciliation did.
 #[derive(Debug, Default)]
@@ -244,8 +242,7 @@ fn reconcile_rbac_for_realm(
             })
             .collect();
         if !domain_resources.is_empty() {
-            if let Err(e) = rbac.reconcile_protected_resources(realm_id, &domain_resources)
-            {
+            if let Err(e) = rbac.reconcile_protected_resources(realm_id, &domain_resources) {
                 tracing::warn!(
                     realm = realm_name,
                     error = %e,
@@ -859,7 +856,7 @@ fn build_idp_config(
         scopes,
         client_id: provider.client_id.clone().unwrap_or_default(),
         client_secret: FederationSecret::new(provider.client_secret.clone().unwrap_or_default()),
-        claim_mappings: std::collections::BTreeMap::new(),
+        claim_mappings: provider.claim_mappings.clone().unwrap_or_default(),
         created_at: now,
         updated_at: now,
     })

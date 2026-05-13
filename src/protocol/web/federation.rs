@@ -191,15 +191,24 @@ async fn callback_impl(state: Arc<WebState>, realm_id: RealmId, q: CallbackQuery
             // empty. The engine validator rejects an empty display
             // name, so synthesize one from the email local-part and
             // fall through to the external sub as the last resort.
-            let email = if identity.email.is_empty() {
+            let email_taken = if identity.email.is_empty() {
+                false
+            } else {
+                match state.identity.get_user_by_email(&realm_id, &identity.email) {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "federation email collision lookup failed");
+                        return handlers_common::server_error();
+                    }
+                }
+            };
+            let email = if identity.email.is_empty() || email_taken {
                 // Synthesized email for providers that don't expose
                 // one (GitHub private-email users, or minimal-scope
-                // flows).
-                format!(
-                    "{}@fed.{}.local",
-                    identity.external_sub,
-                    bag.idp_id.as_uuid()
-                )
+                // flows), and for "treat as separate" cases where the
+                // upstream email collides with an existing local user.
+                synthetic_federation_email(&bag.idp_id, &identity.external_sub)
             } else {
                 identity.email.clone()
             };
@@ -219,7 +228,7 @@ async fn callback_impl(state: Arc<WebState>, realm_id: RealmId, q: CallbackQuery
                 display_name,
                 first_name: identity.first_name.clone(),
                 last_name: identity.last_name.clone(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             };
             let new_user = match state.identity.create_user(&realm_id, &req) {
                 Ok(u) => u,
@@ -522,6 +531,10 @@ fn now_micros() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
+}
+
+fn synthetic_federation_email(idp_id: &IdpId, external_sub: &str) -> String {
+    format!("{external_sub}@fed.{}.local", idp_id.as_uuid())
 }
 
 fn audit_federation_started(state: &Arc<WebState>, realm: &RealmId, idp_name: &str) {

@@ -701,8 +701,7 @@ async fn run_serve(
             Arc::clone(&storage) as Arc<dyn StorageEngine>,
             Arc::clone(&clock),
         ));
-    let (webhook_tx, webhook_rx) =
-        hearth::webhook::dispatcher::audit_event_channel();
+    let (webhook_tx, webhook_rx) = hearth::webhook::dispatcher::audit_event_channel();
 
     // Wrap the raw audit engine so every append broadcasts to the dispatcher.
     let raw_audit: Arc<dyn hearth::audit::AuditEngine> = Arc::new(EmbeddedAuditEngine::new(
@@ -721,17 +720,23 @@ async fn run_serve(
     ));
 
     let app_state = if config.dev_mode {
-        Arc::new(AppState::new_dev(
-            Arc::clone(&identity_engine),
-            Arc::clone(&rbac_engine),
-            Arc::clone(&audit_engine),
-        ).with_webhook(Arc::clone(&webhook_engine)))
+        Arc::new(
+            AppState::new_dev(
+                Arc::clone(&identity_engine),
+                Arc::clone(&rbac_engine),
+                Arc::clone(&audit_engine),
+            )
+            .with_webhook(Arc::clone(&webhook_engine)),
+        )
     } else {
-        Arc::new(AppState::new(
-            Arc::clone(&identity_engine),
-            Arc::clone(&rbac_engine),
-            Arc::clone(&audit_engine),
-        ).with_webhook(Arc::clone(&webhook_engine)))
+        Arc::new(
+            AppState::new(
+                Arc::clone(&identity_engine),
+                Arc::clone(&rbac_engine),
+                Arc::clone(&audit_engine),
+            )
+            .with_webhook(Arc::clone(&webhook_engine)),
+        )
     };
 
     // Build server address

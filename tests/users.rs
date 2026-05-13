@@ -26,7 +26,7 @@ async fn create_and_read_user_by_id() {
                 display_name: "Alice Smith".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create");
@@ -58,7 +58,7 @@ async fn create_and_read_user_by_email() {
                 display_name: "Bob".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create");
@@ -90,7 +90,7 @@ async fn update_user_fields() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create");
@@ -130,7 +130,7 @@ async fn delete_user_removes_from_both_indexes() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create");
@@ -168,7 +168,7 @@ async fn duplicate_email_rejected() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("first create");
@@ -182,7 +182,7 @@ async fn duplicate_email_rejected() {
                 display_name: "Other".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect_err("should fail");
@@ -211,7 +211,7 @@ async fn delete_frees_email_for_reuse() {
                 display_name: "Alice 1".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create");
@@ -231,7 +231,7 @@ async fn delete_frees_email_for_reuse() {
                 display_name: "Alice 2".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("re-create should succeed");
@@ -258,7 +258,7 @@ async fn cross_realm_isolation() {
                 display_name: "Alice A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create in realm A");
@@ -273,7 +273,7 @@ async fn cross_realm_isolation() {
                 display_name: "Alice B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create in realm B should succeed");

@@ -200,7 +200,7 @@ async fn list_users_without_search_returns_paginated_results() {
     let body = resp_json(resp).await;
     // Should include at least the newly created user and the admin user.
     assert!(
-        body["items"].as_array().expect("items").len() >= 1,
+        !body["items"].as_array().expect("items").is_empty(),
         "at least one user"
     );
 }

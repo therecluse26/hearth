@@ -577,6 +577,19 @@ pub trait IdentityEngine: Send + Sync {
         credential_id: &[u8],
     ) -> Result<(), IdentityError>;
 
+    /// Sets a user-supplied display name on an existing `WebAuthn` credential.
+    ///
+    /// The name is cosmetic only (e.g., "MacBook Touch ID") and does not affect
+    /// the cryptographic ceremony. Returns `WebAuthnCredentialNotFound` if the
+    /// credential does not exist or belongs to a different user.
+    fn rename_webauthn_credential(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        credential_id: &[u8],
+        name: &str,
+    ) -> Result<(), IdentityError>;
+
     // ===== Magic Link / Passwordless (Step 25) =====
 
     /// Requests a magic link token for the given email address.

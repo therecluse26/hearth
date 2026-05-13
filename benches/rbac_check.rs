@@ -5,7 +5,7 @@
 //!
 //! Targets (from `docs/specs/AUTHORIZATION.md` § 10):
 //! - JWT payload decode + permission lookup: p99 < 1 μs
-//! - In-memory HashSet `contains` over the claim set: p99 < 100 ns
+//! - In-memory `HashSet` `contains` over the claim set: p99 < 100 ns
 
 use std::collections::HashSet;
 

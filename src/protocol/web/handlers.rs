@@ -158,7 +158,7 @@ pub(super) struct FederationButton {
 /// Login form template.
 #[derive(Template)]
 #[template(path = "ui/login.html")]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools, dead_code)]
 struct LoginTemplate {
     error: Option<String>,
     return_to: Option<String>,
@@ -775,7 +775,9 @@ fn login_form_impl(
     let return_to = query.return_to.as_deref().and_then(sanitize_return_to);
     let locale = resolve_login_locale(
         query.locale.as_deref(),
-        headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()),
+        headers
+            .get(header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
     );
     let (realm, action_prefix) = match resolve_for_source(&state, source, false) {
         PreAuthRealm::Ok {
@@ -888,7 +890,9 @@ fn login_submit_impl(
     let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
     let locale = resolve_login_locale(
         form.locale.as_deref(),
-        headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()),
+        headers
+            .get(header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
     );
     let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
 
@@ -1671,9 +1675,7 @@ pub async fn mfa_enroll_required_submit(
     match verify_result {
         Ok(()) => {}
         Err(IdentityError::InvalidMfaCode) => {
-            return err_response(
-                "Invalid code. Please re-scan the QR code and try again.",
-            );
+            return err_response("Invalid code. Please re-scan the QR code and try again.");
         }
         Err(IdentityError::MfaNotEnabled) => {
             return Redirect::to("/ui/mfa-enroll-required").into_response();

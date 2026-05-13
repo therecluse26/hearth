@@ -508,6 +508,18 @@ pub struct RealmConfig {
     /// When `Some(true)`, passkey auth is treated like password auth
     /// with respect to MFA gating.
     pub passkey_requires_mfa: Option<bool>,
+    /// Whether passkeys are required for all users in this realm.
+    /// When `Some(true)`, users must register a passkey; password-only
+    /// login is rejected at the MFA gate.
+    pub webauthn_required: Option<bool>,
+    /// `residentKey` preference sent in `authenticatorSelection` during
+    /// registration. Values: `"required"`, `"preferred"`, `"discouraged"`.
+    /// `None` inherits the engine default (`"preferred"`).
+    pub webauthn_resident_key: Option<String>,
+    /// `userVerification` preference sent during registration and
+    /// authentication ceremonies. Values: `"required"`, `"preferred"`,
+    /// `"discouraged"`. `None` inherits the engine default (`"preferred"`).
+    pub webauthn_user_verification: Option<String>,
     /// Who may self-register in this realm. `None` means `Disabled`.
     pub registration_policy: Option<RegistrationPolicy>,
     /// Whether dynamic client registration (RFC 7591) is enabled. `None` means `Disabled`.
@@ -535,6 +547,12 @@ pub struct RealmConfig {
     /// YAML-authored claim profile overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_profile: Option<ClaimProfile>,
+    /// SHA-256 hash of the realm-scoped SCIM bearer token.
+    ///
+    /// The plaintext token is intended to remain in configuration input
+    /// only; persisted realm records store just the hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scim_bearer_token_hash: Option<String>,
 }
 
 /// A realm record.
@@ -856,6 +874,7 @@ impl OrganizationMembership {
     }
 
     /// Replaces the additional role set.
+    #[allow(dead_code)]
     pub(crate) fn set_additional_roles(&mut self, roles: Vec<String>) {
         self.additional_roles = roles;
     }

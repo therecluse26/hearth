@@ -17,6 +17,7 @@ pub mod identity {
         clippy::match_single_binding,
         clippy::elidable_lifetime_names,
         clippy::doc_markdown,
+        clippy::similar_names,
         mismatched_lifetime_syntaxes
     )]
     pub mod v1 {
@@ -36,6 +37,7 @@ pub mod rbac {
         clippy::match_single_binding,
         clippy::elidable_lifetime_names,
         clippy::doc_markdown,
+        clippy::similar_names,
         mismatched_lifetime_syntaxes
     )]
     pub mod v1 {
@@ -55,6 +57,7 @@ pub mod events {
         clippy::match_single_binding,
         clippy::elidable_lifetime_names,
         clippy::doc_markdown,
+        clippy::similar_names,
         mismatched_lifetime_syntaxes
     )]
     pub mod v1 {

@@ -9,7 +9,7 @@ mod common;
 use hearth::core::RealmId;
 use hearth::identity::{
     AuthenticationOptions, CompleteAuthenticationParams, CreateRealmRequest, CreateUserRequest,
-    RegistrationOptions, User,
+    IdentityError, RegistrationOptions, User,
 };
 
 /// Helper: creates a real realm with a signing key.
@@ -35,7 +35,7 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
                 display_name: "WebAuthn Test User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user")
@@ -445,4 +445,83 @@ async fn webauthn_credential_management() {
         .expect("auth with key2");
 
     assert_eq!(result.user_id(), user.id());
+}
+
+// ===== Scenario D3: Credential naming and rename =====
+//
+// register → list (name=None) → rename → list (name=Some("...")) →
+// rename to empty → list (name=None) → rename unknown cred → NotFound
+
+#[tokio::test]
+async fn webauthn_credential_naming() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    let origin = "https://example.com";
+
+    let auth = webauthn_helper::TestAuthenticator::new("example.com");
+
+    // Register
+    let challenge = harness
+        .identity()
+        .start_webauthn_registration(
+            &realm,
+            user.id(),
+            &RegistrationOptions {
+                rp_id: "example.com".to_string(),
+                discoverable: false,
+            },
+        )
+        .expect("start registration");
+
+    let (cdj, att) = auth.build_registration_response(&challenge, origin);
+    let cred = harness
+        .identity()
+        .complete_webauthn_registration(&realm, user.id(), &cdj, &att, origin, false)
+        .expect("complete registration");
+
+    // Name is None after registration
+    let creds = harness
+        .identity()
+        .list_webauthn_credentials(&realm, user.id())
+        .expect("list");
+    assert_eq!(creds.len(), 1);
+    assert_eq!(creds[0].name(), None, "name should start as None");
+
+    // Rename
+    harness
+        .identity()
+        .rename_webauthn_credential(&realm, user.id(), cred.credential_id(), "MacBook Touch ID")
+        .expect("rename");
+
+    let creds = harness
+        .identity()
+        .list_webauthn_credentials(&realm, user.id())
+        .expect("list after rename");
+    assert_eq!(creds[0].name(), Some("MacBook Touch ID"));
+
+    // Rename to empty string clears the name
+    harness
+        .identity()
+        .rename_webauthn_credential(&realm, user.id(), cred.credential_id(), "   ")
+        .expect("rename to blank");
+
+    let creds = harness
+        .identity()
+        .list_webauthn_credentials(&realm, user.id())
+        .expect("list after blank rename");
+    assert_eq!(creds[0].name(), None, "blank rename should clear name");
+
+    // Rename with unknown credential ID returns NotFound
+    let fake_id = vec![0xde, 0xad, 0xbe, 0xef];
+    let err = harness
+        .identity()
+        .rename_webauthn_credential(&realm, user.id(), &fake_id, "Ghost")
+        .expect_err("unknown credential should return error");
+    assert!(
+        matches!(err, IdentityError::WebAuthnCredentialNotFound),
+        "expected WebAuthnCredentialNotFound, got: {err}"
+    );
 }

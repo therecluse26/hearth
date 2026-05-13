@@ -346,42 +346,31 @@ mod tests {
 
     #[test]
     fn uri_normalization_lowercases_scheme_and_host() {
-        let uri = Uri::try_from("HTTPS://API.Example.COM/Path".to_string())
-            .expect("valid URI");
-        assert_eq!(
-            uri.normalized(),
-            "https://api.example.com/Path"
-        );
+        let uri = Uri::try_from("HTTPS://API.Example.COM/Path".to_string()).expect("valid URI");
+        assert_eq!(uri.normalized(), "https://api.example.com/Path");
     }
 
     #[test]
     fn uri_normalization_strips_default_ports() {
-        let uri = Uri::try_from("https://api.example.com:443/data".to_string())
-            .expect("valid URI");
+        let uri = Uri::try_from("https://api.example.com:443/data".to_string()).expect("valid URI");
         assert_eq!(uri.normalized(), "https://api.example.com/data");
     }
 
     #[test]
     fn uri_normalization_removes_trailing_slash() {
-        let uri = Uri::try_from("https://api.example.com/v1/".to_string())
-            .expect("valid URI");
+        let uri = Uri::try_from("https://api.example.com/v1/".to_string()).expect("valid URI");
         assert_eq!(uri.normalized(), "https://api.example.com/v1");
     }
 
     #[test]
     fn uri_normalization_preserves_path_case() {
-        let uri = Uri::try_from("https://api.example.com/MyFiles".to_string())
-            .expect("valid URI");
-        assert_eq!(
-            uri.normalized(),
-            "https://api.example.com/MyFiles"
-        );
+        let uri = Uri::try_from("https://api.example.com/MyFiles".to_string()).expect("valid URI");
+        assert_eq!(uri.normalized(), "https://api.example.com/MyFiles");
     }
 
     #[test]
     fn uri_storage_hash_is_stable() {
-        let uri = Uri::try_from("https://api.example.com/data".to_string())
-            .expect("valid URI");
+        let uri = Uri::try_from("https://api.example.com/data".to_string()).expect("valid URI");
         let hash1 = uri.storage_hash();
         let hash2 = uri.storage_hash();
         assert_eq!(hash1, hash2);
@@ -390,8 +379,7 @@ mod tests {
 
     #[test]
     fn uri_serde_round_trip() {
-        let uri = Uri::try_from("https://api.example.com".to_string())
-            .expect("valid URI");
+        let uri = Uri::try_from("https://api.example.com".to_string()).expect("valid URI");
         let json = serde_json::to_string(&uri).expect("serialize");
         let deserialized: Uri = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(uri, deserialized);

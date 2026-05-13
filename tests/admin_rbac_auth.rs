@@ -1,6 +1,6 @@
 //! Integration tests for admin HTTP auth (permission-gated via `hearth.admin`).
 //!
-//! Covers `MIGRATE_TO_RBAC.md` § 7 — admin_rbac_auth.
+//! Covers `MIGRATE_TO_RBAC.md` § 7 — `admin_rbac_auth`.
 
 mod common;
 
@@ -38,7 +38,7 @@ async fn issue_token_for(
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");

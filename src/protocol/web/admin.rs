@@ -38,15 +38,14 @@ use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::config::{Config, ValidationIssue};
-use crate::core::{ClientId, IdpId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId};
+use crate::identity::oidc::{ClientTrustLevel, RegisterClientRequest, UpdateClientRequest};
 use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
     IdentityError, OAuthClient, Organization, OrganizationConfig, OrganizationInvitation,
     OrganizationMembership, OrganizationRole, OrganizationStatus, Page, Realm, RealmStatus,
     Session, UpdateOrganizationRequest, UpdateUserRequest, User, UserStatus,
 };
-use crate::identity::federation::{IdpConfig, IdpKind, FederationSecret};
-use crate::identity::oidc::{ClientTrustLevel, RegisterClientRequest, UpdateClientRequest};
 
 use crate::identity::claims_config::ClaimSource;
 use crate::rbac::{
@@ -1985,11 +1984,7 @@ struct AppNewTemplate {
 }
 
 impl AppNewTemplate {
-    fn blank(
-        realm_name: String,
-        session: &super::auth::UiSession,
-        state: &Arc<WebState>,
-    ) -> Self {
+    fn blank(realm_name: String, session: &super::auth::UiSession, state: &Arc<WebState>) -> Self {
         Self {
             error: None,
             realm_name,
@@ -2028,7 +2023,11 @@ pub async fn admin_app_create_form(
     target: TargetRealm,
     AxumPath(_realm_name): AxumPath<String>,
 ) -> Response {
-    render(&AppNewTemplate::blank(target.0.name().to_string(), &session, &state))
+    render(&AppNewTemplate::blank(
+        target.0.name().to_string(),
+        &session,
+        &state,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2236,9 +2235,9 @@ impl AppEditTemplate {
             .grant_types()
             .contains(&"client_credentials".to_string());
         let grant_refresh_token = app.grant_types().contains(&"refresh_token".to_string());
-        let grant_device_code = app.grant_types().contains(
-            &"urn:ietf:params:oauth:grant-type:device_code".to_string(),
-        );
+        let grant_device_code = app
+            .grant_types()
+            .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string());
         let trust_level = if format!("{:?}", app.trust_level()) == "FirstParty" {
             "first_party".to_string()
         } else {
@@ -2433,8 +2432,7 @@ pub async fn admin_app_edit_submit(
         Err(IdentityError::InvalidInput { reason }) => {
             match state.identity.get_client(target.id(), &client_id) {
                 Ok(Some(app)) => {
-                    let mut tpl =
-                        AppEditTemplate::from_client(app, realm_name, &session, &state);
+                    let mut tpl = AppEditTemplate::from_client(app, realm_name, &session, &state);
                     tpl.error = Some(reason);
                     tpl.form_client_name = form.client_name.clone();
                     render(&tpl)
@@ -2471,11 +2469,7 @@ pub async fn admin_app_delete(
     match state.identity.delete_client(target.id(), &client_id) {
         Ok(()) => {
             audit_app_event(&state, &session, &target.0, &client_id, "delete");
-            Redirect::to(&format!(
-                "/ui/admin/realms/{}/applications",
-                realm_name,
-            ))
-            .into_response()
+            Redirect::to(&format!("/ui/admin/realms/{}/applications", realm_name,)).into_response()
         }
         Err(IdentityError::InvalidClient) => {
             super::handlers_common::not_found("Application not found")
@@ -2543,6 +2537,7 @@ struct SessionListTemplate {
     /// `/ui/admin/sessions`. Empty for the global view; `"&realm=foo"` or
     /// `"&admin_target=system"` for the scoped views. Allows pill links
     /// to keep the page in its current realm scope when switching status.
+    #[allow(dead_code)]
     realm_query_suffix: String,
     active_tab: &'static str,
     chrome: bool,
@@ -2993,7 +2988,7 @@ fn resolve_audit_actor(
     }
     let resolved = match uuid::Uuid::parse_str(actor) {
         Ok(uuid) => {
-            let uid = crate::core::UserId::new(uuid);
+            let user_id = crate::core::UserId::new(uuid);
             // Audit actors can be cross-realm: a system-realm admin acting
             // on a tenant realm shows up with their system-realm user id
             // but the audit row is scoped to the tenant realm. Try the
@@ -3001,7 +2996,7 @@ fn resolve_audit_actor(
             // common case (super-admin acting on tenants) resolves.
             let from_event_realm = state
                 .identity
-                .get_user(realm_id, &uid)
+                .get_user(realm_id, &user_id)
                 .ok()
                 .flatten()
                 .map(|u| u.email().to_string());
@@ -3013,7 +3008,7 @@ fn resolve_audit_actor(
                     }
                     state
                         .identity
-                        .get_user(&system, &uid)
+                        .get_user(&system, &user_id)
                         .ok()
                         .flatten()
                         .map(|u| u.email().to_string())
@@ -3448,12 +3443,14 @@ pub async fn admin_audit_export(
                 // Simplified calendar calculation (accurate 2000–2099).
                 let z = days + 719_468;
                 let era = z / 146_097;
-                let doe = z - era * 146_097;
-                let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+                let day_of_era = z - era * 146_097;
+                let yoe = (day_of_era - day_of_era / 1460 + day_of_era / 36524
+                    - day_of_era / 146_096)
+                    / 365;
                 let y = yoe + era * 400;
-                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-                let mp = (5 * doy + 2) / 153;
-                let d = doy - (153 * mp + 2) / 5 + 1;
+                let day_of_year = day_of_era - (365 * yoe + yoe / 4 - yoe / 100);
+                let mp = (5 * day_of_year + 2) / 153;
+                let d = day_of_year - (153 * mp + 2) / 5 + 1;
                 let m = if mp < 10 { mp + 3 } else { mp - 9 };
                 let y = if m <= 2 { y + 1 } else { y };
                 format!("{y:04}-{m:02}-{d:02}")
@@ -7903,6 +7900,7 @@ pub async fn admin_rbac_scopes(
 #[derive(Template)]
 #[template(path = "ui/admin/realms/_admin_picker_rows.html")]
 struct RealmAdminPickerRowsTemplate {
+    #[allow(dead_code)]
     realm_id: String,
     realm_name: String,
     users: Vec<crate::identity::User>,
@@ -9694,8 +9692,7 @@ pub async fn admin_role_edit_submit(
         Err(msg) => {
             return match state.rbac.get_role(target.id(), &role_id) {
                 Ok(Some(role)) => {
-                    let mut tpl =
-                        RoleEditTemplate::from_role(role, realm_name, &session, &state);
+                    let mut tpl = RoleEditTemplate::from_role(role, realm_name, &session, &state);
                     tpl.error = Some(msg);
                     tpl.form_name = form.name.clone();
                     tpl.form_description = form.description.clone();
@@ -9737,8 +9734,7 @@ pub async fn admin_role_edit_submit(
         Err(crate::rbac::RbacError::DuplicateRoleName) => {
             match state.rbac.get_role(target.id(), &role_id) {
                 Ok(Some(role)) => {
-                    let mut tpl =
-                        RoleEditTemplate::from_role(role, realm_name, &session, &state);
+                    let mut tpl = RoleEditTemplate::from_role(role, realm_name, &session, &state);
                     tpl.error =
                         Some("A role with that name already exists in this realm.".to_string());
                     tpl.form_name = form.name.clone();
@@ -9777,11 +9773,9 @@ pub async fn admin_role_delete(
     let realm_name = target.0.name().to_string();
 
     match state.rbac.delete_role(target.id(), &role_id) {
-        Ok(()) => Redirect::to(&format!(
-            "/ui/admin/realms/{}/rbac/roles",
-            realm_name,
-        ))
-        .into_response(),
+        Ok(()) => {
+            Redirect::to(&format!("/ui/admin/realms/{}/rbac/roles", realm_name,)).into_response()
+        }
         Err(crate::rbac::RbacError::RoleNotFound) => {
             super::handlers_common::not_found("Role not found")
         }
@@ -9902,6 +9896,7 @@ struct ClaimMappingRow {
 #[derive(Template)]
 #[template(path = "ui/admin/realms/claims/view.html")]
 struct RealmClaimsTemplate {
+    #[allow(dead_code)]
     realm_id: String,
     realm_name: String,
     mappings: Vec<ClaimMappingRow>,

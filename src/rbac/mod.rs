@@ -34,7 +34,7 @@ pub use types::{
     UpdateRoleRequest, UserPermissionGrant,
 };
 
-use crate::core::{OrganizationId, RealmId, UserId, Uri};
+use crate::core::{OrganizationId, RealmId, Uri, UserId};
 use crate::identity::ClientTrustLevel;
 
 /// Trait defining the claims-based RBAC engine interface.
@@ -313,9 +313,5 @@ pub trait RbacEngine: Send + Sync {
 
     /// Persists each declared group into per-realm storage by slug. Groups
     /// that already exist are updated if drifted. Idempotent.
-    fn reconcile_groups(
-        &self,
-        realm_id: &RealmId,
-        groups: &[Group],
-    ) -> Result<(), RbacError>;
+    fn reconcile_groups(&self, realm_id: &RealmId, groups: &[Group]) -> Result<(), RbacError>;
 }

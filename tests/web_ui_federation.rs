@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! HTTP-level integration tests for the `/ui/federation/*` handlers.
 //!
 //! Boots a full axum router with a real `EmbeddedIdentityEngine`, a
@@ -14,18 +15,25 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hearth::audit::{AuditEngine, AuditQuery};
-use hearth::core::{Clock, IdpId, SystemClock};
+use hearth::core::{Clock, IdpId, SystemClock, Timestamp};
 use hearth::identity::email::{EmailBranding, EmailService, LoggingEmailSender};
-use hearth::identity::federation::{FederationSecret, IdpConfig, IdpKind, StubFederationTransport};
+use hearth::identity::federation::{
+    FederationSecret, IdpConfig, IdpKind, LinkMode, StateBag, StubFederationTransport,
+};
 use hearth::identity::onboarding::OnboardingService;
 use hearth::identity::{
-    CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
-    RealmConfig,
+    CreateRealmRequest, CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine,
+    IdentityConfig, IdentityEngine, RealmConfig, UpdateRealmRequest,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
 use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+use rsa::pkcs8::EncodePrivateKey;
+use rsa::traits::PublicKeyParts;
+use rsa::RsaPrivateKey;
 use tower::ServiceExt;
 
 const COOKIE_SECRET: [u8; 32] = [7u8; 32];
@@ -152,6 +160,111 @@ fn send(app: &axum::Router, req: Request<Body>) -> axum::http::Response<Body> {
         .unwrap()
         .block_on(fut)
         .expect("router response")
+}
+
+fn set_link_mode(rig: &Rig, mode: LinkMode) {
+    rig.identity
+        .update_realm(
+            &rig.realm_id,
+            &UpdateRealmRequest {
+                name: None,
+                status: None,
+                config: Some(RealmConfig {
+                    federation_link_mode: Some(mode),
+                    ..RealmConfig::default()
+                }),
+            },
+        )
+        .expect("update realm");
+}
+
+fn seed_state(rig: &Rig, state_token: &str, nonce: &str) {
+    rig.identity
+        .put_federation_state(&StateBag {
+            state_token: state_token.to_string(),
+            realm_id: rig.realm_id.clone(),
+            idp_id: rig.idp_id.clone(),
+            nonce: nonce.to_string(),
+            pkce_verifier: "verifier-123".to_string(),
+            return_to: "/ui/account".to_string(),
+            expires_at: Timestamp::from_micros(i64::MAX),
+        })
+        .expect("seed federation state");
+}
+
+fn stub_successful_oidc_callback(
+    transport: &StubFederationTransport,
+    _code: &str,
+    nonce: &str,
+    sub: &str,
+    email: &str,
+    email_verified: bool,
+) {
+    let kid = "test-key-1";
+    let mut rng = rand_core::OsRng;
+    let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate rsa key");
+    let public_key = private_key.to_public_key();
+    let n_b64 = URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be());
+    let e_b64 = URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be());
+
+    let header = serde_json::json!({
+        "alg": "RS256",
+        "typ": "JWT",
+        "kid": kid,
+    });
+    let payload = serde_json::json!({
+        "iss": "https://idp.example",
+        "sub": sub,
+        "aud": "demo-client",
+        "exp": 4_102_444_800i64,
+        "iat": 4_102_444_200i64,
+        "nonce": nonce,
+        "email": email,
+        "email_verified": email_verified,
+        "name": "Alice Federated",
+    });
+    let header_b64 =
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("serialize jwt header"));
+    let payload_b64 =
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("serialize jwt payload"));
+    let signing_input = format!("{header_b64}.{payload_b64}");
+
+    let pkcs8_der = private_key.to_pkcs8_der().expect("pkcs8 encode");
+    let key_pair =
+        ring::signature::RsaKeyPair::from_pkcs8(pkcs8_der.as_bytes()).expect("load keypair");
+    let mut signature = vec![0u8; key_pair.public().modulus_len()];
+    let ring_rng = ring::rand::SystemRandom::new();
+    key_pair
+        .sign(
+            &ring::signature::RSA_PKCS1_SHA256,
+            &ring_rng,
+            signing_input.as_bytes(),
+            &mut signature,
+        )
+        .expect("sign jwt");
+    let jwt = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature));
+
+    transport.stub(
+        "POST",
+        "https://idp.example/token",
+        200,
+        serde_json::json!({ "id_token": jwt }).to_string(),
+    );
+    transport.stub(
+        "GET",
+        "https://idp.example/jwks",
+        200,
+        serde_json::json!({
+            "keys": [{
+                "kty": "RSA",
+                "alg": "RS256",
+                "kid": kid,
+                "n": n_b64,
+                "e": e_b64,
+            }]
+        })
+        .to_string(),
+    );
 }
 
 #[test]
@@ -316,4 +429,167 @@ fn login_page_omits_federation_section_when_no_connectors() {
     let body = String::from_utf8_lossy(&bytes);
     assert!(!body.contains("federation-button"));
     assert!(!body.contains("or continue with"));
+}
+
+#[test]
+fn callback_auto_links_existing_user_on_verified_email() {
+    let stub = Arc::new(StubFederationTransport::new());
+    let rig = build_rig(Arc::clone(&stub));
+    set_link_mode(&rig, LinkMode::Auto);
+    let existing = rig
+        .identity
+        .create_user(
+            &rig.realm_id,
+            &CreateUserRequest {
+                email: "alice@example.com".to_string(),
+                display_name: "Alice Local".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create local user");
+    seed_state(&rig, "state-auto", "nonce-auto");
+    stub_successful_oidc_callback(
+        &stub,
+        "code-auto",
+        "nonce-auto",
+        "ext-auto-1",
+        "alice@example.com",
+        true,
+    );
+
+    let resp = send(
+        &rig.app,
+        Request::builder()
+            .uri("/ui/realms/demo/federation/callback?state=state-auto&code=code-auto")
+            .body(Body::empty())
+            .unwrap(),
+    );
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get("location").unwrap().to_str().unwrap(),
+        "/ui/account"
+    );
+    assert_eq!(
+        rig.identity
+            .find_user_by_external_identity(&rig.realm_id, &rig.idp_id, "ext-auto-1")
+            .expect("lookup link"),
+        Some(existing.id().clone())
+    );
+}
+
+#[test]
+fn callback_confirm_mode_redirects_to_confirm_link_for_existing_user() {
+    let stub = Arc::new(StubFederationTransport::new());
+    let rig = build_rig(Arc::clone(&stub));
+    set_link_mode(&rig, LinkMode::Confirm);
+    let existing = rig
+        .identity
+        .create_user(
+            &rig.realm_id,
+            &CreateUserRequest {
+                email: "alice@example.com".to_string(),
+                display_name: "Alice Local".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create local user");
+    seed_state(&rig, "state-confirm", "nonce-confirm");
+    stub_successful_oidc_callback(
+        &stub,
+        "code-confirm",
+        "nonce-confirm",
+        "ext-confirm-1",
+        "alice@example.com",
+        true,
+    );
+
+    let resp = send(
+        &rig.app,
+        Request::builder()
+            .uri("/ui/realms/demo/federation/callback?state=state-confirm&code=code-confirm")
+            .body(Body::empty())
+            .unwrap(),
+    );
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert!(
+        location.starts_with("/ui/federation/confirm-link?ticket="),
+        "unexpected confirm redirect: {location}"
+    );
+    assert_eq!(
+        rig.identity
+            .find_user_by_external_identity(&rig.realm_id, &rig.idp_id, "ext-confirm-1")
+            .expect("link lookup"),
+        None
+    );
+    let ticket = location
+        .split("ticket=")
+        .nth(1)
+        .expect("confirm-link ticket");
+    let pending = rig
+        .identity
+        .take_confirm_link_ticket(&rig.realm_id, ticket)
+        .expect("load confirm-link ticket");
+    assert_eq!(pending.user_id, *existing.id());
+}
+
+#[test]
+fn callback_disabled_mode_creates_separate_user_on_email_collision() {
+    let stub = Arc::new(StubFederationTransport::new());
+    let rig = build_rig(Arc::clone(&stub));
+    set_link_mode(&rig, LinkMode::Disabled);
+    let existing = rig
+        .identity
+        .create_user(
+            &rig.realm_id,
+            &CreateUserRequest {
+                email: "alice@example.com".to_string(),
+                display_name: "Alice Local".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create local user");
+    seed_state(&rig, "state-disabled", "nonce-disabled");
+    stub_successful_oidc_callback(
+        &stub,
+        "code-disabled",
+        "nonce-disabled",
+        "ext-disabled-1",
+        "alice@example.com",
+        true,
+    );
+
+    let resp = send(
+        &rig.app,
+        Request::builder()
+            .uri("/ui/realms/demo/federation/callback?state=state-disabled&code=code-disabled")
+            .body(Body::empty())
+            .unwrap(),
+    );
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get("location").unwrap().to_str().unwrap(),
+        "/ui/account"
+    );
+    let linked_user = rig
+        .identity
+        .find_user_by_external_identity(&rig.realm_id, &rig.idp_id, "ext-disabled-1")
+        .expect("lookup link")
+        .expect("linked user");
+    assert_ne!(linked_user, *existing.id());
+    let created = rig
+        .identity
+        .get_user(&rig.realm_id, &linked_user)
+        .expect("get linked user")
+        .expect("linked user exists");
+    assert_eq!(
+        created.email(),
+        format!("ext-disabled-1@fed.{}.local", rig.idp_id.as_uuid())
+    );
 }

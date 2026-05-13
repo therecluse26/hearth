@@ -25,7 +25,7 @@ use hearth::identity::{
     CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
 };
 use hearth::protocol::web::{self, CookieSecret, WebState};
-use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
+use hearth::rbac::EmbeddedRbacEngine;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -105,6 +105,17 @@ fn minimal_web_state() -> WebState {
         CookieSecret::random(),
         None,
     )
+}
+
+/// Builds a minimal state and returns both the state and the seeded default realm id.
+fn minimal_web_state_with_default_realm() -> (WebState, RealmId) {
+    let state = minimal_web_state();
+    let realm = state
+        .identity
+        .get_realm_by_name("default")
+        .expect("lookup default realm")
+        .expect("default realm exists");
+    (state, realm.id().clone())
 }
 
 /// Reads the raw body bytes of an axum `Response` up to `limit` bytes.
@@ -313,6 +324,91 @@ async fn theme_css_inlined_in_html_page() {
     assert!(
         !html.contains(r#"href="/ui/static/theme.css""#),
         "theme.css should NOT be loaded via <link> tag anymore"
+    );
+}
+
+/// Login page uses per-realm product name + realm CSS when a realm-scoped
+/// branding override exists.
+#[tokio::test]
+async fn login_page_uses_realm_branding_overrides() {
+    let (state, realm_id) = minimal_web_state_with_default_realm();
+    let realm_key = realm_id.as_uuid().to_string();
+
+    let mut themes = HashMap::new();
+    themes.insert(
+        realm_key.clone(),
+        ":root { --ht-content-brand: 12 200 34; }".to_string(),
+    );
+    let mut names = HashMap::new();
+    names.insert(realm_key, "Acme Realm".to_string());
+
+    let app = web::router(
+        state
+            .with_realm_themes(themes)
+            .with_realm_product_names(names),
+    );
+
+    let req = Request::builder()
+        .uri("/ui/login")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_bytes(resp, 64 * 1024).await;
+    let html = std::str::from_utf8(&body).expect("UTF-8 html");
+
+    assert!(
+        html.contains("Acme Realm · Sign in"),
+        "expected realm product name in title, got head: {}",
+        &html[..html.find("</head>").unwrap_or(500.min(html.len()))]
+    );
+    assert!(
+        html.contains("--ht-content-brand: 12 200 34"),
+        "expected realm CSS override inline"
+    );
+}
+
+/// Locale query selection renders localized login copy.
+#[tokio::test]
+async fn login_page_locale_query_selects_spanish_copy() {
+    let app = web::router(minimal_web_state());
+
+    let req = Request::builder()
+        .uri("/ui/login?locale=es")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_bytes(resp, 64 * 1024).await;
+    let html = std::str::from_utf8(&body).expect("UTF-8 html");
+
+    assert!(
+        html.contains("Inicia sesi&#xF3;n en tu cuenta"),
+        "expected localized heading in Spanish"
+    );
+}
+
+/// Unknown locale falls back to `Accept-Language`, then to English.
+#[tokio::test]
+async fn login_page_locale_fallback_prefers_accept_language() {
+    let app = web::router(minimal_web_state());
+
+    let req = Request::builder()
+        .uri("/ui/login?locale=zz")
+        .header(header::ACCEPT_LANGUAGE, "es-MX,es;q=0.9,en;q=0.8")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_bytes(resp, 64 * 1024).await;
+    let html = std::str::from_utf8(&body).expect("UTF-8 html");
+
+    assert!(
+        html.contains("Inicia sesi&#xF3;n en tu cuenta"),
+        "expected fallback to Spanish via Accept-Language"
     );
 }
 

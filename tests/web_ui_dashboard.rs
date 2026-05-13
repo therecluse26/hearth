@@ -108,7 +108,7 @@ fn build_rig() -> TestRig {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -141,7 +141,7 @@ fn build_rig() -> TestRig {
 
     // Grant the user the hearth#admin relation (same as the onboarding flow).
     authz.seed_realm(realm.id()).expect("seed");
-    let _admin_role = authz
+    let admin_role = authz
         .get_role_by_name(realm.id(), "realm.admin")
         .expect("lookup")
         .expect("seed role");
@@ -150,7 +150,7 @@ fn build_rig() -> TestRig {
             realm.id(),
             &hearth::rbac::AssignRoleRequest {
                 subject: hearth::rbac::Subject::User(user.id().clone()),
-                role_id: _admin_role.id.clone(),
+                role_id: admin_role.id.clone(),
                 scope: hearth::rbac::Scope::Realm,
                 assigned_by: None,
             },

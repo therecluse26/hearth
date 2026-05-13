@@ -1,7 +1,7 @@
 //! Integration tests for `GET /v1/me/permissions`.
 //!
-//! Covers `MIGRATE_TO_RBAC.md` § 7 — me_permissions:returns_live_set,
-//! unauthenticated_401.
+//! Covers `MIGRATE_TO_RBAC.md` § 7 — `me_permissions:returns_live_set`,
+//! `unauthenticated_401`.
 
 mod common;
 
@@ -38,7 +38,7 @@ async fn returns_live_set_reflecting_post_issuance_changes() {
                 display_name: "U".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");

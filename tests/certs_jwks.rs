@@ -215,9 +215,7 @@ async fn jwt_kid_header_matches_a_jwks_entry() {
         .unwrap_or_else(|| {
             panic!(
                 "no JWKS entry with kid {token_kid}; JWKS kids = {:?}",
-                keys.iter()
-                    .map(|j| j["kid"].as_str())
-                    .collect::<Vec<_>>()
+                keys.iter().map(|j| j["kid"].as_str()).collect::<Vec<_>>()
             )
         });
 

@@ -6,15 +6,13 @@
 
 mod common;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{
     AuthorizationRequest, CleartextPassword, CodeChallengeMethod, CreateUserRequest,
     RegisterClientRequest, TokenExchangeRequest,
 };
-use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
-
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use ring::rand::SecureRandom;
 
 // === TEST_SCENARIOS: Developer on-ramp ===
@@ -39,7 +37,7 @@ async fn developer_onramp_realm_app_oidc_login() {
                 display_name: "Developer".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -148,7 +146,7 @@ async fn user_lifecycle_register_authenticate_session_token() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -233,7 +231,7 @@ async fn auth_plus_rbac_permission_grant_and_check() {
                 display_name: "Bob".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -352,7 +350,7 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
                 display_name: "Charlie".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");

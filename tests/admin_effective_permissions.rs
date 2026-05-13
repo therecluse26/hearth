@@ -38,7 +38,7 @@ async fn issue_token_for(
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -94,7 +94,7 @@ async fn happy_path_returns_effective_permissions() {
                 display_name: "Target".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create target user");
@@ -246,7 +246,7 @@ async fn bad_org_id_returns_400() {
                 display_name: "Target".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create target user");
@@ -293,7 +293,7 @@ async fn scope_narrowing_filters_permissions() {
                 display_name: "Target".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create target user");

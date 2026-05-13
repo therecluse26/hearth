@@ -91,7 +91,7 @@ fn build_rig() -> Rig {
             display_name: "Admin".to_string(),
             first_name: String::new(),
             last_name: String::new(),
-                attributes: Default::default(),
+            attributes: Default::default(),
         })
         .expect("create admin user");
     identity
@@ -124,7 +124,7 @@ fn build_rig() -> Rig {
         .expect("create admin session");
 
     authz.seed_realm(&admin_realm_id).expect("seed");
-    let _admin_role = authz
+    let admin_role = authz
         .get_role_by_name(&admin_realm_id, "realm.admin")
         .expect("lookup")
         .expect("seed role");
@@ -133,7 +133,7 @@ fn build_rig() -> Rig {
             &admin_realm_id,
             &hearth::rbac::AssignRoleRequest {
                 subject: hearth::rbac::Subject::User(admin_user.id().clone()),
-                role_id: _admin_role.id.clone(),
+                role_id: admin_role.id.clone(),
                 scope: hearth::rbac::Scope::Realm,
                 assigned_by: None,
             },
@@ -150,7 +150,7 @@ fn build_rig() -> Rig {
                 display_name: "Bob".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create member user");

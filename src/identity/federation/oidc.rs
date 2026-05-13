@@ -278,16 +278,18 @@ fn exchange_code(
     verify_rs256(&parsed.id_token, key)
         .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
 
-    // 3. Decode claims and validate iss / aud / exp / nonce.
-    let claims: IdTokenClaims = serde_json::from_slice(
-        &URL_SAFE_NO_PAD
-            .decode(payload_b64)
-            .map_err(|_| IdentityError::FederationTokenVerificationFailed)?,
-    )
-    .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
+    // 3. Decode claims, apply per-connector renames, validate iss / aud / exp / nonce.
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
+    let mut payload_json: serde_json::Value = serde_json::from_slice(&payload_bytes)
+        .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
+    apply_claim_mappings(&mut payload_json, cfg);
+    let claims: IdTokenClaims = serde_json::from_value(payload_json)
+        .map_err(|_| IdentityError::FederationTokenVerificationFailed)?;
     verify_id_token_claims(&claims, cfg, state, now_unix())?;
 
-    // 4. Map claims → ExternalIdentity (applying per-connector renames).
+    // 4. Map claims → ExternalIdentity.
     Ok(claims_to_identity(&claims, cfg))
 }
 
@@ -456,14 +458,32 @@ fn audience_contains(aud: &Option<serde_json::Value>, client_id: &str) -> bool {
     }
 }
 
+/// Applies `cfg.claim_mappings` to a raw JSON payload in-place before it is
+/// deserialized into [`IdTokenClaims`].
+///
+/// Each entry `{ target_field: source_claim }` copies the value at
+/// `source_claim` in the payload to `target_field`, overwriting any
+/// existing value.  This lets operators point Hearth at IdPs that use
+/// non-standard claim names (e.g. Azure AD sends `upn` instead of `email`).
+///
+/// Only operates on `serde_json::Value::Object` payloads; silently
+/// no-ops for anything else (malformed tokens are caught later by
+/// `serde_json::from_value::<IdTokenClaims>`).
+fn apply_claim_mappings(payload: &mut serde_json::Value, cfg: &IdpConfig) {
+    if cfg.claim_mappings.is_empty() {
+        return;
+    }
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    for (target, source) in &cfg.claim_mappings {
+        if let Some(val) = obj.get(source.as_str()).cloned() {
+            obj.insert(target.clone(), val);
+        }
+    }
+}
+
 fn claims_to_identity(claims: &IdTokenClaims, cfg: &IdpConfig) -> ExternalIdentity {
-    // Per-connector renames (cfg.claim_mappings) are applied by the
-    // caller *before* deserializing into IdTokenClaims — the JSON is
-    // mutated so that `email` / `name` read through the rename. For v1
-    // none of the supported providers need mappings; the hook is here
-    // for operator-written generic `type: oidc` entries pointing at
-    // Azure AD (`upn` → `email`) and the like.
-    let _ = cfg; // reserved
     ExternalIdentity {
         idp_id: cfg.id.clone(),
         external_sub: claims.sub.clone(),
@@ -629,7 +649,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            select_jwk(&jwks, Some("k2")).unwrap().n.as_deref(),
+            select_jwk(&jwks, Some("k2")).expect("k2 jwk").n.as_deref(),
             Some("n2")
         );
         assert!(select_jwk(&jwks, Some("missing")).is_none());
@@ -852,6 +872,44 @@ mod tests {
         assert_eq!(id.display_name, "Alice");
         assert_eq!(id.picture_url.as_deref(), Some("https://pic/"));
         assert_eq!(id.idp_id, cfg.id);
+    }
+
+    // ===== apply_claim_mappings =====
+
+    #[test]
+    fn apply_claim_mappings_renames_upn_to_email() {
+        let mut cfg = sample_config();
+        cfg.claim_mappings
+            .insert("email".to_string(), "upn".to_string());
+        let mut payload = serde_json::json!({
+            "iss": "https://accounts.google.com",
+            "sub": "ext-1",
+            "upn": "alice@corp.example",
+            "exp": 9_999_999_999i64,
+        });
+        apply_claim_mappings(&mut payload, &cfg);
+        assert_eq!(payload["email"], "alice@corp.example");
+        // Upstream field preserved.
+        assert_eq!(payload["upn"], "alice@corp.example");
+    }
+
+    #[test]
+    fn apply_claim_mappings_no_op_when_source_absent() {
+        let mut cfg = sample_config();
+        cfg.claim_mappings
+            .insert("email".to_string(), "upn".to_string());
+        // "upn" not present — "email" should remain absent too.
+        let mut payload = serde_json::json!({ "sub": "ext-1" });
+        apply_claim_mappings(&mut payload, &cfg);
+        assert!(payload.get("email").is_none());
+    }
+
+    #[test]
+    fn apply_claim_mappings_is_no_op_when_mappings_empty() {
+        let cfg = sample_config(); // claim_mappings: BTreeMap::new()
+        let mut payload = serde_json::json!({ "email": "original@example.com" });
+        apply_claim_mappings(&mut payload, &cfg);
+        assert_eq!(payload["email"], "original@example.com");
     }
 
     #[test]

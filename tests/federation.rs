@@ -1,6 +1,7 @@
-//! Integration tests for external IdP federation (gap #5).
+#![allow(clippy::unwrap_used)]
+//! Integration tests for external `IdP` federation (gap #5).
 //!
-//! Covers the engine-level federation surface end-to-end: IdP
+//! Covers the engine-level federation surface end-to-end: `IdP`
 //! registration, state persistence/consumption, JIT link, account
 //! linking under all three [`LinkMode`]s, and cascade cleanup on user
 //! / realm / connector deletion.
@@ -18,7 +19,7 @@ use hearth::core::{IdpId, Timestamp};
 use hearth::identity::federation::{
     ConfirmLinkTicket, ExternalIdentity, FederationSecret, IdpConfig, IdpKind, LinkMode, StateBag,
 };
-use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityEngine, IdentityError};
+use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityError};
 
 use common::TestHarness;
 
@@ -176,7 +177,7 @@ async fn link_external_identity_roundtrip() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -217,7 +218,7 @@ async fn link_refuses_to_rehome_to_different_user() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -230,7 +231,7 @@ async fn link_refuses_to_rehome_to_different_user() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -263,7 +264,7 @@ async fn unlink_is_idempotent_second_call_errors() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -304,7 +305,7 @@ async fn delete_user_cascades_both_federation_indexes() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -338,7 +339,7 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -351,7 +352,7 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -395,7 +396,7 @@ async fn confirm_link_ticket_is_single_use() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();

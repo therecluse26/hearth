@@ -16,15 +16,17 @@ use crate::protocol::http::{extract_admin_auth, AppState};
 use crate::protocol::scim::error::ScimError;
 
 fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<(), ScimError> {
-    extract_admin_auth(headers, state).map(|_| ()).map_err(|(status, body)| {
-        let detail = body
-            .0
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("authentication failed")
-            .to_string();
-        ScimError::new(status, detail)
-    })
+    extract_admin_auth(headers, state)
+        .map(|_| ())
+        .map_err(|(status, body)| {
+            let detail = body
+                .0
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("authentication failed")
+                .to_string();
+            ScimError::new(status, detail)
+        })
 }
 
 /// `GET /scim/v2/ServiceProviderConfig` — RFC 7644 §4.
@@ -61,10 +63,7 @@ pub async fn service_provider_config(
 }
 
 /// `GET /scim/v2/ResourceTypes` — RFC 7644 §4.
-pub async fn resource_types(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn resource_types(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Err(err) = authenticate(&headers, &state) {
         return err.into_response();
     }

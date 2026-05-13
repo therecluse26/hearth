@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! SCIM 2.0 integration tests — drive the HTTP router via `tower::ServiceExt`.
 
 mod common;
@@ -82,7 +83,7 @@ fn setup_admin(rig: &Rig) -> (RealmId, String) {
                 display_name: "Admin".to_string(),
                 first_name: "Admin".to_string(),
                 last_name: "User".to_string(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create admin");

@@ -22,9 +22,6 @@ use tracing::{debug, error, info};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::core::{ClientId, RealmId, UserId, WebhookId};
-use crate::webhook::{
-    CreateWebhookRequest, DeliveryQuery, UpdateWebhookRequest, WebhookEngine, WebhookQuery,
-};
 use crate::identity::IdentityEngine;
 use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
 use crate::protocol::convert::identity::{
@@ -39,6 +36,9 @@ use crate::protocol::proto::identity::v1 as pb;
 use crate::rbac::{
     AssignRoleRequest, CreateGroupRequest, CreateRoleRequest, GroupId, GroupMember, Permission,
     RbacEngine, RbacError, RoleId, Scope, Subject, UpdateGroupRequest, UpdateRoleRequest,
+};
+use crate::webhook::{
+    CreateWebhookRequest, DeliveryQuery, UpdateWebhookRequest, WebhookEngine, WebhookQuery,
 };
 
 /// Default maximum request body size (1 MiB).
@@ -255,6 +255,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(admin_list_users).post(admin_create_user),
         )
         .route("/users/bulk", axum::routing::post(admin_bulk_users))
+        .route("/users/import", axum::routing::post(admin_import_users))
+        .route("/users/export", axum::routing::get(admin_export_users))
         .route(
             "/users/{id}",
             axum::routing::get(admin_get_user)
@@ -905,7 +907,10 @@ fn identity_error_to_response(
         IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
         IdentityError::InvalidAttribute { .. } => (StatusCode::BAD_REQUEST, "invalid attribute"),
         IdentityError::PasswordExpired => (StatusCode::UNAUTHORIZED, "password expired"),
-        IdentityError::PasswordReused => (StatusCode::UNPROCESSABLE_ENTITY, "password was recently used"),
+        IdentityError::PasswordReused => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "password was recently used",
+        ),
         IdentityError::AuditFailure { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error: audit record failed",
@@ -1053,6 +1058,7 @@ async fn register_client_dynamic(
 /// Generates a unique client slug for DCR by appending a random suffix to the
 /// base name. Scans existing clients to avoid collisions, retrying up to 5
 /// times.
+#[allow(dead_code)]
 async fn generate_unique_slug(state: Arc<AppState>, realm_id: &RealmId, base: &str) -> String {
     for _ in 0..5 {
         let suffix = uuid::Uuid::new_v4().to_string();
@@ -1533,11 +1539,12 @@ fn rbac_error_to_response(err: &RbacError) -> (StatusCode, Json<serde_json::Valu
     )
 }
 
-/// Pagination query parameters.
+/// Pagination query parameters (also carries optional search query).
 #[derive(Debug, Deserialize)]
 struct PaginationParams {
     cursor: Option<String>,
     limit: Option<usize>,
+    search: Option<String>,
 }
 
 impl PaginationParams {
@@ -1547,7 +1554,7 @@ impl PaginationParams {
     }
 }
 
-/// Admin: list users (paginated).
+/// Admin: list users (paginated), or search when `?search=<q>` is present.
 async fn admin_list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1557,6 +1564,34 @@ async fn admin_list_users(
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
+
+    if let Some(q) = &params.search {
+        // Short queries return empty results immediately (no index hit).
+        if q.len() < 2 {
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({"items": [], "next_cursor": null})),
+            )
+                .into_response();
+        }
+        return match state
+            .identity
+            .search_users(&auth.realm_id, q, params.effective_limit())
+        {
+            Ok(users) => {
+                let items: Vec<serde_json::Value> = users
+                    .iter()
+                    .map(|u| proto_to_rest_json(&pb::User::from(u)))
+                    .collect();
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"items": items, "next_cursor": null})),
+                )
+                    .into_response()
+            }
+            Err(e) => identity_error_to_response(&e).into_response(),
+        };
+    }
 
     match state.identity.list_users(
         &auth.realm_id,
@@ -1570,6 +1605,178 @@ async fn admin_list_users(
             .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+/// Import request body — one entry per user to import.
+#[derive(Debug, Deserialize)]
+struct ImportUsersBody {
+    users: Vec<ImportUserEntry>,
+}
+
+/// Single user entry in a bulk import request.
+#[derive(Debug, Deserialize)]
+struct ImportUserEntry {
+    email: String,
+    display_name: String,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    /// Accepts `"active"`, `"disabled"`, `"suspended"`, or `"pending_verification"`.
+    status: Option<String>,
+    #[serde(default)]
+    attributes: std::collections::BTreeMap<String, String>,
+}
+
+/// Admin: bulk import users (`POST /admin/users/import`).
+async fn admin_import_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<ImportUsersBody>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    if body.users.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "users array must not be empty"})),
+        )
+            .into_response();
+    }
+
+    let mut imported = 0u32;
+    let mut failed = 0u32;
+    let mut results = Vec::with_capacity(body.users.len());
+
+    for entry in &body.users {
+        let status = match entry.status.as_deref().unwrap_or("active") {
+            "active" => crate::identity::UserStatus::Active,
+            "disabled" => crate::identity::UserStatus::Disabled,
+            "pending_verification" => crate::identity::UserStatus::PendingVerification,
+            other => {
+                failed += 1;
+                results.push(serde_json::json!({
+                    "email": entry.email,
+                    "error": format!("unknown status: {other}")
+                }));
+                continue;
+            }
+        };
+
+        let req = crate::identity::ImportUserRequest {
+            id: None,
+            email: entry.email.clone(),
+            display_name: entry.display_name.clone(),
+            first_name: entry.first_name.clone(),
+            last_name: entry.last_name.clone(),
+            status,
+            credential: None,
+            attributes: entry.attributes.clone(),
+        };
+
+        match state.identity.import_user(&auth.realm_id, &req) {
+            Ok(u) => {
+                imported += 1;
+                results.push(serde_json::json!({
+                    "email": entry.email,
+                    "id": u.id().as_uuid().to_string(),
+                    "error": null
+                }));
+            }
+            Err(e) => {
+                failed += 1;
+                results.push(serde_json::json!({
+                    "email": entry.email,
+                    "error": e.to_string()
+                }));
+            }
+        }
+    }
+
+    let total = imported + failed;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "imported": imported,
+            "failed": failed,
+            "total": total,
+            "results": results
+        })),
+    )
+        .into_response()
+}
+
+/// Export format query parameter.
+#[derive(Debug, Deserialize)]
+struct ExportParams {
+    format: Option<String>,
+}
+
+/// Admin: bulk export users (`GET /admin/users/export`).
+///
+/// Default format is JSON (`{"count": N, "users": [...]}`).
+/// Pass `?format=ndjson` for newline-delimited JSON (one object per line).
+async fn admin_export_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<ExportParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    // Collect all users by draining pages.
+    let mut all_users: Vec<crate::identity::User> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = match state
+            .identity
+            .list_users(&auth.realm_id, cursor.as_deref(), 100)
+        {
+            Ok(p) => p,
+            Err(e) => return identity_error_to_response(&e).into_response(),
+        };
+        all_users.extend(page.items);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    let user_to_json = |u: &crate::identity::User| -> serde_json::Value {
+        let mut v = proto_to_rest_json(&pb::User::from(u));
+        if !u.attributes().is_empty() {
+            v["attributes"] = serde_json::json!(u.attributes());
+        }
+        v
+    };
+
+    let ndjson = params.format.as_deref() == Some("ndjson");
+    if ndjson {
+        let mut body = String::new();
+        for u in &all_users {
+            body.push_str(&serde_json::to_string(&user_to_json(u)).unwrap_or_default());
+            body.push('\n');
+        }
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
+            body,
+        )
+            .into_response();
+    }
+
+    let users: Vec<serde_json::Value> = all_users.iter().map(user_to_json).collect();
+    let count = users.len();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"count": count, "users": users})),
+    )
+        .into_response()
 }
 
 /// Admin: create user.
@@ -3226,9 +3433,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 
 fn b64_decode(s: &str) -> Result<Vec<u8>, (StatusCode, Json<serde_json::Value>)> {
-    URL_SAFE_NO_PAD
-        .decode(s)
-        .map_err(|e| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("invalid base64url: {e}")}))))
+    URL_SAFE_NO_PAD.decode(s).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("invalid base64url: {e}")})),
+        )
+    })
 }
 
 fn b64_encode(data: &[u8]) -> String {
@@ -3336,7 +3546,10 @@ async fn webauthn_register_begin(
         rp_id: body.rp_id.unwrap_or_default(),
         discoverable: body.discoverable.unwrap_or(true),
     };
-    match state.identity.start_webauthn_registration(&realm_id, &user_id, &options) {
+    match state
+        .identity
+        .start_webauthn_registration(&realm_id, &user_id, &options)
+    {
         Ok(challenge) => (
             StatusCode::OK,
             Json(WbrBeginRes {
@@ -3579,6 +3792,7 @@ async fn webauthn_delete_credential(
 // underlying engine methods as the global routes. Token `iss` claims are
 // automatically scoped to `{base_issuer}/realms/{name}`.
 
+#[allow(dead_code)]
 fn resolve_realm_by_name(
     state: &AppState,
     name: &str,
@@ -3601,6 +3815,7 @@ fn resolve_realm_by_name(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_oidc_discovery(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3619,6 +3834,7 @@ async fn realm_oidc_discovery(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_jwks(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3633,6 +3849,7 @@ async fn realm_jwks(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_authorize(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3664,7 +3881,7 @@ async fn realm_authorize(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, dead_code)]
 async fn realm_token_exchange(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3802,6 +4019,7 @@ async fn realm_token_exchange(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_token_revocation(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3831,6 +4049,7 @@ async fn realm_token_revocation(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_token_introspection(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3864,6 +4083,7 @@ async fn realm_token_introspection(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_userinfo(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3894,6 +4114,7 @@ async fn realm_userinfo(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_device_authorization(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -3925,7 +4146,10 @@ async fn realm_device_authorization(
     };
     let request = crate::identity::DeviceAuthorizationRequest {
         client_id,
-        scope: body.get("scope").and_then(|v| v.as_str()).map(str::to_string),
+        scope: body
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     };
     match state.identity.device_authorize(&realm_id, &request) {
         Ok(response) => (
@@ -3939,6 +4163,7 @@ async fn realm_device_authorization(
     }
 }
 
+#[allow(dead_code)]
 async fn realm_register_client_dynamic(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4104,7 +4329,11 @@ async fn admin_list_webhooks(
     };
 
     match engine.list(&query) {
-        Ok(subs) => (StatusCode::OK, Json(serde_json::json!({ "webhooks": subs }))).into_response(),
+        Ok(subs) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "webhooks": subs })),
+        )
+            .into_response(),
         Err(e) => {
             error!("list webhooks failed: {e}");
             (
@@ -4331,9 +4560,11 @@ async fn admin_list_webhook_deliveries(
     };
 
     match engine.list_deliveries(&query) {
-        Ok(deliveries) => {
-            (StatusCode::OK, Json(serde_json::json!({ "deliveries": deliveries }))).into_response()
-        }
+        Ok(deliveries) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "deliveries": deliveries })),
+        )
+            .into_response(),
         Err(e) => {
             error!("list webhook deliveries failed: {e}");
             (
@@ -4345,9 +4576,7 @@ async fn admin_list_webhook_deliveries(
     }
 }
 
-fn parse_webhook_id(
-    s: &str,
-) -> Result<WebhookId, (StatusCode, Json<serde_json::Value>)> {
+fn parse_webhook_id(s: &str) -> Result<WebhookId, (StatusCode, Json<serde_json::Value>)> {
     // IDs arrive either as bare UUIDs or as "wh_{uuid}" — strip the prefix.
     let uuid_str = s.strip_prefix("wh_").unwrap_or(s);
     uuid_str

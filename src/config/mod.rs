@@ -16,9 +16,9 @@ pub use types::{
     MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig,
     OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
     PermissionYamlConfig, PostmarkConfig, ProtectedResourceYamlConfig, RateLimitYaml,
-    RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig, RoleYamlConfig,
-    SamlServiceProviderYaml, ScopeBundleYamlConfig, SendgridConfig, ServerConfig, SmtpConfig,
-    SmtpEncryption, StorageSection, TokenYamlConfig,
+    RealmAuthYaml, RealmEmailYaml, RealmScimYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig,
+    RoleYamlConfig, SamlServiceProviderYaml, ScopeBundleYamlConfig, SendgridConfig, ServerConfig,
+    SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -545,6 +545,16 @@ fn validate_realm_auth_configs(
         return Ok(());
     };
     for (name, cfg) in realms {
+        if let Some(scim) = &cfg.scim {
+            if let Some(token) = &scim.bearer_token {
+                if token.trim().is_empty() {
+                    return Err(invalid(
+                        &format!("realms.{name}.scim.bearer_token"),
+                        "must not be empty when SCIM is configured",
+                    ));
+                }
+            }
+        }
         let Some(auth) = &cfg.auth else { continue };
         if let Some(methods) = &auth.mfa_methods {
             for m in methods {
@@ -1171,6 +1181,16 @@ fn validate_realm_auth_configs_all(
 ) {
     let Some(realms) = realms else { return };
     for (name, cfg) in realms {
+        if let Some(scim) = &cfg.scim {
+            if let Some(token) = &scim.bearer_token {
+                if token.trim().is_empty() {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.scim.bearer_token"),
+                        reason: "must not be empty when SCIM is configured".to_string(),
+                    });
+                }
+            }
+        }
         let Some(auth) = &cfg.auth else { continue };
         if let Some(methods) = &auth.mfa_methods {
             for m in methods {

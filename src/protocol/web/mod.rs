@@ -613,6 +613,10 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(account::passkey_delete),
         )
         .route(
+            "/account/passkeys/{cred_id}/rename",
+            axum::routing::post(account::passkey_rename),
+        )
+        .route(
             "/account/sessions",
             axum::routing::get(account::sessions_index),
         )
@@ -700,6 +704,10 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/realms/{realm}/saml/sso/init",
             axum::routing::get(saml::idp_sso_init),
+        )
+        .route(
+            "/realms/{realm}/saml/slo-idp",
+            axum::routing::get(saml::idp_slo_get).post(saml::idp_slo_post),
         )
         // --- Browser-facing OAuth authorize + consent flow ---
         .route(
@@ -854,8 +862,7 @@ pub fn router(state: WebState) -> Router {
         )
         .route(
             "/admin/realms/{realm}/rbac/roles/new",
-            axum::routing::get(admin::admin_role_create_form)
-                .post(admin::admin_role_create_submit),
+            axum::routing::get(admin::admin_role_create_form).post(admin::admin_role_create_submit),
         )
         .route(
             "/admin/realms/{realm}/rbac/roles/{id}",
@@ -863,8 +870,7 @@ pub fn router(state: WebState) -> Router {
         )
         .route(
             "/admin/realms/{realm}/rbac/roles/{id}/edit",
-            axum::routing::get(admin::admin_role_edit_form)
-                .post(admin::admin_role_edit_submit),
+            axum::routing::get(admin::admin_role_edit_form).post(admin::admin_role_edit_submit),
         )
         .route(
             "/admin/realms/{realm}/rbac/roles/{id}/delete",
@@ -1015,8 +1021,7 @@ pub fn router(state: WebState) -> Router {
         )
         .route(
             "/admin/realms/{realm}/applications/new",
-            axum::routing::get(admin::admin_app_create_form)
-                .post(admin::admin_app_create_submit),
+            axum::routing::get(admin::admin_app_create_form).post(admin::admin_app_create_submit),
         )
         .route(
             "/admin/realms/{realm}/applications/{id}",
@@ -1024,8 +1029,7 @@ pub fn router(state: WebState) -> Router {
         )
         .route(
             "/admin/realms/{realm}/applications/{id}/edit",
-            axum::routing::get(admin::admin_app_edit_form)
-                .post(admin::admin_app_edit_submit),
+            axum::routing::get(admin::admin_app_edit_form).post(admin::admin_app_edit_submit),
         )
         .route(
             "/admin/realms/{realm}/applications/{id}/delete",

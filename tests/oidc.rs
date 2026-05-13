@@ -25,7 +25,7 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
                 display_name: "OIDC Test User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user")

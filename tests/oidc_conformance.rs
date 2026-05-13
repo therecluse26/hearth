@@ -47,7 +47,7 @@ async fn setup_oidc_env() -> (
                 display_name: "Alice Smith".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -134,8 +134,10 @@ async fn oidc_core_required_claims_and_signing() {
     // OIDC Core §2: REQUIRED claims
     assert!(!claims.sub.is_empty(), "sub claim MUST be present");
     assert!(!claims.iss.is_empty(), "iss claim MUST be present");
-    assert!(claims.aud.contains(&client.client_id().to_string()),
-        "aud must contain client_id");
+    assert!(
+        claims.aud.contains(&client.client_id().to_string()),
+        "aud must contain client_id"
+    );
     assert!(
         matches!(&claims.aud, Audience::Single(s) if !s.is_empty())
             || matches!(&claims.aud, Audience::Multi(list) if !list.is_empty()),

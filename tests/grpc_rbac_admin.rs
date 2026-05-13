@@ -1,7 +1,7 @@
 //! Integration tests for the gRPC RBAC admin service.
 //!
-//! Covers `MIGRATE_TO_RBAC.md` § 7 — grpc_rbac_admin:role_crud, group_crud,
-//! assignment_crud, admin_bearer_required.
+//! Covers `MIGRATE_TO_RBAC.md` § 7 — `grpc_rbac_admin:role_crud`, `group_crud`,
+//! `assignment_crud`, `admin_bearer_required`.
 //!
 //! Drives the service in-process via the generated `RbacAdminService` trait
 //! and a `tonic::Request` carrying bearer metadata. Bearer tokens are issued
@@ -41,7 +41,7 @@ async fn grpc_ctx() -> GrpcCtx {
                 display_name: "A".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("user");

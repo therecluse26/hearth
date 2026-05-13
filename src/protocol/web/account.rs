@@ -71,10 +71,12 @@ struct AccountIndexTemplate {
 
 /// A row in the passkey credentials table on the account page.
 struct PasskeyRow {
-    /// Base64url-encoded credential ID (used in delete form actions).
+    /// Base64url-encoded credential ID (used in delete/rename form actions).
     id_b64url: String,
-    /// Truncated credential ID for display.
-    id_short: String,
+    /// User-supplied name, or empty string when none is set.
+    /// Passed to the template as a `data-initial-name` attribute; Askama HTML-escapes it
+    /// and `dataset` decodes it, so no manual quoting or JSON-encoding is needed.
+    name_display: String,
     /// COSE algorithm identifier (e.g. -7 = ES256).
     algorithm: i64,
     /// Whether this is a discoverable (resident key) credential.
@@ -635,9 +637,10 @@ pub async fn totp_regenerate_codes(
     let realm_id = session.realm_id.clone();
     let user_id = session.user_id.clone();
     let identity = state.identity.clone();
-    let result =
-        tokio::task::spawn_blocking(move || identity.regenerate_recovery_codes(&realm_id, &user_id))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        identity.regenerate_recovery_codes(&realm_id, &user_id)
+    })
+    .await;
 
     let codes = match result {
         Ok(Ok(c)) => c,
@@ -759,14 +762,9 @@ fn load_passkey_rows(state: &Arc<WebState>, session: &UiSession) -> Vec<PasskeyR
         .iter()
         .map(|c| {
             let id_b64url = c.credential_id_b64url();
-            let id_short = if id_b64url.len() > 16 {
-                format!("{}...", &id_b64url[..16])
-            } else {
-                id_b64url.clone()
-            };
             PasskeyRow {
+                name_display: c.name().map(str::to_string).unwrap_or_default(),
                 id_b64url,
-                id_short,
                 algorithm: c.algorithm(),
                 discoverable: c.discoverable(),
             }
@@ -796,9 +794,28 @@ pub async fn passkey_register_begin(
         .unwrap_or("localhost")
         .to_string();
 
+    // Read per-realm WebAuthn policy (fall back to safe defaults).
+    let (resident_key, user_verification) = state
+        .identity
+        .get_realm(&session.realm_id)
+        .ok()
+        .flatten()
+        .map(|r| {
+            let cfg = r.config();
+            (
+                cfg.webauthn_resident_key
+                    .clone()
+                    .unwrap_or_else(|| "preferred".to_string()),
+                cfg.webauthn_user_verification
+                    .clone()
+                    .unwrap_or_else(|| "preferred".to_string()),
+            )
+        })
+        .unwrap_or_else(|| ("preferred".to_string(), "preferred".to_string()));
+
     let options = RegistrationOptions {
         rp_id: rp_id.clone(),
-        discoverable: true,
+        discoverable: resident_key != "discouraged",
     };
 
     match state
@@ -822,8 +839,8 @@ pub async fn passkey_register_begin(
                     { "type": "public-key", "alg": -257 }, // RS256
                 ],
                 "authenticatorSelection": {
-                    "residentKey": "preferred",
-                    "userVerification": "preferred",
+                    "residentKey": resident_key,
+                    "userVerification": user_verification,
                 },
                 "attestation": "none",
             });
@@ -847,6 +864,9 @@ pub struct PasskeyRegisterCompleteBody {
     pub client_data_json: String,
     /// Base64url-encoded `attestationObject` from the authenticator.
     pub attestation_object: String,
+    /// User-supplied name for this credential (e.g. "MacBook Touch ID").
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// `POST /ui/account/passkeys/register-complete` — completes the
@@ -891,7 +911,21 @@ pub async fn passkey_register_complete(
         &origin,
         true, // discoverable
     ) {
-        Ok(_cred) => {
+        Ok(cred) => {
+            // Apply user-supplied name if provided.
+            if let Some(ref name) = body.name {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    if let Err(e) = state.identity.rename_webauthn_credential(
+                        &session.realm_id,
+                        &session.user_id,
+                        cred.credential_id(),
+                        trimmed,
+                    ) {
+                        tracing::warn!(error = %e, "passkey rename after registration failed");
+                    }
+                }
+            }
             if let Err(e) = audit_mfa_event(&state, &session, "passkey_register") {
                 tracing::warn!(error = %e, "passkey register audit append failed");
             }
@@ -947,6 +981,43 @@ pub async fn passkey_delete(
     }
 
     Redirect::to("/ui/account").into_response()
+}
+
+/// JSON body for passkey rename.
+#[derive(Debug, Deserialize)]
+pub struct RenamePasskeyBody {
+    /// New display name for the credential.
+    pub name: String,
+}
+
+/// `POST /ui/account/passkeys/:cred_id/rename` — sets a display name on a
+/// passkey credential owned by the current user.
+pub async fn passkey_rename(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    axum::extract::Path(cred_id_b64): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<RenamePasskeyBody>,
+) -> Response {
+    use axum::http::StatusCode;
+    use base64::Engine as _;
+
+    let Ok(cred_id_bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&cred_id_b64)
+    else {
+        return (StatusCode::BAD_REQUEST, "Invalid credential ID").into_response();
+    };
+
+    match state.identity.rename_webauthn_credential(
+        &session.realm_id,
+        &session.user_id,
+        &cred_id_bytes,
+        body.name.trim(),
+    ) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "rename_webauthn_credential failed");
+            (StatusCode::BAD_REQUEST, "Rename failed").into_response()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

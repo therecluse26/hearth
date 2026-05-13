@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::core::{OrganizationId, RealmId, UserId, Uri};
+use crate::core::{OrganizationId, RealmId, Uri, UserId};
 use crate::identity::ClientTrustLevel;
 use crate::rbac::registry::{classify_scope_string, ScopeKind};
 
@@ -335,12 +335,8 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
                 // When resource indicator is present, permission scopes must
                 // belong to the resource's scope bundles' permission lists.
                 if let Some(uri) = resource {
-                    let in_resource_bundles = permission_in_resource_bundles(
-                        resolver,
-                        realm_id,
-                        uri,
-                        scope_str,
-                    )?;
+                    let in_resource_bundles =
+                        permission_in_resource_bundles(resolver, realm_id, uri, scope_str)?;
                     if !in_resource_bundles {
                         if client_trust_level == ClientTrustLevel::ThirdParty {
                             return Err(RbacError::InvalidScope {
@@ -410,12 +406,10 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
                             });
                         }
                         // FirstParty: silently skip.
-                        continue;
                     }
                     Some(bundle_perms) => {
                         // Full-satisfiability: user must have ALL bundle permissions.
-                        let fully_satisfied =
-                            bundle_perms.iter().all(|p| effective.contains(p));
+                        let fully_satisfied = bundle_perms.iter().all(|p| effective.contains(p));
                         if fully_satisfied {
                             granted_scopes.push(scope.clone());
                             for p in bundle_perms {

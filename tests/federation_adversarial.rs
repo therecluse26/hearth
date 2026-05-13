@@ -1,4 +1,5 @@
-//! Adversarial tests for external IdP federation (gap #5).
+#![allow(clippy::unwrap_used)]
+//! Adversarial tests for external `IdP` federation (gap #5).
 //!
 //! Consolidates security-critical sad paths at the engine layer:
 //! state-token replay, cross-realm state reuse, confirm-link cookie
@@ -15,7 +16,7 @@ use hearth::identity::federation::{
     ConfirmLinkTicket, ExternalIdentity, FederationSecret, IdTokenClaims, IdpConfig, IdpKind,
     StateBag,
 };
-use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityEngine, IdentityError};
+use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityError};
 
 use common::TestHarness;
 
@@ -160,7 +161,7 @@ async fn confirm_link_ticket_cannot_be_replayed() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -335,7 +336,7 @@ async fn link_external_identity_refuses_to_rehome_across_users() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -348,7 +349,7 @@ async fn link_external_identity_refuses_to_rehome_across_users() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();

@@ -795,6 +795,7 @@ pub(crate) fn complete_registration(
         credential_id: credential_id.clone(),
         algorithm: alg,
         discoverable: false, // Overridden by caller
+        name: None,
     };
 
     let stored = StoredWebAuthnCredential {
@@ -805,6 +806,7 @@ pub(crate) fn complete_registration(
         discoverable: false, // Overridden by caller
         rp_id: pending.rp_id.clone(),
         created_at: now_micros,
+        name: None,
     };
 
     Ok((info, stored))

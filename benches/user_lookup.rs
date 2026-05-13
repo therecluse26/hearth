@@ -50,7 +50,7 @@ fn setup_user() -> (
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create");
@@ -121,7 +121,7 @@ fn bench_user_creation(c: &mut Criterion) {
                         display_name: "Bench User".to_string(),
                         first_name: String::new(),
                         last_name: String::new(),
-                                        attributes: Default::default(),
+                        attributes: Default::default(),
                     },
                 )
                 .expect("create");

@@ -13,7 +13,7 @@ use hearth::core::SystemClock;
 use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig};
 use hearth::protocol::http::{self, AppState};
 use hearth::protocol::tls::{build_server_config, ReloadableTlsConfig, TlsConfigParams};
-use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
+use hearth::rbac::EmbeddedRbacEngine;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, watch};

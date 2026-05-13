@@ -19,7 +19,7 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
                 display_name: "Test User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user")
@@ -184,6 +184,320 @@ async fn credentials_are_realm_isolated() {
     assert!(
         format!("{err}").contains("credential"),
         "should indicate credential failure in different realm: {err}"
+    );
+}
+
+// ===== Password policy: not_username =====
+
+#[tokio::test]
+async fn not_username_policy_rejected() {
+    use hearth::identity::{
+        CreateRealmRequest, PasswordPolicy, RealmConfig, RegisterUserRequest, RegistrationPolicy,
+    };
+
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = harness
+        .identity()
+        .create_realm(&CreateRealmRequest {
+            name: format!("not-uname-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                registration_policy: Some(RegistrationPolicy::Open),
+                password_policy: Some(PasswordPolicy {
+                    not_username: Some(true),
+                    ..PasswordPolicy::default()
+                }),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    // Password contains display name "Alice" — rejected
+    let err = harness
+        .identity()
+        .register_user(
+            realm.id(),
+            &RegisterUserRequest {
+                email: format!("alice-{}@example.com", uuid::Uuid::new_v4()),
+                display_name: "Alice".to_string(),
+                first_name: "Alice".to_string(),
+                last_name: String::new(),
+                password: CleartextPassword::from_string("my-alice-password".to_string()),
+                client_ip: None,
+                invitation_token: None,
+            },
+        )
+        .expect_err("should reject password containing username");
+    assert!(
+        format!("{err}").contains("username"),
+        "error should mention username: {err}"
+    );
+
+    // Clean password (does not contain display name) — accepted
+    harness
+        .identity()
+        .register_user(
+            realm.id(),
+            &RegisterUserRequest {
+                email: format!("bob-{}@example.com", uuid::Uuid::new_v4()),
+                display_name: "Alice".to_string(),
+                first_name: "Alice".to_string(),
+                last_name: String::new(),
+                password: CleartextPassword::from_string("unrelated-passphrase-42".to_string()),
+                client_ip: None,
+                invitation_token: None,
+            },
+        )
+        .expect("clean password should pass not_username policy");
+}
+
+// ===== Password policy: not_email =====
+
+#[tokio::test]
+async fn not_email_policy_rejected() {
+    use hearth::identity::{
+        CreateRealmRequest, PasswordPolicy, RealmConfig, RegisterUserRequest, RegistrationPolicy,
+    };
+
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = harness
+        .identity()
+        .create_realm(&CreateRealmRequest {
+            name: format!("not-email-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                registration_policy: Some(RegistrationPolicy::Open),
+                password_policy: Some(PasswordPolicy {
+                    not_email: Some(true),
+                    ..PasswordPolicy::default()
+                }),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    let email = format!("carol-{}@example.com", uuid::Uuid::new_v4());
+
+    // Password contains full email address — rejected
+    let bad_pw = CleartextPassword::from_string(format!("prefix-{email}-suffix"));
+    let err = harness
+        .identity()
+        .register_user(
+            realm.id(),
+            &RegisterUserRequest {
+                email: email.clone(),
+                display_name: "Carol".to_string(),
+                first_name: "Carol".to_string(),
+                last_name: String::new(),
+                password: bad_pw,
+                client_ip: None,
+                invitation_token: None,
+            },
+        )
+        .expect_err("should reject password containing email");
+    assert!(
+        format!("{err}").contains("email"),
+        "error should mention email: {err}"
+    );
+
+    // Clean password — accepted
+    harness
+        .identity()
+        .register_user(
+            realm.id(),
+            &RegisterUserRequest {
+                email: format!("carol2-{}@example.com", uuid::Uuid::new_v4()),
+                display_name: "Carol".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                password: CleartextPassword::from_string("completely-unrelated-42".to_string()),
+                client_ip: None,
+                invitation_token: None,
+            },
+        )
+        .expect("clean password should pass not_email policy");
+}
+
+// ===== Password policy: history_depth =====
+
+#[tokio::test]
+async fn history_depth_prevents_reuse() {
+    use hearth::identity::{
+        CreateRealmRequest, IdentityError, PasswordPolicy, RealmConfig, RegistrationPolicy,
+    };
+
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = harness
+        .identity()
+        .create_realm(&CreateRealmRequest {
+            name: format!("hist-realm-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                registration_policy: Some(RegistrationPolicy::Open),
+                password_policy: Some(PasswordPolicy {
+                    history_depth: Some(2),
+                    ..PasswordPolicy::default()
+                }),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    let user = harness
+        .identity()
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: format!("hist-{}@example.com", uuid::Uuid::new_v4()),
+                display_name: "History Tester".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create user");
+
+    let pw_alpha = || CleartextPassword::from_string("password-alpha".to_string());
+    let pw_beta = || CleartextPassword::from_string("password-beta".to_string());
+    let pw_gamma = || CleartextPassword::from_string("password-gamma".to_string());
+    let pw_delta = || CleartextPassword::from_string("password-delta".to_string());
+
+    // Set first two passwords; history now contains pw_alpha
+    harness
+        .identity()
+        .set_password(realm.id(), user.id(), &pw_alpha())
+        .expect("set alpha");
+    harness
+        .identity()
+        .set_password(realm.id(), user.id(), &pw_beta())
+        .expect("set beta");
+
+    // pw_alpha is in the history window (depth=2) — rejected
+    let err = harness
+        .identity()
+        .set_password(realm.id(), user.id(), &pw_alpha())
+        .expect_err("should reject reuse of pw_alpha");
+    assert!(
+        matches!(err, IdentityError::PasswordReused),
+        "expected PasswordReused, got: {err}"
+    );
+
+    // Advance the window: history = [pw_gamma, pw_beta]; pw_alpha rotates out
+    harness
+        .identity()
+        .set_password(realm.id(), user.id(), &pw_gamma())
+        .expect("set gamma");
+    harness
+        .identity()
+        .set_password(realm.id(), user.id(), &pw_delta())
+        .expect("set delta");
+
+    // pw_alpha is no longer in the 2-deep history — allowed again
+    harness
+        .identity()
+        .set_password(realm.id(), user.id(), &pw_alpha())
+        .expect("pw_alpha should be reusable once rotated out of history");
+}
+
+// ===== Password policy: max_age_days (expiry) =====
+
+#[tokio::test]
+async fn password_expiry_enforced() {
+    use hearth::audit::EmbeddedAuditEngine;
+    use hearth::core::{FakeClock, Timestamp};
+    use hearth::identity::{
+        CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
+        IdentityEngine, IdentityError, PasswordPolicy, RealmConfig, RegistrationPolicy,
+    };
+    use hearth::rbac::EmbeddedRbacEngine;
+    use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+    use std::sync::Arc;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let storage = Arc::new(
+        EmbeddedStorageEngine::open(StorageConfig::dev(temp_dir.path().to_path_buf()))
+            .expect("open storage"),
+    );
+    let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000_000)));
+    let audit = Arc::new(EmbeddedAuditEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock) as Arc<dyn hearth::core::Clock>,
+    ));
+    let rbac = Arc::new(EmbeddedRbacEngine::new(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock) as Arc<dyn hearth::core::Clock>,
+    ));
+    let engine = EmbeddedIdentityEngine::with_rbac(
+        Arc::clone(&storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&clock) as Arc<dyn hearth::core::Clock>,
+        IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            ..IdentityConfig::default()
+        },
+        Arc::clone(&rbac) as Arc<dyn hearth::rbac::RbacEngine>,
+        Arc::clone(&audit) as Arc<dyn hearth::audit::AuditEngine>,
+    )
+    .expect("engine creation");
+
+    let realm = engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("expiry-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                registration_policy: Some(RegistrationPolicy::Open),
+                password_policy: Some(PasswordPolicy {
+                    max_age_days: Some(30),
+                    ..PasswordPolicy::default()
+                }),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    let user = engine
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: format!("expiry-{}@example.com", uuid::Uuid::new_v4()),
+                display_name: "Expiry Tester".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create user");
+
+    let pw = CleartextPassword::from_string("not-yet-expired".to_string());
+    engine
+        .set_password(realm.id(), user.id(), &pw)
+        .expect("set password");
+
+    // Within the 30-day window — verify succeeds
+    let ok = engine
+        .verify_password(
+            realm.id(),
+            user.id(),
+            &CleartextPassword::from_string("not-yet-expired".to_string()),
+        )
+        .expect("verify within window");
+    assert!(ok, "correct password should verify before expiry");
+
+    // Advance past the 30-day limit (31 days in microseconds)
+    clock.advance(31_i64 * 24 * 60 * 60 * 1_000_000);
+
+    // Same correct password — now expired
+    let err = engine
+        .verify_password(
+            realm.id(),
+            user.id(),
+            &CleartextPassword::from_string("not-yet-expired".to_string()),
+        )
+        .expect_err("should fail after expiry");
+    assert!(
+        matches!(err, IdentityError::PasswordExpired),
+        "expected PasswordExpired, got: {err}"
     );
 }
 

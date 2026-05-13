@@ -14,14 +14,15 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::audit::{AuditAction, CreateAuditEvent};
-use crate::core::{IdpId, RealmId, Timestamp};
+use crate::core::{RealmId, Timestamp};
 use crate::identity::federation::saml::authn_request::BuildAuthnRequestParams;
 use crate::identity::federation::saml::response::ResponseBuilder;
 use crate::identity::federation::saml::types::{SamlNameIdFormat, SamlStateBag};
 use crate::identity::federation::saml::{
-    build_authn_request_xml, build_idp_metadata, build_post_form_html, build_redirect_url,
-    build_response_xml, build_sp_metadata, parse_authn_request, parse_post_form_saml, sign_element,
-    BuildLogoutRequestParams, IdpMetadataParams, SamlSpOutcome, SamlSpService, SpMetadataParams,
+    build_authn_request_xml, build_idp_metadata, build_logout_response_xml, build_post_form_html,
+    build_redirect_url, build_response_xml, build_sp_metadata, parse_authn_request,
+    parse_logout_request, parse_post_form_saml, sign_element, BuildLogoutResponseParams,
+    IdpMetadataParams, SamlSpOutcome, SamlSpService, SpMetadataParams,
 };
 use crate::identity::federation::IdpKind;
 
@@ -332,7 +333,7 @@ pub async fn idp_metadata(
 
     let realm_url = realm_base_url_from_headers(&headers, &realm_name);
     let sso_url = format!("{realm_url}/saml/sso");
-    let slo_url = format!("{realm_url}/saml/slo-idp");
+    let slo_service_url = format!("{realm_url}/saml/slo-idp");
     let entity_id = realm_url.clone();
 
     let key = match state
@@ -346,7 +347,7 @@ pub async fn idp_metadata(
     let xml = build_idp_metadata(&IdpMetadataParams {
         entity_id: &entity_id,
         sso_url: &sso_url,
-        slo_url: Some(&slo_url),
+        slo_url: Some(&slo_service_url),
         signing_cert_der: key.cert_der(),
     });
 
@@ -565,6 +566,111 @@ pub async fn idp_sso_init(
 }
 
 // ============================================================================
+// IdP-side SLO — receive LogoutRequest from SP, return LogoutResponse.
+// ============================================================================
+
+/// `GET /ui/realms/{realm}/saml/slo-idp` — HTTP-Redirect binding.
+pub async fn idp_slo_get(
+    State(state): State<Arc<WebState>>,
+    AxumPath(realm_name): AxumPath<String>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<IdpSsoQuery>,
+) -> Response {
+    let realm = match resolve_realm(&state, &realm_name) {
+        Some(r) => r,
+        None => return (StatusCode::NOT_FOUND, "realm not found").into_response(),
+    };
+    let Ok(xml) = crate::identity::federation::saml::decode_redirect_request(&q.saml_request)
+    else {
+        return (StatusCode::BAD_REQUEST, "bad SAMLRequest").into_response();
+    };
+    idp_complete_slo(state, headers, realm, xml, q.relay_state).await
+}
+
+/// `POST /ui/realms/{realm}/saml/slo-idp` — HTTP-POST binding.
+pub async fn idp_slo_post(
+    State(state): State<Arc<WebState>>,
+    AxumPath(realm_name): AxumPath<String>,
+    headers: axum::http::HeaderMap,
+    Form(q): Form<IdpSsoQuery>,
+) -> Response {
+    let realm = match resolve_realm(&state, &realm_name) {
+        Some(r) => r,
+        None => return (StatusCode::NOT_FOUND, "realm not found").into_response(),
+    };
+    let Ok(xml) = parse_post_form_saml(&q.saml_request) else {
+        return (StatusCode::BAD_REQUEST, "bad SAMLRequest").into_response();
+    };
+    idp_complete_slo(state, headers, realm, xml, q.relay_state).await
+}
+
+async fn idp_complete_slo(
+    state: Arc<WebState>,
+    headers: axum::http::HeaderMap,
+    realm: RealmId,
+    xml: Vec<u8>,
+    relay_state: Option<String>,
+) -> Response {
+    let req = match parse_logout_request(&xml) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_REQUEST, "bad LogoutRequest").into_response(),
+    };
+
+    // Resolve SP by issuer entity ID.
+    let Ok(Some(sp)) = state.identity.get_saml_sp_by_entity_id(&realm, &req.issuer) else {
+        return (StatusCode::NOT_FOUND, "unknown SP").into_response();
+    };
+    let Some(slo_url) = sp.slo_url.clone() else {
+        return (StatusCode::BAD_REQUEST, "SP has no SLO URL registered").into_response();
+    };
+
+    let realm_url = realm_base_url_for_realm(&headers, &state, &realm).unwrap_or_default();
+    let idp_entity_id = realm_url.clone();
+    let key = match state
+        .identity
+        .get_or_create_saml_signing_key(&realm, &idp_entity_id)
+    {
+        Ok(k) => k,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "no signing key").into_response(),
+    };
+
+    let _ = state.audit.append(&CreateAuditEvent {
+        realm_id: realm.clone(),
+        actor: "system".to_string(),
+        action: AuditAction::SamlSloRequested,
+        resource_type: "saml".to_string(),
+        resource_id: req.id.clone(),
+        metadata: Some(serde_json::json!({ "sp": sp.sp_key, "name_id": req.name_id })),
+    });
+
+    let response_id = format!("_h{}", uuid::Uuid::new_v4().simple());
+    let response_xml = build_logout_response_xml(&BuildLogoutResponseParams {
+        id: &response_id,
+        in_response_to: &req.id,
+        destination: &slo_url,
+        issue_instant: now(),
+        issuer: &idp_entity_id,
+        success: true,
+    });
+    let signed = match sign_element(response_xml.as_bytes(), &response_id, &key) {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "sign failed").into_response(),
+    };
+
+    let _ = state.audit.append(&CreateAuditEvent {
+        realm_id: realm.clone(),
+        actor: "system".to_string(),
+        action: AuditAction::SamlSloCompleted,
+        resource_type: "saml".to_string(),
+        resource_id: response_id,
+        metadata: Some(serde_json::json!({ "sp": sp.sp_key })),
+    });
+
+    let html = build_post_form_html(&slo_url, "SAMLResponse", &signed, relay_state.as_deref());
+    Html(html).into_response()
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -633,7 +739,3 @@ fn now() -> Timestamp {
             .unwrap_or(0),
     )
 }
-
-// Silence unused-import warnings in minimal builds.
-#[allow(dead_code)]
-fn _keep_imports(_p: BuildLogoutRequestParams<'_>, _i: IdpId) {}
