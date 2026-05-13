@@ -4,6 +4,30 @@ unmaintained = "warn"
 yanked = "warn"
 notice = "warn"
 
+[[advisories.ignore]]
+id = "RUSTSEC-2023-0071"
+reason = """
+Hearth uses the `rsa` crate only for key generation and PKCS#8 serialization \
+(via `rsa::RsaPrivateKey::new` / `pkcs8::EncodePrivateKey`). \
+No PKCS#1 v1.5 decryption is performed anywhere in the codebase — the Marvin Attack \
+timing side-channel only affects the decrypt path. \
+All RSA signing is delegated to `ring::signature::RsaKeyPair`, which is unaffected. \
+Track the rsa 0.10+ upgrade when the tonic/tower ecosystem gains support (see HEA-116).
+"""
+
+[[advisories.ignore]]
+id = "RUSTSEC-2026-0104"
+reason = """
+The reachable panic in rustls-webpki 0.103.12 is triggered only during CRL \
+(certificate revocation list) parsing. Hearth's TLS configuration \
+(src/protocol/tls.rs::build_server_config) uses \
+WebPkiClientVerifier::builder_with_provider(...).build() without .with_crls(). \
+CRL validation is structurally disabled — no CRL is ever fetched or parsed — so \
+this code path is unreachable regardless of attacker input. \
+Remove this ignore once rustls-webpki ≥ 0.103.13 (or equivalent patched release) \
+is available transitively via rustls/tonic/tokio-rustls and cargo update picks it up.
+"""
+
 [licenses]
 unlicensed = "deny"
 allow = [
