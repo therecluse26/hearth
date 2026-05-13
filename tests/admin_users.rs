@@ -741,7 +741,7 @@ async fn update_user_returns_updated_display_name() {
     let resp = app
         .oneshot(
             Request::builder()
-                .method("PUT")
+                .method("PATCH")
                 .uri(format!("/admin/users/{}", user.id().as_uuid()))
                 .header("X-Realm-ID", realm.as_uuid().to_string())
                 .header("Authorization", format!("Bearer {token}"))
@@ -899,4 +899,238 @@ async fn import_duplicate_email_reported_as_per_item_error() {
         b2["results"][0]["error"].as_str().is_some(),
         "duplicate import must surface per-item error"
     );
+}
+
+// ===== HTTP method correctness =====
+
+#[tokio::test]
+async fn update_user_put_returns_405() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    let user = h
+        .identity()
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: "puttest@example.com".into(),
+                display_name: "Put Test".into(),
+                first_name: "Put".into(),
+                last_name: "Test".into(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create");
+
+    let app = build_app(&h).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/admin/users/{}", user.id().as_uuid()))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"display_name":"New Name"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+// ===== Field filter tests =====
+
+#[tokio::test]
+async fn filter_users_by_email_returns_exact_match() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    for (email, name) in &[
+        ("filter-alice@example.com", "Alice Filter"),
+        ("filter-bob@example.com", "Bob Filter"),
+    ] {
+        h.identity()
+            .create_user(
+                &realm,
+                &CreateUserRequest {
+                    email: (*email).into(),
+                    display_name: (*name).into(),
+                    first_name: String::new(),
+                    last_name: String::new(),
+                    attributes: Default::default(),
+                },
+            )
+            .expect("create user");
+    }
+
+    let app = build_app(&h).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/users?email=filter-alice@example.com")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp_json(resp).await;
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "expected exactly one match");
+    assert_eq!(items[0]["email"], "filter-alice@example.com");
+}
+
+#[tokio::test]
+async fn filter_users_by_username_returns_substring_matches() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    for (email, name) in &[
+        ("un1@example.com", "Alice Wonder"),
+        ("un2@example.com", "Bob Stone"),
+        ("un3@example.com", "Alice Cooper"),
+    ] {
+        h.identity()
+            .create_user(
+                &realm,
+                &CreateUserRequest {
+                    email: (*email).into(),
+                    display_name: (*name).into(),
+                    first_name: String::new(),
+                    last_name: String::new(),
+                    attributes: Default::default(),
+                },
+            )
+            .expect("create user");
+    }
+
+    let app = build_app(&h).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/users?username=Alice")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp_json(resp).await;
+    let items = body["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2, "expected two Alice matches");
+    let emails: Vec<&str> = items
+        .iter()
+        .map(|u| u["email"].as_str().expect("email string"))
+        .collect();
+    assert!(emails.contains(&"un1@example.com"));
+    assert!(emails.contains(&"un3@example.com"));
+}
+
+#[tokio::test]
+async fn filter_users_by_status_returns_only_matching_status() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    // Import one active and one disabled user so we have known statuses.
+    h.identity()
+        .import_user(
+            &realm,
+            &hearth::identity::ImportUserRequest {
+                id: None,
+                email: "status-active@example.com".into(),
+                display_name: "Active User".into(),
+                first_name: String::new(),
+                last_name: String::new(),
+                status: hearth::identity::UserStatus::Active,
+                credential: None,
+                attributes: Default::default(),
+            },
+        )
+        .expect("import active user");
+
+    h.identity()
+        .import_user(
+            &realm,
+            &hearth::identity::ImportUserRequest {
+                id: None,
+                email: "status-disabled@example.com".into(),
+                display_name: "Disabled User".into(),
+                first_name: String::new(),
+                last_name: String::new(),
+                status: hearth::identity::UserStatus::Disabled,
+                credential: None,
+                attributes: Default::default(),
+            },
+        )
+        .expect("import disabled user");
+
+    let app = build_app(&h).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/users?status=disabled")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp_json(resp).await;
+    let items = body["items"].as_array().expect("items array");
+    assert!(
+        items.iter().all(|u| {
+            u["email"].as_str() != Some("status-active@example.com")
+        }),
+        "active user must not appear in disabled filter results"
+    );
+    assert!(
+        items.iter().any(|u| u["email"] == "status-disabled@example.com"),
+        "disabled user must appear in results"
+    );
+}
+
+#[tokio::test]
+async fn filter_users_invalid_status_returns_400() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    let app = build_app(&h).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/users?status=bogus")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

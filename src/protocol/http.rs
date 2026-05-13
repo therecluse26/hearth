@@ -212,6 +212,10 @@ pub(crate) fn extract_admin_auth(
     let user_id = UserId::new(user_uuid);
 
     // Check admin role via the token's `permissions` claim (§ 5.2).
+    // Design decision: a single `hearth.admin` gate is intentional — all admin
+    // endpoints share the same all-or-nothing permission. Granular sub-scopes
+    // (e.g. `hearth.admin.users:read`) are not required by the current spec and
+    // would require changes to token issuance, RBAC seeding, and every handler.
     let is_admin = claims.permissions.iter().any(|p| p == "hearth.admin");
     if !is_admin {
         return Err((
@@ -264,7 +268,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/users/{id}",
             axum::routing::get(admin_get_user)
-                .put(admin_update_user)
+                .patch(admin_update_user)
                 .delete(admin_delete_user),
         )
         .route(
@@ -1835,12 +1839,18 @@ fn rbac_error_to_response(err: &RbacError) -> (StatusCode, Json<serde_json::Valu
     )
 }
 
-/// Pagination query parameters (also carries optional search query).
+/// Pagination query parameters (also carries optional search query and field filters).
 #[derive(Debug, Deserialize)]
 struct PaginationParams {
     cursor: Option<String>,
     limit: Option<usize>,
     search: Option<String>,
+    /// Exact email filter (case-insensitive, applied after normalisation).
+    email: Option<String>,
+    /// Substring filter on `display_name` (case-insensitive).
+    username: Option<String>,
+    /// Status filter: accepts `"active"`, `"disabled"`, or `"pending_verification"`.
+    status: Option<String>,
 }
 
 impl PaginationParams {
@@ -1850,7 +1860,8 @@ impl PaginationParams {
     }
 }
 
-/// Admin: list users (paginated), or search when `?search=<q>` is present.
+/// Admin: list users (paginated), search when `?search=<q>` is present, or
+/// field-filter when `?email=`, `?username=`, or `?status=` are present.
 async fn admin_list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1887,6 +1898,74 @@ async fn admin_list_users(
             }
             Err(e) => identity_error_to_response(&e).into_response(),
         };
+    }
+
+    let has_field_filters =
+        params.email.is_some() || params.username.is_some() || params.status.is_some();
+
+    if has_field_filters {
+        // Parse the status filter value if provided.
+        let status_filter = if let Some(s) = &params.status {
+            let parsed = match s.as_str() {
+                "active" => Some(crate::identity::UserStatus::Active),
+                "disabled" => Some(crate::identity::UserStatus::Disabled),
+                "pending_verification" => Some(crate::identity::UserStatus::PendingVerification),
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "invalid status filter; expected active, disabled, or pending_verification"})),
+                    )
+                        .into_response();
+                }
+            };
+            parsed
+        } else {
+            None
+        };
+
+        // Full scan up to a bounded cap, then apply predicates. Filtered results
+        // don't support cursor pagination — next_cursor is always null.
+        const FILTER_SCAN_CAP: usize = 10_000;
+        let all_users = match state
+            .identity
+            .list_users(&auth.realm_id, None, FILTER_SCAN_CAP)
+        {
+            Ok(page) => page.items,
+            Err(e) => return identity_error_to_response(&e).into_response(),
+        };
+
+        let email_norm = params.email.as_deref().map(|e| e.to_lowercase());
+        let username_lower = params.username.as_deref().map(|u| u.to_lowercase());
+
+        let items: Vec<serde_json::Value> = all_users
+            .iter()
+            .filter(|u| {
+                if let Some(ref ef) = email_norm {
+                    if u.email() != ef.as_str() {
+                        return false;
+                    }
+                }
+                if let Some(ref uf) = username_lower {
+                    if !u.display_name().to_lowercase().contains(uf.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(sf) = status_filter {
+                    if u.status() != sf {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(params.effective_limit())
+            .map(|u| proto_to_rest_json(&pb::User::from(u)))
+            .collect();
+
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"items": items, "next_cursor": null})),
+        )
+            .into_response();
     }
 
     match state.identity.list_users(
