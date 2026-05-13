@@ -15,8 +15,10 @@ use std::time::Instant;
 use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
+use axum::response::Redirect;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
+use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -370,6 +372,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/authorize", axum::routing::post(authorize))
         .route("/token", axum::routing::post(token_exchange))
+        .route(
+            "/end_session",
+            axum::routing::get(end_session).post(end_session),
+        )
         .route(
             "/revoke",
             axum::routing::post(token_revocation)
@@ -734,11 +740,10 @@ async fn health() -> impl IntoResponse {
 /// Returns the `OpenID` Connect Discovery 1.0 document describing the
 /// provider's configuration, endpoints, and supported features.
 async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Serialize the domain type directly so optional fields like
+    // end_session_endpoint are included without proto schema changes.
     let doc = state.identity.oidc_discovery();
-    (
-        StatusCode::OK,
-        Json(proto_to_rest_json(&pb::OidcDiscoveryDocument::from(&doc))),
-    )
+    (StatusCode::OK, Json(doc))
 }
 
 /// JWKS endpoint (`/jwks`, `/certs`, and `/.well-known/jwks.json`).
@@ -1370,10 +1375,7 @@ async fn token_exchange(
                 Ok(response) => {
                     crate::metrics::metrics()
                         .tokens_issued_total
-                        .with_label_values(&[
-                            &realm_id.as_uuid().to_string(),
-                            "authorization_code",
-                        ])
+                        .with_label_values(&[&realm_id.as_uuid().to_string(), "authorization_code"])
                         .inc();
                     crate::metrics::metrics().active_sessions.inc();
                     (
@@ -1398,10 +1400,7 @@ async fn token_exchange(
                 Ok(tokens) => {
                     crate::metrics::metrics()
                         .tokens_issued_total
-                        .with_label_values(&[
-                            &realm_id.as_uuid().to_string(),
-                            "refresh_token",
-                        ])
+                        .with_label_values(&[&realm_id.as_uuid().to_string(), "refresh_token"])
                         .inc();
                     let resp = pb::OidcTokenResponse {
                         access_token: tokens.access_token().to_string(),
@@ -2566,12 +2565,47 @@ async fn admin_get_client(
     }
 }
 
+/// JSON body for `PUT /admin/applications/{id}`.
+///
+/// Extends the proto `UpdateClientRequest` with logout URI fields that are
+/// not (yet) in the proto schema.
+#[derive(Debug, Deserialize, Default)]
+struct AdminUpdateClientBody {
+    client_name: Option<String>,
+    #[serde(default)]
+    redirect_uris: Vec<String>,
+    #[serde(default)]
+    grant_types: Vec<String>,
+    /// Back-channel logout URI. `null` clears it; omit to leave unchanged.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    backchannel_logout_uri: Option<Option<String>>,
+    /// Front-channel logout URI. `null` clears it; omit to leave unchanged.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    frontchannel_logout_uri: Option<Option<String>>,
+    /// Replaces the allowed post-logout redirect URI list.
+    post_logout_redirect_uris: Option<Vec<String>>,
+}
+
+/// Deserializes an optional nullable string field.
+///
+/// - Field absent → `None` (leave unchanged)
+/// - `null` → `Some(None)` (clear the field)
+/// - `"uri"` → `Some(Some("uri"))` (set to value)
+fn deserialize_nullable_string<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    // Option<Option<String>> naturally handles null vs absent vs string.
+    Option::<Option<String>>::deserialize(d)
+}
+
 /// Admin: update client by ID.
 async fn admin_update_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<pb::UpdateClientRequest>,
+    Json(body): Json<AdminUpdateClientBody>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
@@ -2589,7 +2623,23 @@ async fn admin_update_client(
         }
     };
 
-    let request = crate::identity::UpdateClientRequest::from(body);
+    let request = crate::identity::UpdateClientRequest {
+        client_name: body.client_name,
+        redirect_uris: if body.redirect_uris.is_empty() {
+            None
+        } else {
+            Some(body.redirect_uris)
+        },
+        grant_types: if body.grant_types.is_empty() {
+            None
+        } else {
+            Some(body.grant_types)
+        },
+        backchannel_logout_uri: body.backchannel_logout_uri,
+        frontchannel_logout_uri: body.frontchannel_logout_uri,
+        post_logout_redirect_uris: body.post_logout_redirect_uris,
+        ..Default::default()
+    };
 
     match state
         .identity
@@ -4854,6 +4904,179 @@ fn parse_webhook_id(s: &str) -> Result<WebhookId, (StatusCode, Json<serde_json::
                 Json(serde_json::json!({"error": "invalid webhook id"})),
             )
         })
+}
+
+// === RP-Initiated Logout (OIDC RPL §2 + OIDC BCL §2.5) ===
+
+/// Query parameters for `GET /end_session`.
+#[derive(Debug, Deserialize, Default)]
+struct EndSessionParams {
+    /// ID token previously issued to the RP. Accepted even when expired.
+    id_token_hint: Option<String>,
+    /// Post-logout URI (must be registered on the client when `client_id` is present).
+    post_logout_redirect_uri: Option<String>,
+    /// Client ID — used to validate `post_logout_redirect_uri`.
+    client_id: Option<String>,
+    /// Opaque state — echoed to `post_logout_redirect_uri` as `?state=…`.
+    state: Option<String>,
+}
+
+/// `GET /end_session` — RP-initiated logout.
+///
+/// Revokes the session identified by `id_token_hint`, fans out back-channel
+/// logout tokens to all registered RPs, and either redirects to
+/// `post_logout_redirect_uri` or renders a front-channel logout page.
+///
+/// All parameters are optional; when neither `id_token_hint` nor a session
+/// can be inferred, the endpoint returns 400.
+async fn end_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<EndSessionParams>,
+) -> impl IntoResponse {
+    let realm_id = match extract_realm_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let client_id = params
+        .client_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .map(crate::core::ClientId::new);
+
+    let request = crate::identity::oidc::RpLogoutRequest {
+        id_token_hint: params.id_token_hint,
+        session_id: None,
+        post_logout_redirect_uri: params.post_logout_redirect_uri.clone(),
+        client_id,
+        state: params.state.clone(),
+    };
+
+    let result = match state.identity.initiate_logout(&realm_id, &request) {
+        Ok(r) => r,
+        Err(crate::identity::IdentityError::SessionNotFound) => {
+            // Session already gone — still redirect cleanly.
+            return end_session_redirect(params.post_logout_redirect_uri, params.state);
+        }
+        Err(crate::identity::IdentityError::InvalidToken) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid_request", "error_description": "id_token_hint could not be parsed"})),
+            )
+                .into_response();
+        }
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+
+    // Fan out back-channel logout notifications asynchronously (fire-and-forget).
+    for target in result.backchannel_targets {
+        tokio::spawn(async move {
+            let client = HttpClient::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default();
+            let outcome = client
+                .post(&target.uri)
+                .form(&[("logout_token", &target.logout_token)])
+                .send()
+                .await;
+            if let Err(e) = outcome {
+                tracing::warn!(uri = %target.uri, error = %e, "backchannel logout delivery failed");
+            }
+        });
+    }
+
+    // Serve front-channel logout page (with iframes) or redirect directly.
+    if !result.frontchannel_targets.is_empty() {
+        let sid = result.session_id.as_uuid().to_string();
+        let issuer_enc =
+            form_urlencoded::byte_serialize(state.identity.oidc_discovery().issuer.as_bytes())
+                .collect::<String>();
+        let sid_enc = form_urlencoded::byte_serialize(sid.as_bytes()).collect::<String>();
+
+        let iframes: Vec<String> = result
+            .frontchannel_targets
+            .iter()
+            .map(|t| {
+                // Append iss and sid query params per OIDC FCL spec.
+                let sep = if t.uri.contains('?') { '&' } else { '?' };
+                format!(
+                    r#"<iframe src="{uri}{sep}iss={issuer}&sid={sid}" style="display:none;width:0;height:0;border:0"></iframe>"#,
+                    uri = html_escape(&t.uri),
+                    sep = sep,
+                    issuer = issuer_enc,
+                    sid = sid_enc,
+                )
+            })
+            .collect();
+
+        let redirect_meta = result
+            .post_logout_redirect_uri
+            .as_deref()
+            .map(|uri| {
+                let escaped = html_escape(uri);
+                format!(r#"<meta http-equiv="refresh" content="2;url={escaped}">"#)
+            })
+            .unwrap_or_default();
+
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signing out…</title>
+{redirect_meta}
+</head>
+<body>
+{iframes}
+</body>
+</html>"#,
+            redirect_meta = redirect_meta,
+            iframes = iframes.join("\n"),
+        );
+
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response();
+    }
+
+    end_session_redirect(result.post_logout_redirect_uri, result.state)
+}
+
+/// Builds the post-logout redirect response, appending `state` when present.
+fn end_session_redirect(uri: Option<String>, state: Option<String>) -> Response {
+    match uri {
+        None => (
+            StatusCode::OK,
+            Json(serde_json::json!({"message": "logged out"})),
+        )
+            .into_response(),
+        Some(base_uri) => {
+            let redirect_uri = match state {
+                None => base_uri,
+                Some(s) => {
+                    let sep = if base_uri.contains('?') { '&' } else { '?' };
+                    let state_enc =
+                        form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+                    format!("{base_uri}{sep}state={state_enc}")
+                }
+            };
+            Redirect::to(&redirect_uri).into_response()
+        }
+    }
+}
+
+/// HTML-escapes the five special characters to prevent XSS in inline HTML.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }
 
 #[cfg(test)]

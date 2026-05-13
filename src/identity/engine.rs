@@ -125,13 +125,14 @@ struct StoredEmailVerification {
     used: bool,
 }
 use crate::identity::oidc::{
-    AuthorizationRequest, AuthorizationResponse, CodeChallengeMethod, OAuthClient, OidcConfig,
-    OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, StoredAuthorizationCode,
+    AuthorizationRequest, AuthorizationResponse, BackchannelTarget, CodeChallengeMethod,
+    FrontchannelTarget, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
+    RegisterClientRequest, RpLogoutRequest, RpLogoutResult, StoredAuthorizationCode,
     StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
 };
 use crate::identity::tokens::{
-    self, Audience, IssueTokenRequest, JwksDocument, SigningKey, TokenClaims, TokenConfig,
-    TokenPair,
+    self, Audience, IssueTokenRequest, JwksDocument, LogoutTokenClaims, SigningKey, TokenClaims,
+    TokenConfig, TokenPair,
 };
 use crate::identity::totp::{self, RecoveryCodes, StoredMfaState, TotpEnrollment, TotpSecret};
 use crate::identity::types::{
@@ -842,9 +843,7 @@ impl EmbeddedIdentityEngine {
         if new_count == Self::IP_LOGIN_MAX_ATTEMPTS {
             let ctx = AuditContext {
                 actor: Actor::Anonymous,
-                metadata: Some(
-                    serde_json::json!({ "ip": ip, "attempt_count": new_count }),
-                ),
+                metadata: Some(serde_json::json!({ "ip": ip, "attempt_count": new_count })),
             };
             let _ = self.record_audit(
                 realm_id,
@@ -1896,6 +1895,9 @@ impl EmbeddedIdentityEngine {
             revocation_endpoint: Some(format!("{issuer}/revoke")),
             introspection_endpoint: Some(format!("{issuer}/introspect")),
             resource_indicators_supported: true,
+            end_session_endpoint: Some(format!("{issuer}/end_session")),
+            backchannel_logout_supported: true,
+            backchannel_logout_session_supported: true,
         }
     }
 
@@ -1959,11 +1961,7 @@ impl EmbeddedIdentityEngine {
 }
 
 impl IdentityEngine for EmbeddedIdentityEngine {
-    fn check_ip_login_rate_limit(
-        &self,
-        realm_id: &RealmId,
-        ip: &str,
-    ) -> Result<(), IdentityError> {
+    fn check_ip_login_rate_limit(&self, realm_id: &RealmId, ip: &str) -> Result<(), IdentityError> {
         self.check_ip_login_rate_limit(realm_id, ip)
     }
 
@@ -3185,6 +3183,30 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         session.revoke();
         self.persist_session(realm_id, &session)?;
 
+        // Cascade: revoke all refresh-token grant families issued under this session.
+        let sfam_prefix = keys::encode_session_grant_family_prefix(session_id);
+        let sfam_end = keys::prefix_end(&sfam_prefix);
+        if let Ok(entries) = self.storage.scan(realm_id, &sfam_prefix, &sfam_end) {
+            for entry in &entries {
+                let family_id =
+                    std::str::from_utf8(&entry.key[sfam_prefix.len()..]).unwrap_or_default();
+                if family_id.is_empty() {
+                    continue;
+                }
+                let family_key = keys::encode_grant_family(family_id);
+                if let Ok(Some(fbytes)) = self.storage.get(realm_id, &family_key) {
+                    if let Ok(mut fam) = serde_json::from_slice::<StoredGrantFamily>(&fbytes) {
+                        if !fam.revoked {
+                            fam.revoked = true;
+                            if let Ok(updated) = serde_json::to_vec(&fam) {
+                                let _ = self.storage.put(realm_id, &family_key, &updated);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let audit_ctx = AuditContext {
             actor: Actor::User(session.user_id().clone()),
             metadata: None,
@@ -3492,7 +3514,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         };
 
         // Look up session — this is the actual session-validity check.
-        let session = self.get_session(realm_id, &sid)?.ok_or(IdentityError::InvalidToken)?;
+        let session = self
+            .get_session(realm_id, &sid)?
+            .ok_or(IdentityError::InvalidToken)?;
 
         // Bind claims.sub to session owner (defense-in-depth against sub
         // spoofing via a stolen-but-validly-signed token from another user).
@@ -4091,6 +4115,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let family_key = keys::encode_grant_family(&family_id);
         self.storage
             .put(realm_id, &family_key, &family_bytes)
+            .map_err(Self::storage_err)?;
+        // Index session → family for cascade revocation on session termination.
+        let sfam_key = keys::encode_session_grant_family(&family.session_id, &family_id);
+        self.storage
+            .put(realm_id, &sfam_key, &[])
             .map_err(Self::storage_err)?;
 
         // 13. Issue ID token (OIDC-specific, nonce echoed per OIDC Core §2)
@@ -6179,6 +6208,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
         if let Some(consent_spans_orgs) = request.consent_spans_orgs {
             client.set_consent_spans_orgs(consent_spans_orgs);
+        }
+        if let Some(uri) = &request.backchannel_logout_uri {
+            client.set_backchannel_logout_uri(uri.clone());
+        }
+        if let Some(uri) = &request.frontchannel_logout_uri {
+            client.set_frontchannel_logout_uri(uri.clone());
+        }
+        if let Some(uris) = &request.post_logout_redirect_uris {
+            client.set_post_logout_redirect_uris(uris.clone());
         }
 
         let updated_bytes =
@@ -8836,6 +8874,146 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Success (even returning None) confirms the storage layer is live.
         let probe_realm = keys::system_realm_id();
         self.storage.get(&probe_realm, b"health:probe").is_ok()
+    }
+
+    fn initiate_logout(
+        &self,
+        realm_id: &RealmId,
+        request: &RpLogoutRequest,
+    ) -> Result<RpLogoutResult, IdentityError> {
+        // Resolve session ID and user ID from id_token_hint or explicit session_id.
+        let (session_id, user_id) = if let Some(hint) = &request.id_token_hint {
+            // Decode without signature verification — OIDC spec allows expired hints.
+            let claims =
+                tokens::decode_claims_unverified(hint).map_err(|_| IdentityError::InvalidToken)?;
+            let sid = Self::parse_session_id_claim(&claims)?.ok_or(IdentityError::InvalidToken)?;
+            let uid = Self::parse_user_id_claim(&claims)?;
+            (sid, uid)
+        } else if let Some(sid) = &request.session_id {
+            let session = self
+                .get_session(realm_id, sid)?
+                .ok_or(IdentityError::SessionNotFound)?;
+            (sid.clone(), session.user_id().clone())
+        } else {
+            return Err(IdentityError::InvalidToken);
+        };
+
+        // Revoke the session (and cascade to grant families).
+        match self.revoke_session(realm_id, &session_id) {
+            Ok(()) | Err(IdentityError::SessionNotFound) => {}
+            Err(e) => return Err(e),
+        }
+
+        // Collect all OAuth clients that received tokens under this session.
+        let sfam_prefix = keys::encode_session_grant_family_prefix(&session_id);
+        let sfam_end = keys::prefix_end(&sfam_prefix);
+
+        let mut backchannel_targets: Vec<BackchannelTarget> = Vec::new();
+        let mut frontchannel_targets: Vec<FrontchannelTarget> = Vec::new();
+
+        if let Ok(entries) = self.storage.scan(realm_id, &sfam_prefix, &sfam_end) {
+            let signing_key = self.get_or_load_realm_signing_key(realm_id)?;
+            let issuer = self.config.oidc.issuer.clone();
+            let now = self.clock.now();
+            let iat = now.as_micros() / 1_000_000;
+
+            let mut seen_client_ids = std::collections::HashSet::new();
+
+            for entry in &entries {
+                let family_id = match std::str::from_utf8(&entry.key[sfam_prefix.len()..]) {
+                    Ok(s) if !s.is_empty() => s,
+                    _ => continue,
+                };
+
+                let family_key = keys::encode_grant_family(family_id);
+                let fam = match self.storage.get(realm_id, &family_key) {
+                    Ok(Some(bytes)) => match serde_json::from_slice::<StoredGrantFamily>(&bytes) {
+                        Ok(f) => f,
+                        Err(_) => continue,
+                    },
+                    _ => continue,
+                };
+
+                let client_id = match fam.client_id {
+                    Some(id) => id,
+                    None => continue,
+                };
+
+                if !seen_client_ids.insert(client_id.clone()) {
+                    continue; // Already processed this client for this session.
+                }
+
+                let client_key = keys::encode_oauth_client(&client_id);
+                let client = match self.storage.get(realm_id, &client_key) {
+                    Ok(Some(bytes)) => match serde_json::from_slice::<OAuthClient>(&bytes) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    },
+                    _ => continue,
+                };
+
+                if let Some(bcl_uri) = client.backchannel_logout_uri() {
+                    let jti = uuid::Uuid::new_v4().to_string();
+                    let logout_claims = LogoutTokenClaims::new(
+                        issuer.clone(),
+                        user_id.as_uuid().to_string(),
+                        Audience::single(client_id.as_uuid().to_string()),
+                        session_id.as_uuid().to_string(),
+                        jti,
+                        iat,
+                    );
+                    if let Ok(token) = signing_key.issue_logout_token(&logout_claims) {
+                        backchannel_targets.push(BackchannelTarget {
+                            uri: bcl_uri.to_string(),
+                            logout_token: token,
+                        });
+                    }
+                }
+
+                if let Some(fcl_uri) = client.frontchannel_logout_uri() {
+                    frontchannel_targets.push(FrontchannelTarget {
+                        uri: fcl_uri.to_string(),
+                        client_id: client_id.clone(),
+                    });
+                }
+            }
+        }
+
+        // Validate post_logout_redirect_uri against the registering client's list.
+        let post_logout_redirect_uri = match &request.post_logout_redirect_uri {
+            None => None,
+            Some(uri) => {
+                let valid = match &request.client_id {
+                    None => true, // No client specified — accept without validation.
+                    Some(cid) => {
+                        let client_key = keys::encode_oauth_client(cid);
+                        match self.storage.get(realm_id, &client_key) {
+                            Ok(Some(bytes)) => {
+                                match serde_json::from_slice::<OAuthClient>(&bytes) {
+                                    Ok(c) => c.post_logout_redirect_uris().contains(uri),
+                                    Err(_) => false,
+                                }
+                            }
+                            _ => false,
+                        }
+                    }
+                };
+                if valid {
+                    Some(uri.clone())
+                } else {
+                    None
+                }
+            }
+        };
+
+        Ok(RpLogoutResult {
+            user_id,
+            session_id,
+            backchannel_targets,
+            frontchannel_targets,
+            post_logout_redirect_uri,
+            state: request.state.clone(),
+        })
     }
 }
 
@@ -11624,14 +11802,16 @@ mod tests {
 
         let mut forged_claims = tokens::decode_claims_unverified(token_pair.refresh_token())
             .expect("decode refresh claims");
-        assert!(forged_claims.fid.is_some(), "expected grant-family refresh token");
+        assert!(
+            forged_claims.fid.is_some(),
+            "expected grant-family refresh token"
+        );
         forged_claims.fid = None;
 
         let parts: Vec<&str> = token_pair.refresh_token().split('.').collect();
         assert_eq!(parts.len(), 3, "refresh token should be JWT compact form");
-        let forged_payload = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&forged_claims).expect("serialize forged refresh claims"),
-        );
+        let forged_payload = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&forged_claims).expect("serialize forged refresh claims"));
         let forged_token = format!("{}.{}.{}", parts[0], forged_payload, parts[2]);
 
         let result = engine.refresh_tokens(&realm_id, &forged_token);
@@ -13102,10 +13282,8 @@ mod tests {
 
         // Craft a forged token with escalated permissions, signed by an
         // attacker-controlled key (not Hearth's key).
-        let attacker_key =
-            SigningKey::generate().expect("attacker keygen");
-        let real_claims =
-            tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
+        let attacker_key = SigningKey::generate().expect("attacker keygen");
+        let real_claims = tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
         let forged_claims = TokenClaims {
             permissions: vec!["admin".to_string(), "*".to_string()],
             roles: vec!["superadmin".to_string()],
@@ -13189,8 +13367,7 @@ mod tests {
             .expect("legitimate refresh should succeed");
 
         // Craft a forged refresh token with a different signing key
-        let attacker_key =
-            SigningKey::generate().expect("attacker keygen");
+        let attacker_key = SigningKey::generate().expect("attacker keygen");
         let real_claims =
             tokens::decode_claims_unverified(response.refresh_token()).expect("decode");
         let forged_claims = TokenClaims {
@@ -13203,10 +13380,7 @@ mod tests {
             .expect("issue forged refresh");
 
         let result = engine.refresh_tokens(&realm_id, &forged_token);
-        assert!(
-            result.is_err(),
-            "forged refresh token must be rejected"
-        );
+        assert!(result.is_err(), "forged refresh token must be rejected");
     }
 
     /// Regression: forged revoke token silently ignored (RFC 7009)
@@ -13230,10 +13404,8 @@ mod tests {
             .expect("issue tokens");
 
         // Craft a forged revocation token targeting a real session
-        let attacker_key =
-            SigningKey::generate().expect("attacker keygen");
-        let real_claims =
-            tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
+        let attacker_key = SigningKey::generate().expect("attacker keygen");
+        let real_claims = tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
         let forged_claims = TokenClaims {
             token_type: "access".to_string(),
             ..real_claims
@@ -13294,10 +13466,8 @@ mod tests {
         assert!(real_response.active, "real token should be active");
 
         // Craft a forged token with valid-looking claims but wrong key
-        let attacker_key =
-            SigningKey::generate().expect("attacker keygen");
-        let real_claims =
-            tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
+        let attacker_key = SigningKey::generate().expect("attacker keygen");
+        let real_claims = tokens::decode_claims_unverified(tokens.access_token()).expect("decode");
         let forged_claims = TokenClaims {
             exp: real_claims.exp + 86400,
             token_type: "access".to_string(),

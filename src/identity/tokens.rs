@@ -397,6 +397,36 @@ impl SigningKey {
         Ok(format!("{signing_input}.{sig_b64}"))
     }
 
+    /// Issues an OIDC back-channel logout token (OIDC BCL §2.4).
+    ///
+    /// The `typ` header is set to `"logout+JWT"` to distinguish logout tokens
+    /// from regular access/ID tokens. The `events` claim in `claims` MUST
+    /// include the backchannel-logout event key.
+    pub fn issue_logout_token(&self, claims: &LogoutTokenClaims) -> Result<String, IdentityError> {
+        let header = JwtHeader {
+            alg: JWT_ALGORITHM.to_string(),
+            typ: LOGOUT_TOKEN_TYPE.to_string(),
+            kid: self.key_id.clone(),
+        };
+
+        let header_json =
+            serde_json::to_vec(&header).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let claims_json = serde_json::to_vec(claims).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+
+        let header_b64 = URL_SAFE_NO_PAD.encode(&header_json);
+        let claims_b64 = URL_SAFE_NO_PAD.encode(&claims_json);
+
+        let signing_input = format!("{header_b64}.{claims_b64}");
+        let sig = self.sign(signing_input.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(&sig);
+
+        Ok(format!("{signing_input}.{sig_b64}"))
+    }
+
     /// Issues an access/refresh token pair for the given request.
     pub fn issue_token_pair(
         &self,
@@ -577,6 +607,61 @@ pub fn validate_token_with_time(
 /// trusts its own tokens and validates via session lookup instead.
 ///
 /// Returns `Err(InvalidToken)` if the token is malformed.
+/// JWT claims for an OIDC back-channel logout token (OIDC BCL §2.4).
+///
+/// A logout token MUST NOT contain a `nonce` claim. It MUST contain the
+/// `events` claim with a `backchannel-logout` member, and either `sub` or
+/// `sid` (or both). The JWT header `typ` is `"logout+JWT"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogoutTokenClaims {
+    /// Issuer — identifies the OP.
+    pub iss: String,
+    /// Subject — the end-user's identifier (RECOMMENDED).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub: Option<String>,
+    /// Audience — the RP's client ID.
+    pub aud: Audience,
+    /// Issued-at time (Unix seconds).
+    pub iat: i64,
+    /// JWT ID — unique per logout token, used for replay prevention.
+    pub jti: String,
+    /// Session ID — identifies the OP session being terminated (RECOMMENDED).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
+    /// Events claim — MUST contain the backchannel-logout event key.
+    pub events: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl LogoutTokenClaims {
+    /// Builds a minimal logout token claim set for the given session and user.
+    pub fn new(
+        iss: String,
+        sub: String,
+        aud: Audience,
+        sid: String,
+        jti: String,
+        iat: i64,
+    ) -> Self {
+        let mut events = std::collections::BTreeMap::new();
+        events.insert(
+            "http://schemas.openid.net/event/backchannel-logout".to_string(),
+            serde_json::json!({}),
+        );
+        Self {
+            iss,
+            sub: Some(sub),
+            aud,
+            iat,
+            jti,
+            sid: Some(sid),
+            events,
+        }
+    }
+}
+
+/// The JWT `typ` header value for logout tokens (OIDC BCL §2.4).
+const LOGOUT_TOKEN_TYPE: &str = "logout+JWT";
+
 pub fn decode_claims_unverified(token: &str) -> Result<TokenClaims, IdentityError> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {

@@ -383,6 +383,23 @@ pub trait IdentityEngine: Send + Sync {
     /// types, signing algorithms, and PKCE methods.
     fn oidc_discovery(&self) -> OidcDiscoveryDocument;
 
+    /// Processes RP-initiated logout (OIDC RPL §2 + OIDC BCL §2.5).
+    ///
+    /// Revokes the identified session and its associated refresh-token grant
+    /// families, then collects back-channel and front-channel logout targets
+    /// for all RPs that received tokens under this session. Pre-signs a
+    /// logout token for each back-channel target so the HTTP layer can fan
+    /// out notifications without touching cryptographic material directly.
+    ///
+    /// Accepts an expired `id_token_hint` per the OIDC spec (§2, ¶3). When
+    /// neither an `id_token_hint` nor an explicit `session_id` is supplied,
+    /// returns `InvalidToken`.
+    fn initiate_logout(
+        &self,
+        realm_id: &RealmId,
+        request: &oidc::RpLogoutRequest,
+    ) -> Result<oidc::RpLogoutResult, IdentityError>;
+
     /// Returns a per-realm OIDC Discovery document.
     ///
     /// The `issuer` in the returned document is `{base_issuer}/realms/{name}`,

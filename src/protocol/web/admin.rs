@@ -2412,6 +2412,9 @@ pub async fn admin_app_edit_submit(
         trust_level,
         declared_scopes: Some(declared_scopes),
         consent_spans_orgs: None,
+        backchannel_logout_uri: None,
+        frontchannel_logout_uri: None,
+        post_logout_redirect_uris: None,
     };
 
     let realm_name = target.0.name().to_string();

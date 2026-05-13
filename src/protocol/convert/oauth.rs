@@ -74,6 +74,9 @@ impl From<pb::UpdateClientRequest> for domain::UpdateClientRequest {
             trust_level: None,
             declared_scopes: None,
             consent_spans_orgs: None,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            post_logout_redirect_uris: None,
         }
     }
 }

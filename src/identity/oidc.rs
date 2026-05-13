@@ -154,6 +154,24 @@ pub struct OAuthClient {
     /// Whether a realm-level consent covers all org contexts.
     #[serde(default)]
     consent_spans_orgs: bool,
+    /// OIDC back-channel logout URI (OIDC BCL §2.5).
+    ///
+    /// When set, Hearth delivers a signed logout token to this URI after
+    /// session termination. Delivery is async fire-and-forget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backchannel_logout_uri: Option<String>,
+    /// OIDC front-channel logout URI.
+    ///
+    /// When set, Hearth embeds an iframe pointing to this URI on the
+    /// post-logout page so the RP can perform its own session cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frontchannel_logout_uri: Option<String>,
+    /// Allowed post-logout redirect URIs.
+    ///
+    /// After RP-initiated logout, Hearth redirects to `post_logout_redirect_uri`
+    /// only if it matches one of these registered values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    post_logout_redirect_uris: Vec<String>,
 }
 
 fn default_require_consent() -> bool {
@@ -181,6 +199,9 @@ impl OAuthClient {
             trust_level: ClientTrustLevel::FirstParty,
             declared_scopes: Vec::new(),
             consent_spans_orgs: false,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            post_logout_redirect_uris: Vec::new(),
         }
     }
 
@@ -206,6 +227,9 @@ impl OAuthClient {
             trust_level: ClientTrustLevel::FirstParty,
             declared_scopes: Vec::new(),
             consent_spans_orgs: false,
+            backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            post_logout_redirect_uris: Vec::new(),
         }
     }
 
@@ -324,6 +348,36 @@ impl OAuthClient {
     pub(crate) fn set_consent_spans_orgs(&mut self, value: bool) {
         self.consent_spans_orgs = value;
     }
+
+    /// Returns the back-channel logout URI, if configured.
+    pub fn backchannel_logout_uri(&self) -> Option<&str> {
+        self.backchannel_logout_uri.as_deref()
+    }
+
+    /// Returns the front-channel logout URI, if configured.
+    pub fn frontchannel_logout_uri(&self) -> Option<&str> {
+        self.frontchannel_logout_uri.as_deref()
+    }
+
+    /// Returns the allowed post-logout redirect URIs.
+    pub fn post_logout_redirect_uris(&self) -> &[String] {
+        &self.post_logout_redirect_uris
+    }
+
+    /// Sets the back-channel logout URI. `None` clears it.
+    pub(crate) fn set_backchannel_logout_uri(&mut self, uri: Option<String>) {
+        self.backchannel_logout_uri = uri;
+    }
+
+    /// Sets the front-channel logout URI. `None` clears it.
+    pub(crate) fn set_frontchannel_logout_uri(&mut self, uri: Option<String>) {
+        self.frontchannel_logout_uri = uri;
+    }
+
+    /// Sets the allowed post-logout redirect URIs.
+    pub(crate) fn set_post_logout_redirect_uris(&mut self, uris: Vec<String>) {
+        self.post_logout_redirect_uris = uris;
+    }
 }
 
 /// Request to update an existing OAuth 2.0 client.
@@ -350,6 +404,66 @@ pub struct UpdateClientRequest {
     pub declared_scopes: Option<Vec<String>>,
     /// Updated org-spanning consent behavior.
     pub consent_spans_orgs: Option<bool>,
+    /// Back-channel logout URI (OIDC BCL §2.5). `Some(None)` clears it.
+    pub backchannel_logout_uri: Option<Option<String>>,
+    /// Front-channel logout URI. `Some(None)` clears it.
+    pub frontchannel_logout_uri: Option<Option<String>>,
+    /// Allowed post-logout redirect URIs. Replaces the existing list.
+    pub post_logout_redirect_uris: Option<Vec<String>>,
+}
+
+// ===== RP-Initiated Logout =====
+
+/// A client that needs a back-channel logout notification.
+#[derive(Debug, Clone)]
+pub struct BackchannelTarget {
+    /// The registered back-channel logout URI.
+    pub uri: String,
+    /// Pre-signed logout token JWT to POST to `uri`.
+    pub logout_token: String,
+}
+
+/// A client that needs a front-channel logout via iframe.
+#[derive(Debug, Clone)]
+pub struct FrontchannelTarget {
+    /// The registered front-channel logout URI.
+    pub uri: String,
+    /// The client's ID, included as query param per OIDC FCL spec.
+    pub client_id: crate::core::ClientId,
+}
+
+/// Request for RP-initiated logout (OIDC RPL §2).
+#[derive(Debug, Clone, Default)]
+pub struct RpLogoutRequest {
+    /// Optional ID token hint — used to bind the logout to a specific session.
+    /// Accepted even when expired, per the OIDC spec.
+    pub id_token_hint: Option<String>,
+    /// Explicit session ID override (alternative to id_token_hint).
+    pub session_id: Option<crate::core::SessionId>,
+    /// Post-logout redirect URI. Validated against `post_logout_redirect_uris`
+    /// when a `client_id` is present.
+    pub post_logout_redirect_uri: Option<String>,
+    /// The client initiating the logout. Used to validate `post_logout_redirect_uri`.
+    pub client_id: Option<crate::core::ClientId>,
+    /// Opaque state parameter — echoed back in the redirect.
+    pub state: Option<String>,
+}
+
+/// Result of RP-initiated logout.
+#[derive(Debug, Clone)]
+pub struct RpLogoutResult {
+    /// The user whose session was terminated.
+    pub user_id: crate::core::UserId,
+    /// The session that was revoked.
+    pub session_id: crate::core::SessionId,
+    /// Clients requiring back-channel notification, with pre-signed tokens.
+    pub backchannel_targets: Vec<BackchannelTarget>,
+    /// Clients requiring front-channel notification via iframe.
+    pub frontchannel_targets: Vec<FrontchannelTarget>,
+    /// Validated post-logout redirect URI (absent if unregistered or not provided).
+    pub post_logout_redirect_uri: Option<String>,
+    /// State parameter from the request, echoed back.
+    pub state: Option<String>,
 }
 
 /// The PKCE code challenge method.
@@ -570,6 +684,15 @@ pub struct OidcDiscoveryDocument {
     /// Whether RFC 8707 resource indicators are supported.
     #[serde(default)]
     pub resource_indicators_supported: bool,
+    /// URL of the RP-initiated logout endpoint (OIDC RP-Initiated Logout 1.0 §3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_session_endpoint: Option<String>,
+    /// Whether back-channel logout is supported (OIDC BCL draft §2.1).
+    #[serde(default)]
+    pub backchannel_logout_supported: bool,
+    /// Whether back-channel logout tokens include a `sid` claim.
+    #[serde(default)]
+    pub backchannel_logout_session_supported: bool,
 }
 
 // ===== Client Credentials Grant =====
@@ -960,6 +1083,9 @@ mod tests {
             revocation_endpoint: Some("https://hearth.local/revoke".to_string()),
             introspection_endpoint: Some("https://hearth.local/introspect".to_string()),
             resource_indicators_supported: false,
+            end_session_endpoint: Some("https://hearth.local/end_session".to_string()),
+            backchannel_logout_supported: false,
+            backchannel_logout_session_supported: false,
         };
 
         let json = serde_json::to_string(&doc).expect("serialize");
