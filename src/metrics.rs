@@ -20,7 +20,7 @@
 
 use std::sync::OnceLock;
 
-use prometheus::{CounterVec, Gauge, HistogramOpts, HistogramVec, Opts, Registry};
+use prometheus::{Counter, CounterVec, Gauge, HistogramOpts, HistogramVec, Opts, Registry};
 
 /// HTTP request latency histogram buckets (seconds).
 ///
@@ -77,6 +77,13 @@ pub struct Metrics {
     /// and adding `Instant::now()` to every `get` would violate the
     /// zero-syscall hot-path contract.
     pub storage_operation_duration_seconds: HistogramVec,
+
+    /// Total number of audit chain integrity verification failures.
+    ///
+    /// Incremented each time `verify_integrity` detects a hash mismatch in
+    /// the append-only audit log. A non-zero value indicates either log
+    /// tampering or storage corruption and SHOULD trigger an alert.
+    pub audit_integrity_failures_total: Counter,
 }
 
 impl Metrics {
@@ -142,6 +149,15 @@ impl Metrics {
             .register(Box::new(storage_operation_duration_seconds.clone()))
             .expect("metric registration succeeds on a fresh registry");
 
+        let audit_integrity_failures_total = Counter::new(
+            "hearth_audit_integrity_failures_total",
+            "Total audit chain integrity verification failures detected",
+        )
+        .expect("metric descriptor is valid");
+        registry
+            .register(Box::new(audit_integrity_failures_total.clone()))
+            .expect("metric registration succeeds on a fresh registry");
+
         Self {
             registry,
             http_request_duration_seconds,
@@ -149,6 +165,7 @@ impl Metrics {
             tokens_issued_total,
             active_sessions,
             storage_operation_duration_seconds,
+            audit_integrity_failures_total,
         }
     }
 
