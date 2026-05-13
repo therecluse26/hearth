@@ -279,13 +279,21 @@ async fn reconcile_federation_wires_claim_mappings_to_idp() {
             token_endpoint: Some(
                 "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token".to_string(),
             ),
+            userinfo_endpoint: None,
             jwks_uri: Some(
                 "https://login.microsoftonline.com/tenant-id/discovery/v2.0/keys".to_string(),
             ),
             client_id: Some("app-id".to_string()),
             client_secret: Some("app-secret".to_string()),
+            scopes: None,
             claim_mappings: Some(claim_mappings.clone()),
-            ..FederationProviderYaml::default_oidc()
+            entity_id: None,
+            sso_url: None,
+            slo_url: None,
+            idp_certificate_pem: None,
+            sign_authn_requests: None,
+            want_assertions_signed: None,
+            attribute_map: None,
         },
     );
 

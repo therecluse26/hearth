@@ -189,6 +189,25 @@ pub trait IdentityEngine: Send + Sync {
         password: &CleartextPassword,
     ) -> Result<bool, IdentityError>;
 
+    /// Checks whether the given IP has exceeded the per-IP login rate limit
+    /// for a realm. Returns `Err(RateLimited)` when blocked.
+    ///
+    /// The default implementation is a no-op (`Ok(())`); the embedded engine
+    /// overrides it with a sliding-window counter.
+    fn check_ip_login_rate_limit(
+        &self,
+        _realm_id: &RealmId,
+        _ip: &str,
+    ) -> Result<(), IdentityError> {
+        Ok(())
+    }
+
+    /// Records a failed login attempt for the given IP so subsequent calls
+    /// to `check_ip_login_rate_limit` can enforce the window threshold.
+    ///
+    /// The default implementation is a no-op; the embedded engine overrides.
+    fn record_ip_login_attempt(&self, _realm_id: &RealmId, _ip: &str) {}
+
     /// Changes a user's password after verifying the old one.
     ///
     /// Returns `Err(InvalidCredential)` if the old password is wrong.
@@ -763,6 +782,24 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<Option<OAuthClient>, IdentityError>;
+
+    /// Authenticates a caller for protected OAuth endpoints (revocation,
+    /// introspection).
+    ///
+    /// `client_id` must identify an existing client in the realm.
+    /// Confidential clients (those with a stored secret hash) additionally
+    /// require a matching `client_secret`. Public clients (no stored secret)
+    /// are accepted with `client_id` alone.
+    ///
+    /// Returns `Err(IdentityError::InvalidClientSecret)` for all authentication
+    /// failures (unknown client, wrong or missing secret). Using a single error
+    /// variant prevents client enumeration by timing or error differentiation.
+    fn authenticate_client(
+        &self,
+        realm_id: &RealmId,
+        client_id: &crate::core::ClientId,
+        client_secret: Option<&str>,
+    ) -> Result<(), IdentityError>;
 
     /// Updates an existing OAuth client's fields.
     ///

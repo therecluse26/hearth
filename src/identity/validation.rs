@@ -159,9 +159,7 @@ pub(crate) fn validate_name_part(name: &str, field: &str) -> Result<String, Iden
 /// context (e.g., admin `set_password` without a user object loaded).
 ///
 /// Complements `validate_password_length` (which only guards against the
-/// hashing DoS bound). Admin-created users bypass this check intentionally,
-/// because operators may set weak interim passwords that the user must rotate
-/// on first login.
+/// hashing DoS bound).
 pub(crate) fn validate_password_against_policy(
     password_bytes: &[u8],
     policy: &PasswordPolicy,

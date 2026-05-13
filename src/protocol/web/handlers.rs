@@ -568,7 +568,13 @@ pub async fn setup_submit(
 
     let password = CleartextPassword::from_string(form.admin_password.clone());
 
-    let base_url = derive_base_url(&headers);
+    let base_url = derive_base_url(
+        state
+            .config
+            .as_ref()
+            .and_then(|c| c.onboarding.base_url.as_deref()),
+        &headers,
+    );
     match state.onboarding.complete_setup(
         form.admin_email.trim(),
         form.admin_display_name.trim(),
@@ -914,6 +920,10 @@ fn login_submit_impl(
     // and avoids a scoped mirror route that adds no security value.
     let mfa_url = "/ui/mfa-challenge".to_string();
 
+    // Extract the client IP once, after trusted-proxy stripping, for the
+    // per-IP rate limiter. Empty string = no IP available (skipped by engine).
+    let client_ip = session_ctx.ip_address.clone().unwrap_or_default();
+
     let generic_error = {
         let action_prefix = action_prefix.clone();
         let return_to = return_to.clone();
@@ -941,8 +951,20 @@ fn login_submit_impl(
         }
     };
 
+    // Per-IP rate limit check. Must happen before user lookup so a blocked
+    // IP cannot probe which email addresses exist.
+    if state
+        .identity
+        .check_ip_login_rate_limit(realm.id(), &client_ip)
+        .is_err()
+    {
+        tracing::warn!(ip = %client_ip, "login: IP rate limit exceeded");
+        return generic_error();
+    }
+
     // Resolved realm → single targeted lookup. No walk.
     let Ok(Some(user)) = state.identity.get_user_by_email(realm.id(), email) else {
+        state.identity.record_ip_login_attempt(realm.id(), &client_ip);
         return generic_error();
     };
 
@@ -952,9 +974,13 @@ fn login_submit_impl(
         .verify_password(realm.id(), user.id(), &password)
     {
         Ok(true) => {}
-        Ok(false) => return generic_error(),
+        Ok(false) => {
+            state.identity.record_ip_login_attempt(realm.id(), &client_ip);
+            return generic_error();
+        }
         Err(e) => {
             tracing::warn!(error = %e, "login: password verification failed");
+            state.identity.record_ip_login_attempt(realm.id(), &client_ip);
             return generic_error();
         }
     }
@@ -1944,22 +1970,17 @@ fn validate_setup_form(form: &SetupForm) -> Result<(), String> {
     Ok(())
 }
 
-/// Derives the base URL for email links from the `Host` header.
+/// Returns the base URL for security-sensitive email links.
 ///
-/// Falls back to `http://localhost` if no `Host` header is present
-/// (e.g. direct test harness calls). Uses `https://` when the request
-/// came in over TLS (`X-Forwarded-Proto: https`), else `http://`.
-fn derive_base_url(headers: &HeaderMap) -> String {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| *s == "https")
-        .map_or("http", |_| "https");
-    format!("{scheme}://{host}")
+/// Security invariant: this must not trust request-controlled headers
+/// (`Host`, `X-Forwarded-Proto`, etc.), to prevent link poisoning.
+/// Uses configured `onboarding.base_url` when present, otherwise the
+/// local fallback `http://localhost`.
+fn derive_base_url(configured_base_url: Option<&str>, _headers: &HeaderMap) -> String {
+    configured_base_url
+        .unwrap_or("http://localhost")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 const DEFAULT_LOGIN_LOCALE: &str = "en";
@@ -2317,7 +2338,13 @@ fn forgot_password_submit_impl(
 
     match state.identity.request_password_reset(realm.id(), email) {
         Ok(Some(token)) => {
-            let base = derive_base_url(&headers);
+            let base = derive_base_url(
+                state
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.onboarding.base_url.as_deref()),
+                &headers,
+            );
             let reset_url = format!("{base}{action_prefix}/reset-password?token={token}");
             if let Some(ref email_service) = state.email {
                 let realm_branding = realm.config().email_branding.clone();
@@ -2860,7 +2887,13 @@ fn register_submit_impl(
     };
 
     if let Some(email_service) = state.email.as_ref() {
-        let base = derive_base_url(&headers);
+        let base = derive_base_url(
+            state
+                .config
+                .as_ref()
+                .and_then(|c| c.onboarding.base_url.as_deref()),
+            &headers,
+        );
         let verify_url = format!(
             "{base}{action_prefix}/verify-email?token={}",
             response.verification_token
@@ -3327,30 +3360,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn derive_base_url_uses_host_header() {
+    fn derive_base_url_uses_configured_origin() {
         let mut h = HeaderMap::new();
         h.insert(
             header::HOST,
             "auth.example.com:8420".parse().expect("valid header"),
         );
-        assert_eq!(derive_base_url(&h), "http://auth.example.com:8420");
+        h.insert("x-forwarded-proto", "https".parse().expect("valid header"));
+        assert_eq!(
+            derive_base_url(Some("https://canonical.example.com"), &h),
+            "https://canonical.example.com"
+        );
     }
 
     #[test]
-    fn derive_base_url_honours_forwarded_proto_https() {
+    fn derive_base_url_ignores_host_and_forwarded_proto_headers() {
         let mut h = HeaderMap::new();
         h.insert(
             header::HOST,
-            "auth.example.com".parse().expect("valid header"),
+            "attacker.example".parse().expect("valid header"),
         );
         h.insert("x-forwarded-proto", "https".parse().expect("valid header"));
-        assert_eq!(derive_base_url(&h), "https://auth.example.com");
+        assert_eq!(
+            derive_base_url(Some("https://auth.example.com"), &h),
+            "https://auth.example.com"
+        );
     }
 
     #[test]
     fn derive_base_url_falls_back_without_host() {
         let h = HeaderMap::new();
-        assert_eq!(derive_base_url(&h), "http://localhost");
+        assert_eq!(derive_base_url(None, &h), "http://localhost");
+    }
+
+    #[test]
+    fn derive_base_url_trims_trailing_slash() {
+        let h = HeaderMap::new();
+        assert_eq!(
+            derive_base_url(Some("https://auth.example.com/"), &h),
+            "https://auth.example.com"
+        );
     }
 
     #[test]

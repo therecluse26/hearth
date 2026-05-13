@@ -814,6 +814,105 @@ struct HttpTokenRequest {
     device_code: Option<String>,
 }
 
+/// HTTP request body for token revocation (RFC 7009).
+///
+/// Extends the proto type with optional client credentials for HTTP endpoints.
+/// Clients may authenticate via HTTP Basic Auth or via these body fields
+/// per RFC 6749 §2.3.1.
+#[derive(Debug, Deserialize)]
+struct HttpRevocationBody {
+    token: String,
+    #[serde(default)]
+    token_type_hint: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client_secret: Option<String>,
+}
+
+/// HTTP request body for token introspection (RFC 7662).
+///
+/// Extends the proto type with optional client credentials for HTTP endpoints.
+/// Clients may authenticate via HTTP Basic Auth or via these body fields
+/// per RFC 6749 §2.3.1.
+#[derive(Debug, Deserialize)]
+struct HttpIntrospectionBody {
+    token: String,
+    #[serde(default)]
+    token_type_hint: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client_secret: Option<String>,
+}
+
+/// Parses HTTP Basic Auth credentials from the `Authorization` header.
+///
+/// Returns `Some((client_id, client_secret))` on success, `None` if the header
+/// is absent or not Basic Auth.
+fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let encoded = value.strip_prefix("Basic ")?;
+    use base64::Engine as _;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let decoded_str = String::from_utf8(decoded).ok()?;
+    let (id, secret) = decoded_str.split_once(':')?;
+    Some((id.to_string(), secret.to_string()))
+}
+
+/// Extracts client credentials from HTTP Basic Auth or body parameters and
+/// verifies them against the stored client record.
+///
+/// Returns a 401 response if the client_id is missing, the client does not
+/// exist, or the secret is wrong. Confidential clients require a secret;
+/// public clients are accepted with client_id alone.
+fn verify_endpoint_client(
+    state: &AppState,
+    realm_id: &RealmId,
+    headers: &HeaderMap,
+    body_client_id: Option<&str>,
+    body_client_secret: Option<&str>,
+) -> Result<(), Response> {
+    // Prefer Basic Auth (RFC 6749 §2.3.1); fall back to body parameters.
+    let (raw_id, secret) = if let Some((id, sec)) = parse_basic_auth(headers) {
+        (id, Some(sec))
+    } else if let Some(id) = body_client_id {
+        (id.to_string(), body_client_secret.map(str::to_string))
+    } else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            [("www-authenticate", "Basic realm=\"hearth\"")],
+            Json(serde_json::json!({"error": "client_id required"})),
+        )
+            .into_response());
+    };
+
+    let client_uuid = raw_id.parse::<uuid::Uuid>().map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid client credentials"})),
+        )
+            .into_response()
+    })?;
+    let client_id = ClientId::new(client_uuid);
+
+    state
+        .identity
+        .authenticate_client(realm_id, &client_id, secret.as_deref())
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid client credentials"})),
+            )
+                .into_response()
+        })
+}
+
 /// Extracts a `RealmId` from the `X-Realm-ID` header.
 ///
 /// Returns a `(StatusCode, Json)` error if the header is missing or invalid.
@@ -1419,18 +1518,32 @@ async fn token_exchange(
 /// POST /revoke — revokes an OAuth 2.0 token.
 ///
 /// Per RFC 7009, returns 200 OK regardless of whether the token was
-/// actually revoked (to prevent information leakage).
+/// actually revoked (to prevent information leakage). Requires client
+/// authentication via HTTP Basic Auth or body `client_id`/`client_secret`.
 async fn token_revocation(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<pb::TokenRevocationRequest>,
+    Json(body): Json<HttpRevocationBody>,
 ) -> impl IntoResponse {
     let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
-    let request = crate::identity::TokenRevocationRequest::from(body);
+    if let Err(resp) = verify_endpoint_client(
+        &state,
+        &realm_id,
+        &headers,
+        body.client_id.as_deref(),
+        body.client_secret.as_deref(),
+    ) {
+        return resp;
+    }
+
+    let request = crate::identity::TokenRevocationRequest {
+        token: body.token,
+        token_type_hint: body.token_type_hint,
+    };
 
     match state.identity.revoke_token(&realm_id, &request) {
         Ok(()) => {
@@ -1450,27 +1563,39 @@ async fn token_revocation(
 
 /// POST /introspect — introspects an OAuth 2.0 token.
 ///
-/// Returns metadata about the token including its active status.
+/// Returns metadata about the token including its active status. Requires
+/// client authentication via HTTP Basic Auth or body `client_id`/`client_secret`.
 async fn token_introspection(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<pb::TokenIntrospectionRequest>,
+    Json(body): Json<HttpIntrospectionBody>,
 ) -> impl IntoResponse {
     let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
-    let request = crate::identity::TokenIntrospectionRequest::from(body);
+    if let Err(resp) = verify_endpoint_client(
+        &state,
+        &realm_id,
+        &headers,
+        body.client_id.as_deref(),
+        body.client_secret.as_deref(),
+    ) {
+        return resp;
+    }
+
+    let request = crate::identity::TokenIntrospectionRequest {
+        token: body.token,
+        token_type_hint: body.token_type_hint,
+    };
 
     match state.identity.introspect_token(&realm_id, &request) {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(proto_to_rest_json(&pb::IntrospectionResponse::from(
-                &response,
-            ))),
-        )
-            .into_response(),
+        // Use the domain type directly: the domain IntrospectionResponse has
+        // #[derive(Serialize)] and always emits `active: false` for inactive
+        // tokens. The proto-generated serde omits proto3 default values (false)
+        // which would violate RFC 7662 §2.2 by leaving `active` absent.
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }

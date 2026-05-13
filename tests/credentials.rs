@@ -25,6 +25,21 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
         .expect("create user")
 }
 
+/// Helper: loads the raw stored credential JSON for a user.
+fn load_stored_credential(
+    harness: &common::TestHarness,
+    realm: &RealmId,
+    user_id: &hearth::core::UserId,
+) -> serde_json::Value {
+    let key = format!("cred:user:{}", user_id.as_uuid());
+    let bytes = harness
+        .storage()
+        .get(realm, key.as_bytes())
+        .expect("load credential bytes")
+        .expect("credential exists");
+    serde_json::from_slice(&bytes).expect("credential json")
+}
+
 // ===== Scenario 5: Full credential lifecycle =====
 
 #[tokio::test]
@@ -498,6 +513,206 @@ async fn password_expiry_enforced() {
     assert!(
         matches!(err, IdentityError::PasswordExpired),
         "expected PasswordExpired, got: {err}"
+    );
+}
+
+// ===== Per-realm hashing config =====
+
+#[tokio::test]
+async fn set_password_uses_realm_argon2_parameters() {
+    use hearth::identity::{CreateRealmRequest, RealmConfig};
+
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+
+    let realm = harness
+        .identity()
+        .create_realm(&CreateRealmRequest {
+            name: format!("hash-params-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                password_memory_cost: Some(1024),
+                password_time_cost: Some(3),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    let user = create_user(&harness, realm.id());
+    harness
+        .identity()
+        .set_password(
+            realm.id(),
+            user.id(),
+            &CleartextPassword::from_string("RealmAwarePassword123!".to_string()),
+        )
+        .expect("set password");
+
+    let stored = load_stored_credential(&harness, realm.id(), user.id());
+    let hash = stored["hash"].as_str().expect("hash string");
+    assert!(
+        hash.starts_with("$argon2id$"),
+        "expected argon2id hash, got: {hash}"
+    );
+    assert!(
+        hash.contains("m=1024"),
+        "expected realm memory cost in hash params, got: {hash}"
+    );
+    assert!(
+        hash.contains("t=3"),
+        "expected realm time cost in hash params, got: {hash}"
+    );
+}
+
+#[tokio::test]
+async fn legacy_verify_rehash_uses_realm_argon2_parameters_and_keeps_age() {
+    use hearth::identity::{
+        CreateRealmRequest, ImportUserRequest, RawCredential, RealmConfig, UserStatus,
+    };
+    use std::collections::BTreeMap;
+
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+
+    let realm = harness
+        .identity()
+        .create_realm(&CreateRealmRequest {
+            name: format!("legacy-rehash-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                password_memory_cost: Some(1536),
+                password_time_cost: Some(2),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    let legacy_hash =
+        bcrypt::hash("legacy-password", 4).expect("create bcrypt hash for import fixture");
+    let imported_created_at = 1_700_000_000_000_000_i64;
+
+    let user = harness
+        .identity()
+        .import_user(
+            realm.id(),
+            &ImportUserRequest {
+                id: None,
+                email: format!("legacy-{}@example.com", uuid::Uuid::new_v4()),
+                display_name: "Legacy User".to_string(),
+                first_name: "Legacy".to_string(),
+                last_name: "User".to_string(),
+                status: UserStatus::Active,
+                credential: Some(RawCredential {
+                    phc_string: legacy_hash,
+                    created_at_micros: Some(imported_created_at),
+                }),
+                attributes: BTreeMap::new(),
+            },
+        )
+        .expect("import user");
+
+    let ok = harness
+        .identity()
+        .verify_password(
+            realm.id(),
+            user.id(),
+            &CleartextPassword::from_string("legacy-password".to_string()),
+        )
+        .expect("verify imported legacy credential");
+    assert!(ok, "legacy credential should verify");
+
+    let stored = load_stored_credential(&harness, realm.id(), user.id());
+    let hash = stored["hash"].as_str().expect("hash string");
+    assert!(
+        hash.starts_with("$argon2id$"),
+        "expected upgrade to argon2id after verify, got: {hash}"
+    );
+    assert!(
+        hash.contains("m=1536"),
+        "expected realm memory override in upgraded hash, got: {hash}"
+    );
+    assert!(
+        hash.contains("t=2"),
+        "expected realm time override in upgraded hash, got: {hash}"
+    );
+    assert_eq!(
+        stored["created_at"].as_i64(),
+        Some(imported_created_at),
+        "rehash should preserve original credential age for expiry policy"
+    );
+}
+
+// ===== Policy enforcement on non-registration write paths =====
+
+#[tokio::test]
+async fn change_and_reset_paths_enforce_realm_password_policy() {
+    use hearth::identity::{
+        CreateRealmRequest, IdentityError, PasswordPolicy, RealmConfig, RegistrationPolicy,
+    };
+
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = harness
+        .identity()
+        .create_realm(&CreateRealmRequest {
+            name: format!("policy-paths-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                registration_policy: Some(RegistrationPolicy::Open),
+                password_policy: Some(PasswordPolicy {
+                    min_length: Some(12),
+                    require_uppercase: Some(true),
+                    require_number: Some(true),
+                    not_email: Some(true),
+                    ..PasswordPolicy::default()
+                }),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    let user = create_user(&harness, realm.id());
+    harness
+        .identity()
+        .set_password(
+            realm.id(),
+            user.id(),
+            &CleartextPassword::from_string("InitialStrongPass1!".to_string()),
+        )
+        .expect("set initial password");
+
+    // 1) Change-password path should enforce policy.
+    let change_err = harness
+        .identity()
+        .change_password(
+            realm.id(),
+            user.id(),
+            &CleartextPassword::from_string("InitialStrongPass1!".to_string()),
+            &CleartextPassword::from_string("weak".to_string()),
+        )
+        .expect_err("weak replacement password should be rejected");
+    assert!(
+        matches!(change_err, IdentityError::InvalidInput { .. }),
+        "expected InvalidInput on weak change_password, got: {change_err}"
+    );
+
+    // 2) Reset-password path should enforce policy.
+    let reset_token = harness
+        .identity()
+        .request_password_reset(realm.id(), user.email())
+        .expect("request reset")
+        .expect("known user should produce token");
+    let reset_err = harness
+        .identity()
+        .reset_password_with_token(
+            realm.id(),
+            &reset_token,
+            &CleartextPassword::from_string("short1A".to_string()),
+        )
+        .expect_err("weak reset password should be rejected");
+    assert!(
+        matches!(reset_err, IdentityError::InvalidInput { .. }),
+        "expected InvalidInput on weak reset_password_with_token, got: {reset_err}"
     );
 }
 

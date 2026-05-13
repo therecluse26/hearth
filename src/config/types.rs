@@ -531,8 +531,8 @@ pub struct OnboardingConfig {
     #[serde(default = "OnboardingConfig::default_enabled")]
     pub enabled: bool,
     /// Public base URL used in verification-email links (e.g.
-    /// `https://auth.example.com`). Falls back to the request `Host`
-    /// header when `None`.
+    /// `https://auth.example.com`). When `None`, link generation falls
+    /// back to `http://localhost`.
     #[serde(default)]
     pub base_url: Option<String>,
     /// Email address to send the first-run setup URL to on startup.

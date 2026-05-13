@@ -708,3 +708,275 @@ async fn refresh_token_rejects_forged_session_impersonation() {
         "victim session must remain intact after impersonation attempt"
     );
 }
+
+// ===== HTTP-level: introspect/revoke require client authentication (HEA-131) =====
+
+mod http_client_auth {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use hearth::core::RealmId;
+    use hearth::identity::{ClientTrustLevel, RegisterClientRequest};
+    use hearth::protocol::http::{router, AppState};
+    use tower::ServiceExt as _;
+
+    use super::common;
+
+    async fn build_app(harness: &common::TestHarness) -> axum::Router {
+        let state = Arc::new(AppState::new(
+            harness.identity_arc(),
+            harness.rbac_arc(),
+            harness.audit_arc(),
+        ));
+        router(state)
+    }
+
+    /// Registers a confidential client and returns (client_id_str, plaintext_secret).
+    fn register_confidential_client(
+        harness: &common::TestHarness,
+        realm: &RealmId,
+    ) -> (String, String) {
+        let secret = "test-secret-1234".to_string();
+        let client = harness
+            .identity()
+            .register_client(
+                realm,
+                &RegisterClientRequest {
+                    client_name: "test-client".to_string(),
+                    redirect_uris: vec!["https://example.com/callback".to_string()],
+                    client_secret: Some(secret.clone()),
+                    grant_types: vec![
+                        "authorization_code".to_string(),
+                        "client_credentials".to_string(),
+                    ],
+                    trust_level: ClientTrustLevel::FirstParty,
+                    ..RegisterClientRequest::default()
+                },
+            )
+            .expect("register client");
+        (client.client_id().as_uuid().to_string(), secret)
+    }
+
+    fn basic_auth_header(client_id: &str, secret: &str) -> String {
+        use base64::Engine as _;
+        let creds = format!("{client_id}:{secret}");
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(creds)
+        )
+    }
+
+    #[tokio::test]
+    async fn introspect_without_client_auth_returns_401() {
+        let h = common::TestHarness::embedded().await.expect("harness");
+        let realm = RealmId::generate();
+        let app = build_app(&h).await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/introspect")
+                    .header("X-Realm-ID", realm.as_uuid().to_string())
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"token":"some.fake.token"}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "introspect without client_id must return 401"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_without_client_auth_returns_401() {
+        let h = common::TestHarness::embedded().await.expect("harness");
+        let realm = RealmId::generate();
+        let app = build_app(&h).await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/revoke")
+                    .header("X-Realm-ID", realm.as_uuid().to_string())
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"token":"some.fake.token"}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "revoke without client_id must return 401"
+        );
+    }
+
+    #[tokio::test]
+    async fn introspect_with_wrong_secret_returns_401() {
+        let h = common::TestHarness::embedded().await.expect("harness");
+        let realm = RealmId::generate();
+        let (client_id, _) = register_confidential_client(&h, &realm);
+        let app = build_app(&h).await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/introspect")
+                    .header("X-Realm-ID", realm.as_uuid().to_string())
+                    .header("Content-Type", "application/json")
+                    .header(
+                        "Authorization",
+                        basic_auth_header(&client_id, "wrong-secret"),
+                    )
+                    .body(Body::from(r#"{"token":"some.fake.token"}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "introspect with wrong secret must return 401"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_with_wrong_secret_returns_401() {
+        let h = common::TestHarness::embedded().await.expect("harness");
+        let realm = RealmId::generate();
+        let (client_id, _) = register_confidential_client(&h, &realm);
+        let app = build_app(&h).await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/revoke")
+                    .header("X-Realm-ID", realm.as_uuid().to_string())
+                    .header("Content-Type", "application/json")
+                    .header(
+                        "Authorization",
+                        basic_auth_header(&client_id, "wrong-secret"),
+                    )
+                    .body(Body::from(r#"{"token":"some.fake.token"}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "revoke with wrong secret must return 401"
+        );
+    }
+
+    #[tokio::test]
+    async fn introspect_forged_token_with_valid_client_auth_returns_inactive() {
+        let h = common::TestHarness::embedded().await.expect("harness");
+        let realm = RealmId::generate();
+        let (client_id, secret) = register_confidential_client(&h, &realm);
+        let app = build_app(&h).await;
+
+        let body = serde_json::json!({
+            "token": "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJmYWtlIiwiZXhwIjo5OTk5OTk5OTk5fQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/introspect")
+                    .header("X-Realm-ID", realm.as_uuid().to_string())
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", basic_auth_header(&client_id, &secret))
+                    .body(Body::from(serde_json::to_vec(&body).expect("json")))
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+        assert_eq!(
+            json["active"], false,
+            "forged token must introspect as inactive"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_with_valid_client_auth_succeeds() {
+        let h = common::TestHarness::embedded().await.expect("harness");
+        let realm = RealmId::generate();
+        let (client_id, secret) = register_confidential_client(&h, &realm);
+        let app = build_app(&h).await;
+
+        // Revoke an unrecognized token — RFC 7009 says 200 OK regardless.
+        let body = serde_json::json!({"token": "not-a-real-token"});
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/revoke")
+                    .header("X-Realm-ID", realm.as_uuid().to_string())
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", basic_auth_header(&client_id, &secret))
+                    .body(Body::from(serde_json::to_vec(&body).expect("json")))
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "revoke with valid auth must return 200 OK per RFC 7009"
+        );
+    }
+
+    #[tokio::test]
+    async fn introspect_with_body_client_credentials_returns_inactive_for_forged_token() {
+        let h = common::TestHarness::embedded().await.expect("harness");
+        let realm = RealmId::generate();
+        let (client_id, secret) = register_confidential_client(&h, &realm);
+        let app = build_app(&h).await;
+
+        // Use body-based client credentials (RFC 6749 §2.3.1 alternative)
+        let body = serde_json::json!({
+            "token": "totally.forged.token",
+            "client_id": client_id,
+            "client_secret": secret
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/introspect")
+                    .header("X-Realm-ID", realm.as_uuid().to_string())
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).expect("json")))
+                    .expect("req"),
+            )
+            .await
+            .expect("resp");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+        assert_eq!(
+            json["active"], false,
+            "forged token must introspect as inactive even with body credentials"
+        );
+    }
+}

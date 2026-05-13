@@ -11,6 +11,8 @@ mod common;
 
 use std::sync::Arc;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{CreateUserRequest, SessionContext};
 use hearth::protocol::admin_auth::AdminRateLimiter;
@@ -28,7 +30,7 @@ struct GrpcCtx {
     svc: RbacAdminSvc,
 }
 
-async fn grpc_ctx() -> GrpcCtx {
+async fn grpc_ctx_with_admin(with_admin: bool) -> GrpcCtx {
     let h = common::TestHarness::embedded().await.expect("harness");
     let realm = RealmId::generate();
     h.rbac().seed_realm(&realm).expect("seed");
@@ -45,22 +47,24 @@ async fn grpc_ctx() -> GrpcCtx {
             },
         )
         .expect("user");
-    let role = h
-        .rbac()
-        .get_role_by_name(&realm, "realm.admin")
-        .expect("lookup")
-        .expect("seed");
-    h.rbac()
-        .assign_role(
-            &realm,
-            &AssignRoleRequest {
-                subject: Subject::User(user.id().clone()),
-                role_id: role.id,
-                scope: RbacScope::Realm,
-                assigned_by: None,
-            },
-        )
-        .expect("assign");
+    if with_admin {
+        let role = h
+            .rbac()
+            .get_role_by_name(&realm, "realm.admin")
+            .expect("lookup")
+            .expect("seed");
+        h.rbac()
+            .assign_role(
+                &realm,
+                &AssignRoleRequest {
+                    subject: Subject::User(user.id().clone()),
+                    role_id: role.id,
+                    scope: RbacScope::Realm,
+                    assigned_by: None,
+                },
+            )
+            .expect("assign");
+    }
     let session = h
         .identity()
         .create_session(&realm, user.id(), &SessionContext::default())
@@ -88,6 +92,10 @@ async fn grpc_ctx() -> GrpcCtx {
     }
 }
 
+async fn grpc_ctx() -> GrpcCtx {
+    grpc_ctx_with_admin(true).await
+}
+
 fn req<T>(ctx: &GrpcCtx, msg: T) -> Request<T> {
     let mut r = Request::new(msg);
     r.metadata_mut().insert(
@@ -99,6 +107,24 @@ fn req<T>(ctx: &GrpcCtx, msg: T) -> Request<T> {
         ctx.realm.as_uuid().to_string().parse().expect("realm meta"),
     );
     r
+}
+
+fn forge_admin_permission_claim(token: &str) -> String {
+    let mut parts = token.split('.').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3, "JWT must have three parts");
+
+    let payload = URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .expect("decode payload segment");
+    let mut payload_json: serde_json::Value =
+        serde_json::from_slice(&payload).expect("parse payload JSON");
+    payload_json["permissions"] = serde_json::json!(["hearth.admin"]);
+
+    let tampered_payload = serde_json::to_vec(&payload_json).expect("serialize payload JSON");
+    let tampered_payload_b64 = URL_SAFE_NO_PAD.encode(tampered_payload);
+    parts[1] = tampered_payload_b64.as_str();
+
+    parts.join(".")
 }
 
 #[tokio::test]
@@ -206,4 +232,24 @@ async fn admin_bearer_required_returns_unauthenticated() {
         ),
         "unexpected status: {status:?}"
     );
+}
+
+#[tokio::test]
+async fn admin_tampered_unsigned_claim_returns_unauthenticated() {
+    let mut ctx = grpc_ctx_with_admin(false).await;
+    ctx.token = forge_admin_permission_claim(&ctx.token);
+
+    let status = ctx
+        .svc
+        .list_roles(req(
+            &ctx,
+            pb::ListRolesRequest {
+                realm_id: ctx.realm.as_uuid().to_string(),
+                cursor: String::new(),
+                limit: 0,
+            },
+        ))
+        .await
+        .expect_err("tampered token must fail");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
 }

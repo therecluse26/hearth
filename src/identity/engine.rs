@@ -351,6 +351,12 @@ pub struct EmbeddedIdentityEngine {
     /// across all realms and emails.
     /// Key format: raw IP string.
     registration_ip_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
+    /// Per-IP login rate trackers for credential-stuffing protection.
+    ///
+    /// Counts failed login attempts per source IP per realm within a sliding
+    /// window. Keyed by `"{realm_uuid}:{ip}"` so attacks on one realm do
+    /// not affect legitimate users on another.
+    ip_login_rate_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Pending `WebAuthn` challenges awaiting completion.
     webauthn_challenges: WebAuthnChallengeStore,
     /// Serializes realm-record lifecycle mutations (create/update/delete).
@@ -587,6 +593,7 @@ impl EmbeddedIdentityEngine {
             password_reset_rate_trackers: Mutex::new(HashMap::new()),
             registration_email_rate_trackers: Mutex::new(HashMap::new()),
             registration_ip_rate_trackers: Mutex::new(HashMap::new()),
+            ip_login_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
@@ -625,6 +632,7 @@ impl EmbeddedIdentityEngine {
             password_reset_rate_trackers: Mutex::new(HashMap::new()),
             registration_email_rate_trackers: Mutex::new(HashMap::new()),
             registration_ip_rate_trackers: Mutex::new(HashMap::new()),
+            ip_login_rate_trackers: Mutex::new(HashMap::new()),
             used_nonces: Mutex::new(HashSet::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
@@ -702,17 +710,18 @@ impl EmbeddedIdentityEngine {
 
     /// Checks whether the given user is currently rate-limited.
     ///
-    /// Returns `Err(RateLimited)` if the user has exceeded the maximum
-    /// number of consecutive failed attempts and the lockout window
-    /// has not yet expired. Otherwise returns `Ok(())`.
+    /// Uses realm-specific thresholds when configured, falling back to the
+    /// global `RateLimitConfig` defaults. Returns `Err(RateLimited)` if the
+    /// lockout window has not yet expired.
     fn check_rate_limit(&self, realm_id: &RealmId, user_id: &UserId) -> Result<(), IdentityError> {
+        let (max_attempts, lockout_micros) = self.effective_rate_limit(realm_id);
         let key = Self::tracker_key(realm_id, user_id);
         let trackers = self.attempt_trackers.lock().expect("tracker lock");
         if let Some(tracker) = trackers.get(&key) {
-            if tracker.failed_count >= self.config.rate_limit.max_failed_attempts {
+            if tracker.failed_count >= max_attempts {
                 let now = self.clock.now().as_micros();
                 let elapsed = now - tracker.last_failure_micros;
-                if elapsed < self.config.rate_limit.lockout_duration_micros {
+                if elapsed < lockout_micros {
                     return Err(IdentityError::RateLimited);
                 }
                 // Lockout window has expired — fall through and allow the attempt.
@@ -723,7 +732,10 @@ impl EmbeddedIdentityEngine {
     }
 
     /// Records a failed verification attempt for the given user.
-    fn record_failed_attempt(&self, realm_id: &RealmId, user_id: &UserId) {
+    ///
+    /// Returns the new consecutive failure count so callers can determine
+    /// whether this attempt triggered a lockout.
+    fn record_failed_attempt(&self, realm_id: &RealmId, user_id: &UserId) -> u32 {
         let key = Self::tracker_key(realm_id, user_id);
         let now = self.clock.now().as_micros();
         let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
@@ -733,6 +745,7 @@ impl EmbeddedIdentityEngine {
         });
         tracker.failed_count += 1;
         tracker.last_failure_micros = now;
+        tracker.failed_count
     }
 
     /// Clears the failed attempt tracker for the given user (on success).
@@ -740,6 +753,107 @@ impl EmbeddedIdentityEngine {
         let key = Self::tracker_key(realm_id, user_id);
         let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
         trackers.remove(&key);
+    }
+
+    /// Returns the effective `(max_attempts, lockout_micros)` for the given
+    /// realm, preferring per-realm config over global defaults.
+    fn effective_rate_limit(&self, realm_id: &RealmId) -> (u32, i64) {
+        if let Ok(Some(realm)) = self.get_realm(realm_id) {
+            let max = realm
+                .config()
+                .max_failed_logins
+                .unwrap_or(self.config.rate_limit.max_failed_attempts);
+            let dur = realm
+                .config()
+                .lockout_duration_micros
+                .unwrap_or(self.config.rate_limit.lockout_duration_micros);
+            return (max, dur);
+        }
+        (
+            self.config.rate_limit.max_failed_attempts,
+            self.config.rate_limit.lockout_duration_micros,
+        )
+    }
+
+    // ===== Per-IP login rate limiting helpers =====
+
+    /// Max failed login attempts per IP per realm before the IP is rate-limited.
+    const IP_LOGIN_MAX_ATTEMPTS: u32 = 20;
+    /// Rate-limit window for IP-based login throttling: 15 minutes.
+    const IP_LOGIN_RATE_WINDOW_MICROS: i64 = 15 * 60 * 1_000_000;
+
+    fn ip_login_tracker_key(realm_id: &RealmId, ip: &str) -> String {
+        format!("login-ip:{}:{ip}", realm_id.as_uuid())
+    }
+
+    /// Checks whether the given IP has exceeded the per-IP login rate limit.
+    ///
+    /// Returns `Err(RateLimited)` if the IP has made more than
+    /// [`Self::IP_LOGIN_MAX_ATTEMPTS`] failed login attempts within the
+    /// sliding window. Passes through for trusted callers (empty IP).
+    pub fn check_ip_login_rate_limit(
+        &self,
+        realm_id: &RealmId,
+        ip: &str,
+    ) -> Result<(), IdentityError> {
+        if ip.is_empty() {
+            return Ok(());
+        }
+        let key = Self::ip_login_tracker_key(realm_id, ip);
+        let trackers = self
+            .ip_login_rate_trackers
+            .lock()
+            .expect("ip login tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= Self::IP_LOGIN_MAX_ATTEMPTS {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                if elapsed < Self::IP_LOGIN_RATE_WINDOW_MICROS {
+                    return Err(IdentityError::RateLimited);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a failed login attempt for the given IP.
+    ///
+    /// Emits `IpLoginLimitExceeded` to the audit log the first time the count
+    /// reaches [`Self::IP_LOGIN_MAX_ATTEMPTS`] within the window.
+    pub fn record_ip_login_attempt(&self, realm_id: &RealmId, ip: &str) {
+        if ip.is_empty() {
+            return;
+        }
+        let key = Self::ip_login_tracker_key(realm_id, ip);
+        let now = self.clock.now().as_micros();
+        let new_count = {
+            let mut trackers = self
+                .ip_login_rate_trackers
+                .lock()
+                .expect("ip login tracker lock");
+            let tracker = trackers.entry(key).or_insert(AttemptTracker {
+                failed_count: 0,
+                last_failure_micros: now,
+            });
+            tracker.failed_count += 1;
+            tracker.last_failure_micros = now;
+            tracker.failed_count
+        };
+        if new_count == Self::IP_LOGIN_MAX_ATTEMPTS {
+            let ctx = AuditContext {
+                actor: Actor::Anonymous,
+                metadata: Some(
+                    serde_json::json!({ "ip": ip, "attempt_count": new_count }),
+                ),
+            };
+            let _ = self.record_audit(
+                realm_id,
+                Some(&ctx),
+                AuditAction::IpLoginLimitExceeded,
+                "ip",
+                ip,
+            );
+        }
     }
 
     // ===== MFA rate limiting helpers =====
@@ -1805,9 +1919,58 @@ impl EmbeddedIdentityEngine {
         }
         Ok(())
     }
+
+    /// Emits `LoginFailed` and, when the lockout threshold is first reached,
+    /// `LoginLocked` to the audit log. Best-effort: audit failures are logged
+    /// but do not affect the caller's error path.
+    fn emit_login_failed_audit(&self, realm_id: &RealmId, user_id: &UserId, attempt_count: u32) {
+        let (max_attempts, lockout_micros) = self.effective_rate_limit(realm_id);
+        let user_id_str = user_id.as_uuid().to_string();
+
+        let failed_ctx = AuditContext {
+            actor: Actor::Anonymous,
+            metadata: Some(serde_json::json!({ "attempt_count": attempt_count })),
+        };
+        let _ = self.record_audit(
+            realm_id,
+            Some(&failed_ctx),
+            AuditAction::LoginFailed,
+            "credential",
+            &user_id_str,
+        );
+
+        if attempt_count >= max_attempts {
+            let locked_ctx = AuditContext {
+                actor: Actor::Anonymous,
+                metadata: Some(serde_json::json!({
+                    "attempt_count": attempt_count,
+                    "lockout_duration_micros": lockout_micros,
+                })),
+            };
+            let _ = self.record_audit(
+                realm_id,
+                Some(&locked_ctx),
+                AuditAction::LoginLocked,
+                "credential",
+                &user_id_str,
+            );
+        }
+    }
 }
 
 impl IdentityEngine for EmbeddedIdentityEngine {
+    fn check_ip_login_rate_limit(
+        &self,
+        realm_id: &RealmId,
+        ip: &str,
+    ) -> Result<(), IdentityError> {
+        self.check_ip_login_rate_limit(realm_id, ip)
+    }
+
+    fn record_ip_login_attempt(&self, realm_id: &RealmId, ip: &str) {
+        self.record_ip_login_attempt(realm_id, ip);
+    }
+
     // ===== Realm lifecycle (Phase 1 Step 19) =====
 
     fn create_realm(&self, request: &CreateRealmRequest) -> Result<Realm, IdentityError> {
@@ -2855,7 +3018,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // indistinguishable from a real failed verification.
             // Return generic error to prevent user enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
-            self.record_failed_attempt(realm_id, user_id);
+            let count = self.record_failed_attempt(realm_id, user_id);
+            self.emit_login_failed_audit(realm_id, user_id, count);
             return Err(IdentityError::InvalidCredential {
                 reason: "verification failed".to_string(),
             });
@@ -2872,7 +3036,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             // Timing defense: same as above.
             // Return generic error to prevent credential enumeration.
             let _ = credentials::verify_hash(password, &self.dummy_hash);
-            self.record_failed_attempt(realm_id, user_id);
+            let count = self.record_failed_attempt(realm_id, user_id);
+            self.emit_login_failed_audit(realm_id, user_id, count);
             return Err(IdentityError::InvalidCredential {
                 reason: "verification failed".to_string(),
             });
@@ -2912,7 +3077,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                     .map_err(Self::storage_err)?;
             }
         } else {
-            self.record_failed_attempt(realm_id, user_id);
+            let count = self.record_failed_attempt(realm_id, user_id);
+            self.emit_login_failed_audit(realm_id, user_id, count);
         }
 
         Ok(matches)
@@ -3385,8 +3551,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
         // Bind token subject to the referenced session. This prevents a
         // mismatched `sub` from minting tokens for a different principal.
+        // Use load_session_raw so a revoked session (e.g. after revoke_token)
+        // is still visible for the ownership check. Actual revocation is
+        // enforced by rotate_grant_family (returns TokenRevoked) or by
+        // refresh_session on the legacy path (returns SessionNotFound).
         let session = self
-            .get_session(realm_id, &session_id)?
+            .load_session_raw(realm_id, &session_id)?
             .ok_or(IdentityError::InvalidToken)?;
         if session.user_id() != &user_id {
             return Err(IdentityError::InvalidToken);
@@ -5922,6 +6092,29 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
             None => Ok(None),
         }
+    }
+
+    fn authenticate_client(
+        &self,
+        realm_id: &RealmId,
+        client_id: &crate::core::ClientId,
+        client_secret: Option<&str>,
+    ) -> Result<(), IdentityError> {
+        // Return InvalidClientSecret (not ClientNotFound) on any failure to
+        // prevent client enumeration via error differentiation.
+        let client = self
+            .get_client(realm_id, client_id)?
+            .ok_or(IdentityError::InvalidClientSecret)?;
+
+        if let Some(hash) = client.client_secret_hash() {
+            // Confidential client: secret is required and must match.
+            let secret = client_secret.ok_or(IdentityError::InvalidClientSecret)?;
+            if !credentials::verify_raw_secret(secret.as_bytes(), hash)? {
+                return Err(IdentityError::InvalidClientSecret);
+            }
+        }
+        // Public client: no secret needed, client_id alone suffices.
+        Ok(())
     }
 
     fn update_client(
