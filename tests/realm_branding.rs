@@ -8,9 +8,7 @@
 
 mod common;
 
-use hearth::identity::email::{
-    validate_email_template, EmailTemplateBody, LocalizedEmailTemplate,
-};
+use hearth::identity::email::{validate_email_template, EmailTemplateBody, LocalizedEmailTemplate};
 use hearth::identity::{CreateRealmRequest, RealmConfig, UpdateRealmRequest};
 
 // ===== Branding field persistence =====
@@ -45,10 +43,7 @@ async fn realm_branding_logo_and_primary_color_persist() {
         updated.config().logo_url.as_deref(),
         Some("https://example.com/logo.png")
     );
-    assert_eq!(
-        updated.config().primary_color.as_deref(),
-        Some("#FF5500")
-    );
+    assert_eq!(updated.config().primary_color.as_deref(), Some("#FF5500"));
 
     // Reload from storage and verify persistence.
     let reloaded = identity
@@ -59,10 +54,7 @@ async fn realm_branding_logo_and_primary_color_persist() {
         reloaded.config().logo_url.as_deref(),
         Some("https://example.com/logo.png")
     );
-    assert_eq!(
-        reloaded.config().primary_color.as_deref(),
-        Some("#FF5500")
-    );
+    assert_eq!(reloaded.config().primary_color.as_deref(), Some("#FF5500"));
 }
 
 #[tokio::test]
@@ -141,7 +133,11 @@ async fn email_template_upsert_and_retrieve() {
         )
         .expect("update");
 
-    let tmpl = updated.config().email_templates.get("verification").expect("template present");
+    let tmpl = updated
+        .config()
+        .email_templates
+        .get("verification")
+        .expect("template present");
     assert_eq!(
         tmpl.default.subject.as_deref(),
         Some("Verify your {{product_name}} account")
@@ -187,7 +183,10 @@ async fn email_template_delete_removes_entry() {
         })
         .expect("create");
 
-    assert!(realm.config().email_templates.contains_key("password_reset"));
+    assert!(realm
+        .config()
+        .email_templates
+        .contains_key("password_reset"));
 
     let mut new_templates = realm.config().email_templates.clone();
     new_templates.remove("password_reset");
@@ -205,7 +204,10 @@ async fn email_template_delete_removes_entry() {
         )
         .expect("update");
 
-    assert!(!updated.config().email_templates.contains_key("password_reset"));
+    assert!(!updated
+        .config()
+        .email_templates
+        .contains_key("password_reset"));
 }
 
 // ===== Locale fallback =====
@@ -239,15 +241,9 @@ async fn locale_fallback_language_prefix() {
     );
 
     // "pt-BR" → falls back to "pt" because no exact "pt-BR" entry.
-    assert_eq!(
-        tmpl.resolve(Some("pt-BR")).subject.as_deref(),
-        Some("Olá")
-    );
+    assert_eq!(tmpl.resolve(Some("pt-BR")).subject.as_deref(), Some("Olá"));
     // Unknown locale → falls back to default.
-    assert_eq!(
-        tmpl.resolve(Some("de")).subject.as_deref(),
-        Some("Default")
-    );
+    assert_eq!(tmpl.resolve(Some("de")).subject.as_deref(), Some("Default"));
 }
 
 // ===== Placeholder validation =====
@@ -256,41 +252,35 @@ async fn locale_fallback_language_prefix() {
 fn validate_rejects_disallowed_placeholder_in_verification() {
     let result = validate_email_template("verification", "Click {{reset_url}} to verify.");
     assert!(result.is_err());
-    let msg = format!("{}", result.unwrap_err());
+    let msg = format!("{}", result.expect_err("expected error"));
     assert!(msg.contains("disallowed"), "got: {msg}");
     assert!(msg.contains("reset_url"), "got: {msg}");
 }
 
 #[test]
 fn validate_accepts_allowed_placeholders() {
-    assert!(
-        validate_email_template(
-            "verification",
-            "Welcome to {{product_name}}! Click {{verification_url}}."
-        )
-        .is_ok()
-    );
-    assert!(
-        validate_email_template(
-            "password_reset",
-            "Reset at {{reset_url}} — {{product_name}}"
-        )
-        .is_ok()
-    );
-    assert!(
-        validate_email_template(
-            "invitation",
-            "{{org_name}} via {{inviter_email}} — {{accept_url}}"
-        )
-        .is_ok()
-    );
+    assert!(validate_email_template(
+        "verification",
+        "Welcome to {{product_name}}! Click {{verification_url}}."
+    )
+    .is_ok());
+    assert!(validate_email_template(
+        "password_reset",
+        "Reset at {{reset_url}} — {{product_name}}"
+    )
+    .is_ok());
+    assert!(validate_email_template(
+        "invitation",
+        "{{org_name}} via {{inviter_email}} — {{accept_url}}"
+    )
+    .is_ok());
 }
 
 #[test]
 fn validate_rejects_unknown_kind() {
     let result = validate_email_template("unknown_kind", "anything");
     assert!(result.is_err());
-    let msg = format!("{}", result.unwrap_err());
+    let msg = format!("{}", result.expect_err("expected error"));
     assert!(msg.contains("unknown email template kind"), "got: {msg}");
 }
 
@@ -305,7 +295,7 @@ fn validate_rejects_cross_kind_contamination() {
 fn validate_detects_unclosed_braces() {
     let result = validate_email_template("verification", "{{unclosed_brace");
     assert!(result.is_err());
-    let msg = format!("{}", result.unwrap_err());
+    let msg = format!("{}", result.expect_err("expected error"));
     assert!(msg.contains("unclosed"), "got: {msg}");
 }
 

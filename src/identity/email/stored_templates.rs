@@ -102,8 +102,10 @@ mod tests {
 
     #[test]
     fn resolve_falls_back_to_default() {
-        let mut t = LocalizedEmailTemplate::default();
-        t.default = make_body("Hello");
+        let t = LocalizedEmailTemplate {
+            default: make_body("Hello"),
+            ..Default::default()
+        };
         assert_eq!(t.resolve(None).subject.as_deref(), Some("Hello"));
         assert_eq!(t.resolve(Some("de")).subject.as_deref(), Some("Hello"));
     }
@@ -112,7 +114,8 @@ mod tests {
     fn resolve_exact_beats_prefix() {
         let mut t = LocalizedEmailTemplate::default();
         t.locales.insert("pt".to_string(), make_body("Generic PT"));
-        t.locales.insert("pt-BR".to_string(), make_body("BR Portuguese"));
+        t.locales
+            .insert("pt-BR".to_string(), make_body("BR Portuguese"));
         assert_eq!(
             t.resolve(Some("pt-BR")).subject.as_deref(),
             Some("BR Portuguese")

@@ -33,11 +33,7 @@ pub fn allowed_placeholders(kind: &str) -> Option<Vec<&'static str>> {
         "verification" => &["{{verification_url}}"],
         "password_reset" => &["{{reset_url}}"],
         "welcome" => &["{{user_email}}"],
-        "invitation" => &[
-            "{{accept_url}}",
-            "{{org_name}}",
-            "{{inviter_email}}",
-        ],
+        "invitation" => &["{{accept_url}}", "{{org_name}}", "{{inviter_email}}"],
         _ => return None,
     };
 
@@ -115,14 +111,14 @@ mod tests {
 
     #[test]
     fn verification_includes_verification_url() {
-        let allowed = allowed_placeholders("verification").unwrap();
+        let allowed = allowed_placeholders("verification").expect("known kind");
         assert!(allowed.contains(&"{{verification_url}}"));
         assert!(allowed.contains(&"{{product_name}}"));
     }
 
     #[test]
     fn invitation_includes_all_extra_tokens() {
-        let allowed = allowed_placeholders("invitation").unwrap();
+        let allowed = allowed_placeholders("invitation").expect("known kind");
         assert!(allowed.contains(&"{{accept_url}}"));
         assert!(allowed.contains(&"{{org_name}}"));
         assert!(allowed.contains(&"{{inviter_email}}"));
@@ -137,25 +133,17 @@ mod tests {
 
     #[test]
     fn validate_allowed_placeholder_ok() {
-        assert!(
-            validate(
-                "verification",
-                "Click {{verification_url}} to verify."
-            )
-            .is_ok()
-        );
+        assert!(validate("verification", "Click {{verification_url}} to verify.").is_ok());
     }
 
     #[test]
     fn validate_common_placeholder_ok() {
-        assert!(
-            validate("password_reset", "Email from {{product_name}}").is_ok()
-        );
+        assert!(validate("password_reset", "Email from {{product_name}}").is_ok());
     }
 
     #[test]
     fn validate_disallowed_placeholder_err() {
-        let err = validate("verification", "{{reset_url}}").unwrap_err();
+        let err = validate("verification", "{{reset_url}}").expect_err("expected validation error");
         let msg = format!("{err}");
         assert!(msg.contains("reset_url"), "got: {msg}");
         assert!(msg.contains("disallowed"), "got: {msg}");
@@ -163,33 +151,32 @@ mod tests {
 
     #[test]
     fn validate_unknown_kind_err() {
-        let err = validate("bogus_kind", "hello").unwrap_err();
+        let err = validate("bogus_kind", "hello").expect_err("expected validation error");
         let msg = format!("{err}");
         assert!(msg.contains("unknown email template kind"), "got: {msg}");
     }
 
     #[test]
     fn validate_unclosed_brace_err() {
-        let err = validate("verification", "{{unclosed").unwrap_err();
+        let err = validate("verification", "{{unclosed").expect_err("expected validation error");
         let msg = format!("{err}");
         assert!(msg.contains("unclosed"), "got: {msg}");
     }
 
     #[test]
     fn validate_multiple_placeholders_ok() {
-        assert!(
-            validate(
-                "invitation",
-                "{{org_name}} invited by {{inviter_email}}, click {{accept_url}}"
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "invitation",
+            "{{org_name}} invited by {{inviter_email}}, click {{accept_url}}"
+        )
+        .is_ok());
     }
 
     #[test]
     fn validate_cross_kind_placeholder_rejected() {
         // verification_url is not allowed in password_reset
-        let err = validate("password_reset", "{{verification_url}}").unwrap_err();
+        let err = validate("password_reset", "{{verification_url}}")
+            .expect_err("expected validation error");
         let msg = format!("{err}");
         assert!(msg.contains("disallowed"), "got: {msg}");
     }
@@ -198,10 +185,7 @@ mod tests {
 
     #[test]
     fn render_substitutes_known_vars() {
-        let result = render(
-            "Hello from {{product_name}}!",
-            &[("product_name", "Acme")],
-        );
+        let result = render("Hello from {{product_name}}!", &[("product_name", "Acme")]);
         assert_eq!(result, "Hello from Acme!");
     }
 
@@ -222,7 +206,10 @@ mod tests {
 
     #[test]
     fn render_repeated_token() {
-        let result = render("{{product_name}} is {{product_name}}", &[("product_name", "Hearth")]);
+        let result = render(
+            "{{product_name}} is {{product_name}}",
+            &[("product_name", "Hearth")],
+        );
         assert_eq!(result, "Hearth is Hearth");
     }
 }

@@ -26,12 +26,12 @@ use crate::config::{ObservabilityConfig, OtlpConfig, OtlpProtocol};
 /// Holds the live OTel tracer provider. Dropping this guard flushes all
 /// pending spans and shuts down the export pipeline.
 pub struct TracingGuard {
-    _provider: Option<TracerProvider>,
+    provider: Option<TracerProvider>,
 }
 
 impl Drop for TracingGuard {
     fn drop(&mut self) {
-        if self._provider.is_some() {
+        if self.provider.is_some() {
             opentelemetry::global::shutdown_tracer_provider();
         }
     }
@@ -47,8 +47,7 @@ impl Drop for TracingGuard {
 ///
 /// Panics if the global subscriber has already been set (called twice).
 pub fn init(config: &ObservabilityConfig) -> TracingGuard {
-    let filter = EnvFilter::try_new(&config.log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     let json = config.log_format == "json";
 
@@ -77,7 +76,7 @@ pub fn init(config: &ObservabilityConfig) -> TracingGuard {
         }
 
         TracingGuard {
-            _provider: Some(provider),
+            provider: Some(provider),
         }
     } else {
         if json {
@@ -92,7 +91,7 @@ pub fn init(config: &ObservabilityConfig) -> TracingGuard {
                 .init();
         }
 
-        TracingGuard { _provider: None }
+        TracingGuard { provider: None }
     }
 }
 
