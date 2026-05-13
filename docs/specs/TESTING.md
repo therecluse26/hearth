@@ -161,7 +161,8 @@ benches/
 └── token_issuance.rs
 ```
 
-Benchmarks run with `criterion`, comparing against a baseline stored in version control. CI fails if any benchmark regresses beyond its threshold.
+Benchmarks run with `criterion`. CI enforcement can use either baseline-comparison
+or explicit threshold assertions in the bench binary. Any threshold breach fails CI.
 
 ---
 
@@ -374,7 +375,9 @@ watch = ["src"]
 
 **Fast** (every commit): Runs `cargo nextest run` with the default profile. This covers all `#[cfg(test)]` unit tests and all non-ignored integration tests. Developers should be able to run this locally in under 5 minutes.
 
-**Standard** (merge to main): Adds `cargo bench` with regression comparison against the stored baseline. A benchmark regression beyond the threshold blocks the merge.
+**Standard** (merge to main): Adds benchmark gates. For RBAC, CI runs `make bench-gate`
+(`cargo bench --bench rbac_check`) and fails if either P0 latency threshold is
+breached: `resolve_permissions` p99 > 1 ms or `hasPermission` p99 > 1 us.
 
 **Extended** (nightly): Runs `proptest` with a high case count (10,000+), `cargo fuzz` time-boxed to 30 minutes per target, and simulation tests with a broad seed range. Failures file issues automatically.
 

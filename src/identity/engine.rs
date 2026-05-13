@@ -108,6 +108,13 @@ pub(crate) fn validate_claim_payload(
 /// Email-verification token expiry: 24 hours in microseconds.
 const EMAIL_VERIFY_EXPIRY_MICROS: i64 = 24 * 60 * 60 * 1_000_000;
 
+/// Maximum tolerated clock skew between issuer and validator, in seconds.
+///
+/// Tokens with `iat > now + CLOCK_SKEW_SECS` are rejected as future-dated.
+/// 60 seconds matches common JWT library defaults and absorbs NTP drift without
+/// opening a meaningful replay window.
+const CLOCK_SKEW_SECS: i64 = 60;
+
 /// Persisted state for a pending email-verification token.
 ///
 /// Stored under `email:verify:{sha256_hex_of_token}`. The plaintext
@@ -3511,6 +3518,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         if now_secs >= claims.exp {
             return Err(IdentityError::TokenExpired);
         }
+        // Reject tokens issued in the future beyond clock-skew tolerance.
+        if claims.iat > now_secs + CLOCK_SKEW_SECS {
+            return Err(IdentityError::InvalidToken);
+        }
+        // Coherence: iat must not exceed exp (would be an invalid token).
+        if claims.iat > claims.exp {
+            return Err(IdentityError::InvalidToken);
+        }
 
         // Verify the token was issued for this realm.
         if claims.tid != realm_id.to_string() {
@@ -3565,6 +3580,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let now_secs = now.as_micros() / 1_000_000;
         if now_secs >= claims.exp {
             return Err(IdentityError::TokenExpired);
+        }
+        if claims.iat > now_secs + CLOCK_SKEW_SECS {
+            return Err(IdentityError::InvalidToken);
+        }
+        if claims.iat > claims.exp {
+            return Err(IdentityError::InvalidToken);
         }
 
         // Parse session ID
@@ -4635,10 +4656,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Ok(IntrospectionResponse::inactive());
         }
 
-        // 3. Check expiration
+        // 3. Check expiration and iat sanity
         let now = self.clock.now();
         let now_secs = now.as_micros() / 1_000_000;
         if now_secs >= claims.exp {
+            return Ok(IntrospectionResponse::inactive());
+        }
+        if claims.iat > now_secs + CLOCK_SKEW_SECS {
+            return Ok(IntrospectionResponse::inactive());
+        }
+        if claims.iat > claims.exp {
             return Ok(IntrospectionResponse::inactive());
         }
 

@@ -964,7 +964,9 @@ fn login_submit_impl(
 
     // Resolved realm → single targeted lookup. No walk.
     let Ok(Some(user)) = state.identity.get_user_by_email(realm.id(), email) else {
-        state.identity.record_ip_login_attempt(realm.id(), &client_ip);
+        state
+            .identity
+            .record_ip_login_attempt(realm.id(), &client_ip);
         return generic_error();
     };
 
@@ -975,12 +977,16 @@ fn login_submit_impl(
     {
         Ok(true) => {}
         Ok(false) => {
-            state.identity.record_ip_login_attempt(realm.id(), &client_ip);
+            state
+                .identity
+                .record_ip_login_attempt(realm.id(), &client_ip);
             return generic_error();
         }
         Err(e) => {
             tracing::warn!(error = %e, "login: password verification failed");
-            state.identity.record_ip_login_attempt(realm.id(), &client_ip);
+            state
+                .identity
+                .record_ip_login_attempt(realm.id(), &client_ip);
             return generic_error();
         }
     }

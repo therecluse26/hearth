@@ -195,9 +195,7 @@ pub fn verify_grpc_client_auth(
         .map_err(|_| Status::unauthenticated("invalid client credentials"))?;
     let client_id = crate::core::ClientId::new(uuid);
 
-    let secret = md
-        .get(CLIENT_SECRET_META_KEY)
-        .and_then(|v| v.to_str().ok());
+    let secret = md.get(CLIENT_SECRET_META_KEY).and_then(|v| v.to_str().ok());
 
     identity
         .authenticate_client(realm_id, &client_id, secret)

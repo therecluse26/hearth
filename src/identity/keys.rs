@@ -47,6 +47,13 @@ const REALM_NAME_PREFIX: &str = "realm:name:";
 /// Prefix for grant family storage (refresh token rotation).
 const GRANT_FAMILY_PREFIX: &str = "oauth:family:";
 
+/// Prefix for session → grant-family secondary index.
+///
+/// Format: `oauth:session_fam:{session_uuid}:{family_id}` — empty value.
+/// Written at grant family creation; scanned during session revocation for
+/// cascade refresh-token family invalidation.
+const SESSION_GRANT_FAMILY_PREFIX: &str = "oauth:session_fam:";
+
 /// Prefix for device authorization code storage.
 const DEVICE_CODE_PREFIX: &str = "oauth:device:";
 
@@ -1064,6 +1071,24 @@ pub(crate) fn encode_saml_logout_key(token: &str) -> Vec<u8> {
 #[allow(dead_code)]
 pub(crate) fn saml_logout_scan_prefix() -> Vec<u8> {
     SAML_LOGOUT_STATE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the session → grant-family index key.
+///
+/// Format: `oauth:session_fam:{session_uuid}:{family_id}`.
+pub(crate) fn encode_session_grant_family(session_id: &SessionId, family_id: &str) -> Vec<u8> {
+    format!(
+        "{SESSION_GRANT_FAMILY_PREFIX}{}:{family_id}",
+        session_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for all grant families on a session.
+///
+/// Format: `oauth:session_fam:{session_uuid}:`.
+pub(crate) fn encode_session_grant_family_prefix(session_id: &SessionId) -> Vec<u8> {
+    format!("{SESSION_GRANT_FAMILY_PREFIX}{}:", session_id.as_uuid()).into_bytes()
 }
 
 #[cfg(test)]

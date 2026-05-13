@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test docker-up docker-reload
+.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test ci-fast bench-gate ci-standard docker-up docker-reload
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -113,8 +113,14 @@ sdk-test:
 ## CI fast tier: lint + fmt + proto lint + css freshness (every commit).
 ci-fast: fmt clippy proto-lint css-check
 
-## CI standard tier: fast + tests + SDK tests + proto breaking (merge).
-ci-standard: ci-fast test proto-breaking sdk-test proto-check
+## CI benchmark gate: compile and run RBAC perf threshold gates (p99 limits).
+## Runs resolve_permissions ≤ 1 ms and hasPermission ≤ 1 µs assertions before
+## Criterion sampling; non-zero exit fails the Standard CI tier.
+bench-gate:
+	PROTOC=$(PROTOC) cargo bench --bench rbac_check $(CARGO_FLAGS)
+
+## CI standard tier: fast + tests + SDK tests + proto breaking + perf gate (merge).
+ci-standard: ci-fast test proto-breaking sdk-test proto-check bench-gate
 
 # ── Docker ──────────────────────────────────────────
 

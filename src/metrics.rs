@@ -33,8 +33,9 @@ const HTTP_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 
 /// Range: 50 µs → 100 ms, covering WAL flush and SST scan latencies.
 /// Does not apply to hot-tier reads, which bypass storage instrumentation
 /// to avoid syscall overhead on the hot path.
-const STORAGE_BUCKETS: &[f64] =
-    &[0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1];
+const STORAGE_BUCKETS: &[f64] = &[
+    0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1,
+];
 
 /// All Prometheus metrics collected by the Hearth server.
 ///

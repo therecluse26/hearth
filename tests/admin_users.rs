@@ -593,3 +593,310 @@ async fn import_requires_admin_token() {
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ===== CRUD happy-path tests =====
+
+#[tokio::test]
+async fn create_user_returns_201_with_user_body() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+    let app = build_app(&h).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/users")
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{"email":"newuser@example.com","display_name":"New User"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = resp_json(resp).await;
+    assert_eq!(body["email"], "newuser@example.com");
+    assert!(body["id"].is_string(), "response must include user id");
+}
+
+#[tokio::test]
+async fn get_user_by_id_returns_correct_user() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+    let app = build_app(&h).await;
+
+    // Create via domain layer so we have a known ID.
+    let user = h
+        .identity()
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: "getme@example.com".into(),
+                display_name: "Get Me".into(),
+                first_name: "Get".into(),
+                last_name: "Me".into(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/admin/users/{}", user.id().as_uuid()))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp_json(resp).await;
+    assert_eq!(body["email"], "getme@example.com");
+    assert_eq!(body["id"], user.id().as_uuid().to_string());
+}
+
+#[tokio::test]
+async fn get_user_unknown_id_returns_404() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+    let app = build_app(&h).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/users/00000000-0000-0000-0000-000000000001")
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_user_invalid_id_returns_400() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+    let app = build_app(&h).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/users/not-a-uuid")
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn update_user_returns_updated_display_name() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    let user = h
+        .identity()
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: "updateme@example.com".into(),
+                display_name: "Before".into(),
+                first_name: "Before".into(),
+                last_name: "Name".into(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create");
+
+    let app = build_app(&h).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/admin/users/{}", user.id().as_uuid()))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"display_name":"After"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp_json(resp).await;
+    assert_eq!(body["display_name"], "After");
+}
+
+#[tokio::test]
+async fn delete_user_returns_204_and_user_gone() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    let user = h
+        .identity()
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: "deleteme@example.com".into(),
+                display_name: "Delete Me".into(),
+                first_name: "Delete".into(),
+                last_name: "Me".into(),
+                attributes: Default::default(),
+            },
+        )
+        .expect("create");
+
+    let app = build_app(&h).await;
+    let del_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/users/{}", user.id().as_uuid()))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+    // Confirm the user is no longer reachable.
+    let get_resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/admin/users/{}", user.id().as_uuid()))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ===== Realm isolation regression =====
+
+#[tokio::test]
+async fn cross_realm_token_denied_on_list() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+
+    // realm_a has an admin token; realm_b is a different tenant.
+    let realm_a = RealmId::generate();
+    let realm_b = RealmId::generate();
+    h.rbac().seed_realm(&realm_a).expect("seed a");
+    h.rbac().seed_realm(&realm_b).expect("seed b");
+
+    // Mint a token scoped to realm_a.
+    let token_a = admin_token(&h, &realm_a).await;
+    let app = build_app(&h).await;
+
+    // Send realm_a token with X-Realm-ID pointing to realm_b.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/users")
+                .header("X-Realm-ID", realm_b.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token_a}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    // Must be rejected — realm_a token must not access realm_b data.
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ===== Import idempotency =====
+
+#[tokio::test]
+async fn import_duplicate_email_reported_as_per_item_error() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let token = admin_token(&h, &realm).await;
+
+    let payload = r#"{"users":[{"email":"dup@example.com","display_name":"Dup"}]}"#;
+
+    let app = build_app(&h).await;
+
+    // First import succeeds.
+    let resp1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/users/import")
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(payload))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let b1 = resp_json(resp1).await;
+    assert_eq!(b1["imported"], 1);
+    assert_eq!(b1["failed"], 0);
+
+    // Second import with same email: implementation returns DuplicateEmail as
+    // a per-item error (not idempotent upsert). This test documents current
+    // behavior; callers must deduplicate before import.
+    let resp2 = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/users/import")
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(payload))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let b2 = resp_json(resp2).await;
+    assert_eq!(b2["imported"], 0);
+    assert_eq!(b2["failed"], 1);
+    assert!(
+        b2["results"][0]["error"].as_str().is_some(),
+        "duplicate import must surface per-item error"
+    );
+}
