@@ -14,11 +14,12 @@ pub use types::{
     ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, CompactionSection,
     EmailConfig, EmailTransport, FederationProviderYaml, FederationYamlConfig, LinkModeYaml,
     MailgunConfig, MailgunRegion, MailtrapConfig, MetricsConfig, ObservabilityConfig, OidcYamlConfig,
-    OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
-    PermissionYamlConfig, PostmarkConfig, ProtectedResourceYamlConfig, RateLimitYaml,
-    RealmAuthYaml, RealmEmailYaml, RealmScimYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig,
-    RoleYamlConfig, SamlServiceProviderYaml, ScopeBundleYamlConfig, SendgridConfig, ServerConfig,
-    SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
+    OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, OtlpConfig,
+    OtlpProtocol, PasswordPolicyYaml, PermissionYamlConfig, PostmarkConfig,
+    ProtectedResourceYamlConfig, RateLimitYaml, RealmAuthYaml, RealmEmailYaml, RealmScimYaml,
+    RealmTokenYaml, RealmWebYaml, RealmYamlConfig, RoleYamlConfig, SamlServiceProviderYaml,
+    ScopeBundleYamlConfig, SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection,
+    TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -171,6 +172,7 @@ impl Config {
             observability: ObservabilityConfig {
                 log_level: "debug".to_string(),
                 log_format: "text".to_string(),
+                otlp: None,
             },
             operational: OperationalConfig::default(),
             email: EmailConfig::default(),

@@ -2621,6 +2621,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         user_id: &UserId,
     ) -> Result<Option<User>, IdentityError> {
+        // Conditional span: only allocated when debug tracing is active.
+        let _span = tracing::enabled!(tracing::Level::DEBUG).then(|| {
+            tracing::debug_span!(
+                "hearth.auth.user_lookup",
+                "enduser.id" = %user_id,
+                "hearth.realm_id" = %realm_id,
+            )
+            .entered()
+        });
+
         let key = keys::encode_user_id(user_id);
         let bytes = self
             .storage
@@ -3214,6 +3224,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         session_id: &SessionId,
     ) -> Result<Option<Session>, IdentityError> {
+        // Conditional span: only allocated when debug tracing is active to
+        // preserve the zero-allocation guarantee on the token validation path.
+        let _span = tracing::enabled!(tracing::Level::DEBUG).then(|| {
+            tracing::debug_span!(
+                "hearth.auth.session_lookup",
+                "hearth.session_id" = %session_id,
+                "hearth.realm_id" = %realm_id,
+            )
+            .entered()
+        });
+
         let session = self.load_session_raw(realm_id, session_id)?;
         match session {
             Some(s) if s.is_valid(self.clock.now()) => Ok(Some(s)),
@@ -3551,6 +3572,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         token: &str,
     ) -> Result<TokenClaims, IdentityError> {
+        // Conditional span: only allocated when debug tracing is active.
+        // validate_token is on the zero-allocation hot path; this guard
+        // ensures no heap allocation occurs when debug is disabled.
+        let _span = tracing::enabled!(tracing::Level::DEBUG).then(|| {
+            tracing::debug_span!(
+                "hearth.auth.token_validate",
+                "hearth.realm_id" = %realm_id,
+                // token sub/jti are populated after signature verification below
+            )
+            .entered()
+        });
+
         // Verify Ed25519 signature against realm key (with global-key fallback
         // for Phase 0 realms). Rejects forged, tampered, and alg=none tokens
         // at the cryptographic layer before any claim inspection.
@@ -3609,6 +3642,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         Ok(claims)
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip(self, refresh_token),
+        fields(
+            hearth_realm_id = %realm_id,
+            hearth_oauth_grant_type = "refresh_token",
+        )
+    )]
     fn refresh_tokens(
         &self,
         realm_id: &RealmId,
@@ -3987,6 +4028,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(
+            hearth_realm_id = %realm_id,
+            hearth_oauth_client_id = %request.client_id,
+            hearth_oauth_grant_type = "authorization_code",
+        )
+    )]
     fn exchange_authorization_code(
         &self,
         realm_id: &RealmId,
@@ -4290,6 +4340,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     // ===== OAuth 2.0 Extended (Step 22) =====
 
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(
+            hearth_realm_id = %realm_id,
+            hearth_oauth_client_id = %request.client_id,
+            hearth_oauth_grant_type = "client_credentials",
+        )
+    )]
     fn client_credentials_token(
         &self,
         realm_id: &RealmId,

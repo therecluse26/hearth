@@ -6,7 +6,6 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
 
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::config::{Config, EmailTransport, EnvVarWarningKind};
@@ -364,10 +363,10 @@ async fn run_serve(
         );
     }
 
-    // Initialize tracing
-    let filter = EnvFilter::try_new(&config.observability.log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Initialize tracing (and optional OTLP export).
+    // The guard must be held for the process lifetime to ensure the batch
+    // exporter is flushed on shutdown.
+    let _tracing_guard = hearth::telemetry::init(&config.observability);
 
     // Log config warnings through the structured tracing pipeline
     for w in &config.config_warnings {

@@ -13,4 +13,5 @@ pub mod metrics;
 pub mod protocol;
 pub mod rbac;
 pub mod storage;
+pub mod telemetry;
 pub mod webhook;

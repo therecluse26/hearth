@@ -115,6 +115,13 @@ pub async fn sp_acs(
         None => return (StatusCode::NOT_FOUND, "realm not found").into_response(),
     };
 
+    let _span = tracing::info_span!(
+        "hearth.saml.sp_acs",
+        "hearth.realm_id" = %realm,
+        "hearth.saml.role" = "sp",
+    )
+    .entered();
+
     // Decode the base64 payload.
     let xml = match parse_post_form_saml(&form.saml_response) {
         Ok(b) => b,
@@ -411,6 +418,13 @@ async fn idp_complete_sso(
     xml: Vec<u8>,
     relay_state: Option<String>,
 ) -> Response {
+    let _span = tracing::info_span!(
+        "hearth.saml.idp_sso",
+        "hearth.realm_id" = %realm,
+        "hearth.saml.role" = "idp",
+    )
+    .entered();
+
     // Parse the AuthnRequest.
     let req = match parse_authn_request(&xml) {
         Ok(r) => r,

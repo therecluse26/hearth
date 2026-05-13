@@ -22,11 +22,13 @@ use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::{debug, error, info, Level};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::core::{ClientId, RealmId, UserId, WebhookId};
-use crate::identity::IdentityEngine;
+use crate::identity::email::{validate_email_template, EmailBranding, LocalizedEmailTemplate};
+use crate::identity::{IdentityEngine, UpdateRealmRequest};
 use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
 use crate::protocol::convert::identity::{
     proto_user_status_to_domain, realm_page_to_proto, user_bulk_result_to_proto,
@@ -295,6 +297,20 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .delete(admin_delete_realm),
         )
         .route(
+            "/realms/{id}/branding",
+            axum::routing::get(admin_get_realm_branding).patch(admin_patch_realm_branding),
+        )
+        .route(
+            "/realms/{id}/email-templates",
+            axum::routing::get(admin_list_realm_email_templates),
+        )
+        .route(
+            "/realms/{id}/email-templates/{kind}",
+            axum::routing::get(admin_get_realm_email_template)
+                .put(admin_put_realm_email_template)
+                .delete(admin_delete_realm_email_template),
+        )
+        .route(
             "/applications",
             axum::routing::get(admin_list_clients).post(admin_register_client),
         )
@@ -473,6 +489,15 @@ pub fn router(state: Arc<AppState>) -> Router {
                 ),
         )
         .route_layer(axum::middleware::from_fn(track_metrics))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(
+                    DefaultMakeSpan::new()
+                        .level(Level::INFO)
+                        .include_headers(false),
+                )
+                .on_response(DefaultOnResponse::new().level(Level::DEBUG)),
+        )
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
         .with_state(state)
 }
@@ -2591,6 +2616,363 @@ async fn admin_delete_realm(
             Json(serde_json::json!({"error": "not found"})),
         )
             .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Realm branding & email-template admin API
+// ---------------------------------------------------------------------------
+
+/// Request body for `PATCH /realms/{id}/branding`.
+#[derive(Debug, Deserialize)]
+struct PatchRealmBrandingRequest {
+    #[serde(default)]
+    logo_url: Option<String>,
+    #[serde(default)]
+    primary_color: Option<String>,
+    /// Email-level branding (accent_color, support_email, custom_footer_text).
+    #[serde(default)]
+    email_branding: Option<EmailBranding>,
+}
+
+/// Response body for `GET /realms/{id}/branding`.
+#[derive(Debug, Serialize)]
+struct RealmBrandingResponse {
+    logo_url: Option<String>,
+    primary_color: Option<String>,
+    email_branding: Option<EmailBranding>,
+}
+
+/// Parses a realm UUID from a path segment, returning 400 on bad input.
+fn parse_realm_id(id: &str) -> Result<RealmId, Response> {
+    id.parse::<uuid::Uuid>()
+        .map(RealmId::new)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid realm ID"})),
+            )
+                .into_response()
+        })
+}
+
+/// Resolves a live realm by ID, returning 404 when absent.
+fn require_realm(
+    state: &AppState,
+    realm_id: &RealmId,
+) -> Result<crate::identity::Realm, Response> {
+    match state.identity.get_realm(realm_id) {
+        Ok(Some(r)) => Ok(r),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "realm not found"})),
+        )
+            .into_response()),
+        Err(e) => Err(identity_error_to_response(&e).into_response()),
+    }
+}
+
+/// `GET /realms/{id}/branding` — return current per-realm branding settings.
+async fn admin_get_realm_branding(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = extract_admin_auth(&headers, &state) {
+        return e.into_response();
+    }
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let cfg = realm.config();
+    (
+        StatusCode::OK,
+        Json(RealmBrandingResponse {
+            logo_url: cfg.logo_url.clone(),
+            primary_color: cfg.primary_color.clone(),
+            email_branding: cfg.email_branding.clone(),
+        }),
+    )
+        .into_response()
+}
+
+/// `PATCH /realms/{id}/branding` — update per-realm branding settings.
+///
+/// Only fields present in the request body are updated; omitted fields are
+/// left unchanged. Use `null` to clear a previously-set value.
+async fn admin_patch_realm_branding(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<PatchRealmBrandingRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    // Validate hex color format if provided.
+    if let Some(color) = body.primary_color.as_deref() {
+        if !color.starts_with('#') || (color.len() != 4 && color.len() != 7) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error": "invalid_color",
+                    "message": "primary_color must be a CSS hex color (#RGB or #RRGGBB)"
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let mut new_config = realm.config().clone();
+    // Merge: explicit `Some` overwrites; `None` in request body clears.
+    // The PATCH semantics here treat the request as a partial update where
+    // serde's `#[serde(default)]` delivers `None` for absent fields — so
+    // we only overwrite when the caller explicitly sent the field.
+    // Use JSON `null` to explicitly clear a field.
+    if body.logo_url.is_some() {
+        new_config.logo_url = body.logo_url;
+    }
+    if body.primary_color.is_some() {
+        new_config.primary_color = body.primary_color;
+    }
+    if body.email_branding.is_some() {
+        new_config.email_branding = body.email_branding;
+    }
+
+    match state.identity.update_realm(
+        &realm_id,
+        &UpdateRealmRequest {
+            config: Some(new_config),
+            ..UpdateRealmRequest::default()
+        },
+    ) {
+        Ok(updated) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api", "op": "patch_branding"})),
+            });
+            let cfg = updated.config();
+            (
+                StatusCode::OK,
+                Json(RealmBrandingResponse {
+                    logo_url: cfg.logo_url.clone(),
+                    primary_color: cfg.primary_color.clone(),
+                    email_branding: cfg.email_branding.clone(),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// `GET /realms/{id}/email-templates` — list all stored template overrides.
+async fn admin_list_realm_email_templates(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = extract_admin_auth(&headers, &state) {
+        return e.into_response();
+    }
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    (StatusCode::OK, Json(realm.config().email_templates.clone())).into_response()
+}
+
+/// `GET /realms/{id}/email-templates/{kind}` — get a single stored template.
+async fn admin_get_realm_email_template(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, kind)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(e) = extract_admin_auth(&headers, &state) {
+        return e.into_response();
+    }
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match realm.config().email_templates.get(&kind) {
+        Some(tmpl) => (StatusCode::OK, Json(tmpl.clone())).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "template not found"})),
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /realms/{id}/email-templates/{kind}` — upsert a stored template.
+///
+/// Validates that all `{{placeholder}}` tokens in the body are in the
+/// allowlist for the given template kind before persisting.
+async fn admin_put_realm_email_template(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, kind)): Path<(String, String)>,
+    Json(body): Json<LocalizedEmailTemplate>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    // Validate template kind and placeholders in all body fields.
+    let fields_to_validate: Vec<(&str, &str)> = {
+        let mut v = Vec::new();
+        if let Some(ref s) = body.default.subject {
+            v.push(("default.subject", s.as_str()));
+        }
+        if let Some(ref s) = body.default.html_body {
+            v.push(("default.html_body", s.as_str()));
+        }
+        if let Some(ref s) = body.default.text_body {
+            v.push(("default.text_body", s.as_str()));
+        }
+        for (locale, lb) in &body.locales {
+            if let Some(ref s) = lb.subject {
+                v.push((locale.as_str(), s.as_str()));
+            }
+            if let Some(ref s) = lb.html_body {
+                v.push((locale.as_str(), s.as_str()));
+            }
+            if let Some(ref s) = lb.text_body {
+                v.push((locale.as_str(), s.as_str()));
+            }
+        }
+        v
+    };
+
+    for (_field, text) in &fields_to_validate {
+        if let Err(e) = validate_email_template(&kind, text) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error": "invalid_template",
+                    "message": format!("{e}")
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let mut new_config = realm.config().clone();
+    new_config.email_templates.insert(kind.clone(), body);
+
+    match state.identity.update_realm(
+        &realm_id,
+        &UpdateRealmRequest {
+            config: Some(new_config),
+            ..UpdateRealmRequest::default()
+        },
+    ) {
+        Ok(updated) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(
+                    serde_json::json!({"via": "admin_api", "op": "put_email_template", "kind": kind}),
+                ),
+            });
+            match updated.config().email_templates.get(&kind) {
+                Some(tmpl) => (StatusCode::OK, Json(tmpl.clone())).into_response(),
+                None => StatusCode::NO_CONTENT.into_response(),
+            }
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// `DELETE /realms/{id}/email-templates/{kind}` — remove a stored template override.
+async fn admin_delete_realm_email_template(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, kind)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    if !realm.config().email_templates.contains_key(&kind) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "template not found"})),
+        )
+            .into_response();
+    }
+    let mut new_config = realm.config().clone();
+    new_config.email_templates.remove(&kind);
+
+    match state.identity.update_realm(
+        &realm_id,
+        &UpdateRealmRequest {
+            config: Some(new_config),
+            ..UpdateRealmRequest::default()
+        },
+    ) {
+        Ok(_) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(
+                    serde_json::json!({"via": "admin_api", "op": "delete_email_template", "kind": kind}),
+                ),
+            });
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }

@@ -45,6 +45,16 @@ observability:
   log_level: "info"      # trace | debug | info | warn | error
   log_format: "text"     # text | json
 
+  # Optional: export distributed traces via OpenTelemetry OTLP.
+  # When omitted, no traces are exported and there is zero overhead.
+  #
+  # otlp:
+  #   protocol: grpc         # grpc (default, port 4317) | http (port 4318)
+  #   endpoint: "http://localhost:4317"   # default shown; override for your collector
+  #   service_name: "hearth"             # reported as service.name in every span
+  #   headers:                           # optional auth headers for managed collectors
+  #     Authorization: "Bearer <token>"
+
 operational:
   request_timeout_secs: 30
   shutdown_timeout_secs: 10

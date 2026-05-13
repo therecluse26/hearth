@@ -237,6 +237,59 @@ impl Default for MetricsConfig {
     }
 }
 
+/// OTLP transport protocol.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OtlpProtocol {
+    /// gRPC transport (default, port 4317).
+    #[default]
+    Grpc,
+    /// HTTP/protobuf transport (port 4318).
+    Http,
+}
+
+/// OpenTelemetry OTLP export configuration.
+///
+/// When present under `observability.otlp`, Hearth ships spans to the
+/// configured collector endpoint via gRPC or HTTP.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OtlpConfig {
+    /// Collector endpoint URL.
+    ///
+    /// Defaults to `http://localhost:4317` for gRPC and
+    /// `http://localhost:4318` for HTTP when omitted.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Transport protocol: `grpc` (default) or `http`.
+    #[serde(default)]
+    pub protocol: OtlpProtocol,
+    /// Additional request headers forwarded to the collector.
+    ///
+    /// Useful for authentication tokens required by managed collectors.
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+    /// `service.name` resource attribute reported in every span.
+    #[serde(default = "OtlpConfig::default_service_name")]
+    pub service_name: String,
+}
+
+impl OtlpConfig {
+    fn default_service_name() -> String {
+        "hearth".to_string()
+    }
+
+    /// Effective endpoint URL, substituting the protocol-specific default.
+    pub fn effective_endpoint(&self) -> String {
+        if let Some(ep) = &self.endpoint {
+            return ep.clone();
+        }
+        match self.protocol {
+            OtlpProtocol::Grpc => "http://localhost:4317".to_string(),
+            OtlpProtocol::Http => "http://localhost:4318".to_string(),
+        }
+    }
+}
+
 /// Observability (logging and tracing) configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ObservabilityConfig {
@@ -246,6 +299,9 @@ pub struct ObservabilityConfig {
     /// Log output format: "text" or "json".
     #[serde(default = "ObservabilityConfig::default_log_format")]
     pub log_format: String,
+    /// Optional OTLP export. When absent, no spans are exported.
+    #[serde(default)]
+    pub otlp: Option<OtlpConfig>,
 }
 
 impl ObservabilityConfig {
@@ -270,6 +326,7 @@ impl Default for ObservabilityConfig {
         Self {
             log_level: Self::default_log_level(),
             log_format: Self::default_log_format(),
+            otlp: None,
         }
     }
 }
@@ -1601,6 +1658,13 @@ impl RealmYamlConfig {
             claim_profile,
             groups,
             scim_bearer_token_hash,
+            // Per-realm logo and primary color are managed via the admin API,
+            // not via hearth.yaml, so they default to None here.
+            logo_url: None,
+            primary_color: None,
+            // Email template overrides are managed via the admin API, not
+            // via hearth.yaml; start empty and let the API populate them.
+            email_templates: std::collections::HashMap::new(),
         })
     }
 }
