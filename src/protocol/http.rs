@@ -76,6 +76,10 @@ pub struct AppState {
     /// Enables the `POST /admin/bootstrap` endpoint for SDK integration
     /// tests and local development.
     pub dev_mode: bool,
+    /// Whether the `/metrics` Prometheus scrape endpoint is enabled.
+    ///
+    /// Controlled by `metrics.enabled` in `hearth.yaml` (default: `true`).
+    pub metrics_enabled: bool,
     /// Shared admin API rate limiter. Shared between the HTTP and gRPC
     /// admin surfaces so a caller cannot evade the limit by switching
     /// protocols.
@@ -95,6 +99,7 @@ impl AppState {
             audit,
             webhook: None,
             dev_mode: false,
+            metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
         }
     }
@@ -113,6 +118,7 @@ impl AppState {
             audit,
             webhook: None,
             dev_mode: true,
+            metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
         }
     }
@@ -133,6 +139,7 @@ impl AppState {
             audit,
             webhook: None,
             dev_mode: false,
+            metrics_enabled: true,
             admin_rate_limiter,
         }
     }
@@ -140,6 +147,12 @@ impl AppState {
     /// Attaches a webhook engine, enabling the webhook management endpoints.
     pub fn with_webhook(mut self, webhook: Arc<dyn WebhookEngine>) -> Self {
         self.webhook = Some(webhook);
+        self
+    }
+
+    /// Sets whether the `/metrics` Prometheus scrape endpoint is exposed.
+    pub fn with_metrics_enabled(mut self, enabled: bool) -> Self {
+        self.metrics_enabled = enabled;
         self
     }
 }
@@ -748,7 +761,10 @@ async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// No authentication is required by default — operators SHOULD firewall this
 /// endpoint from the public internet if the metric cardinality reveals
 /// sensitive business data (e.g. realm names in label sets).
-async fn metrics_handler() -> impl IntoResponse {
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if !state.metrics_enabled {
+        return (StatusCode::NOT_FOUND, [(axum::http::header::CONTENT_TYPE, "text/plain")], String::new()).into_response();
+    }
     let body = crate::metrics::metrics().render();
     (
         StatusCode::OK,
@@ -757,7 +773,7 @@ async fn metrics_handler() -> impl IntoResponse {
             "text/plain; version=0.0.4; charset=utf-8",
         )],
         body,
-    )
+    ).into_response()
 }
 
 /// Health check endpoint.
@@ -1137,6 +1153,9 @@ fn identity_error_to_response(
         }
         IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
         IdentityError::InvalidAttribute { .. } => (StatusCode::BAD_REQUEST, "invalid attribute"),
+        IdentityError::AuthMethodNotAllowed { .. } => {
+            (StatusCode::FORBIDDEN, "authentication method not permitted")
+        }
         IdentityError::PasswordExpired => (StatusCode::UNAUTHORIZED, "password expired"),
         IdentityError::PasswordReused => (
             StatusCode::UNPROCESSABLE_ENTITY,

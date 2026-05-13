@@ -726,7 +726,8 @@ async fn run_serve(
                 Arc::clone(&rbac_engine),
                 Arc::clone(&audit_engine),
             )
-            .with_webhook(Arc::clone(&webhook_engine)),
+            .with_webhook(Arc::clone(&webhook_engine))
+            .with_metrics_enabled(config.metrics.enabled),
         )
     } else {
         Arc::new(
@@ -735,7 +736,8 @@ async fn run_serve(
                 Arc::clone(&rbac_engine),
                 Arc::clone(&audit_engine),
             )
-            .with_webhook(Arc::clone(&webhook_engine)),
+            .with_webhook(Arc::clone(&webhook_engine))
+            .with_metrics_enabled(config.metrics.enabled),
         )
     };
 

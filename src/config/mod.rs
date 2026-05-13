@@ -13,7 +13,7 @@ pub use types::parse_duration_to_micros;
 pub use types::{
     ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, CompactionSection,
     EmailConfig, EmailTransport, FederationProviderYaml, FederationYamlConfig, LinkModeYaml,
-    MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig,
+    MailgunConfig, MailgunRegion, MailtrapConfig, MetricsConfig, ObservabilityConfig, OidcYamlConfig,
     OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
     PermissionYamlConfig, PostmarkConfig, ProtectedResourceYamlConfig, RateLimitYaml,
     RealmAuthYaml, RealmEmailYaml, RealmScimYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig,
@@ -84,6 +84,9 @@ pub struct Config {
     /// Global authentication defaults (session TTL, password hashing params).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Prometheus metrics endpoint settings.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     /// Per-realm configuration overrides.
     ///
     /// When `Some`, realms are declaratively managed: YAML entries become
@@ -176,6 +179,7 @@ impl Config {
             oidc: OidcYamlConfig::default(),
             token: TokenYamlConfig::default(),
             auth: AuthConfig::default(),
+            metrics: MetricsConfig::default(),
             realms: None,
             dev_mode: true,
             config_warnings: Vec::new(),

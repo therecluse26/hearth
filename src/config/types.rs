@@ -212,6 +212,31 @@ impl Default for StorageSection {
     }
 }
 
+/// Metrics endpoint configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MetricsConfig {
+    /// Whether to expose the Prometheus `/metrics` HTTP endpoint.
+    ///
+    /// Set to `false` to disable the endpoint (e.g., when metrics are
+    /// collected via a sidecar instead of a direct scrape).
+    #[serde(default = "MetricsConfig::default_enabled")]
+    pub enabled: bool,
+}
+
+impl MetricsConfig {
+    const fn default_enabled() -> bool {
+        true
+    }
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+        }
+    }
+}
+
 /// Observability (logging and tracing) configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ObservabilityConfig {

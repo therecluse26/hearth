@@ -72,7 +72,7 @@ _Generated: 2026-05-06 · Spec source: docs/specs/ + docs/vision/VISION.md · Co
 | # | Gap | Detail |
 |---|-----|--------|
 | 23 | **Per-realm auth policies not enforced** | Password complexity, MFA required, allowed auth methods, rate limits, token TTLs populated from YAML into `RealmConfig` but never enforced in login/credential flows. |
-| 24 | **No Prometheus `/metrics` endpoint** | ARCH §14.2 requires Prometheus-compatible metrics. |
+| 24 | ~~**No Prometheus `/metrics` endpoint**~~ | **Resolved.** `/metrics` endpoint wired in `src/protocol/http.rs`; hot-path counters/histograms (`auth_attempts_total`, `tokens_issued_total`, `active_sessions`, `http_request_duration_seconds`, `storage_operation_duration_seconds`) increment in production code paths. Gated by `metrics.enabled` config flag (default `true`). |
 | 25 | **No OpenTelemetry distributed tracing** | ARCH §14.3. No tracing integration exists. |
 | 26 | **No Helm chart or systemd service file** | VISION §10 Phase 2. |
 | 27 | **No comprehensive README** | THINGS_WE_NEED.md. |
