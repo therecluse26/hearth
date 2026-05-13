@@ -1,0 +1,60 @@
+# Hearth — local development stack.
+#
+# Quick start:
+#   cp hearth.example.yaml hearth.yaml      # edit to taste
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Services:
+#   hearth   — http://localhost:8420  (health at /health)
+#   mailpit  — http://localhost:8025  (SMTP capture UI)
+#
+# To wipe all data:  docker compose -f deploy/docker-compose.yml down -v
+
+services:
+  hearth:
+    image: ghcr.io/hearth-rs/hearth:latest
+    container_name: hearth
+    depends_on:
+      mailpit:
+        condition: service_started
+    ports:
+      - "8420:8420"
+    volumes:
+      # Named volume keeps WAL + SSTs across restarts. Use `down -v` to wipe.
+      - hearth_data:/var/lib/hearth
+      # Bind-mount your local hearth.yaml (from the project root) read-only.
+      # Adjust the path if your config lives elsewhere.
+      - ../hearth.yaml:/etc/hearth/hearth.yaml:ro
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      RUST_LOG: "info,hearth=debug"
+      # Inside Docker the server must bind all interfaces.
+      HEARTH_BIND_ADDRESS: "0.0.0.0"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8420/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  mailpit:
+    # Dev-only SMTP sink + web UI. Captures outbound mail from Hearth and
+    # renders it at http://localhost:8025.
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    ports:
+      - "8025:8025"       # web UI
+      # Port 1025 is intentionally not published to the host — reachable
+      # only from inside the compose network as mailpit:1025.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  hearth_data:

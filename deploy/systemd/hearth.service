@@ -1,0 +1,101 @@
+[Unit]
+Description=Hearth — single-binary identity database
+Documentation=https://github.com/hearth-rs/hearth
+After=network-online.target
+Wants=network-online.target
+# Restart the service when it exits. Combine with RestartSec so that a
+# crash-loop doesn't hammer the system.
+
+[Service]
+Type=notify
+User=hearth
+Group=hearth
+WorkingDirectory=/var/lib/hearth
+ExecStart=/usr/local/bin/hearth serve -c /etc/hearth/hearth.yaml
+
+# Restart policy — restart on any unexpected exit (crashes, OOMs, etc.),
+# but not when systemd stops the service intentionally (e.g. systemctl stop).
+Restart=on-failure
+RestartSec=5s
+# Give up after 3 rapid restarts in 60 s to avoid runaway crash loops.
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Graceful shutdown: send SIGTERM, wait up to 30 s, then SIGKILL.
+TimeoutStopSec=30
+
+# Standard streams — journal captures stdout/stderr automatically.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hearth
+
+# --- Security hardening -------------------------------------------------------
+
+# Prevent the process from gaining new privileges via setuid/capabilities.
+NoNewPrivileges=true
+
+# Mount /usr, /boot, /efi read-only; /etc read-only. Hearth only writes to
+# /var/lib/hearth (data) and /tmp (ephemeral). Use ReadWritePaths to allow
+# those.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hearth
+ReadWritePaths=/tmp
+
+# Hide /home and /root from the process — identity databases have no business
+# there.
+ProtectHome=true
+
+# Give the process its own /tmp, invisible to other units.
+PrivateTmp=true
+
+# Prevent access to /dev devices (except pseudo-devices like /dev/null).
+PrivateDevices=true
+
+# Restrict kernel tunables (sysctl) — Hearth has no reason to write them.
+ProtectKernelTunables=true
+
+# Prevent loading kernel modules.
+ProtectKernelModules=true
+
+# Block access to the kernel log buffer.
+ProtectKernelLogs=true
+
+# Protect the system clock.
+ProtectClock=true
+
+# Isolate the hostname/domainname namespace.
+ProtectHostname=true
+
+# Block access to /proc/<pid> entries of other processes.
+ProcSubset=pid
+
+# Restrict the set of address families the process can use.
+# AF_INET + AF_INET6 for HTTP; AF_UNIX for local sockets (e.g. admin API).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Restrict namespace creation — Hearth does not need to create namespaces.
+RestrictNamespaces=true
+
+# Prevent process from changing its own UID/GID.
+LockPersonality=true
+
+# Disallow memory regions that are both writable and executable (W^X).
+MemoryDenyWriteExecute=true
+
+# Allow only the syscalls needed for a typical network service.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# Capabilities — Hearth binds to port 8420 (> 1024), so it needs no
+# CAP_NET_BIND_SERVICE. Drop everything.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# --- Resource limits ----------------------------------------------------------
+# Prevent a single instance from monopolising the system. Tune to your hardware.
+LimitNOFILE=65536
+LimitNPROC=512
+
+[Install]
+WantedBy=multi-user.target
