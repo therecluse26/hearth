@@ -1460,7 +1460,7 @@ async fn token_exchange(
                 Ok(response) => {
                     crate::metrics::metrics()
                         .tokens_issued_total
-                        .with_label_values(&[&realm_id.as_uuid().to_string(), "authorization_code"])
+                        .with_label_values(&[realm_id.as_uuid().to_string().as_str(), "authorization_code"])
                         .inc();
                     crate::metrics::metrics().active_sessions.inc();
                     (
@@ -1485,7 +1485,7 @@ async fn token_exchange(
                 Ok(tokens) => {
                     crate::metrics::metrics()
                         .tokens_issued_total
-                        .with_label_values(&[&realm_id.as_uuid().to_string(), "refresh_token"])
+                        .with_label_values(&[realm_id.as_uuid().to_string().as_str(), "refresh_token"])
                         .inc();
                     let resp = pb::OidcTokenResponse {
                         access_token: tokens.access_token().to_string(),
@@ -1522,11 +1522,11 @@ async fn token_exchange(
                 Ok(response) => {
                     crate::metrics::metrics()
                         .auth_attempts_total
-                        .with_label_values(&[&realm_str, "success"])
+                        .with_label_values(&[realm_str.as_str(), "success"])
                         .inc();
                     crate::metrics::metrics()
                         .tokens_issued_total
-                        .with_label_values(&[&realm_str, "client_credentials"])
+                        .with_label_values(&[realm_str.as_str(), "client_credentials"])
                         .inc();
                     (
                         StatusCode::OK,
@@ -1539,7 +1539,7 @@ async fn token_exchange(
                 Err(e) => {
                     crate::metrics::metrics()
                         .auth_attempts_total
-                        .with_label_values(&[&realm_str, "failure"])
+                        .with_label_values(&[realm_str.as_str(), "failure"])
                         .inc();
                     identity_error_to_response(&e).into_response()
                 }
@@ -1575,7 +1575,7 @@ async fn token_exchange(
                     crate::metrics::metrics()
                         .tokens_issued_total
                         .with_label_values(&[
-                            &realm_id.as_uuid().to_string(),
+                            realm_id.as_uuid().to_string().as_str(),
                             "urn:ietf:params:oauth:grant-type:device_code",
                         ])
                         .inc();

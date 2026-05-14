@@ -67,7 +67,7 @@ pub async fn build_router(
     use crate::protocol::proto::identity::v1::o_auth_service_server::OAuthServiceServer;
     use crate::protocol::proto::rbac::v1::rbac_admin_service_server::RbacAdminServiceServer;
 
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
     // Mark every Hearth service SERVING by default; graceful shutdown will
     // flip them to NOT_SERVING before the listener closes.
     health_reporter

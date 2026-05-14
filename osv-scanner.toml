@@ -1,0 +1,85 @@
+# osv-scanner / OpenSSF Scorecard vulnerability suppressions for Hearth.
+#
+# This file is read by:
+#   - OpenSSF Scorecard's Vulnerabilities check
+#     (.github/workflows/scorecard.yml -> ossf/scorecard-action),
+#     which delegates to osv-scanner under the hood.
+#   - Any local `osv-scanner` invocation run from the repo root.
+#
+# Suppressions below are scoped to the smallest possible blast radius: each
+# entry covers exactly one GHSA, paired with the structural reason the
+# advisory cannot apply to this codebase and the precise condition under
+# which the entry should be re-validated.
+#
+# When adding new entries, prefer fixing the underlying dependency over
+# suppressing. Suppressions are reserved for advisories that cannot affect
+# this project (e.g. package not present, ecosystem mismatch, exploit path
+# unreachable in our usage).
+#
+# Source of truth for the false-positive analysis: HEA-271 plan document
+# (Vulnerability Mitigation Plan) and HEA-285.
+
+# ---------------------------------------------------------------------------
+# protobufjs (7 GHSAs) — not a dependency of this project.
+#
+# Hearth performs all protobuf work in Rust via `prost` / `tonic` (see the
+# `proto/` directory and the `proto-check` / `proto-breaking` make targets
+# in .github/workflows/ci.yml). The JavaScript `protobufjs` package is not
+# present in `package.json` or `package-lock.json`. These advisories cannot
+# apply unless protobufjs is introduced as a JS dependency in the future,
+# at which point each entry below MUST be re-validated.
+# ---------------------------------------------------------------------------
+
+[[IgnoredVulns]]
+id = "GHSA-q6x5-8v7m-xcrf"
+reason = "protobufjs not in package-lock.json; Hearth uses Rust prost/tonic for protobuf. Re-validate if protobufjs is ever added as a JS dependency."
+
+[[IgnoredVulns]]
+id = "GHSA-2pr8-phx7-x9h3"
+reason = "protobufjs not in package-lock.json; Hearth uses Rust prost/tonic for protobuf. Re-validate if protobufjs is ever added as a JS dependency."
+
+[[IgnoredVulns]]
+id = "GHSA-66ff-xgx4-vchm"
+reason = "protobufjs not in package-lock.json; Hearth uses Rust prost/tonic for protobuf. Re-validate if protobufjs is ever added as a JS dependency."
+
+[[IgnoredVulns]]
+id = "GHSA-685m-2w69-288q"
+reason = "protobufjs not in package-lock.json; Hearth uses Rust prost/tonic for protobuf. Re-validate if protobufjs is ever added as a JS dependency."
+
+[[IgnoredVulns]]
+id = "GHSA-75px-5xx7-5xc7"
+reason = "protobufjs not in package-lock.json; Hearth uses Rust prost/tonic for protobuf. Re-validate if protobufjs is ever added as a JS dependency."
+
+[[IgnoredVulns]]
+id = "GHSA-fx83-v9x8-x52w"
+reason = "protobufjs not in package-lock.json; Hearth uses Rust prost/tonic for protobuf. Re-validate if protobufjs is ever added as a JS dependency."
+
+[[IgnoredVulns]]
+id = "GHSA-jvwf-75h9-cwgg"
+reason = "protobufjs not in package-lock.json; Hearth uses Rust prost/tonic for protobuf. Re-validate if protobufjs is ever added as a JS dependency."
+
+# ---------------------------------------------------------------------------
+# esbuild (1 GHSA) — not a dependency of this project.
+#
+# Hearth has no JavaScript bundler or transpiler in its build graph. Asset
+# pipeline is Tailwind standalone CLI (see `make tailwind-install` /
+# `make css-check` in .github/workflows/ci.yml). The `esbuild` package is
+# not present in `package.json` or `package-lock.json`. Re-validate if a
+# bundler is ever introduced.
+# ---------------------------------------------------------------------------
+
+[[IgnoredVulns]]
+id = "GHSA-67mh-4wv8-2f99"
+reason = "esbuild not in package-lock.json; Hearth has no JS bundler in its asset pipeline (Tailwind standalone CLI only). Re-validate if a bundler is ever added."
+
+# ---------------------------------------------------------------------------
+# vite (1 GHSA) — not a dependency of this project.
+#
+# Hearth's frontend is server-rendered HTML + Tailwind; there is no Vite
+# dev server, no Vite-built SPA, and no `vite` entry in `package.json` or
+# `package-lock.json`. Re-validate if a Vite-based frontend is ever added.
+# ---------------------------------------------------------------------------
+
+[[IgnoredVulns]]
+id = "GHSA-4w7w-66w2-5vf9"
+reason = "vite not in package-lock.json; Hearth has no Vite-based frontend. Re-validate if Vite is ever added as a dependency."

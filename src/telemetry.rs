@@ -13,8 +13,7 @@
 
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{WithExportConfig, WithHttpConfig, WithTonicConfig};
-use opentelemetry_sdk::runtime;
-use opentelemetry_sdk::trace::{BatchSpanProcessor, TracerProvider};
+use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
 use opentelemetry_sdk::Resource;
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
 use tracing_subscriber::layer::SubscriberExt;
@@ -26,13 +25,13 @@ use crate::config::{ObservabilityConfig, OtlpConfig, OtlpProtocol};
 /// Holds the live OTel tracer provider. Dropping this guard flushes all
 /// pending spans and shuts down the export pipeline.
 pub struct TracingGuard {
-    provider: Option<TracerProvider>,
+    provider: Option<SdkTracerProvider>,
 }
 
 impl Drop for TracingGuard {
     fn drop(&mut self) {
-        if self.provider.is_some() {
-            opentelemetry::global::shutdown_tracer_provider();
+        if let Some(provider) = self.provider.take() {
+            let _ = provider.shutdown();
         }
     }
 }
@@ -97,11 +96,13 @@ pub fn init(config: &ObservabilityConfig) -> TracingGuard {
 
 // ── private helpers ──────────────────────────────────────────────────────────
 
-fn build_provider(cfg: &OtlpConfig) -> TracerProvider {
-    let resource = Resource::new([KeyValue::new(SERVICE_NAME, cfg.service_name.clone())]);
+fn build_provider(cfg: &OtlpConfig) -> SdkTracerProvider {
+    let resource = Resource::builder()
+        .with_attribute(KeyValue::new(SERVICE_NAME, cfg.service_name.clone()))
+        .build();
     let exporter = build_exporter(cfg);
-    let processor = BatchSpanProcessor::builder(exporter, runtime::Tokio).build();
-    TracerProvider::builder()
+    let processor = BatchSpanProcessor::builder(exporter).build();
+    SdkTracerProvider::builder()
         .with_span_processor(processor)
         .with_resource(resource)
         .build()

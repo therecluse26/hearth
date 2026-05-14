@@ -80,9 +80,10 @@ A pre-release third-party security audit is in progress. This page will be updat
 
 ## Known Exceptions
 
-| CVE / Advisory | Affected crate | Justification |
+| CVE / Advisory | Affected crate / package | Justification |
 |---|---|---|
 | RUSTSEC-2023-0071 | `rsa` | Marvin Attack timing side-channel affects PKCS#1 v1.5 decryption only. Hearth uses the `rsa` crate exclusively for RSA key generation and PKCS#8 serialization — no decryption operations are performed. |
+| 9 GHSAs in protobufjs, esbuild, vite | n/a (packages absent from `package-lock.json`) | OpenSSF Scorecard / osv-scanner false positives — none of these packages are dependencies of Hearth. Each advisory and its re-validation condition is documented in `osv-scanner.toml` at the repo root. |
 
 ## Encryption at Rest
 
