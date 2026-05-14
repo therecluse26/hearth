@@ -51,3 +51,57 @@ make check   # clippy + fmt + nextest
 See [`CLAUDE.md`](CLAUDE.md) and [`docs/specs/`](docs/specs/) for the
 architecture, testing, and implementation-order rules every change
 must follow.
+
+## Performance benchmarks and CI gates
+
+Hearth targets sub-millisecond p99 latency on the hot path. Two benchmark
+binaries enforce hard latency limits in CI (`make bench-gate`).
+
+### Running the gates locally
+
+```sh
+make bench-gate          # compile + run both gate binaries
+```
+
+Each binary runs threshold checks *before* Criterion sampling begins.
+A failed assertion exits non-zero, which fails the CI Standard tier
+(`make ci-standard`).
+
+### Gate thresholds
+
+| Binary | Operation | p50 limit | p99 limit |
+|--------|-----------|-----------|-----------|
+| `rbac_check` | `resolve_permissions` (JWT decode + scan) | — | 1 ms |
+| `rbac_check` | `hasPermission` (`HashSet::contains`) | — | 1 µs |
+| `storage_gate` | Storage hot-tier key lookup | 10 µs | 100 µs |
+| `storage_gate` | Session lookup by ID | 10 µs | 100 µs |
+| `storage_gate` | User lookup by ID | 20 µs | 200 µs |
+| `storage_gate` | User lookup by email | 20 µs | 200 µs |
+
+Thresholds derive from `docs/specs/ARCHITECTURE.md` § Hot Path Rules
+and `docs/specs/TEST_SCENARIOS.md` benchmark scenarios.
+
+### Running individual Criterion benchmarks
+
+```sh
+# All benchmarks with HTML reports (target/criterion/):
+PROTOC=protoc cargo bench
+
+# A single bench group:
+PROTOC=protoc cargo bench --bench tiered_storage
+PROTOC=protoc cargo bench --bench session_lookup
+PROTOC=protoc cargo bench --bench user_lookup
+PROTOC=protoc cargo bench --bench rbac_check
+PROTOC=protoc cargo bench --bench storage_gate
+```
+
+### Interpreting results
+
+Criterion reports **mean**, **median** (≈ p50), and standard deviation.
+The gate binaries independently compute p50 and p99 from 10 000 raw
+samples taken after 200 warm-up iterations, matching the hot-tier
+steady state (data already in the `ArcSwap`-backed lock-free tier).
+
+If a gate fails on your machine but passes elsewhere, check for
+background load, frequency scaling (`cpupower frequency-info`), or
+running under a hypervisor that inflates tail latency.

@@ -141,6 +141,10 @@ harness = false
 name = "rbac_check"
 harness = false
 
+[[bench]]
+name = "storage_gate"
+harness = false
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"

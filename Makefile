@@ -113,11 +113,23 @@ sdk-test:
 ## CI fast tier: lint + fmt + proto lint + css freshness (every commit).
 ci-fast: fmt clippy proto-lint css-check
 
-## CI benchmark gate: compile and run RBAC perf threshold gates (p99 limits).
-## Runs resolve_permissions ≤ 1 ms and hasPermission ≤ 1 µs assertions before
-## Criterion sampling; non-zero exit fails the Standard CI tier.
+## CI benchmark gate: compile and run hot-path perf threshold gates.
+##
+## Two bench binaries run in sequence; each asserts p50 and p99 targets
+## before Criterion sampling begins. Non-zero exit fails the Standard CI tier.
+##
+## rbac_check gates:
+##   resolve_permissions p99 ≤ 1 ms
+##   hasPermission p99       ≤ 1 µs
+##
+## storage_gate gates:
+##   storage hot-tier lookup   p50 ≤ 10 µs, p99 ≤ 100 µs
+##   session lookup by ID      p50 ≤ 10 µs, p99 ≤ 100 µs
+##   user lookup by ID         p50 ≤ 20 µs, p99 ≤ 200 µs
+##   user lookup by email      p50 ≤ 20 µs, p99 ≤ 200 µs
 bench-gate:
 	PROTOC=$(PROTOC) cargo bench --bench rbac_check $(CARGO_FLAGS)
+	PROTOC=$(PROTOC) cargo bench --bench storage_gate $(CARGO_FLAGS)
 
 ## CI standard tier: fast + tests + SDK tests + proto breaking + perf gate (merge).
 ci-standard: ci-fast test proto-breaking sdk-test proto-check bench-gate
