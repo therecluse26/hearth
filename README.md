@@ -1,3 +1,5 @@
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/therecluse26/hearth/badge)](https://scorecard.dev/viewer/?uri=github.com/therecluse26/hearth)
+
 # Hearth — a purpose-built identity database
 
 **Identity is a database problem. Hearth is the database.**
