@@ -1,0 +1,6 @@
+version: v1.25.0
+exclude:
+  code:
+    - tests
+    - benches
+    - simulation
