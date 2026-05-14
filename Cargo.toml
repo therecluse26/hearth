@@ -71,7 +71,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = { version = "0.12", features = ["transport", "tls", "gzip"] }
 tonic-health = "0.12"
 tonic-reflection = "0.12"
-tonic-types = "0.12"
+tonic-types = "0.14"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
