@@ -54,3 +54,6 @@ hearth.yaml
 hearth.yml
 
 .codex
+
+# Backup files
+*.bak

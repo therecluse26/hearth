@@ -1350,4 +1350,79 @@ mod tests {
             );
         }
     }
+
+    /// Encryption-at-rest: raw SST and WAL bytes must not contain plaintext.
+    ///
+    /// Writes a recognizable sentinel value, forces a flush to produce an SST
+    /// file, then reads the raw on-disk bytes to confirm the sentinel does not
+    /// appear in plaintext. Also checks the WAL file. The engine must still be
+    /// able to retrieve the value through the normal read path (proving the
+    /// data is encrypted, not lost).
+    #[test]
+    fn engine_data_is_encrypted_at_rest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+
+        let sentinel: &[u8] = b"HEARTH_ENCRYPTION_SENTINEL_XR7Q";
+
+        let config = StorageConfig {
+            data_dir: dir.path().to_path_buf(),
+            wal_config: WalConfig {
+                max_size: 64 * 1024 * 1024,
+                sync_mode: SyncMode::None,
+            },
+            memtable_config: MemtableConfig {
+                flush_threshold_bytes: 50,
+            },
+            tiered_config: TieredConfig::default(),
+            allow_missing_keks: false,
+            compaction: CompactionConfig::default(),
+        };
+
+        {
+            let engine = EmbeddedStorageEngine::open(config).expect("open");
+            for i in 0u32..5 {
+                engine
+                    .put(&realm, format!("k-{i}").as_bytes(), sentinel)
+                    .expect("put");
+            }
+            // Engine must still be able to read back the value.
+            assert_eq!(
+                engine.get(&realm, b"k-0").expect("get"),
+                Some(sentinel.to_vec()),
+                "sentinel must be readable through the engine"
+            );
+        }
+
+        // At least one SST file must exist after flush.
+        let sst_files: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "sst"))
+            .collect();
+        assert!(
+            !sst_files.is_empty(),
+            "expected at least one SST file after flush"
+        );
+
+        // Raw SST bytes must not contain the sentinel in plaintext.
+        for entry in &sst_files {
+            let raw = std::fs::read(entry.path()).expect("read sst");
+            assert!(
+                !raw.windows(sentinel.len()).any(|w| w == sentinel),
+                "SST file {:?} contains plaintext sentinel — encryption-at-rest not working",
+                entry.path()
+            );
+        }
+
+        // Raw WAL bytes must not contain the sentinel in plaintext.
+        let wal_path = dir.path().join("hearth.wal");
+        if wal_path.exists() {
+            let raw = std::fs::read(&wal_path).expect("read wal");
+            assert!(
+                !raw.windows(sentinel.len()).any(|w| w == sentinel),
+                "WAL file contains plaintext sentinel — WAL encryption-at-rest not working"
+            );
+        }
+    }
 }

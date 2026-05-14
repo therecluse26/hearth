@@ -319,6 +319,8 @@ pub(crate) fn decrypt_section(
 /// Used during key rotation. The DEK itself does not change — only the
 /// wrapper header is updated with the new KEK. Returns a new
 /// `EncryptionHeader` with the new `kek_id`, nonce, and wrapped DEK.
+// TODO(1.1): wired by the key-rotation path; keep to avoid re-implementing.
+#[allow(dead_code)]
 pub(crate) fn rewrap_header(
     header: &EncryptionHeader,
     old_kek: &KeyEncryptionKey,

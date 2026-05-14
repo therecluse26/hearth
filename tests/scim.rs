@@ -415,6 +415,79 @@ async fn groups_post_creates_organization_and_members() {
     assert_eq!(members[0]["value"], user_id);
 }
 
+// ===== Groups PATCH =====
+
+#[tokio::test]
+async fn groups_patch_renames_group_and_adds_member() {
+    let rig = build_rig();
+    let (realm, token) = setup_admin(&rig);
+
+    // Provision two users.
+    let u1_post = scim_request("POST", "/scim/v2/Users", &realm, &token)
+        .body(Body::from(
+            json!({
+                "userName": "first@example.com",
+                "name": {"givenName": "First", "familyName": "User"}
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (_, u1) = send(&rig.app, u1_post).await;
+    let u1_id = u1["id"].as_str().unwrap().to_string();
+
+    let u2_post = scim_request("POST", "/scim/v2/Users", &realm, &token)
+        .body(Body::from(
+            json!({
+                "userName": "second@example.com",
+                "name": {"givenName": "Second", "familyName": "User"}
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (_, u2) = send(&rig.app, u2_post).await;
+    let u2_id = u2["id"].as_str().unwrap().to_string();
+
+    // Create group with only the first user.
+    let gpost = scim_request("POST", "/scim/v2/Groups", &realm, &token)
+        .body(Body::from(
+            json!({
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+                "displayName": "OldName",
+                "members": [{"value": u1_id}]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, gbody) = send(&rig.app, gpost).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let group_id = gbody["id"].as_str().unwrap().to_string();
+
+    // PATCH: rename the group and add the second user.
+    let patch = scim_request("PATCH", &format!("/scim/v2/Groups/{group_id}"), &realm, &token)
+        .body(Body::from(
+            json!({
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                "Operations": [
+                    {"op": "replace", "path": "displayName", "value": "NewName"},
+                    {"op": "add", "path": "members", "value": [{"value": u2_id}]}
+                ]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = send(&rig.app, patch).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["displayName"], "NewName");
+    let member_ids: Vec<&str> = body["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["value"].as_str())
+        .collect();
+    assert!(member_ids.contains(&u1_id.as_str()), "original member retained");
+    assert!(member_ids.contains(&u2_id.as_str()), "new member added");
+}
+
 // ===== Auth =====
 
 #[tokio::test]
