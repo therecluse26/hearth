@@ -54,7 +54,8 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::ConsentRequired
         | IdentityError::LastOwner
         | IdentityError::NotAMember
-        | IdentityError::UserNotVerified => (Code::PermissionDenied, err.to_string()),
+        | IdentityError::UserNotVerified
+        | IdentityError::AuthMethodNotAllowed { .. } => (Code::PermissionDenied, err.to_string()),
         IdentityError::InvalidInput { .. }
         | IdentityError::InvalidAttribute { .. }
         | IdentityError::InvalidRedirectUri
@@ -96,7 +97,9 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::SlowDown
         | IdentityError::DeviceCodeExpired
         | IdentityError::DeviceCodeDenied
-        | IdentityError::TokenRevoked => (Code::FailedPrecondition, err.to_string()),
+        | IdentityError::TokenRevoked
+        | IdentityError::PasswordExpired
+        | IdentityError::PasswordReused => (Code::FailedPrecondition, err.to_string()),
         IdentityError::RateLimited
         | IdentityError::MemberLimitReached
         | IdentityError::TokenTooLarge { .. } => (Code::ResourceExhausted, err.to_string()),
@@ -163,4 +166,39 @@ pub fn extract_realm_id(md: &MetadataMap) -> Result<RealmId, Status> {
         .parse::<uuid::Uuid>()
         .map_err(|_| Status::invalid_argument("realm id is not a valid UUID"))?;
     Ok(RealmId::new(uuid))
+}
+
+/// Metadata key carrying the OAuth client ID for protected RPC calls.
+pub const CLIENT_ID_META_KEY: &str = "x-hearth-client-id";
+
+/// Metadata key carrying the OAuth client secret for protected RPC calls.
+pub const CLIENT_SECRET_META_KEY: &str = "x-hearth-client-secret";
+
+/// Extracts and verifies OAuth client credentials from gRPC request metadata.
+///
+/// Reads `x-hearth-client-id` and optional `x-hearth-client-secret` metadata
+/// values and delegates to the identity engine for verification. Confidential
+/// clients require the secret; public clients are accepted with ID alone.
+/// Returns `UNAUTHENTICATED` for any auth failure.
+pub fn verify_grpc_client_auth(
+    md: &MetadataMap,
+    realm_id: &RealmId,
+    identity: &dyn crate::identity::IdentityEngine,
+) -> Result<(), Status> {
+    let raw_id = md
+        .get(CLIENT_ID_META_KEY)
+        .ok_or_else(|| Status::unauthenticated("missing x-hearth-client-id metadata"))?
+        .to_str()
+        .map_err(|_| Status::invalid_argument("x-hearth-client-id is not valid ASCII"))?;
+
+    let uuid = raw_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| Status::unauthenticated("invalid client credentials"))?;
+    let client_id = crate::core::ClientId::new(uuid);
+
+    let secret = md.get(CLIENT_SECRET_META_KEY).and_then(|v| v.to_str().ok());
+
+    identity
+        .authenticate_client(realm_id, &client_id, secret)
+        .map_err(|_| Status::unauthenticated("invalid client credentials"))
 }

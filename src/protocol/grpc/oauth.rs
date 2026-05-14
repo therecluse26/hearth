@@ -16,7 +16,7 @@ use crate::protocol::convert::oauth::{
 use crate::protocol::proto::identity::v1 as pb;
 use crate::protocol::proto::identity::v1::o_auth_service_server::OAuthService;
 
-use super::convert::{extract_realm_id, identity_to_status};
+use super::convert::{extract_realm_id, identity_to_status, verify_grpc_client_auth};
 use super::server::GrpcState;
 
 pub struct OAuthSvc {
@@ -66,6 +66,7 @@ impl OAuthService for OAuthSvc {
         req: Request<pb::TokenRevocationRequest>,
     ) -> Result<Response<pb::OAuthEmpty>, Status> {
         let realm_id = extract_realm_id(req.metadata())?;
+        verify_grpc_client_auth(req.metadata(), &realm_id, self.state.identity.as_ref())?;
         let body: domain::TokenRevocationRequest = req.into_inner().into();
         self.state
             .identity
@@ -79,6 +80,7 @@ impl OAuthService for OAuthSvc {
         req: Request<pb::TokenIntrospectionRequest>,
     ) -> Result<Response<pb::IntrospectionResponse>, Status> {
         let realm_id = extract_realm_id(req.metadata())?;
+        verify_grpc_client_auth(req.metadata(), &realm_id, self.state.identity.as_ref())?;
         let body: domain::TokenIntrospectionRequest = req.into_inner().into();
         let resp = self
             .state

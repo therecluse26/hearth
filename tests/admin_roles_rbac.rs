@@ -1,7 +1,7 @@
 //! Integration tests for admin HTTP role CRUD.
 //!
-//! Covers `MIGRATE_TO_RBAC.md` § 7 — admin_roles_rbac:crud,
-//! duplicate_slug_rejected, cycle_on_composition_rejected, cross_realm_isolation.
+//! Covers `MIGRATE_TO_RBAC.md` § 7 — `admin_roles_rbac:crud`,
+//! `duplicate_slug_rejected`, `cycle_on_composition_rejected`, `cross_realm_isolation`.
 
 mod common;
 
@@ -35,7 +35,7 @@ async fn admin_ctx() -> AdminCtx {
                 display_name: "A".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("user");

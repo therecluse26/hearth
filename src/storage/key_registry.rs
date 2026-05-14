@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::RealmId;
 use crate::storage::encryption::{
-    self, decrypt_kek, encrypt_kek, generate_host_key, generate_kek, HostKey, KekId,
-    KeyEncryptionKey, KEK_ID_SIZE,
+    decrypt_kek, encrypt_kek, generate_host_key, generate_kek, HostKey, KekId, KeyEncryptionKey,
+    KEK_ID_SIZE,
 };
 use crate::storage::error::StorageError;
 use crate::storage::fs::{Fs, RealFs};

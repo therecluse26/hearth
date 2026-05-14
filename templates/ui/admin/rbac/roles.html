@@ -1,24 +1,29 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} &middot; Roles{% endblock %}
 {% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-  <div class="flex items-center gap-3">
+  <div>
     <h1 class="font-display text-2xl font-medium text-ht-content-primary">Roles</h1>
-    {% include "ui/admin/_components/_yaml_badge.html" %}
   </div>
-  <a href="/ui/admin/settings/editor?section=auth"
-     class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
-    Edit in Config Editor
-    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-  </a>
+  <div class="flex items-center gap-2">
+    <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles/new"
+       class="inline-flex shrink-0 items-center gap-1.5 rounded bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-hover">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      New role
+    </a>
+    <a href="/ui/admin/settings/editor?section=auth"
+       class="inline-flex shrink-0 items-center gap-1.5 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-primary hover-bg-divider">
+      Config Editor
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+    </a>
+  </div>
 </div>
 
 <div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle overflow-hidden">
   {% if roles.is_empty() %}
   <p class="px-6 py-10 text-center text-sm text-ht-content-muted">
-    No roles registered. Add them under
-    <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs">realms.&lt;id&gt;.roles</code>
-    in <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs">hearth.yaml</code>.
+    No roles defined. Click <strong>New role</strong> to create one, or add them via the Config Editor.
   </p>
   {% else %}
   <table class="w-full text-sm">
@@ -34,7 +39,8 @@
       {% for row in roles %}
       <tr class="hover:bg-ht-surface-base align-top">
         <td class="px-4 py-3 whitespace-nowrap">
-          <code class="rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ row.name }}</code>
+          <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles/{{ row.id }}"
+             class="font-mono text-xs text-ht-content-brand hover:underline">{{ row.name }}</a>
         </td>
         <td class="px-4 py-3 whitespace-nowrap">
           {% if row.scope == "organization" %}

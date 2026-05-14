@@ -170,7 +170,7 @@ pub fn canonicalize_with_inherited(
                 out.extend_from_slice(escaped.as_bytes());
             }
             Ok(Event::Eof) => break,
-            Ok(Event::Comment(_)) | Ok(Event::Decl(_)) | Ok(Event::PI(_)) => {
+            Ok(Event::Comment(_) | Event::Decl(_) | Event::PI(_)) => {
                 // Skip per c14n rules (we never emit these, and comments
                 // are off per our #WithComments-free variant).
             }
@@ -178,7 +178,6 @@ pub fn canonicalize_with_inherited(
                 return Err(IdentityError::SamlUnsupportedAlgorithm);
             }
             Err(e) => return Err(parse_err(format!("c14n parse error: {e}"))),
-            Ok(_) => {}
         }
         buf.clear();
     }
@@ -369,10 +368,10 @@ mod tests {
 
     #[test]
     fn canon_escapes_text() {
-        let xml = br#"<root>a&amp;b&lt;c</root>"#;
+        let xml = br"<root>a&amp;b&lt;c</root>";
         let out = canonicalize(xml, false).expect("canon");
         let s = std::str::from_utf8(&out).expect("utf8");
-        assert_eq!(s, r#"<root>a&amp;b&lt;c</root>"#);
+        assert_eq!(s, r"<root>a&amp;b&lt;c</root>");
     }
 
     #[test]

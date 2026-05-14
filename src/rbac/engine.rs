@@ -22,9 +22,9 @@ use super::resolve::{self, Resolver};
 use super::seed::{self, StoredScope};
 use super::types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
-    GroupId, GroupMember, GroupMembership, Page, Permission, ProtectedResource, ResolvedPermissions,
-    Role, RoleAssignment, RoleId, RoleSpec, RoleSubject, Scope, ScopeSpec, Subject, TraversalKind,
-    UpdateGroupRequest, UpdateRoleRequest, UserPermissionGrant,
+    GroupId, GroupMember, GroupMembership, Page, Permission, ProtectedResource,
+    ResolvedPermissions, Role, RoleAssignment, RoleId, RoleSpec, RoleSubject, Scope, ScopeSpec,
+    Subject, TraversalKind, UpdateGroupRequest, UpdateRoleRequest, UserPermissionGrant,
 };
 use super::RbacEngine;
 
@@ -989,10 +989,7 @@ impl RbacEngine for EmbeddedRbacEngine {
                 items.push(g);
             }
         }
-        Ok(Page {
-            items,
-            next_cursor,
-        })
+        Ok(Page { items, next_cursor })
     }
 
     fn add_group_member(
@@ -1204,10 +1201,7 @@ impl RbacEngine for EmbeddedRbacEngine {
                 items.push(subject);
             }
         }
-        Ok(Page {
-            items,
-            next_cursor,
-        })
+        Ok(Page { items, next_cursor })
     }
 
     // ---------- Bootstrap ----------
@@ -1346,10 +1340,11 @@ impl RbacEngine for EmbeddedRbacEngine {
     ) -> Result<(), RbacError> {
         for resource in resources {
             // Validate the resource URI.
-            let uri = Uri::try_from(resource.resource_uri.clone())
-                .map_err(|e| RbacError::Serialization {
+            let uri = Uri::try_from(resource.resource_uri.clone()).map_err(|e| {
+                RbacError::Serialization {
                     reason: format!("invalid resource URI '{}': {e}", resource.resource_uri),
-                })?;
+                }
+            })?;
             let hash = uri.storage_hash();
 
             for bundle in &resource.scopes {
@@ -1369,11 +1364,7 @@ impl RbacEngine for EmbeddedRbacEngine {
         Ok(())
     }
 
-    fn reconcile_groups(
-        &self,
-        realm_id: &RealmId,
-        groups: &[Group],
-    ) -> Result<(), RbacError> {
+    fn reconcile_groups(&self, realm_id: &RealmId, groups: &[Group]) -> Result<(), RbacError> {
         let now = self.clock.now();
         for group in groups {
             let slug = if group.slug.is_empty() {
@@ -1392,7 +1383,8 @@ impl RbacEngine for EmbeddedRbacEngine {
                             existing.description.clone_from(&group.description);
                             existing.updated_at = now;
                             let group_key = keys::encode_group(&existing.id);
-                            self.storage.put(realm_id, &group_key, &Self::ser(&existing)?)?;
+                            self.storage
+                                .put(realm_id, &group_key, &Self::ser(&existing)?)?;
                         }
                     }
                 }
@@ -1507,7 +1499,7 @@ mod tests {
     }
 
     #[test]
-     fn reserved_namespace_rejected_for_operator_role() {
+    fn reserved_namespace_rejected_for_operator_role() {
         // Per AUTHZ_EXPANSION.md the global namespace is `hearth.*` —
         // operator-created roles may not include it directly.
         let (engine, realm) = mk_engine();

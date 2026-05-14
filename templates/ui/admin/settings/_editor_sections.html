@@ -547,6 +547,41 @@
       </select>
       <p x-show="errors['auth.passkey_requires_mfa']" x-text="errors['auth.passkey_requires_mfa']" class="mt-1 text-xs text-danger-fg"></p>
     </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Passkey Required</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Require all users to register a passkey (blocks password-only login).</p>
+      <select @change="setVal('auth.webauthn_required', $el.value === 'true' ? true : $el.value === 'false' ? false : null)"
+              :class="(Object.keys(errors).length, fieldClass('auth.webauthn_required'))">
+        <option value="" :selected="getVal('auth.webauthn_required', null) === null">— not set —</option>
+        <option value="true" :selected="getVal('auth.webauthn_required', null) === true">Required</option>
+        <option value="false" :selected="getVal('auth.webauthn_required', null) === false">Optional</option>
+      </select>
+      <p x-show="errors['auth.webauthn_required']" x-text="errors['auth.webauthn_required']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Resident Key (residentKey)</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Controls whether passkeys are stored on the authenticator device (enables username-less login).</p>
+      <select @change="setVal('auth.webauthn_resident_key', $el.value || null)"
+              :class="(Object.keys(errors).length, fieldClass('auth.webauthn_resident_key'))">
+        <option value="" :selected="!getVal('auth.webauthn_resident_key', null)">— inherit default (preferred) —</option>
+        <option value="required" :selected="getVal('auth.webauthn_resident_key', null) === 'required'">Required</option>
+        <option value="preferred" :selected="getVal('auth.webauthn_resident_key', null) === 'preferred'">Preferred</option>
+        <option value="discouraged" :selected="getVal('auth.webauthn_resident_key', null) === 'discouraged'">Discouraged</option>
+      </select>
+      <p x-show="errors['auth.webauthn_resident_key']" x-text="errors['auth.webauthn_resident_key']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">User Verification (userVerification)</label>
+      <p class="mt-0.5 text-xs text-ht-content-muted">Controls whether biometric/PIN verification is required during authentication ceremonies.</p>
+      <select @change="setVal('auth.webauthn_user_verification', $el.value || null)"
+              :class="(Object.keys(errors).length, fieldClass('auth.webauthn_user_verification'))">
+        <option value="" :selected="!getVal('auth.webauthn_user_verification', null)">— inherit default (preferred) —</option>
+        <option value="required" :selected="getVal('auth.webauthn_user_verification', null) === 'required'">Required</option>
+        <option value="preferred" :selected="getVal('auth.webauthn_user_verification', null) === 'preferred'">Preferred</option>
+        <option value="discouraged" :selected="getVal('auth.webauthn_user_verification', null) === 'discouraged'">Discouraged</option>
+      </select>
+      <p x-show="errors['auth.webauthn_user_verification']" x-text="errors['auth.webauthn_user_verification']" class="mt-1 text-xs text-danger-fg"></p>
+    </div>
   </div>
 </div>
 
@@ -649,6 +684,38 @@
           <option value="" :selected="config.realms?.[activeRealm]?.auth?.passkey_requires_mfa == null">— inherit —</option>
           <option value="true" :selected="config.realms?.[activeRealm]?.auth?.passkey_requires_mfa === true">Enabled</option>
           <option value="false" :selected="config.realms?.[activeRealm]?.auth?.passkey_requires_mfa === false">Disabled</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Passkey Required</label>
+        <p class="mt-0.5 text-xs text-ht-content-muted">Require all users to have a passkey.</p>
+        <select @change="ensure('realms.' + activeRealm + '.auth'); config.realms[activeRealm].auth.webauthn_required = $el.value === 'true' ? true : $el.value === 'false' ? false : undefined"
+                class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+          <option value="" :selected="config.realms?.[activeRealm]?.auth?.webauthn_required == null">— inherit —</option>
+          <option value="true" :selected="config.realms?.[activeRealm]?.auth?.webauthn_required === true">Required</option>
+          <option value="false" :selected="config.realms?.[activeRealm]?.auth?.webauthn_required === false">Optional</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">Resident Key</label>
+        <p class="mt-0.5 text-xs text-ht-content-muted">Controls discoverable credential storage on the authenticator.</p>
+        <select @change="ensure('realms.' + activeRealm + '.auth'); config.realms[activeRealm].auth.webauthn_resident_key = $el.value || undefined"
+                class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+          <option value="" :selected="!config.realms?.[activeRealm]?.auth?.webauthn_resident_key">— inherit —</option>
+          <option value="required" :selected="config.realms?.[activeRealm]?.auth?.webauthn_resident_key === 'required'">Required</option>
+          <option value="preferred" :selected="config.realms?.[activeRealm]?.auth?.webauthn_resident_key === 'preferred'">Preferred</option>
+          <option value="discouraged" :selected="config.realms?.[activeRealm]?.auth?.webauthn_resident_key === 'discouraged'">Discouraged</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ht-content-secondary">User Verification</label>
+        <p class="mt-0.5 text-xs text-ht-content-muted">Controls biometric/PIN enforcement during ceremonies.</p>
+        <select @change="ensure('realms.' + activeRealm + '.auth'); config.realms[activeRealm].auth.webauthn_user_verification = $el.value || undefined"
+                class="mt-1.5 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-brand-ember focus:outline-none focus:ring-1 focus:ring-brand-ember">
+          <option value="" :selected="!config.realms?.[activeRealm]?.auth?.webauthn_user_verification">— inherit —</option>
+          <option value="required" :selected="config.realms?.[activeRealm]?.auth?.webauthn_user_verification === 'required'">Required</option>
+          <option value="preferred" :selected="config.realms?.[activeRealm]?.auth?.webauthn_user_verification === 'preferred'">Preferred</option>
+          <option value="discouraged" :selected="config.realms?.[activeRealm]?.auth?.webauthn_user_verification === 'discouraged'">Discouraged</option>
         </select>
       </div>
     </div>

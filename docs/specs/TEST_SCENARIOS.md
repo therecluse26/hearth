@@ -259,39 +259,39 @@ Covers `src/rbac/` — the claims-based RBAC engine. See [AUTHORIZATION.md](./AU
 
 #### Unit
 
-- [ ] Permission string grammar: valid strings accepted, invalid rejected (empty, uppercase, leading digit, delimiter chars, length > 128) `P0` `fast`
-- [ ] Role composition — transitive: `A → B → C` resolves all permissions from A, B, and C `P0` `fast`
-- [ ] Role composition — cycle rejected: `A → B → A` returns `CycleDetected` `P0` `fast`
-- [ ] Role composition — depth cap: 11-deep parent chain returns `DepthExceeded` `P0` `fast`
-- [ ] Group membership — transitive: user in nested groups resolves to all containing groups `P0` `fast`
-- [ ] Group membership — cycle rejected: `G1 ∈ G2 ∈ G1` returns `CycleDetected` `P0` `fast`
-- [ ] Group caps: depth > 10 or breadth > 1000 returns the corresponding error `P0` `fast`
+- [x] Permission string grammar: valid strings accepted, invalid rejected (empty, uppercase, leading digit, delimiter chars, length > 128) `P0` `fast` `tests/rbac_p0_scenarios.rs`
+- [x] Role composition — transitive: `A → B → C` resolves all permissions from A, B, and C `P0` `fast` `tests/rbac_engine.rs`
+- [x] Role composition — cycle rejected: `A → B → A` returns `CycleDetected` `P0` `fast` `tests/rbac_engine.rs`
+- [x] Role composition — depth cap: 11-deep parent chain returns `DepthExceeded` `P0` `fast` `tests/rbac_engine.rs`
+- [x] Group membership — transitive: user in nested groups resolves to all containing groups `P0` `fast` `tests/rbac_engine.rs`
+- [x] Group membership — cycle rejected: `G1 ∈ G2 ∈ G1` returns `CycleDetected` `P0` `fast` `tests/rbac_engine.rs`
+- [x] Group caps: depth > 10 or breadth > 1000 returns the corresponding error `P0` `fast` `tests/rbac_p0_scenarios.rs` (depth); `src/rbac/resolve.rs` inline unit (breadth)
 
 #### Integration
 
-- [ ] Create role → assign to user → resolve → permissions present `P0` `fast`
-- [ ] Create role chain A→B→C → resolve → all permissions present `P0` `fast`
-- [ ] Group-assigned role: add user to group, assign role to group, resolve → user gets role's permissions `P0` `fast`
-- [ ] Realm-scoped vs org-scoped assignment: token without `oid` excludes org-scoped permissions `P0` `fast`
-- [ ] Scope request narrows permissions: `scope=docs` intersects resolved set with `docs.*` mapping `P0` `fast`
+- [x] Create role → assign to user → resolve → permissions present `P0` `fast` `tests/rbac_engine.rs`
+- [x] Create role chain A→B→C → resolve → all permissions present `P0` `fast` `tests/rbac_engine.rs`
+- [x] Group-assigned role: add user to group, assign role to group, resolve → user gets role's permissions `P0` `fast` `tests/rbac_engine.rs`
+- [x] Realm-scoped vs org-scoped assignment: token without `oid` excludes org-scoped permissions `P0` `fast` `tests/rbac_engine.rs`
+- [x] Scope request narrows permissions: `scope=docs` intersects resolved set with `docs.*` mapping `P0` `fast` `tests/rbac_engine.rs`
 
 #### Property
 
-- [ ] Random role DAGs (no cycles) produce correct reachability results (`proptest`) `P0` `extended`
-- [ ] Random group graphs (no cycles) produce correct transitive membership (`proptest`) `P0` `extended`
-- [ ] Random assign / unassign sequences maintain invariants (no orphaned permissions, no duplicate assignments) `P0` `extended`
+- [x] Random role DAGs (no cycles) produce correct reachability results (`proptest`) `P0` `extended` `tests/rbac_property.rs`
+- [x] Random group graphs (no cycles) produce correct transitive membership (`proptest`) `P0` `extended` `tests/rbac_property.rs`
+- [x] Random assign / unassign sequences maintain invariants (no orphaned permissions, no duplicate assignments) `P0` `extended` `tests/rbac_property.rs`
 
 #### Adversarial
 
-- [ ] Invalid permission strings rejected at role creation (ungrammatical, reserved namespace abuse) `P0` `fast`
-- [ ] Cross-realm permission leak prevented: resolving in realm B ignores realm A roles and groups `P0` `fast`
-- [ ] Reserved namespace (`hearth.*`) refuses operator-defined role permissions `P0` `fast`
-- [ ] Token-size cap exceeded: issuance refused with structured error naming the violating bound `P0` `fast`
+- [x] Invalid permission strings rejected at role creation (ungrammatical, reserved namespace abuse) `P0` `fast` `tests/rbac_p0_scenarios.rs`
+- [x] Cross-realm permission leak prevented: resolving in realm B ignores realm A roles and groups `P0` `fast` `tests/rbac_cross_realm.rs`
+- [x] Reserved namespace (`hearth.*`) refuses operator-defined role permissions `P0` `fast` `tests/rbac_p0_scenarios.rs`
+- [x] Token-size cap exceeded: issuance refused with structured error naming the violating bound `P0` `fast` `tests/rbac_p0_scenarios.rs`
 
 #### Benchmark
 
-- [ ] `resolve_permissions` (off the hot path, at token issue): p50 < 100 μs, p99 < 1 ms for a typical user (5 roles, 10 groups) `P0` `standard`
-- [ ] JWT claim lookup (`hasPermission` on a decoded token): p99 < 1 μs (hashset `contains`) `P0` `standard`
+- [x] `resolve_permissions` (off the hot path, at token issue): p50 < 100 μs, p99 < 1 ms for a typical user (5 roles, 10 groups) `P0` `standard`
+- [x] JWT claim lookup (`hasPermission` on a decoded token): p99 < 1 μs (hashset `contains`) `P0` `standard`
 
 ---
 

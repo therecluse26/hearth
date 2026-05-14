@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Integration tests for realm reconciliation.
 //!
 //! Tests the `reconcile_realms()` function which syncs YAML-declared
@@ -252,4 +253,78 @@ async fn idempotent_reconciliation() {
     assert!(report2.updated.is_empty(), "no updates on second run");
     assert!(report2.archived.is_empty(), "no archives on second run");
     assert!(report2.unarchived.is_empty(), "no unarchives on second run");
+}
+
+#[tokio::test]
+async fn reconcile_federation_wires_claim_mappings_to_idp() {
+    use hearth::config::{FederationProviderYaml, FederationYamlConfig};
+
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let mut claim_mappings = std::collections::BTreeMap::new();
+    claim_mappings.insert("email".to_string(), "upn".to_string());
+    claim_mappings.insert("name".to_string(), "displayName".to_string());
+
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(
+        "entra".to_string(),
+        FederationProviderYaml {
+            kind: "oidc".to_string(),
+            display_name: Some("Microsoft Entra".to_string()),
+            issuer: Some("https://login.microsoftonline.com/tenant-id/v2.0".to_string()),
+            authorization_endpoint: Some(
+                "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/authorize".to_string(),
+            ),
+            token_endpoint: Some(
+                "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token".to_string(),
+            ),
+            userinfo_endpoint: None,
+            jwks_uri: Some(
+                "https://login.microsoftonline.com/tenant-id/discovery/v2.0/keys".to_string(),
+            ),
+            client_id: Some("app-id".to_string()),
+            client_secret: Some("app-secret".to_string()),
+            scopes: None,
+            claim_mappings: Some(claim_mappings.clone()),
+            entity_id: None,
+            sso_url: None,
+            slo_url: None,
+            idp_certificate_pem: None,
+            sign_authn_requests: None,
+            want_assertions_signed: None,
+            attribute_map: None,
+        },
+    );
+
+    let mut realms = HashMap::new();
+    realms.insert(
+        "corp".to_string(),
+        RealmYamlConfig {
+            federation: Some(FederationYamlConfig {
+                providers,
+                link_existing_accounts: None,
+            }),
+            ..RealmYamlConfig::default()
+        },
+    );
+
+    let config = config_with_realms(Some(realms));
+    reconcile_realms(identity, harness.authz(), &config).expect("reconcile");
+
+    let realm = identity
+        .get_realm_by_name("corp")
+        .expect("lookup realm")
+        .expect("corp realm exists");
+    let idps = identity.list_idps(realm.id()).expect("list idps");
+    let entra = idps.iter().find(|c| c.name == "entra").expect("entra idp");
+
+    assert_eq!(
+        entra.claim_mappings.get("email").map(String::as_str),
+        Some("upn")
+    );
+    assert_eq!(
+        entra.claim_mappings.get("name").map(String::as_str),
+        Some("displayName")
+    );
 }

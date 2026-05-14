@@ -56,7 +56,10 @@ async fn setup() -> (
                 client_name: "Resource Aud App".to_string(),
                 redirect_uris: vec!["https://example.com/callback".to_string()],
                 client_secret: None,
-                grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
+                grant_types: vec![
+                    "authorization_code".to_string(),
+                    "refresh_token".to_string(),
+                ],
                 require_consent: true,
                 client_logo_url: None,
                 ..Default::default()
@@ -113,12 +116,17 @@ async fn resource_aud_preserved_through_refresh() {
     let (harness, realm_id, user_id, client) = setup().await;
 
     // 1. Authorize with a resource indicator → get tokens
-    let tokens =
-        authorize_and_exchange(&harness, &realm_id, &user_id, &client, Some("https://api.example.com"));
+    let tokens = authorize_and_exchange(
+        &harness,
+        &realm_id,
+        &user_id,
+        &client,
+        Some("https://api.example.com"),
+    );
 
     // 2. Assert access token has Multi audience [hearth, https://api.example.com]
-    let access_claims = decode_claims_unverified(tokens.access_token())
-        .expect("decode access token");
+    let access_claims =
+        decode_claims_unverified(tokens.access_token()).expect("decode access token");
     assert!(
         matches!(&access_claims.aud, Audience::Multi(list) if list.len() == 2),
         "initial access token aud should be Multi with 2 entries, got {:?}",
@@ -161,8 +169,8 @@ async fn no_resource_produces_single_audience() {
     let tokens = authorize_and_exchange(&harness, &realm_id, &user_id, &client, None);
 
     // Assert access token has Single audience
-    let access_claims = decode_claims_unverified(tokens.access_token())
-        .expect("decode access token");
+    let access_claims =
+        decode_claims_unverified(tokens.access_token()).expect("decode access token");
     assert!(
         matches!(&access_claims.aud, Audience::Single(s) if s == "hearth"),
         "no-resource access token aud should be Single, got {:?}",

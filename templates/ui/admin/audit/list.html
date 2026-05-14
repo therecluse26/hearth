@@ -59,7 +59,7 @@
       </div>
     </div>
   </form>
-  <div class="mt-3 border-t border-divider-faint pt-3">
+  <div class="mt-3 flex items-center gap-3 border-t border-divider-faint pt-3">
     <form method="post" action="/ui/admin/realms/{{ realm_name }}/audit/verify" class="inline">
       {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
       <button type="submit"
@@ -67,6 +67,10 @@
         Verify integrity
       </button>
     </form>
+    <a href="/ui/admin/realms/{{ realm_name }}/audit/export?actor={{ form_actor }}&action={{ form_action }}&start_date={{ form_start_date }}&end_date={{ form_end_date }}&limit={{ form_limit }}"
+       class="rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+      Export JSON
+    </a>
   </div>
 </div>
 

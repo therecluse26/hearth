@@ -471,6 +471,14 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(handlers::mfa_challenge_form).post(handlers::mfa_challenge_submit),
         )
         .route(
+            "/mfa-enroll-required",
+            axum::routing::get(handlers::mfa_enroll_required_form),
+        )
+        .route(
+            "/mfa-enroll-required/activate",
+            axum::routing::post(handlers::mfa_enroll_required_submit),
+        )
+        .route(
             "/forgot-password",
             axum::routing::get(handlers::forgot_password_form)
                 .post(handlers::forgot_password_submit),
@@ -585,6 +593,14 @@ pub fn router(state: WebState) -> Router {
             axum::routing::post(account::totp_disable),
         )
         .route(
+            "/account/totp/recovery-codes.txt",
+            axum::routing::get(account::totp_download_recovery_codes),
+        )
+        .route(
+            "/account/totp/regenerate-codes",
+            axum::routing::post(account::totp_regenerate_codes),
+        )
+        .route(
             "/account/passkeys/register-begin",
             axum::routing::get(account::passkey_register_begin),
         )
@@ -595,6 +611,10 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/account/passkeys/{cred_id}/delete",
             axum::routing::post(account::passkey_delete),
+        )
+        .route(
+            "/account/passkeys/{cred_id}/rename",
+            axum::routing::post(account::passkey_rename),
         )
         .route(
             "/account/sessions",
@@ -685,6 +705,10 @@ pub fn router(state: WebState) -> Router {
             "/realms/{realm}/saml/sso/init",
             axum::routing::get(saml::idp_sso_init),
         )
+        .route(
+            "/realms/{realm}/saml/slo-idp",
+            axum::routing::get(saml::idp_slo_get).post(saml::idp_slo_post),
+        )
         // --- Browser-facing OAuth authorize + consent flow ---
         .route(
             "/oauth/authorize",
@@ -743,6 +767,10 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/realms/{realm}/users/{id}/disable-mfa",
             axum::routing::post(admin::admin_user_disable_mfa),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{id}/reset-mfa-codes",
+            axum::routing::post(admin::admin_user_reset_mfa_codes),
         )
         .route(
             "/admin/realms/{realm}/users/{id}/sessions/{sid}/revoke",
@@ -831,6 +859,22 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/realms/{realm}/rbac/roles",
             axum::routing::get(admin::admin_rbac_roles),
+        )
+        .route(
+            "/admin/realms/{realm}/rbac/roles/new",
+            axum::routing::get(admin::admin_role_create_form).post(admin::admin_role_create_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/rbac/roles/{id}",
+            axum::routing::get(admin::admin_role_detail),
+        )
+        .route(
+            "/admin/realms/{realm}/rbac/roles/{id}/edit",
+            axum::routing::get(admin::admin_role_edit_form).post(admin::admin_role_edit_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/rbac/roles/{id}/delete",
+            axum::routing::post(admin::admin_role_delete),
         )
         .route(
             "/admin/realms/{realm}/rbac/scopes",
@@ -970,14 +1014,26 @@ pub fn router(state: WebState) -> Router {
             "/admin/api/nav/realms",
             axum::routing::get(admin::admin_api_nav_realms),
         )
-        // --- Realm-scoped: applications (read-only) ---
+        // --- Realm-scoped: applications ---
         .route(
             "/admin/realms/{realm}/applications",
             axum::routing::get(admin::admin_apps_list),
         )
         .route(
+            "/admin/realms/{realm}/applications/new",
+            axum::routing::get(admin::admin_app_create_form).post(admin::admin_app_create_submit),
+        )
+        .route(
             "/admin/realms/{realm}/applications/{id}",
             axum::routing::get(admin::admin_app_detail),
+        )
+        .route(
+            "/admin/realms/{realm}/applications/{id}/edit",
+            axum::routing::get(admin::admin_app_edit_form).post(admin::admin_app_edit_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/applications/{id}/delete",
+            axum::routing::post(admin::admin_app_delete),
         )
         .route(
             "/admin/realms/{realm}/applications/{id}/regenerate-secret",
@@ -1000,6 +1056,14 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/realms/{realm}/audit/verify",
             axum::routing::post(admin::admin_audit_verify_integrity),
+        )
+        .route(
+            "/admin/realms/{realm}/audit/export",
+            axum::routing::get(admin::admin_audit_export),
+        )
+        .route(
+            "/admin/api/realms/{realm}/audit/events",
+            axum::routing::get(admin::admin_api_audit_events),
         )
         .route(
             "/admin/settings",

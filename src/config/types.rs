@@ -5,6 +5,7 @@
 //! means partial YAML files work seamlessly.
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 use crate::identity::claims_config::ClaimMapping;
@@ -211,6 +212,84 @@ impl Default for StorageSection {
     }
 }
 
+/// Metrics endpoint configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MetricsConfig {
+    /// Whether to expose the Prometheus `/metrics` HTTP endpoint.
+    ///
+    /// Set to `false` to disable the endpoint (e.g., when metrics are
+    /// collected via a sidecar instead of a direct scrape).
+    #[serde(default = "MetricsConfig::default_enabled")]
+    pub enabled: bool,
+}
+
+impl MetricsConfig {
+    const fn default_enabled() -> bool {
+        true
+    }
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+        }
+    }
+}
+
+/// OTLP transport protocol.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OtlpProtocol {
+    /// gRPC transport (default, port 4317).
+    #[default]
+    Grpc,
+    /// HTTP/protobuf transport (port 4318).
+    Http,
+}
+
+/// OpenTelemetry OTLP export configuration.
+///
+/// When present under `observability.otlp`, Hearth ships spans to the
+/// configured collector endpoint via gRPC or HTTP.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OtlpConfig {
+    /// Collector endpoint URL.
+    ///
+    /// Defaults to `http://localhost:4317` for gRPC and
+    /// `http://localhost:4318` for HTTP when omitted.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Transport protocol: `grpc` (default) or `http`.
+    #[serde(default)]
+    pub protocol: OtlpProtocol,
+    /// Additional request headers forwarded to the collector.
+    ///
+    /// Useful for authentication tokens required by managed collectors.
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+    /// `service.name` resource attribute reported in every span.
+    #[serde(default = "OtlpConfig::default_service_name")]
+    pub service_name: String,
+}
+
+impl OtlpConfig {
+    fn default_service_name() -> String {
+        "hearth".to_string()
+    }
+
+    /// Effective endpoint URL, substituting the protocol-specific default.
+    pub fn effective_endpoint(&self) -> String {
+        if let Some(ep) = &self.endpoint {
+            return ep.clone();
+        }
+        match self.protocol {
+            OtlpProtocol::Grpc => "http://localhost:4317".to_string(),
+            OtlpProtocol::Http => "http://localhost:4318".to_string(),
+        }
+    }
+}
+
 /// Observability (logging and tracing) configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ObservabilityConfig {
@@ -220,6 +299,9 @@ pub struct ObservabilityConfig {
     /// Log output format: "text" or "json".
     #[serde(default = "ObservabilityConfig::default_log_format")]
     pub log_format: String,
+    /// Optional OTLP export. When absent, no spans are exported.
+    #[serde(default)]
+    pub otlp: Option<OtlpConfig>,
 }
 
 impl ObservabilityConfig {
@@ -244,6 +326,7 @@ impl Default for ObservabilityConfig {
         Self {
             log_level: Self::default_log_level(),
             log_format: Self::default_log_format(),
+            otlp: None,
         }
     }
 }
@@ -530,8 +613,8 @@ pub struct OnboardingConfig {
     #[serde(default = "OnboardingConfig::default_enabled")]
     pub enabled: bool,
     /// Public base URL used in verification-email links (e.g.
-    /// `https://auth.example.com`). Falls back to the request `Host`
-    /// header when `None`.
+    /// `https://auth.example.com`). When `None`, link generation falls
+    /// back to `http://localhost`.
     #[serde(default)]
     pub base_url: Option<String>,
     /// Email address to send the first-run setup URL to on startup.
@@ -763,6 +846,18 @@ pub struct PasswordPolicyYaml {
     /// Require at least one special character.
     #[serde(default)]
     pub require_special: Option<bool>,
+    /// Password must not contain or equal the user's display name.
+    #[serde(default)]
+    pub not_username: Option<bool>,
+    /// Password must not contain or equal the user's email address.
+    #[serde(default)]
+    pub not_email: Option<bool>,
+    /// Number of previous passwords to remember; reuse is rejected.
+    #[serde(default)]
+    pub history_depth: Option<usize>,
+    /// Maximum password age in days before the user must reset.
+    #[serde(default)]
+    pub max_age_days: Option<u32>,
 }
 
 /// Per-realm token TTL overrides in YAML.
@@ -774,6 +869,10 @@ pub struct RealmTokenYaml {
     /// Refresh token TTL as a duration string (e.g. `"7d"`).
     #[serde(default)]
     pub refresh_token_ttl: Option<String>,
+    /// Password reset token TTL as a duration string (e.g. `"30m"`).
+    /// Defaults to 30 minutes when absent.
+    #[serde(default)]
+    pub password_reset_token_ttl: Option<String>,
 }
 
 /// Per-realm rate limit overrides in YAML.
@@ -956,6 +1055,9 @@ pub struct RealmYamlConfig {
     /// Per-realm auth policy overrides (MFA, password policy, rate limits, token TTLs).
     #[serde(default)]
     pub auth: Option<RealmAuthYaml>,
+    /// SCIM 2.0 provisioning settings for this realm.
+    #[serde(default)]
+    pub scim: Option<RealmScimYaml>,
     /// Declarative OAuth 2.0 application (client) definitions.
     /// Reconciled with storage at startup.
     #[serde(default)]
@@ -994,6 +1096,17 @@ pub struct RealmYamlConfig {
     /// Optional groups declared for this realm.
     #[serde(default)]
     pub groups: Option<Vec<GroupYamlConfig>>,
+}
+
+/// YAML for `realms.{name}.scim.*`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RealmScimYaml {
+    /// Static bearer token accepted by `/scim/v2/*` for this realm.
+    ///
+    /// Supports `${ENV_VAR}` substitution. The plaintext token is hashed
+    /// before it is persisted into the runtime realm config.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
 }
 
 /// YAML for a single SAML SP registration (Hearth as IdP issues to this SP).
@@ -1098,6 +1211,15 @@ pub struct FederationProviderYaml {
     /// Scopes override. Default is the preset's or `["openid","email","profile"]`.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    /// Per-claim renames for OIDC/OAuth2 connectors: maps a Hearth field
+    /// name (e.g. `"email"`, `"name"`) to the upstream claim name the IdP
+    /// actually sends (e.g. `"upn"`, `"preferred_username"`).
+    ///
+    /// Used for IdPs that don't follow the standard OIDC claim names, such
+    /// as Azure AD (`"email": "upn"`) or custom Okta apps.
+    /// Ignored for `type: saml` (use `attribute_map` instead).
+    #[serde(default)]
+    pub claim_mappings: Option<std::collections::BTreeMap<String, String>>,
 
     // --- SAML-specific fields (when `type: saml`) ---
     /// SAML IdP entity ID (SAML issuer).
@@ -1121,6 +1243,32 @@ pub struct FederationProviderYaml {
     /// Attribute mapping: Hearth field → SAML attribute URI.
     #[serde(default)]
     pub attribute_map: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl FederationProviderYaml {
+    /// Returns a blank OIDC provider config with all optional fields unset.
+    pub fn default_oidc() -> Self {
+        Self {
+            kind: "oidc".to_string(),
+            display_name: None,
+            issuer: None,
+            authorization_endpoint: None,
+            token_endpoint: None,
+            userinfo_endpoint: None,
+            jwks_uri: None,
+            client_id: None,
+            client_secret: None,
+            scopes: None,
+            claim_mappings: None,
+            entity_id: None,
+            sso_url: None,
+            slo_url: None,
+            idp_certificate_pem: None,
+            sign_authn_requests: None,
+            want_assertions_signed: None,
+            attribute_map: None,
+        }
+    }
 }
 
 /// Parses a human-readable duration string into microseconds.
@@ -1157,6 +1305,13 @@ pub fn parse_duration_to_micros(s: &str) -> Result<i64, String> {
         .map_err(|e| format!("invalid duration number '{num_str}': {e}"))?;
 
     Ok(value * multiplier)
+}
+
+fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl RealmYamlConfig {
@@ -1197,6 +1352,13 @@ impl RealmYamlConfig {
 
         // Map auth policy fields from the YAML `auth:` block (if present).
         let auth = self.auth.as_ref();
+        let scim_bearer_token_hash = self
+            .scim
+            .as_ref()
+            .and_then(|s| s.bearer_token.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(sha256_hex);
 
         let mfa_required = auth.and_then(|a| a.mfa_required).or(global.mfa_required);
         let mfa_methods = auth.and_then(|a| a.mfa_methods.clone());
@@ -1211,6 +1373,10 @@ impl RealmYamlConfig {
                 require_uppercase: pp.require_uppercase,
                 require_number: pp.require_number,
                 require_special: pp.require_special,
+                not_username: pp.not_username,
+                not_email: pp.not_email,
+                history_depth: pp.history_depth,
+                max_age_days: pp.max_age_days,
             }
         });
 
@@ -1222,6 +1388,11 @@ impl RealmYamlConfig {
         let refresh_token_ttl_micros = auth
             .and_then(|a| a.token.as_ref())
             .and_then(|t| t.refresh_token_ttl.as_deref())
+            .and_then(|s| parse_duration_to_micros(s).ok());
+
+        let password_reset_token_ttl_micros = auth
+            .and_then(|a| a.token.as_ref())
+            .and_then(|t| t.password_reset_token_ttl.as_deref())
             .and_then(|s| parse_duration_to_micros(s).ok());
 
         let max_failed_logins = auth
@@ -1473,9 +1644,13 @@ impl RealmYamlConfig {
             password_policy,
             access_token_ttl_micros,
             refresh_token_ttl_micros,
+            password_reset_token_ttl_micros,
             max_failed_logins,
             lockout_duration_micros,
             passkey_requires_mfa,
+            webauthn_required: None,
+            webauthn_resident_key: None,
+            webauthn_user_verification: None,
             registration_policy,
             dcr_policy,
             // Realm-level federation link mode. `None` → `Confirm`
@@ -1492,6 +1667,14 @@ impl RealmYamlConfig {
             protected_resources,
             claim_profile,
             groups,
+            scim_bearer_token_hash,
+            // Per-realm logo and primary color are managed via the admin API,
+            // not via hearth.yaml, so they default to None here.
+            logo_url: None,
+            primary_color: None,
+            // Email template overrides are managed via the admin API, not
+            // via hearth.yaml; start empty and let the API populate them.
+            email_templates: std::collections::HashMap::new(),
         })
     }
 }
@@ -1582,6 +1765,23 @@ mod tests {
             .to_realm_config(&AuthConfig::default(), None)
             .expect("to_realm_config");
         assert!(cfg.web_theme_name.is_none());
+    }
+
+    #[test]
+    fn to_realm_config_hashes_scim_bearer_token() {
+        let yaml = RealmYamlConfig {
+            scim: Some(RealmScimYaml {
+                bearer_token: Some("scim-secret-token".to_string()),
+            }),
+            ..RealmYamlConfig::default()
+        };
+        let cfg = yaml
+            .to_realm_config(&AuthConfig::default(), None)
+            .expect("to_realm_config");
+        assert_eq!(
+            cfg.scim_bearer_token_hash.as_deref(),
+            Some("31c5b57bb0a5e7b9a064b0d08eaa2a74d532e36a261d02510120e45466187272")
+        );
     }
 
     #[test]

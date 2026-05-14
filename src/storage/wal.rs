@@ -34,10 +34,9 @@
 use crate::core::{RealmId, Timestamp};
 use crate::storage::encryption::{
     self, counter_nonce, DataEncryptionKey, EncryptionHeader, KekId, ENCRYPTION_HEADER_SIZE,
-    KEK_ID_SIZE,
 };
 use crate::storage::error::StorageError;
-use crate::storage::fs::{Fs, FsFile, RealFs};
+use crate::storage::fs::{Fs, FsFile};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -716,6 +715,8 @@ impl std::fmt::Debug for Wal {
 mod tests {
     use super::*;
     use crate::core::RealmId;
+    use crate::storage::encryption::KEK_ID_SIZE;
+    use crate::storage::fs::RealFs;
     use proptest::prelude::*;
     use std::io::Write;
 
@@ -971,12 +972,14 @@ mod tests {
 
             // Skip record 0
             if pos + 4 <= data.len() {
-                let len0 = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+                let len0 = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4-byte slice"))
+                    as usize;
                 pos += 4 + len0 + 4;
             }
             // Now at record 1: flip byte in the GCM tag region (last 16 bytes of ciphertext)
             if pos + 4 <= data.len() {
-                let len1 = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+                let len1 = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4-byte slice"))
+                    as usize;
                 // CRC is at pos + 4 + len1..pos + 4 + len1 + 4
                 // GCM tag is the last 16 bytes of the ciphertext (at pos+4+len1-16..pos+4+len1)
                 let tag_pos = pos + 4 + len1 - 1; // last byte of tag

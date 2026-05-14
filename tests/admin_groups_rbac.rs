@@ -36,7 +36,7 @@ async fn ctx() -> Ctx {
                 display_name: "A".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("user");

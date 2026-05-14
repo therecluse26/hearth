@@ -239,9 +239,9 @@ fn extract_signature_fields(
     let sig_bytes = &element_bytes[sig_range.0..sig_range.1];
 
     // Find SignedInfo.
-    let si_range = find_element_range(sig_bytes, ns::DS, "SignedInfo", None)?
+    let signed_info_range = find_element_range(sig_bytes, ns::DS, "SignedInfo", None)?
         .ok_or(IdentityError::SamlSignature)?;
-    let signed_info = sig_bytes[si_range.0..si_range.1].to_vec();
+    let signed_info = sig_bytes[signed_info_range.0..signed_info_range.1].to_vec();
 
     // Extract <ds:SignatureValue>…</ds:SignatureValue> textual content.
     let sv = extract_text_element(sig_bytes, "SignatureValue")?;
@@ -457,7 +457,10 @@ mod tests {
         let payload = br#"<Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="a1">hello</Assertion>"#;
         let mut signed = sign_element(payload, "a1", &key).expect("sign");
         // Tamper with the element content.
-        let idx = signed.windows(5).position(|w| w == b"hello").unwrap();
+        let idx = signed
+            .windows(5)
+            .position(|w| w == b"hello")
+            .expect("hello bytes present");
         signed[idx] = b'H';
         let result = verify_signed_element(&signed, "Assertion", &cert_pem);
         assert!(matches!(result, Err(IdentityError::SamlSignature)));
@@ -467,7 +470,7 @@ mod tests {
         let b64 = B64.encode(der);
         let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
         for chunk in b64.as_bytes().chunks(64) {
-            out.push_str(std::str::from_utf8(chunk).unwrap());
+            out.push_str(std::str::from_utf8(chunk).expect("base64 is valid utf8"));
             out.push('\n');
         }
         out.push_str("-----END CERTIFICATE-----\n");

@@ -17,10 +17,12 @@ pub mod http;
 mod log;
 pub mod mailgun;
 mod mailtrap;
+pub(crate) mod placeholder;
 mod postmark;
 mod sendgrid;
 pub(crate) mod service;
 mod smtp;
+pub(crate) mod stored_templates;
 pub(crate) mod templates;
 
 use std::fmt;
@@ -37,6 +39,10 @@ pub use self::sendgrid::SendgridEmailSender;
 pub use self::service::EmailService;
 pub use self::smtp::{smtp_sender_from_config, SmtpEmailSender};
 pub use branding::EmailBranding;
+pub use placeholder::{
+    allowed_placeholders, render as render_email_template, validate as validate_email_template,
+};
+pub use stored_templates::{EmailTemplateBody, LocalizedEmailTemplate};
 
 /// Errors returned from an email send attempt.
 #[derive(Debug)]

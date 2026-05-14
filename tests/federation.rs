@@ -1,6 +1,7 @@
-//! Integration tests for external IdP federation (gap #5).
+#![allow(clippy::unwrap_used)]
+//! Integration tests for external `IdP` federation (gap #5).
 //!
-//! Covers the engine-level federation surface end-to-end: IdP
+//! Covers the engine-level federation surface end-to-end: `IdP`
 //! registration, state persistence/consumption, JIT link, account
 //! linking under all three [`LinkMode`]s, and cascade cleanup on user
 //! / realm / connector deletion.
@@ -18,7 +19,7 @@ use hearth::core::{IdpId, Timestamp};
 use hearth::identity::federation::{
     ConfirmLinkTicket, ExternalIdentity, FederationSecret, IdpConfig, IdpKind, LinkMode, StateBag,
 };
-use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityEngine, IdentityError};
+use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityError};
 
 use common::TestHarness;
 
@@ -176,7 +177,7 @@ async fn link_external_identity_roundtrip() {
                 display_name: "Alice".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -217,7 +218,7 @@ async fn link_refuses_to_rehome_to_different_user() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -230,7 +231,7 @@ async fn link_refuses_to_rehome_to_different_user() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -263,7 +264,7 @@ async fn unlink_is_idempotent_second_call_errors() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -304,7 +305,7 @@ async fn delete_user_cascades_both_federation_indexes() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -338,7 +339,7 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -351,7 +352,7 @@ async fn delete_idp_severs_all_links_but_leaves_users_intact() {
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -395,7 +396,7 @@ async fn confirm_link_ticket_is_single_use() {
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .unwrap();
@@ -434,4 +435,165 @@ async fn link_mode_default_is_confirm_when_unset() {
     // an unset `federation_link_mode` means `Confirm`, so the safe
     // default applies without any config.
     assert_eq!(LinkMode::default(), LinkMode::Confirm);
+}
+
+// ===== Federation edge cases =====
+
+#[tokio::test]
+async fn claim_mappings_in_idp_config_are_stored_and_retrieved() {
+    let h = TestHarness::embedded().await.expect("harness");
+    let realm = setup_realm(&h).await;
+    let idp_id = IdpId::generate();
+
+    // Azure AD-style config: upstream sends `upn` and `displayName`
+    // instead of the standard OIDC `email` and `name` claims.
+    let mut cfg = oidc_config(&realm, &idp_id, "azure-ad");
+    cfg.claim_mappings
+        .insert("email".to_string(), "upn".to_string());
+    cfg.claim_mappings
+        .insert("name".to_string(), "displayName".to_string());
+
+    h.identity().register_idp(&cfg).unwrap();
+
+    let retrieved = h
+        .identity()
+        .get_idp(&realm, &idp_id)
+        .unwrap()
+        .expect("idp must exist after registration");
+
+    assert_eq!(
+        retrieved.claim_mappings.get("email").map(String::as_str),
+        Some("upn"),
+        "email→upn mapping must survive storage round-trip"
+    );
+    assert_eq!(
+        retrieved.claim_mappings.get("name").map(String::as_str),
+        Some("displayName"),
+        "name→displayName mapping must survive storage round-trip"
+    );
+    assert_eq!(
+        retrieved.claim_mappings.len(),
+        2,
+        "no extra mappings should appear"
+    );
+}
+
+#[tokio::test]
+async fn two_oidc_providers_same_realm_links_are_isolated() {
+    let h = TestHarness::embedded().await.expect("harness");
+    let realm = setup_realm(&h).await;
+
+    let idp1 = IdpId::generate();
+    let idp2 = IdpId::generate();
+    h.identity()
+        .register_idp(&oidc_config(&realm, &idp1, "google"))
+        .unwrap();
+    h.identity()
+        .register_idp(&oidc_config(&realm, &idp2, "microsoft"))
+        .unwrap();
+
+    // Both IdPs are visible under the realm.
+    let listed = h.identity().list_idps(&realm).unwrap();
+    assert_eq!(listed.len(), 2);
+
+    let alice = h
+        .identity()
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: "alice@example.com".to_string(),
+                display_name: "Alice".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .unwrap();
+    let bob = h
+        .identity()
+        .create_user(
+            &realm,
+            &CreateUserRequest {
+                email: "bob@example.com".to_string(),
+                display_name: "Bob".to_string(),
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            },
+        )
+        .unwrap();
+
+    // The same external subject identifier can be used independently at
+    // each IdP — "user-99" at Google and "user-99" at Microsoft are
+    // unrelated identities.
+    h.identity()
+        .link_external_identity(&realm, alice.id(), &idp1, "user-99")
+        .unwrap();
+    h.identity()
+        .link_external_identity(&realm, bob.id(), &idp2, "user-99")
+        .unwrap();
+
+    let found_idp1 = h
+        .identity()
+        .find_user_by_external_identity(&realm, &idp1, "user-99")
+        .unwrap();
+    assert_eq!(found_idp1, Some(alice.id().clone()), "idp1 link → alice");
+
+    let found_idp2 = h
+        .identity()
+        .find_user_by_external_identity(&realm, &idp2, "user-99")
+        .unwrap();
+    assert_eq!(found_idp2, Some(bob.id().clone()), "idp2 link → bob");
+}
+
+#[test]
+fn unverified_or_missing_email_identity_is_not_linkable_by_email() {
+    let base = ExternalIdentity {
+        idp_id: IdpId::generate(),
+        external_sub: "sub-1".to_string(),
+        email: "alice@example.com".to_string(),
+        email_verified: true,
+        display_name: "Alice".to_string(),
+        first_name: String::new(),
+        last_name: String::new(),
+        picture_url: None,
+    };
+
+    // Verified email → linkable.
+    assert!(
+        base.is_linkable_by_email(),
+        "verified email must be linkable"
+    );
+
+    // Unverified email → not linkable (prevents IdP-impersonation account hijack).
+    let unverified = ExternalIdentity {
+        email_verified: false,
+        ..base.clone()
+    };
+    assert!(
+        !unverified.is_linkable_by_email(),
+        "unverified email must block auto-linking to prevent account hijack"
+    );
+
+    // Empty email (e.g. GitHub with private email setting) → not linkable.
+    let no_email = ExternalIdentity {
+        email: String::new(),
+        email_verified: false,
+        ..base.clone()
+    };
+    assert!(
+        !no_email.is_linkable_by_email(),
+        "empty email must never be used for auto-linking"
+    );
+
+    // Empty email even if somehow marked verified → not linkable.
+    let empty_verified = ExternalIdentity {
+        email: String::new(),
+        email_verified: true,
+        ..base
+    };
+    assert!(
+        !empty_verified.is_linkable_by_email(),
+        "empty email string must not be treated as a valid link target"
+    );
 }

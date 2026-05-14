@@ -9,7 +9,7 @@ mod common;
 use hearth::core::RealmId;
 use hearth::identity::{
     AuthenticationOptions, CompleteAuthenticationParams, CreateRealmRequest, CreateUserRequest,
-    RegistrationOptions, User,
+    IdentityError, RegistrationOptions, User,
 };
 
 /// Helper: creates a real realm with a signing key.
@@ -35,7 +35,7 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
                 display_name: "WebAuthn Test User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user")
@@ -62,6 +62,32 @@ mod webauthn_helper {
         key_pair_pkcs8: Vec<u8>,
         pub credential_id: Vec<u8>,
         rp_id: String,
+    }
+
+    /// Builds authenticator data (37 bytes) with a custom RP ID and no attested credential.
+    ///
+    /// Used for RP-ID mismatch adversarial tests where the authenticator data
+    /// must claim a different RP than the server expects.
+    pub fn auth_data_for_rp(rp_id: &str, sign_count: u32) -> Vec<u8> {
+        let rp_id_hash = ring::digest::digest(&ring::digest::SHA256, rp_id.as_bytes());
+        let mut data = Vec::new();
+        data.extend_from_slice(rp_id_hash.as_ref()); // 32-byte RP ID hash
+        data.push(0x01); // UP flag set, no AT flag
+        data.extend_from_slice(&sign_count.to_be_bytes()); // 4-byte counter
+        data
+    }
+
+    /// Builds a `webauthn.get` clientDataJSON without signing anything.
+    ///
+    /// Used to construct tampered CDJ payloads independently of the authenticator.
+    pub fn get_client_data_json(challenge: &[u8], origin: &str) -> Vec<u8> {
+        let challenge_b64 = URL_SAFE_NO_PAD.encode(challenge);
+        serde_json::to_vec(&serde_json::json!({
+            "type": "webauthn.get",
+            "challenge": challenge_b64,
+            "origin": origin,
+        }))
+        .expect("serialize clientDataJSON")
     }
 
     impl TestAuthenticator {
@@ -445,4 +471,393 @@ async fn webauthn_credential_management() {
         .expect("auth with key2");
 
     assert_eq!(result.user_id(), user.id());
+}
+
+// ===== Scenario D3: Credential naming and rename =====
+//
+// register → list (name=None) → rename → list (name=Some("...")) →
+// rename to empty → list (name=None) → rename unknown cred → NotFound
+
+#[tokio::test]
+async fn webauthn_credential_naming() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    let origin = "https://example.com";
+
+    let auth = webauthn_helper::TestAuthenticator::new("example.com");
+
+    // Register
+    let challenge = harness
+        .identity()
+        .start_webauthn_registration(
+            &realm,
+            user.id(),
+            &RegistrationOptions {
+                rp_id: "example.com".to_string(),
+                discoverable: false,
+            },
+        )
+        .expect("start registration");
+
+    let (cdj, att) = auth.build_registration_response(&challenge, origin);
+    let cred = harness
+        .identity()
+        .complete_webauthn_registration(&realm, user.id(), &cdj, &att, origin, false)
+        .expect("complete registration");
+
+    // Name is None after registration
+    let creds = harness
+        .identity()
+        .list_webauthn_credentials(&realm, user.id())
+        .expect("list");
+    assert_eq!(creds.len(), 1);
+    assert_eq!(creds[0].name(), None, "name should start as None");
+
+    // Rename
+    harness
+        .identity()
+        .rename_webauthn_credential(&realm, user.id(), cred.credential_id(), "MacBook Touch ID")
+        .expect("rename");
+
+    let creds = harness
+        .identity()
+        .list_webauthn_credentials(&realm, user.id())
+        .expect("list after rename");
+    assert_eq!(creds[0].name(), Some("MacBook Touch ID"));
+
+    // Rename to empty string clears the name
+    harness
+        .identity()
+        .rename_webauthn_credential(&realm, user.id(), cred.credential_id(), "   ")
+        .expect("rename to blank");
+
+    let creds = harness
+        .identity()
+        .list_webauthn_credentials(&realm, user.id())
+        .expect("list after blank rename");
+    assert_eq!(creds[0].name(), None, "blank rename should clear name");
+
+    // Rename with unknown credential ID returns NotFound
+    let fake_id = vec![0xde, 0xad, 0xbe, 0xef];
+    let err = harness
+        .identity()
+        .rename_webauthn_credential(&realm, user.id(), &fake_id, "Ghost")
+        .expect_err("unknown credential should return error");
+    assert!(
+        matches!(err, IdentityError::WebAuthnCredentialNotFound),
+        "expected WebAuthnCredentialNotFound, got: {err}"
+    );
+}
+
+// ===== Scenario D4 (adversarial): Counter-replay rejection =====
+//
+// register → auth(sign_count=1) success → auth(sign_count=1) again → rejected
+//
+// Mirrors: src/identity/webauthn.rs tests::sign_counter_replay_rejected (inline unit test)
+
+#[tokio::test]
+async fn webauthn_counter_replay_rejected() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    let origin = "https://example.com";
+    let authenticator = webauthn_helper::TestAuthenticator::new("example.com");
+
+    // Register the credential
+    let reg_challenge = harness
+        .identity()
+        .start_webauthn_registration(
+            &realm,
+            user.id(),
+            &RegistrationOptions {
+                rp_id: "example.com".to_string(),
+                discoverable: false,
+            },
+        )
+        .expect("start registration");
+    let (reg_cdj, reg_att) = authenticator.build_registration_response(&reg_challenge, origin);
+    harness
+        .identity()
+        .complete_webauthn_registration(&realm, user.id(), &reg_cdj, &reg_att, origin, false)
+        .expect("complete registration");
+
+    // First authentication with sign_count=1 — should succeed and store count=1
+    let challenge1 = harness
+        .identity()
+        .start_webauthn_authentication(
+            &realm,
+            Some(user.id()),
+            &AuthenticationOptions {
+                rp_id: "example.com".to_string(),
+            },
+        )
+        .expect("start auth1");
+    let (auth_cdj1, auth_data1, sig1, _) =
+        authenticator.build_authentication_response(&challenge1, origin, 1, None);
+    harness
+        .identity()
+        .complete_webauthn_authentication(
+            &realm,
+            &CompleteAuthenticationParams {
+                credential_id: &authenticator.credential_id,
+                client_data_json: &auth_cdj1,
+                authenticator_data: &auth_data1,
+                signature: &sig1,
+                user_handle: None,
+                origin,
+            },
+        )
+        .expect("first authentication should succeed");
+
+    // Second authentication with same sign_count=1 — must be rejected (counter replay)
+    let challenge2 = harness
+        .identity()
+        .start_webauthn_authentication(
+            &realm,
+            Some(user.id()),
+            &AuthenticationOptions {
+                rp_id: "example.com".to_string(),
+            },
+        )
+        .expect("start auth2");
+    let (auth_cdj2, auth_data2, sig2, _) =
+        authenticator.build_authentication_response(&challenge2, origin, 1, None); // same counter
+    let err = harness
+        .identity()
+        .complete_webauthn_authentication(
+            &realm,
+            &CompleteAuthenticationParams {
+                credential_id: &authenticator.credential_id,
+                client_data_json: &auth_cdj2,
+                authenticator_data: &auth_data2,
+                signature: &sig2,
+                user_handle: None,
+                origin,
+            },
+        )
+        .expect_err("replayed counter should be rejected");
+    assert!(
+        matches!(err, IdentityError::InvalidAssertion { .. }),
+        "expected InvalidAssertion, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("sign counter"),
+        "expected sign-counter message, got: {err}"
+    );
+}
+
+// ===== Scenario D5 (adversarial): RP-ID mismatch rejection =====
+//
+// register(rp_id=example.com) → authenticate with auth_data claiming evil.com → rejected
+//
+// Mirrors: src/identity/webauthn.rs tests::rp_id_mismatch_rejected_on_authentication
+
+#[tokio::test]
+async fn webauthn_rp_id_mismatch_rejected() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    let origin = "https://example.com";
+    let authenticator = webauthn_helper::TestAuthenticator::new("example.com");
+
+    // Register credential for example.com
+    let reg_challenge = harness
+        .identity()
+        .start_webauthn_registration(
+            &realm,
+            user.id(),
+            &RegistrationOptions {
+                rp_id: "example.com".to_string(),
+                discoverable: false,
+            },
+        )
+        .expect("start registration");
+    let (reg_cdj, reg_att) = authenticator.build_registration_response(&reg_challenge, origin);
+    harness
+        .identity()
+        .complete_webauthn_registration(&realm, user.id(), &reg_cdj, &reg_att, origin, false)
+        .expect("complete registration");
+
+    // Start authentication — get a real challenge
+    let auth_challenge = harness
+        .identity()
+        .start_webauthn_authentication(
+            &realm,
+            Some(user.id()),
+            &AuthenticationOptions {
+                rp_id: "example.com".to_string(),
+            },
+        )
+        .expect("start authentication");
+
+    // Build authenticator data with evil.com's RP-ID hash instead of example.com
+    // RP-ID check happens before signature verification, so any signature bytes work.
+    let evil_auth_data = webauthn_helper::auth_data_for_rp("evil.com", 1);
+    let cdj = webauthn_helper::get_client_data_json(&auth_challenge, origin);
+    let fake_sig = vec![0u8; 64]; // irrelevant — RP-ID check fires first
+
+    let err = harness
+        .identity()
+        .complete_webauthn_authentication(
+            &realm,
+            &CompleteAuthenticationParams {
+                credential_id: &authenticator.credential_id,
+                client_data_json: &cdj,
+                authenticator_data: &evil_auth_data,
+                signature: &fake_sig,
+                user_handle: None,
+                origin,
+            },
+        )
+        .expect_err("RP-ID mismatch should be rejected");
+    assert!(
+        matches!(err, IdentityError::InvalidAssertion { .. }),
+        "expected InvalidAssertion, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("RP ID hash mismatch"),
+        "expected RP ID mismatch message, got: {err}"
+    );
+}
+
+// ===== Scenario D6 (adversarial): Tampered clientDataJSON rejection =====
+//
+// Attacker replaces the origin in clientDataJSON with evil.com.
+// Origin is checked before RP-ID and signature, so the sig need not be valid.
+//
+// Mirrors: src/identity/webauthn.rs tests::tampered_origin_in_client_data_rejected
+
+#[tokio::test]
+async fn webauthn_tampered_client_data_json_rejected() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    let origin = "https://example.com";
+    let authenticator = webauthn_helper::TestAuthenticator::new("example.com");
+
+    // Register
+    let reg_challenge = harness
+        .identity()
+        .start_webauthn_registration(
+            &realm,
+            user.id(),
+            &RegistrationOptions {
+                rp_id: "example.com".to_string(),
+                discoverable: false,
+            },
+        )
+        .expect("start registration");
+    let (reg_cdj, reg_att) = authenticator.build_registration_response(&reg_challenge, origin);
+    harness
+        .identity()
+        .complete_webauthn_registration(&realm, user.id(), &reg_cdj, &reg_att, origin, false)
+        .expect("complete registration");
+
+    // Get a real challenge then build a CDJ with the real challenge but wrong origin.
+    // Engine parses challenge from CDJ to find the pending, so the challenge must be real.
+    // Origin is checked inside complete_authentication before signature, so any sig works.
+    let auth_challenge = harness
+        .identity()
+        .start_webauthn_authentication(
+            &realm,
+            Some(user.id()),
+            &AuthenticationOptions {
+                rp_id: "example.com".to_string(),
+            },
+        )
+        .expect("start authentication");
+
+    let tampered_cdj = webauthn_helper::get_client_data_json(&auth_challenge, "https://evil.com");
+    let (_, auth_data, _, _) =
+        authenticator.build_authentication_response(&auth_challenge, origin, 1, None);
+    let fake_sig = vec![0u8; 64]; // origin check fires before signature verification
+
+    let err = harness
+        .identity()
+        .complete_webauthn_authentication(
+            &realm,
+            &CompleteAuthenticationParams {
+                credential_id: &authenticator.credential_id,
+                client_data_json: &tampered_cdj,
+                authenticator_data: &auth_data,
+                signature: &fake_sig,
+                user_handle: None,
+                origin,
+            },
+        )
+        .expect_err("tampered clientDataJSON origin should be rejected");
+    assert!(
+        matches!(err, IdentityError::InvalidAssertion { .. }),
+        "expected InvalidAssertion, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("origin mismatch"),
+        "expected origin mismatch message, got: {err}"
+    );
+}
+
+// ===== Scenario D7 (adversarial): CBOR-malformed attestation object rejection =====
+//
+// Passes garbage bytes as the attestation_object during registration.
+// parse_attestation_object (CBOR) must reject it cleanly, mirroring the fuzz target
+// at src/identity/webauthn.rs::fuzz_parse_webauthn which exercises the same parser.
+//
+// Mirrors: src/identity/webauthn.rs::fuzz_parse_webauthn (fuzz coverage)
+
+#[tokio::test]
+async fn webauthn_cbor_malformed_auth_data_rejected() {
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    let origin = "https://example.com";
+    let authenticator = webauthn_helper::TestAuthenticator::new("example.com");
+
+    // Start registration to obtain a real challenge so the engine can find the pending.
+    let reg_challenge = harness
+        .identity()
+        .start_webauthn_registration(
+            &realm,
+            user.id(),
+            &RegistrationOptions {
+                rp_id: "example.com".to_string(),
+                discoverable: false,
+            },
+        )
+        .expect("start registration");
+
+    // Build a legitimate clientDataJSON (with the real challenge) but pass garbage CBOR
+    // as the attestation object. parse_attestation_object must reject it.
+    let (real_cdj, _) = authenticator.build_registration_response(&reg_challenge, origin);
+    let garbage_attestation_object = b"\xff\x00\xde\xad\xbe\xef garbage not valid CBOR";
+
+    let err = harness
+        .identity()
+        .complete_webauthn_registration(
+            &realm,
+            user.id(),
+            &real_cdj,
+            garbage_attestation_object,
+            origin,
+            false,
+        )
+        .expect_err("malformed CBOR attestation object should be rejected");
+    assert!(
+        matches!(err, IdentityError::InvalidInput { .. }),
+        "expected InvalidInput for malformed CBOR, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("CBOR") || err.to_string().contains("attestation"),
+        "expected CBOR/attestation error message, got: {err}"
+    );
 }

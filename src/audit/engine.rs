@@ -254,6 +254,9 @@ impl AuditEngine for EmbeddedAuditEngine {
 
             let expected_hash = Self::compute_hash(&prev_hash, &event);
             if event.integrity_hash != expected_hash {
+                crate::metrics::metrics()
+                    .audit_integrity_failures_total
+                    .inc();
                 return Ok(false);
             }
             prev_hash = event.integrity_hash;

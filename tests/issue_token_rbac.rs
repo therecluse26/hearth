@@ -36,7 +36,7 @@ async fn populates_roles_groups_permissions() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -117,7 +117,7 @@ async fn claims_empty_for_user_with_no_assignments() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -153,13 +153,13 @@ async fn permissions_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
 
     let many_perms: Vec<Permission> = (0..101)
-        .map(|i| Permission::new(&format!("perm.{i:03}")).expect("valid perm"))
+        .map(|i| Permission::new(format!("perm.{i:03}")).expect("valid perm"))
         .collect();
     let role = h
         .rbac()
@@ -223,7 +223,7 @@ async fn roles_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -292,7 +292,7 @@ async fn groups_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -351,14 +351,14 @@ async fn exact_limit_succeeds() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
 
     // 100 permissions in one role.
     let many_perms: Vec<Permission> = (0..100)
-        .map(|i| Permission::new(&format!("perm.{i:03}")).expect("valid perm"))
+        .map(|i| Permission::new(format!("perm.{i:03}")).expect("valid perm"))
         .collect();
     let big_role = h
         .rbac()
@@ -465,7 +465,7 @@ async fn byte_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -543,14 +543,14 @@ async fn oauth_path_permissions_cap_refuses_issuance() {
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
 
     // 101 permissions via role.
     let many_perms: Vec<Permission> = (0..101)
-        .map(|i| Permission::new(&format!("perm.{i:03}")).expect("valid perm"))
+        .map(|i| Permission::new(format!("perm.{i:03}")).expect("valid perm"))
         .collect();
     let role = h
         .rbac()

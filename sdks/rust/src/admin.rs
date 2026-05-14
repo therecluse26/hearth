@@ -95,7 +95,7 @@ impl AdminClient {
     ) -> Result<User, HearthError> {
         let resp = self
             .http
-            .put(format!("{}/admin/users/{user_id}", self.base_url))
+            .patch(format!("{}/admin/users/{user_id}", self.base_url))
             .json(req)
             .send()
             .await?;

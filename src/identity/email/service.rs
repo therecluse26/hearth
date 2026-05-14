@@ -11,8 +11,10 @@
 use std::path::Path;
 
 use super::branding::{EmailBranding, ResolvedBranding};
+use super::placeholder;
+use super::stored_templates::{EmailTemplateBody, LocalizedEmailTemplate};
 use super::templates;
-use super::{EmailError, SharedEmailSender};
+use super::{EmailError, EmailMessage, SharedEmailSender};
 
 /// Orchestration layer for sending branded, templated emails.
 ///
@@ -74,19 +76,42 @@ impl EmailService {
     ///
     /// Resolves branding (global defaults + realm overrides), renders
     /// the verification template, and dispatches to the transport.
+    /// When `stored` is `Some`, the stored template is tried first (with
+    /// locale fallback); compiled/disk templates are the fallback.
     pub fn send_verification_email(
         &self,
         to: &str,
         url: &str,
         realm_branding: Option<&EmailBranding>,
+        stored: Option<&LocalizedEmailTemplate>,
+        locale: Option<&str>,
     ) -> Result<(), EmailError> {
         let branding = self.resolve_branding(realm_branding);
-        let mut msg =
+        let vars = [
+            ("verification_url", url),
+            ("product_name", branding.product_name.as_str()),
+            (
+                "support_email",
+                branding.support_email.as_deref().unwrap_or(""),
+            ),
+            (
+                "custom_footer_text",
+                branding.custom_footer_text.as_deref().unwrap_or(""),
+            ),
+        ];
+        let mut msg = if let Some(tmpl) = stored {
+            let body = tmpl.resolve(locale);
+            render_stored_or_fallback(
+                body,
+                &vars,
+                "verification",
+                || templates::render_verification(url, &branding, self.custom_templates.as_ref()),
+                || templates::render_verification(url, &branding, None),
+            )?
+        } else {
             templates::render_verification(url, &branding, self.custom_templates.as_ref())
-                .or_else(|_| {
-                    // Fallback to compiled templates if custom rendering fails
-                    templates::render_verification(url, &branding, None)
-                })?;
+                .or_else(|_| templates::render_verification(url, &branding, None))?
+        };
         msg.to = to.to_string();
         self.sender.send(&msg)
     }
@@ -106,19 +131,41 @@ impl EmailService {
     ///
     /// Resolves branding (global defaults + realm overrides), renders
     /// the password reset template, and dispatches to the transport.
+    /// When `stored` is `Some`, the stored template is tried first.
     pub fn send_password_reset_email(
         &self,
         to: &str,
         url: &str,
         realm_branding: Option<&EmailBranding>,
+        stored: Option<&LocalizedEmailTemplate>,
+        locale: Option<&str>,
     ) -> Result<(), EmailError> {
         let branding = self.resolve_branding(realm_branding);
-        let mut msg =
+        let vars = [
+            ("reset_url", url),
+            ("product_name", branding.product_name.as_str()),
+            (
+                "support_email",
+                branding.support_email.as_deref().unwrap_or(""),
+            ),
+            (
+                "custom_footer_text",
+                branding.custom_footer_text.as_deref().unwrap_or(""),
+            ),
+        ];
+        let mut msg = if let Some(tmpl) = stored {
+            let body = tmpl.resolve(locale);
+            render_stored_or_fallback(
+                body,
+                &vars,
+                "password_reset",
+                || templates::render_password_reset(url, &branding, self.custom_templates.as_ref()),
+                || templates::render_password_reset(url, &branding, None),
+            )?
+        } else {
             templates::render_password_reset(url, &branding, self.custom_templates.as_ref())
-                .or_else(|_| {
-                    // Fallback to compiled templates if custom rendering fails
-                    templates::render_password_reset(url, &branding, None)
-                })?;
+                .or_else(|_| templates::render_password_reset(url, &branding, None))?
+        };
         msg.to = to.to_string();
         self.sender.send(&msg)
     }
@@ -126,6 +173,7 @@ impl EmailService {
     /// Sends an organization invitation email.
     ///
     /// Contains an acceptance URL and context about who sent the invitation.
+    /// When `stored` is `Some`, the stored template is tried first.
     pub fn send_invitation_email(
         &self,
         to: &str,
@@ -133,19 +181,61 @@ impl EmailService {
         org_name: &str,
         inviter_email: &str,
         realm_branding: Option<&EmailBranding>,
+        stored: Option<&LocalizedEmailTemplate>,
+        locale: Option<&str>,
     ) -> Result<(), EmailError> {
         let branding = self.resolve_branding(realm_branding);
-        let mut msg = templates::render_invitation(
-            accept_url,
-            org_name,
-            inviter_email,
-            &branding,
-            self.custom_templates.as_ref(),
-        )
-        .or_else(|_| {
-            // Fallback to compiled templates if custom rendering fails
-            templates::render_invitation(accept_url, org_name, inviter_email, &branding, None)
-        })?;
+        let vars = [
+            ("accept_url", accept_url),
+            ("org_name", org_name),
+            ("inviter_email", inviter_email),
+            ("product_name", branding.product_name.as_str()),
+            (
+                "support_email",
+                branding.support_email.as_deref().unwrap_or(""),
+            ),
+            (
+                "custom_footer_text",
+                branding.custom_footer_text.as_deref().unwrap_or(""),
+            ),
+        ];
+        let mut msg = if let Some(tmpl) = stored {
+            let body = tmpl.resolve(locale);
+            render_stored_or_fallback(
+                body,
+                &vars,
+                "invitation",
+                || {
+                    templates::render_invitation(
+                        accept_url,
+                        org_name,
+                        inviter_email,
+                        &branding,
+                        self.custom_templates.as_ref(),
+                    )
+                },
+                || {
+                    templates::render_invitation(
+                        accept_url,
+                        org_name,
+                        inviter_email,
+                        &branding,
+                        None,
+                    )
+                },
+            )?
+        } else {
+            templates::render_invitation(
+                accept_url,
+                org_name,
+                inviter_email,
+                &branding,
+                self.custom_templates.as_ref(),
+            )
+            .or_else(|_| {
+                templates::render_invitation(accept_url, org_name, inviter_email, &branding, None)
+            })?
+        };
         msg.to = to.to_string();
         self.sender.send(&msg)
     }
@@ -221,6 +311,54 @@ impl EmailService {
     pub fn sender(&self) -> &SharedEmailSender {
         &self.sender
     }
+}
+
+/// Renders using a stored template body when any field is set; falls back
+/// to the provided Tera/Askama render functions otherwise.
+///
+/// Only the fields (`subject`, `html_body`, `text_body`) that are `Some`
+/// in the stored body are replaced; `None` fields inherit from the fallback
+/// compiled render. This allows partial overrides (e.g. subject only).
+fn render_stored_or_fallback<F1, F2>(
+    body: &EmailTemplateBody,
+    vars: &[(&str, &str)],
+    _kind: &str,
+    try_custom: F1,
+    compiled: F2,
+) -> Result<EmailMessage, EmailError>
+where
+    F1: FnOnce() -> Result<EmailMessage, EmailError>,
+    F2: FnOnce() -> Result<EmailMessage, EmailError>,
+{
+    // Get the fallback-rendered message for fields not overridden by stored.
+    let fallback = try_custom().or_else(|_| compiled())?;
+
+    if body.is_empty() {
+        return Ok(fallback);
+    }
+
+    let subject = body
+        .subject
+        .as_deref()
+        .map(|s| placeholder::render(s, vars))
+        .unwrap_or(fallback.subject);
+    let html_body = body
+        .html_body
+        .as_deref()
+        .map(|s| placeholder::render(s, vars))
+        .unwrap_or(fallback.html_body);
+    let text_body = body
+        .text_body
+        .as_deref()
+        .map(|s| placeholder::render(s, vars))
+        .unwrap_or(fallback.text_body);
+
+    Ok(EmailMessage {
+        to: String::new(),
+        subject,
+        html_body,
+        text_body,
+    })
 }
 
 /// Prepares raw SVG markup for inline rendering in email HTML.
@@ -359,6 +497,8 @@ mod tests {
             "alice@example.com",
             "https://auth.example.com/verify?t=abc",
             None,
+            None,
+            None,
         );
         assert!(result.is_ok(), "send should succeed: {result:?}");
     }
@@ -374,6 +514,8 @@ mod tests {
             "alice@example.com",
             "https://auth.example.com/verify?t=abc",
             Some(&realm),
+            None,
+            None,
         );
         assert!(result.is_ok(), "send should succeed: {result:?}");
     }
@@ -417,6 +559,8 @@ mod tests {
             "alice@example.com",
             "https://auth.example.com/reset?t=abc",
             None,
+            None,
+            None,
         );
         assert!(result.is_ok(), "send should succeed: {result:?}");
     }
@@ -432,6 +576,8 @@ mod tests {
             "alice@example.com",
             "https://auth.example.com/reset?t=abc",
             Some(&realm),
+            None,
+            None,
         );
         assert!(result.is_ok(), "send should succeed: {result:?}");
     }

@@ -1,7 +1,7 @@
 //! Integration test: RBAC data in realm A is invisible to queries scoped
 //! to realm B — both at the engine level and through the public API.
 //!
-//! Covers `MIGRATE_TO_RBAC.md` § 7 — rbac_cross_realm:no_leak.
+//! Covers `MIGRATE_TO_RBAC.md` § 7 — `rbac_cross_realm:no_leak`.
 
 mod common;
 

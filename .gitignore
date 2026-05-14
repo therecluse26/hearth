@@ -36,7 +36,8 @@ ui/tailwindcss
 # Generated protobuf code (produced by build.rs on every build)
 /src/protocol/generated/
 
-hearth
+# Binary symlink at repo root (not the helm chart subdirectory)
+/hearth
 *.wal
 
 # Local runtime data (compose named volume + `cargo run` default path)
@@ -53,3 +54,6 @@ hearth.yaml
 hearth.yml
 
 .codex
+
+# Backup files
+*.bak

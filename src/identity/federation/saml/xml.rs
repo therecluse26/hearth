@@ -9,7 +9,6 @@
 //! many XXE CVEs in SAML parsers historically.
 
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::name::QName;
 use quick_xml::Reader;
 use std::io::BufRead;
 
@@ -80,10 +79,8 @@ fn namespace_matches_prefix(prefix: &[u8], expected_uri: &str, start: &BytesStar
     // ancestor in a proper parse). Accept standard prefixes.
     matches!(
         (prefix, expected_uri),
-        (b"samlp", ns::SAMLP)
-            | (b"saml", ns::SAML)
-            | (b"saml2p", ns::SAMLP)
-            | (b"saml2", ns::SAML)
+        (b"samlp" | b"saml2p", ns::SAMLP)
+            | (b"saml" | b"saml2", ns::SAML)
             | (b"ds", ns::DS)
             | (b"md", ns::MD)
     )

@@ -1,9 +1,9 @@
-//! OIDC RP conformance tests for external IdP federation (gap #5).
+//! OIDC RP conformance tests for external `IdP` federation (gap #5).
 //!
 //! Per OIDC Core 1.0 §3.1.3.7 the relying party MUST validate:
 //!
 //! * `iss` matches the expected issuer
-//! * `aud` contains the client_id
+//! * `aud` contains the `client_id`
 //! * `exp` is in the future (with reasonable skew)
 //! * `nbf` (if present) is not in the future
 //! * `nonce` matches what the RP sent
@@ -274,7 +274,7 @@ fn rs256_signature_verify_round_trip() {
     // no-pad big-endian byte encodings.
     let n_bytes = public_key.n().to_bytes_be();
     let e_bytes = public_key.e().to_bytes_be();
-    let jwk = Jwk {
+    let rsa_jwk = Jwk {
         kty: "RSA".into(),
         alg: Some("RS256".into()),
         kid: Some("test-key-1".into()),
@@ -294,7 +294,7 @@ fn rs256_signature_verify_round_trip() {
     let pkcs8_der = private_key.to_pkcs8_der().expect("pkcs8 encode");
     let key_pair =
         ring::signature::RsaKeyPair::from_pkcs8(pkcs8_der.as_bytes()).expect("load keypair");
-    let mut signature = vec![0u8; key_pair.public_modulus_len()];
+    let mut signature = vec![0u8; key_pair.public().modulus_len()];
     let ring_rng = ring::rand::SystemRandom::new();
     key_pair
         .sign(
@@ -309,7 +309,7 @@ fn rs256_signature_verify_round_trip() {
     let jwt = format!("{signing_input}.{sig_b64}");
 
     // 1. Happy path: verification passes.
-    verify_rs256(&jwt, &jwk).expect("valid RS256 signature");
+    verify_rs256(&jwt, &rsa_jwk).expect("valid RS256 signature");
 
     // 2. Flip a bit in the signature; verification must now fail.
     let mut tampered = signature.clone();
@@ -317,7 +317,7 @@ fn rs256_signature_verify_round_trip() {
     let bad_sig_b64 = URL_SAFE_NO_PAD.encode(&tampered);
     let bad_jwt = format!("{signing_input}.{bad_sig_b64}");
     assert!(matches!(
-        verify_rs256(&bad_jwt, &jwk),
+        verify_rs256(&bad_jwt, &rsa_jwk),
         Err(IdentityError::FederationTokenVerificationFailed)
     ));
 
@@ -325,7 +325,7 @@ fn rs256_signature_verify_round_trip() {
     let other = RsaPrivateKey::new(&mut rng, 2048)
         .expect("another key")
         .to_public_key();
-    let other_jwk = Jwk {
+    let other_rsa_jwk = Jwk {
         kty: "RSA".into(),
         alg: Some("RS256".into()),
         kid: Some("test-key-1".into()),
@@ -333,7 +333,7 @@ fn rs256_signature_verify_round_trip() {
         e: Some(URL_SAFE_NO_PAD.encode(other.e().to_bytes_be())),
     };
     assert!(matches!(
-        verify_rs256(&jwt, &other_jwk),
+        verify_rs256(&jwt, &other_rsa_jwk),
         Err(IdentityError::FederationTokenVerificationFailed)
     ));
 }

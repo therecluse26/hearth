@@ -1,0 +1,83 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Edit {{ role.name }}{% endblock %}
+{% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+<div class="mb-6 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles"
+     class="hover:text-ht-content-primary">Roles</a>
+  <span>›</span>
+  <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles/{{ role.id.as_uuid() }}"
+     class="hover:text-ht-content-primary">{{ role.name }}</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">Edit</span>
+</div>
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Edit <code class="font-mono text-2xl">{{ role.name }}</code></h1>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+  {% match error %}
+    {% when Some with (msg) %}
+      <div class="mb-4 rounded-lg bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
+    {% when None %}
+  {% endmatch %}
+
+  <form method="post" action="/ui/admin/realms/{{ realm_name }}/rbac/roles/{{ role.id.as_uuid() }}/edit" class="space-y-6" autocomplete="off">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+
+    <div>
+      <label for="name" class="block text-sm font-medium text-ht-content-secondary">Role name <span class="text-danger-fg">*</span></label>
+      <input type="text" id="name" name="name" required autofocus maxlength="128"
+             value="{{ form_name }}"
+             class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+    </div>
+
+    <div>
+      <label for="description" class="block text-sm font-medium text-ht-content-secondary">Description <span class="text-ht-content-muted">(optional)</span></label>
+      <textarea id="description" name="description" rows="2" maxlength="500"
+                class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">{{ form_description }}</textarea>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ht-content-secondary">Scope</label>
+      <div class="mt-2 space-y-2">
+        <label class="flex cursor-pointer items-start gap-3 rounded border border-divider bg-ht-bg-base px-4 py-3 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="scope_kind" value="realm" {% if form_scope_kind == "realm" %}checked{% endif %}
+                 class="mt-0.5 h-4 w-4 text-ht-content-brand">
+          <span class="text-sm font-medium text-ht-content-primary">Realm</span>
+        </label>
+        <label class="flex cursor-pointer items-start gap-3 rounded border border-divider bg-ht-bg-base px-4 py-3 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="scope_kind" value="organization" {% if form_scope_kind == "organization" %}checked{% endif %}
+                 class="mt-0.5 h-4 w-4 text-ht-content-brand">
+          <span class="text-sm font-medium text-ht-content-primary">Organization</span>
+        </label>
+        <label class="flex cursor-pointer items-start gap-3 rounded border border-divider bg-ht-bg-base px-4 py-3 has-[:checked]:border-brand has-[:checked]:bg-brand/[0.04]">
+          <input type="radio" name="scope_kind" value="any" {% if form_scope_kind == "any" %}checked{% endif %}
+                 class="mt-0.5 h-4 w-4 text-ht-content-brand">
+          <span class="text-sm font-medium text-ht-content-primary">Any</span>
+        </label>
+      </div>
+    </div>
+
+    <div>
+      <label for="permissions" class="block text-sm font-medium text-ht-content-secondary">Permissions</label>
+      <p class="mb-1.5 text-xs text-ht-content-muted">One permission per line. This replaces the current permission set.</p>
+      <textarea id="permissions" name="permissions" rows="5"
+                class="block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">{{ form_permissions }}</textarea>
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+      <button type="submit"
+              class="btn-ember rounded px-4 py-2 text-sm font-semibold">
+        Save changes
+      </button>
+      <a href="/ui/admin/realms/{{ realm_name }}/rbac/roles/{{ role.id.as_uuid() }}"
+         class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

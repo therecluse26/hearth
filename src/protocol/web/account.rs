@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
@@ -70,10 +71,12 @@ struct AccountIndexTemplate {
 
 /// A row in the passkey credentials table on the account page.
 struct PasskeyRow {
-    /// Base64url-encoded credential ID (used in delete form actions).
+    /// Base64url-encoded credential ID (used in delete/rename form actions).
     id_b64url: String,
-    /// Truncated credential ID for display.
-    id_short: String,
+    /// User-supplied name, or empty string when none is set.
+    /// Passed to the template as a `data-initial-name` attribute; Askama HTML-escapes it
+    /// and `dataset` decodes it, so no manual quoting or JSON-encoding is needed.
+    name_display: String,
     /// COSE algorithm identifier (e.g. -7 = ES256).
     algorithm: i64,
     /// Whether this is a discoverable (resident key) credential.
@@ -290,7 +293,7 @@ fn audit_password_changed(
 /// Returns an empty string on error (the template falls back to showing
 /// only the manual secret). This is a presentation concern and belongs
 /// in the protocol layer — the identity engine only produces the URI.
-fn generate_qr_svg(provisioning_uri: &str) -> String {
+pub fn generate_qr_svg(provisioning_uri: &str) -> String {
     if provisioning_uri.is_empty() {
         return String::new();
     }
@@ -583,6 +586,99 @@ pub async fn totp_disable(
     }
 }
 
+/// `GET /ui/account/totp/recovery-codes.txt`
+///
+/// Serves the pending plaintext recovery codes as a downloadable text file.
+/// Only available during the enrollment window (before the codes are hashed).
+/// Returns 404 if MFA is already enabled or no enrollment is pending.
+pub async fn totp_download_recovery_codes(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+) -> Response {
+    use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+
+    let mfa_state = match state
+        .identity
+        .load_pending_recovery_codes(&session.realm_id, &session.user_id)
+    {
+        Ok(Some(codes)) => codes,
+        Ok(None) => return super::handlers_common::not_found("No pending recovery codes"),
+        Err(e) => {
+            tracing::warn!(error = %e, "load_pending_recovery_codes failed");
+            return super::handlers_common::not_found("No pending recovery codes");
+        }
+    };
+
+    let body = mfa_state.join("\n") + "\n";
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(
+            CONTENT_DISPOSITION,
+            "attachment; filename=\"hearth-recovery-codes.txt\"",
+        )
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| super::handlers_common::not_found("error"))
+}
+
+/// `POST /ui/account/totp/regenerate-codes`
+///
+/// Generates a new set of recovery codes for an already-enrolled user,
+/// invalidating any existing codes. Shows the new codes once.
+pub async fn totp_regenerate_codes(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    Form(form): Form<DisableTotpForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let realm_id = session.realm_id.clone();
+    let user_id = session.user_id.clone();
+    let identity = state.identity.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        identity.regenerate_recovery_codes(&realm_id, &user_id)
+    })
+    .await;
+
+    let codes = match result {
+        Ok(Ok(c)) => c,
+        Ok(Err(IdentityError::MfaNotEnabled)) => {
+            return Redirect::to("/ui/account/totp").into_response();
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "regenerate_recovery_codes failed");
+            return render_totp_error(&state, &session, "Unable to regenerate codes right now.");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "regenerate_recovery_codes panicked");
+            return render_totp_error(&state, &session, "Unable to regenerate codes right now.");
+        }
+    };
+
+    let admin = super::handlers::is_admin(&state, &session);
+    let mut tmpl = TotpEnrollTemplate::new(
+        &session,
+        false,
+        String::new(),
+        String::new(),
+        String::new(),
+        codes,
+        None,
+        admin,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+    );
+    // Render in "codes only" mode: mfa_enabled = false shows the enrollment
+    // form but we pass empty secret/uri so only the recovery codes section
+    // is meaningful. The template's activate form is a no-op here since the
+    // user is already enrolled.
+    tmpl.theme_css.clone_from(&state.theme_css);
+    tmpl.realm_theme_css = state.realm_theme_css();
+    render(&tmpl)
+}
+
 /// Re-renders the TOTP enrolment page with an inline error above the
 /// activation form. Used when activation fails without restarting the
 /// ceremony.
@@ -666,14 +762,9 @@ fn load_passkey_rows(state: &Arc<WebState>, session: &UiSession) -> Vec<PasskeyR
         .iter()
         .map(|c| {
             let id_b64url = c.credential_id_b64url();
-            let id_short = if id_b64url.len() > 16 {
-                format!("{}...", &id_b64url[..16])
-            } else {
-                id_b64url.clone()
-            };
             PasskeyRow {
+                name_display: c.name().map(str::to_string).unwrap_or_default(),
                 id_b64url,
-                id_short,
                 algorithm: c.algorithm(),
                 discoverable: c.discoverable(),
             }
@@ -703,9 +794,28 @@ pub async fn passkey_register_begin(
         .unwrap_or("localhost")
         .to_string();
 
+    // Read per-realm WebAuthn policy (fall back to safe defaults).
+    let (resident_key, user_verification) = state
+        .identity
+        .get_realm(&session.realm_id)
+        .ok()
+        .flatten()
+        .map(|r| {
+            let cfg = r.config();
+            (
+                cfg.webauthn_resident_key
+                    .clone()
+                    .unwrap_or_else(|| "preferred".to_string()),
+                cfg.webauthn_user_verification
+                    .clone()
+                    .unwrap_or_else(|| "preferred".to_string()),
+            )
+        })
+        .unwrap_or_else(|| ("preferred".to_string(), "preferred".to_string()));
+
     let options = RegistrationOptions {
         rp_id: rp_id.clone(),
-        discoverable: true,
+        discoverable: resident_key != "discouraged",
     };
 
     match state
@@ -729,8 +839,8 @@ pub async fn passkey_register_begin(
                     { "type": "public-key", "alg": -257 }, // RS256
                 ],
                 "authenticatorSelection": {
-                    "residentKey": "preferred",
-                    "userVerification": "preferred",
+                    "residentKey": resident_key,
+                    "userVerification": user_verification,
                 },
                 "attestation": "none",
             });
@@ -754,6 +864,9 @@ pub struct PasskeyRegisterCompleteBody {
     pub client_data_json: String,
     /// Base64url-encoded `attestationObject` from the authenticator.
     pub attestation_object: String,
+    /// User-supplied name for this credential (e.g. "MacBook Touch ID").
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// `POST /ui/account/passkeys/register-complete` — completes the
@@ -798,7 +911,21 @@ pub async fn passkey_register_complete(
         &origin,
         true, // discoverable
     ) {
-        Ok(_cred) => {
+        Ok(cred) => {
+            // Apply user-supplied name if provided.
+            if let Some(ref name) = body.name {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    if let Err(e) = state.identity.rename_webauthn_credential(
+                        &session.realm_id,
+                        &session.user_id,
+                        cred.credential_id(),
+                        trimmed,
+                    ) {
+                        tracing::warn!(error = %e, "passkey rename after registration failed");
+                    }
+                }
+            }
             if let Err(e) = audit_mfa_event(&state, &session, "passkey_register") {
                 tracing::warn!(error = %e, "passkey register audit append failed");
             }
@@ -854,6 +981,43 @@ pub async fn passkey_delete(
     }
 
     Redirect::to("/ui/account").into_response()
+}
+
+/// JSON body for passkey rename.
+#[derive(Debug, Deserialize)]
+pub struct RenamePasskeyBody {
+    /// New display name for the credential.
+    pub name: String,
+}
+
+/// `POST /ui/account/passkeys/:cred_id/rename` — sets a display name on a
+/// passkey credential owned by the current user.
+pub async fn passkey_rename(
+    State(state): State<Arc<WebState>>,
+    session: UiSession,
+    axum::extract::Path(cred_id_b64): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<RenamePasskeyBody>,
+) -> Response {
+    use axum::http::StatusCode;
+    use base64::Engine as _;
+
+    let Ok(cred_id_bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&cred_id_b64)
+    else {
+        return (StatusCode::BAD_REQUEST, "Invalid credential ID").into_response();
+    };
+
+    match state.identity.rename_webauthn_credential(
+        &session.realm_id,
+        &session.user_id,
+        &cred_id_bytes,
+        body.name.trim(),
+    ) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "rename_webauthn_credential failed");
+            (StatusCode::BAD_REQUEST, "Rename failed").into_response()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

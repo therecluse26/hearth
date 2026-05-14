@@ -127,7 +127,7 @@
     <table class="w-full">
       <thead>
         <tr class="border-b border-divider-subtle">
-          <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Credential ID</th>
+          <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Name / ID</th>
           <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Algorithm</th>
           <th class="px-3 py-2 text-left font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ht-content-muted">Discoverable</th>
           <th class="px-3 py-2"></th>
@@ -135,8 +135,30 @@
       </thead>
       <tbody>
         {% for c in passkey_credentials %}
-        <tr class="border-b border-divider-faint">
-          <td class="px-3 py-2"><code class="font-mono text-xs text-ht-content-secondary">{{ c.id_short }}</code></td>
+        <tr class="border-b border-divider-faint"
+            x-data="passkeyRow('{{ c.id_b64url }}')"
+            data-initial-name="{{ c.name_display }}">
+          <td class="px-3 py-2">
+            <template x-if="!editing">
+              <div class="flex items-center gap-2">
+                <span x-text="displayName" class="text-sm text-ht-content-secondary"></span>
+                <button @click="startEdit()" type="button"
+                        title="Rename"
+                        class="text-ht-content-muted hover:text-ht-content-secondary">
+                  <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+              </div>
+            </template>
+            <template x-if="editing">
+              <div class="flex items-center gap-1.5">
+                <input x-model="draftName" @keydown.enter="saveEdit()" @keydown.escape="cancelEdit()"
+                       class="rounded border border-strong bg-ht-surface px-2 py-0.5 text-sm text-ht-content-primary focus:outline-none focus:ring-1 focus:ring-ht-brand-deep"
+                       style="width:14rem" autofocus />
+                <button @click="saveEdit()" type="button" class="text-xs text-ht-content-brand hover:text-ht-brand-deep">Save</button>
+                <button @click="cancelEdit()" type="button" class="text-xs text-ht-content-muted hover:text-ht-content-secondary">Cancel</button>
+              </div>
+            </template>
+          </td>
           <td class="px-3 py-2 text-sm text-ht-content-muted">
             {% if c.algorithm == -7 %}ES256{% else if c.algorithm == -257 %}RS256{% else %}{{ c.algorithm }}{% endif %}
           </td>
@@ -183,6 +205,9 @@ function passkeyManager() {
         const cred = await navigator.credentials.create({ publicKey: opts });
         if (!cred) throw new Error('Registration cancelled');
 
+        // Prompt for a friendly name (optional — user can skip).
+        const credName = prompt('Give this passkey a name (optional):', '') || '';
+
         // Encode response as base64url
         const toB64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 
@@ -192,6 +217,7 @@ function passkeyManager() {
           body: JSON.stringify({
             client_data_json: toB64url(cred.response.clientDataJSON),
             attestation_object: toB64url(cred.response.attestationObject),
+            name: credName.trim() || null,
           }),
         });
         if (!completeResp.ok) throw new Error('Registration failed');
@@ -204,6 +230,45 @@ function passkeyManager() {
         this.registering = false;
       }
     }
+  };
+}
+
+function passkeyRow(credId) {
+  return {
+    credId,
+    displayName: '',
+    editing: false,
+    draftName: '',
+    _name: null,
+    init() {
+      // Read name from data attribute — Askama HTML-encodes it, browser decodes via dataset.
+      const raw = this.$el.dataset.initialName || '';
+      this._name = raw || null;
+      this.displayName = raw || credId.substring(0, 16) + '…';
+    },
+    startEdit() {
+      this.draftName = this._name || '';
+      this.editing = true;
+    },
+    cancelEdit() {
+      this.editing = false;
+    },
+    async saveEdit() {
+      const name = this.draftName.trim();
+      try {
+        const resp = await fetch(`/ui/account/passkeys/${this.credId}/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!resp.ok) throw new Error('Rename failed');
+        this._name = name || null;
+        this.displayName = name || this.credId.substring(0, 16) + '…';
+        this.editing = false;
+      } catch (e) {
+        alert(e.message || 'Rename failed');
+      }
+    },
   };
 }
 </script>

@@ -1,16 +1,51 @@
-//! Criterion benchmarks for claims-based RBAC checks.
+//! Criterion benchmarks and CI threshold gates for claims-based RBAC checks.
 //!
 //! Covers the hot-path authorization pattern: client and server
 //! authorization decisions are JWT claim lookups, never network calls.
 //!
-//! Targets (from `docs/specs/AUTHORIZATION.md` § 10):
-//! - JWT payload decode + permission lookup: p99 < 1 μs
-//! - In-memory HashSet `contains` over the claim set: p99 < 100 ns
+//! # CI Threshold Gates
+//!
+//! Two hard gates run at binary startup (before Criterion sampling).
+//! The bench binary exits non-zero if either limit is breached, which
+//! causes `make bench-gate` — and therefore `make ci-standard` — to fail.
+//!
+//! | Gate | Limit | Regression delta |
+//! |------|-------|-----------------|
+//! | `resolve_permissions` (JWT decode + HashSet lookup) | p99 ≤ 1 ms | 0% (hard limit) |
+//! | `hasPermission` (pre-parsed `HashSet::contains`)    | p99 ≤ 1 µs | 0% (hard limit) |
+//!
+//! Gates collect [`GATE_SAMPLES`] measurements after [`GATE_WARMUP`]
+//! discard iterations, then assert `samples[samples.len() * 99 / 100]`.
+//!
+//! Thresholds derive from `docs/specs/TESTING.md` (Standard CI tier) and
+//! `docs/specs/AUTHORIZATION.md` § 10. These checks intentionally use
+//! hard thresholds to prevent drift on the two P0 RBAC latency scenarios.
+//!
+//! Aspirational design targets (tighter, not enforced in CI):
+//! - JWT decode + permission lookup: p99 < 1 µs
+//! - `HashSet::contains` over claim set: p99 < 100 ns
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, BenchmarkId, Criterion};
+
+// ── Threshold constants ───────────────────────────────────────────────────────
+
+/// Hard p99 limit for `resolve_permissions` (full JWT decode + lookup path).
+const RESOLVE_PERMISSIONS_P99_LIMIT: Duration = Duration::from_millis(1);
+
+/// Hard p99 limit for `hasPermission` (pre-parsed `HashSet::contains` only).
+const HAS_PERMISSION_P99_LIMIT: Duration = Duration::from_micros(1);
+
+/// Number of raw samples collected per gate for p99 estimation.
+const GATE_SAMPLES: usize = 10_000;
+
+/// Warm-up iterations discarded before gate measurement begins.
+const GATE_WARMUP: usize = 200;
+
+// ── Token forge helper ────────────────────────────────────────────────────────
 
 /// Build a JWT payload segment containing `n` permissions plus a fixed
 /// set of RBAC-relevant claims. The signature segment is arbitrary —
@@ -42,6 +77,89 @@ fn forge_token(permission_count: usize) -> String {
     format!("{hb}.{cb}.{sig}")
 }
 
+// ── Inner hot-path helpers (shared by gates and Criterion) ───────────────────
+
+/// JWT decode + linear permission scan — the `resolve_permissions` path.
+#[inline]
+fn do_jwt_lookup(token: &str, target: &str) -> bool {
+    let parts: Vec<&str> = token.split('.').collect();
+    let payload = URL_SAFE_NO_PAD.decode(parts[1]).expect("base64 decode");
+    let claims: serde_json::Value = serde_json::from_slice(&payload).expect("json parse");
+    claims
+        .get("permissions")
+        .and_then(|p| p.as_array())
+        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(target)))
+}
+
+/// Pre-parsed `HashSet::contains` — the `hasPermission` server hot path.
+#[inline]
+fn do_hashset_contains(set: &HashSet<String>, target: &str) -> bool {
+    set.contains(target)
+}
+
+// ── Threshold gate functions ──────────────────────────────────────────────────
+
+/// Assert `resolve_permissions` p99 ≤ [`RESOLVE_PERMISSIONS_P99_LIMIT`].
+///
+/// Uses the worst-case fixture: 100 permissions, target is the last one
+/// (maximises the linear scan in `do_jwt_lookup`).
+fn gate_resolve_permissions_p99() {
+    let token = forge_token(100);
+    let target = format!("namespace.resource.action_{:04}", 99);
+
+    for _ in 0..GATE_WARMUP {
+        black_box(do_jwt_lookup(black_box(&token), black_box(&target)));
+    }
+
+    let mut samples: Vec<Duration> = Vec::with_capacity(GATE_SAMPLES);
+    for _ in 0..GATE_SAMPLES {
+        let start = Instant::now();
+        black_box(do_jwt_lookup(black_box(&token), black_box(&target)));
+        samples.push(start.elapsed());
+    }
+
+    samples.sort_unstable();
+    let p99 = samples[GATE_SAMPLES * 99 / 100];
+
+    assert!(
+        p99 <= RESOLVE_PERMISSIONS_P99_LIMIT,
+        "resolve_permissions p99 {p99:?} exceeds CI limit {RESOLVE_PERMISSIONS_P99_LIMIT:?} \
+         — see benches/rbac_check.rs for threshold rationale"
+    );
+}
+
+/// Assert `hasPermission` p99 ≤ [`HAS_PERMISSION_P99_LIMIT`].
+///
+/// Uses a 100-element set; target is the worst-case hash bucket.
+fn gate_has_permission_p99() {
+    let set: HashSet<String> = (0..100usize)
+        .map(|i| format!("namespace.resource.action_{i:04}"))
+        .collect();
+    let target = format!("namespace.resource.action_{:04}", 99);
+
+    for _ in 0..GATE_WARMUP {
+        black_box(do_hashset_contains(black_box(&set), black_box(&target)));
+    }
+
+    let mut samples: Vec<Duration> = Vec::with_capacity(GATE_SAMPLES);
+    for _ in 0..GATE_SAMPLES {
+        let start = Instant::now();
+        black_box(do_hashset_contains(black_box(&set), black_box(&target)));
+        samples.push(start.elapsed());
+    }
+
+    samples.sort_unstable();
+    let p99 = samples[GATE_SAMPLES * 99 / 100];
+
+    assert!(
+        p99 <= HAS_PERMISSION_P99_LIMIT,
+        "hasPermission p99 {p99:?} exceeds CI limit {HAS_PERMISSION_P99_LIMIT:?} \
+         — see benches/rbac_check.rs for threshold rationale"
+    );
+}
+
+// ── Criterion benchmark groups ────────────────────────────────────────────────
+
 /// Benchmarks the end-to-end "client-side claim lookup" pattern:
 /// split the JWT, base64url-decode the payload segment, parse JSON,
 /// then test membership.
@@ -55,18 +173,10 @@ fn bench_jwt_lookup(c: &mut Criterion) {
         let target = format!("namespace.resource.action_{:04}", size - 1);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
-                let t = black_box(token.as_str());
-                let permission = black_box(target.as_str());
-                let parts: Vec<&str> = t.split('.').collect();
-                assert_eq!(parts.len(), 3);
-                let payload = URL_SAFE_NO_PAD.decode(parts[1]).expect("base64 decode");
-                let claims: serde_json::Value =
-                    serde_json::from_slice(&payload).expect("json parse");
-                let found = claims
-                    .get("permissions")
-                    .and_then(|p| p.as_array())
-                    .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(permission)));
-                black_box(found)
+                black_box(do_jwt_lookup(
+                    black_box(token.as_str()),
+                    black_box(target.as_str()),
+                ))
             });
         });
     }
@@ -89,9 +199,10 @@ fn bench_hashset_contains(c: &mut Criterion) {
         let target = format!("namespace.resource.action_{:04}", size - 1);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
-                let s = black_box(&set);
-                let t = black_box(target.as_str());
-                black_box(s.contains(t))
+                black_box(do_hashset_contains(
+                    black_box(&set),
+                    black_box(target.as_str()),
+                ))
             });
         });
     }
@@ -99,4 +210,13 @@ fn bench_hashset_contains(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_jwt_lookup, bench_hashset_contains);
-criterion_main!(benches);
+
+// Custom main: run hard threshold gates before Criterion sampling.
+// Panicking here causes non-zero exit, which fails `make bench-gate`.
+fn main() {
+    gate_resolve_permissions_p99();
+    gate_has_permission_p99();
+
+    // `benches()` is generated by criterion_group! and owns its Criterion instance.
+    benches();
+}

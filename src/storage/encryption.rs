@@ -214,11 +214,12 @@ pub(crate) fn wrap_dek(
         UnboundKey::new(&AES_256_GCM, kek.as_bytes()).map_err(|_| StorageError::Crypto {
             reason: "failed to create AEAD key for DEK wrapping".to_string(),
         })?;
-    let key = LessSafeKey::new(unbound);
+    let aes_key = LessSafeKey::new(unbound);
 
     // The DEK plaintext is the data to encrypt
     let mut buffer = dek.bytes.to_vec();
-    key.seal_in_place_append_tag(nonce, Aad::from(&kek_id), &mut buffer)
+    aes_key
+        .seal_in_place_append_tag(nonce, Aad::from(&kek_id), &mut buffer)
         .map_err(|_| StorageError::Crypto {
             reason: "DEK wrapping failed".to_string(),
         })?;
@@ -245,10 +246,10 @@ pub(crate) fn unwrap_dek(
         UnboundKey::new(&AES_256_GCM, kek.as_bytes()).map_err(|_| StorageError::Crypto {
             reason: "failed to create AEAD key for DEK unwrapping".to_string(),
         })?;
-    let key = LessSafeKey::new(unbound);
+    let aes_key = LessSafeKey::new(unbound);
 
     let mut buffer = header.wrapped_dek.to_vec();
-    let plaintext = key
+    let plaintext = aes_key
         .open_in_place(nonce, Aad::from(&header.kek_id), &mut buffer)
         .map_err(|_| StorageError::Crypto {
             reason: "DEK unwrapping failed — wrong KEK or corrupted header".to_string(),
@@ -318,6 +319,8 @@ pub(crate) fn decrypt_section(
 /// Used during key rotation. The DEK itself does not change — only the
 /// wrapper header is updated with the new KEK. Returns a new
 /// `EncryptionHeader` with the new `kek_id`, nonce, and wrapped DEK.
+// TODO(1.1): wired by the key-rotation path; keep to avoid re-implementing.
+#[allow(dead_code)]
 pub(crate) fn rewrap_header(
     header: &EncryptionHeader,
     old_kek: &KeyEncryptionKey,
@@ -365,10 +368,11 @@ pub(crate) fn encrypt_kek(
         UnboundKey::new(&AES_256_GCM, host_key.as_bytes()).map_err(|_| StorageError::Crypto {
             reason: "failed to create AEAD key for KEK encryption".to_string(),
         })?;
-    let key = LessSafeKey::new(unbound);
+    let aes_key = LessSafeKey::new(unbound);
 
     let mut buffer = kek.bytes.to_vec();
-    key.seal_in_place_append_tag(nonce, Aad::from(&kek_id), &mut buffer)
+    aes_key
+        .seal_in_place_append_tag(nonce, Aad::from(&kek_id), &mut buffer)
         .map_err(|_| StorageError::Crypto {
             reason: "KEK encryption failed".to_string(),
         })?;

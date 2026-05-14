@@ -259,7 +259,10 @@ mod tests {
             value: Some(json!("Smith")),
         };
         apply_user_patch(&mut u, &[op]).expect("apply");
-        assert_eq!(u.name.unwrap().family_name.as_deref(), Some("Smith"));
+        assert_eq!(
+            u.name.expect("name present").family_name.as_deref(),
+            Some("Smith")
+        );
     }
 
     #[test]

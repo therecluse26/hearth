@@ -56,7 +56,7 @@ fn setup_admin() -> (tempfile::TempDir, EmbeddedIdentityEngine, RealmId) {
                     display_name: format!("Bench User {i}"),
                     first_name: String::new(),
                     last_name: String::new(),
-                                attributes: Default::default(),
+                    attributes: Default::default(),
                 },
             )
             .expect("create user");

@@ -175,6 +175,16 @@ pub enum AuditAction {
     /// codes, pending tickets, grant families). Emitted once per realm
     /// per sweep; metadata carries deletion counts.
     Cleanup,
+    /// A credential verification attempt failed (wrong password or no
+    /// credential set). Metadata carries `attempt_count`.
+    LoginFailed,
+    /// An account was temporarily locked out after too many consecutive
+    /// failed login attempts. Metadata carries `attempt_count` and
+    /// `lockout_duration_micros`.
+    LoginLocked,
+    /// A per-IP login rate limit was exceeded. Metadata carries `ip`
+    /// and `attempt_count`.
+    IpLoginLimitExceeded,
 }
 
 impl AuditAction {
@@ -247,6 +257,9 @@ impl AuditAction {
             Self::ClientConsentRevoked,
             Self::ConsentRequiredOnRefresh,
             Self::Cleanup,
+            Self::LoginFailed,
+            Self::LoginLocked,
+            Self::IpLoginLimitExceeded,
         ];
         v.sort_by_key(|a| a.as_str());
         v
@@ -317,6 +330,9 @@ impl AuditAction {
             Self::ClientConsentRevoked => "client_consent_revoked",
             Self::ConsentRequiredOnRefresh => "consent_required_on_refresh",
             Self::Cleanup => "cleanup",
+            Self::LoginFailed => "login_failed",
+            Self::LoginLocked => "login_locked",
+            Self::IpLoginLimitExceeded => "ip_login_limit_exceeded",
         }
     }
 }
@@ -388,6 +404,9 @@ impl std::str::FromStr for AuditAction {
             "client_consent_revoked" => Ok(Self::ClientConsentRevoked),
             "consent_required_on_refresh" => Ok(Self::ConsentRequiredOnRefresh),
             "cleanup" => Ok(Self::Cleanup),
+            "login_failed" => Ok(Self::LoginFailed),
+            "login_locked" => Ok(Self::LoginLocked),
+            "ip_login_limit_exceeded" => Ok(Self::IpLoginLimitExceeded),
             other => Err(format!("unknown audit action: {other}")),
         }
     }
@@ -468,7 +487,9 @@ impl AuditAction {
             | Self::ClientConsentGranted
             | Self::OrphanedReferenceSkipped
             | Self::ConsentRequiredOnRefresh
-            | Self::Cleanup => LogOnly,
+            | Self::Cleanup
+            | Self::LoginFailed
+            | Self::IpLoginLimitExceeded => LogOnly,
             // ---- FailOperation (destructive / security-sensitive) ----
             Self::UserDeleted
             | Self::CredentialChanged
@@ -487,7 +508,8 @@ impl AuditAction {
             | Self::ScimUserDeleted
             | Self::ScimGroupDeleted
             | Self::RoleRevoked
-            | Self::ClientConsentRevoked => FailOperation,
+            | Self::ClientConsentRevoked
+            | Self::LoginLocked => FailOperation,
         }
     }
 }

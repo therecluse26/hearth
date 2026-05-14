@@ -7,6 +7,7 @@
 //! - **Session primary**: `ses:id:{uuid}` → JSON-serialized `Session`
 //! - **Session user index**: `ses:user:{user_uuid}:{session_uuid}` → empty
 //! - **Credential**: `cred:user:{uuid}` → JSON-serialized `StoredCredential`
+//! - **Credential history**: `cred:history:{uuid}` → JSON-serialized `Vec<StoredCredential>`
 //! - **OAuth client**: `oauth:client:{uuid}` → JSON-serialized `OAuthClient`
 //! - **OAuth code**: `oauth:code:{sha256_hex}` → JSON-serialized code
 //! - **Realm primary**: `realm:id:{uuid}` → JSON-serialized `Realm` (system realm scope)
@@ -25,6 +26,9 @@ const USER_EMAIL_PREFIX: &str = "usr:email:";
 /// Prefix for user credential keys.
 const CREDENTIAL_PREFIX: &str = "cred:user:";
 
+/// Prefix for credential history keys.
+const CREDENTIAL_HISTORY_PREFIX: &str = "cred:history:";
+
 /// Prefix for OAuth client keys.
 const OAUTH_CLIENT_PREFIX: &str = "oauth:client:";
 
@@ -42,6 +46,13 @@ const REALM_NAME_PREFIX: &str = "realm:name:";
 
 /// Prefix for grant family storage (refresh token rotation).
 const GRANT_FAMILY_PREFIX: &str = "oauth:family:";
+
+/// Prefix for session → grant-family secondary index.
+///
+/// Format: `oauth:session_fam:{session_uuid}:{family_id}` — empty value.
+/// Written at grant family creation; scanned during session revocation for
+/// cascade refresh-token family invalidation.
+const SESSION_GRANT_FAMILY_PREFIX: &str = "oauth:session_fam:";
 
 /// Prefix for device authorization code storage.
 const DEVICE_CODE_PREFIX: &str = "oauth:device:";
@@ -175,6 +186,7 @@ const SAML_SP_SESSION_PREFIX: &str = "saml:sp_session:";
 /// Format: `saml:logout:{token}` — JSON-serialized `SamlLogoutStateBag`.
 /// Matches the SP-side / IdP-side logout round-trip (LogoutRequest sent →
 /// LogoutResponse received). 5-minute TTL; single-use.
+#[allow(dead_code)]
 const SAML_LOGOUT_STATE_PREFIX: &str = "saml:logout:";
 
 /// Prefix for the SCIM `externalId` → Hearth `UserId` index.
@@ -238,6 +250,13 @@ pub(crate) fn user_id_scan_prefix() -> Vec<u8> {
 /// Format: `cred:user:{uuid}`
 pub(crate) fn encode_credential_key(user_id: &UserId) -> Vec<u8> {
     format!("{CREDENTIAL_PREFIX}{}", user_id.as_uuid()).into_bytes()
+}
+
+/// Encodes the credential history key for a user.
+///
+/// Format: `cred:history:{uuid}`
+pub(crate) fn encode_credential_history_key(user_id: &UserId) -> Vec<u8> {
+    format!("{CREDENTIAL_HISTORY_PREFIX}{}", user_id.as_uuid()).into_bytes()
 }
 
 /// Encodes the primary key for a session record.
@@ -807,6 +826,7 @@ pub(crate) fn encode_federation_state_key(state_token: &str) -> Vec<u8> {
 /// Returns the scan prefix for federation state (for cascade cleanup).
 ///
 /// Format: `fed:state:`
+#[allow(dead_code)]
 pub(crate) fn fed_state_scan_prefix() -> Vec<u8> {
     FED_STATE_PREFIX.as_bytes().to_vec()
 }
@@ -826,6 +846,7 @@ pub(crate) fn encode_federation_confirm_key(ticket: &str) -> Vec<u8> {
 /// Returns the scan prefix for federation confirm-link tickets.
 ///
 /// Format: `fed:confirm:`
+#[allow(dead_code)]
 pub(crate) fn fed_confirm_scan_prefix() -> Vec<u8> {
     FED_CONFIRM_PREFIX.as_bytes().to_vec()
 }
@@ -861,6 +882,7 @@ pub(crate) fn encode_federation_ext_prefix_for_idp(idp_id: &IdpId) -> Vec<u8> {
 /// Format: `fed:ext:`
 ///
 /// Used by `delete_realm` cascade.
+#[allow(dead_code)]
 pub(crate) fn fed_ext_scan_prefix() -> Vec<u8> {
     FED_EXT_PREFIX.as_bytes().to_vec()
 }
@@ -894,6 +916,7 @@ pub(crate) fn encode_federation_ext_fwd_prefix_for_user(user_id: &UserId) -> Vec
 /// Format: `fed:ext_fwd:`
 ///
 /// Used by `delete_realm` cascade.
+#[allow(dead_code)]
 pub(crate) fn fed_ext_fwd_scan_prefix() -> Vec<u8> {
     FED_EXT_FWD_PREFIX.as_bytes().to_vec()
 }
@@ -911,6 +934,7 @@ pub(crate) fn encode_scim_ext_user_key(external_id: &str) -> Vec<u8> {
 /// Returns the scan prefix for every SCIM external-id-to-user mapping.
 ///
 /// Format: `scim:ext_user:` — used by `delete_realm` cascade.
+#[allow(dead_code)]
 pub(crate) fn scim_ext_user_scan_prefix() -> Vec<u8> {
     SCIM_EXT_USER_PREFIX.as_bytes().to_vec()
 }
@@ -927,6 +951,7 @@ pub(crate) fn encode_scim_ext_user_fwd_key(user_id: &UserId) -> Vec<u8> {
 /// Returns the scan prefix for every SCIM forward index entry in a realm.
 ///
 /// Format: `scim:ext_user_fwd:` — used by `delete_realm` cascade.
+#[allow(dead_code)]
 pub(crate) fn scim_ext_user_fwd_scan_prefix() -> Vec<u8> {
     SCIM_EXT_USER_FWD_PREFIX.as_bytes().to_vec()
 }
@@ -942,6 +967,7 @@ pub(crate) fn encode_scim_ext_group_key(external_id: &str) -> Vec<u8> {
 /// Returns the scan prefix for every SCIM group external-id mapping.
 ///
 /// Format: `scim:ext_group:` — used by `delete_realm` cascade.
+#[allow(dead_code)]
 pub(crate) fn scim_ext_group_scan_prefix() -> Vec<u8> {
     SCIM_EXT_GROUP_PREFIX.as_bytes().to_vec()
 }
@@ -956,6 +982,7 @@ pub(crate) fn encode_scim_ext_group_fwd_key(org_id: &OrganizationId) -> Vec<u8> 
 /// Returns the scan prefix for every SCIM group forward index entry.
 ///
 /// Format: `scim:ext_group_fwd:` — used by `delete_realm` cascade.
+#[allow(dead_code)]
 pub(crate) fn scim_ext_group_fwd_scan_prefix() -> Vec<u8> {
     SCIM_EXT_GROUP_FWD_PREFIX.as_bytes().to_vec()
 }
@@ -990,6 +1017,7 @@ pub(crate) fn encode_saml_state_key(state_token: &str) -> Vec<u8> {
 }
 
 /// Returns the scan prefix for SAML outbound request state.
+#[allow(dead_code)]
 pub(crate) fn saml_state_scan_prefix() -> Vec<u8> {
     SAML_STATE_PREFIX.as_bytes().to_vec()
 }
@@ -1002,11 +1030,13 @@ pub(crate) fn encode_saml_assertion_id(idp_id: &IdpId, assertion_id: &str) -> Ve
 }
 
 /// Returns the scan prefix for all SAML assertion-ID sentinels owned by an IdP.
+#[allow(dead_code)]
 pub(crate) fn encode_saml_assertion_prefix_for_idp(idp_id: &IdpId) -> Vec<u8> {
     format!("{SAML_ASSERTION_PREFIX}{}:", idp_id.as_uuid()).into_bytes()
 }
 
 /// Returns the scan prefix for all SAML assertion sentinels in the realm.
+#[allow(dead_code)]
 pub(crate) fn saml_assertion_scan_prefix() -> Vec<u8> {
     SAML_ASSERTION_PREFIX.as_bytes().to_vec()
 }
@@ -1024,6 +1054,7 @@ pub(crate) fn encode_saml_sp_session_prefix(session_id: &SessionId) -> Vec<u8> {
 }
 
 /// Returns the scan prefix for all SP session registrations in the realm.
+#[allow(dead_code)]
 pub(crate) fn saml_sp_session_scan_prefix() -> Vec<u8> {
     SAML_SP_SESSION_PREFIX.as_bytes().to_vec()
 }
@@ -1031,13 +1062,33 @@ pub(crate) fn saml_sp_session_scan_prefix() -> Vec<u8> {
 /// Encodes the SAML logout state key.
 ///
 /// Format: `saml:logout:{opaque_token}`.
+#[allow(dead_code)]
 pub(crate) fn encode_saml_logout_key(token: &str) -> Vec<u8> {
     format!("{SAML_LOGOUT_STATE_PREFIX}{token}").into_bytes()
 }
 
 /// Returns the scan prefix for SAML logout state.
+#[allow(dead_code)]
 pub(crate) fn saml_logout_scan_prefix() -> Vec<u8> {
     SAML_LOGOUT_STATE_PREFIX.as_bytes().to_vec()
+}
+
+/// Encodes the session → grant-family index key.
+///
+/// Format: `oauth:session_fam:{session_uuid}:{family_id}`.
+pub(crate) fn encode_session_grant_family(session_id: &SessionId, family_id: &str) -> Vec<u8> {
+    format!(
+        "{SESSION_GRANT_FAMILY_PREFIX}{}:{family_id}",
+        session_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for all grant families on a session.
+///
+/// Format: `oauth:session_fam:{session_uuid}:`.
+pub(crate) fn encode_session_grant_family_prefix(session_id: &SessionId) -> Vec<u8> {
+    format!("{SESSION_GRANT_FAMILY_PREFIX}{}:", session_id.as_uuid()).into_bytes()
 }
 
 #[cfg(test)]

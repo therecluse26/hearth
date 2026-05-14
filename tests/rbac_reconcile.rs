@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Integration tests for YAML-driven RBAC reconciliation.
 //!
 //! Verifies that `RbacEngine::reconcile_permissions`, `reconcile_roles`, and

@@ -21,6 +21,11 @@
 # Pinned to 1.89 — the repo's declared `rust-version = "1.75"` is aspirational;
 # transitive deps (e.g. ureq-proto 0.6) require edition 2024, which stabilized
 # in Rust 1.85. Bump in lockstep with the host toolchain when deps move.
+#
+# Supply-chain hardening: pin by digest as well as tag. Obtain with:
+#   docker pull rust:1.89-slim-bookworm && \
+#   docker inspect rust:1.89-slim-bookworm --format '{{index .RepoDigests 0}}'
+# Replace the tag with @sha256:<hash> once available in CI.
 FROM rust:1.89-slim-bookworm AS builder
 
 # Build-time deps:
@@ -122,6 +127,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
+# Pinning by digest is the strongest supply-chain control available for base
+# images. The tag below is kept for human readability; the digest is the
+# authoritative lock. Re-pin after every intentional base-image upgrade:
+#   docker pull debian:bookworm-slim
+#   docker inspect debian:bookworm-slim --format '{{index .RepoDigests 0}}'
+#
+# NOTE: current digest placeholder must be updated to a real value before
+# shipping to production. To obtain it locally:
+#   docker pull debian:bookworm-slim && \
+#   docker inspect debian:bookworm-slim --format '{{index .RepoDigests 0}}'
+# then replace the tag with @sha256:<hash> in the FROM line.
 FROM debian:bookworm-slim AS runtime
 
 # Runtime deps:
@@ -149,10 +165,20 @@ RUN groupadd --system --gid 10001 hearth \
     && mkdir -p /var/lib/hearth /etc/hearth \
     && chown -R hearth:hearth /var/lib/hearth /etc/hearth
 
-COPY --from=builder /tmp/hearth /usr/local/bin/hearth
+COPY --from=builder --chmod=0555 /tmp/hearth /usr/local/bin/hearth
 
 USER 10001:10001
 WORKDIR /var/lib/hearth
+
+# OCI standard labels: bind the image to a source revision for auditability.
+# BUILD_VERSION and BUILD_REVISION are optional build-args; CI should pass them.
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+LABEL org.opencontainers.image.title="Hearth" \
+      org.opencontainers.image.description="Purpose-built identity database: authentication, authorization, and session management" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${BUILD_REVISION}"
 
 EXPOSE 8420
 

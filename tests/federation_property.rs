@@ -1,4 +1,5 @@
-//! Property tests for external IdP federation (gap #5).
+#![allow(clippy::unwrap_used)]
+//! Property tests for external `IdP` federation (gap #5).
 //!
 //! Focuses on invariants that hold for *any* input: encoding
 //! round-trips, forward/reverse index symmetry, and idempotency of
@@ -11,7 +12,7 @@ use std::collections::BTreeMap;
 
 use hearth::core::{IdpId, RealmId, Timestamp, UserId};
 use hearth::identity::federation::{FederationSecret, IdpConfig, IdpKind, LinkMode, StateBag};
-use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityEngine, IdentityError};
+use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityError};
 
 use common::TestHarness;
 use proptest::prelude::*;
@@ -87,7 +88,7 @@ proptest! {
             let idp = IdpId::generate();
             h.identity().register_idp(&oidc_config(&realm, &idp, "x")).unwrap();
             let user = h.identity().create_user(&realm, &CreateUserRequest {
-                email: format!("{}@x.c", sub),
+                email: format!("{sub}@x.c"),
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
@@ -126,7 +127,7 @@ proptest! {
             let idp = IdpId::generate();
             h.identity().register_idp(&oidc_config(&realm, &idp, "x")).unwrap();
             let user = h.identity().create_user(&realm, &CreateUserRequest {
-                email: format!("{}@x.c", sub),
+                email: format!("{sub}@x.c"),
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
@@ -144,7 +145,7 @@ proptest! {
 
             // A fresh user can now claim the same sub.
             let user2 = h.identity().create_user(&realm, &CreateUserRequest {
-                email: format!("new-{}@x.c", sub),
+                email: format!("new-{sub}@x.c"),
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
@@ -173,14 +174,14 @@ proptest! {
             let idp = IdpId::generate();
             h.identity().register_idp(&oidc_config(&realm, &idp, "x")).unwrap();
             let alice = h.identity().create_user(&realm, &CreateUserRequest {
-                email: format!("a-{}@x.c", sub),
+                email: format!("a-{sub}@x.c"),
                 display_name: "A".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
                         attributes: Default::default(),
             }).unwrap();
             let bob = h.identity().create_user(&realm, &CreateUserRequest {
-                email: format!("b-{}@x.c", sub),
+                email: format!("b-{sub}@x.c"),
                 display_name: "B".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),

@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(u.user_name, "alice@example.com");
         assert_eq!(u.external_id.as_deref(), Some("okta-abc"));
         assert_eq!(
-            u.name.as_ref().unwrap().given_name.as_deref(),
+            u.name.as_ref().expect("name present").given_name.as_deref(),
             Some("Alice")
         );
         assert_eq!(u.emails.len(), 1);

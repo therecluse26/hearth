@@ -61,7 +61,7 @@ pub use webauthn::{
     WebAuthnAuthResult, WebAuthnCredentialInfo,
 };
 
-use crate::core::{InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
 
 /// Trait defining the identity engine interface.
 ///
@@ -189,6 +189,25 @@ pub trait IdentityEngine: Send + Sync {
         password: &CleartextPassword,
     ) -> Result<bool, IdentityError>;
 
+    /// Checks whether the given IP has exceeded the per-IP login rate limit
+    /// for a realm. Returns `Err(RateLimited)` when blocked.
+    ///
+    /// The default implementation is a no-op (`Ok(())`); the embedded engine
+    /// overrides it with a sliding-window counter.
+    fn check_ip_login_rate_limit(
+        &self,
+        _realm_id: &RealmId,
+        _ip: &str,
+    ) -> Result<(), IdentityError> {
+        Ok(())
+    }
+
+    /// Records a failed login attempt for the given IP so subsequent calls
+    /// to `check_ip_login_rate_limit` can enforce the window threshold.
+    ///
+    /// The default implementation is a no-op; the embedded engine overrides.
+    fn record_ip_login_attempt(&self, _realm_id: &RealmId, _ip: &str) {}
+
     /// Changes a user's password after verifying the old one.
     ///
     /// Returns `Err(InvalidCredential)` if the old password is wrong.
@@ -305,12 +324,9 @@ pub trait IdentityEngine: Send + Sync {
         ctx: &TokenIssuanceContext,
     ) -> Result<TokenPair, IdentityError>;
 
-    /// Validates a token via session lookup (internal hot path).
-    ///
-    /// Extracts the session ID from the token without verifying the
-    /// signature (Hearth trusts its own tokens). Looks up the session
-    /// and checks validity. Returns the decoded claims only if the
-    /// session is still active.
+    /// Validates an access token: verifies the Ed25519 signature, enforces
+    /// `exp`, checks the realm binding (`tid`), and confirms the session is
+    /// still active. Returns decoded claims only when all checks pass.
     fn validate_token(&self, realm_id: &RealmId, token: &str)
         -> Result<TokenClaims, IdentityError>;
 
@@ -367,6 +383,35 @@ pub trait IdentityEngine: Send + Sync {
     /// types, signing algorithms, and PKCE methods.
     fn oidc_discovery(&self) -> OidcDiscoveryDocument;
 
+    /// Processes RP-initiated logout (OIDC RPL §2 + OIDC BCL §2.5).
+    ///
+    /// Revokes the identified session and its associated refresh-token grant
+    /// families, then collects back-channel and front-channel logout targets
+    /// for all RPs that received tokens under this session. Pre-signs a
+    /// logout token for each back-channel target so the HTTP layer can fan
+    /// out notifications without touching cryptographic material directly.
+    ///
+    /// Accepts an expired `id_token_hint` per the OIDC spec (§2, ¶3). When
+    /// neither an `id_token_hint` nor an explicit `session_id` is supplied,
+    /// returns `InvalidToken`.
+    fn initiate_logout(
+        &self,
+        realm_id: &RealmId,
+        request: &oidc::RpLogoutRequest,
+    ) -> Result<oidc::RpLogoutResult, IdentityError>;
+
+    /// Returns a per-realm OIDC Discovery document.
+    ///
+    /// The `issuer` in the returned document is `{base_issuer}/realms/{name}`,
+    /// enabling distinct OIDC issuers per realm. All endpoint URLs are prefixed
+    /// with the per-realm issuer.
+    ///
+    /// Returns `RealmNotFound` when the realm does not exist.
+    fn realm_oidc_discovery(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<OidcDiscoveryDocument, IdentityError>;
+
     // ===== OAuth 2.0 Extended (Step 22) =====
 
     /// Issues an access token via the Client Credentials Grant (RFC 6749 §4.4).
@@ -379,6 +424,17 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         request: &ClientCredentialsRequest,
     ) -> Result<ClientCredentialsResponse, IdentityError>;
+
+    /// Authenticates an OAuth confidential client using its client secret.
+    ///
+    /// Returns `Ok(())` only when the client exists in the target realm,
+    /// is confidential, and the provided secret matches the stored hash.
+    fn authenticate_oauth_client(
+        &self,
+        realm_id: &RealmId,
+        client_id: &ClientId,
+        client_secret: &str,
+    ) -> Result<(), IdentityError>;
 
     /// Initiates a Device Authorization Grant (RFC 8628).
     ///
@@ -483,6 +539,25 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns whether MFA is currently enabled for a user.
     fn mfa_enabled(&self, realm_id: &RealmId, user_id: &UserId) -> Result<bool, IdentityError>;
 
+    /// Generates a new set of recovery codes, replacing any existing ones.
+    ///
+    /// Requires MFA to be already enabled. Returns the new plaintext codes
+    /// (shown once; hashes are stored immediately).
+    fn regenerate_recovery_codes(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Vec<String>, IdentityError>;
+
+    /// Returns the plaintext pending recovery codes if the user has a pending
+    /// enrollment (codes not yet confirmed/hashed). Returns `None` if MFA is
+    /// already enabled or there is no pending enrollment.
+    fn load_pending_recovery_codes(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+    ) -> Result<Option<Vec<String>>, IdentityError>;
+
     // ===== WebAuthn / Passkeys (Step 24) =====
 
     /// Starts a `WebAuthn` registration ceremony.
@@ -544,6 +619,19 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         user_id: &UserId,
         credential_id: &[u8],
+    ) -> Result<(), IdentityError>;
+
+    /// Sets a user-supplied display name on an existing `WebAuthn` credential.
+    ///
+    /// The name is cosmetic only (e.g., "MacBook Touch ID") and does not affect
+    /// the cryptographic ceremony. Returns `WebAuthnCredentialNotFound` if the
+    /// credential does not exist or belongs to a different user.
+    fn rename_webauthn_credential(
+        &self,
+        realm_id: &RealmId,
+        user_id: &UserId,
+        credential_id: &[u8],
+        name: &str,
     ) -> Result<(), IdentityError>;
 
     // ===== Magic Link / Passwordless (Step 25) =====
@@ -711,6 +799,24 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         client_id: &crate::core::ClientId,
     ) -> Result<Option<OAuthClient>, IdentityError>;
+
+    /// Authenticates a caller for protected OAuth endpoints (revocation,
+    /// introspection).
+    ///
+    /// `client_id` must identify an existing client in the realm.
+    /// Confidential clients (those with a stored secret hash) additionally
+    /// require a matching `client_secret`. Public clients (no stored secret)
+    /// are accepted with `client_id` alone.
+    ///
+    /// Returns `Err(IdentityError::InvalidClientSecret)` for all authentication
+    /// failures (unknown client, wrong or missing secret). Using a single error
+    /// variant prevents client enumeration by timing or error differentiation.
+    fn authenticate_client(
+        &self,
+        realm_id: &RealmId,
+        client_id: &crate::core::ClientId,
+        client_secret: Option<&str>,
+    ) -> Result<(), IdentityError>;
 
     /// Updates an existing OAuth client's fields.
     ///
@@ -1303,4 +1409,16 @@ pub trait IdentityEngine: Send + Sync {
         &self,
         realm_id: &RealmId,
     ) -> Result<crate::identity::cleanup::CleanupStats, IdentityError>;
+
+    /// Probes the underlying storage engine for basic liveness.
+    ///
+    /// Performs a minimal read (`get` on a probe key) and returns `true`
+    /// when the storage layer responds without error. Used by the `/readyz`
+    /// endpoint to gate inbound traffic until storage is confirmed healthy.
+    ///
+    /// The default implementation returns `true` (suitable for in-memory or
+    /// mock engines used in tests).
+    fn is_storage_healthy(&self) -> bool {
+        true
+    }
 }

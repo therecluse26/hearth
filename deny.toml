@@ -4,6 +4,17 @@ unmaintained = "warn"
 yanked = "warn"
 notice = "warn"
 
+[[advisories.ignore]]
+id = "RUSTSEC-2023-0071"
+reason = """
+Hearth uses the `rsa` crate only for key generation and PKCS#8 serialization \
+(via `rsa::RsaPrivateKey::new` / `pkcs8::EncodePrivateKey`). \
+No PKCS#1 v1.5 decryption is performed anywhere in the codebase — the Marvin Attack \
+timing side-channel only affects the decrypt path. \
+All RSA signing is delegated to `ring::signature::RsaKeyPair`, which is unaffected. \
+Track the rsa 0.10+ upgrade when the tonic/tower ecosystem gains support (see HEA-116).
+"""
+
 [licenses]
 unlicensed = "deny"
 allow = [

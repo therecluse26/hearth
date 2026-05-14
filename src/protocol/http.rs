@@ -10,19 +10,25 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::middleware::Next;
+use axum::response::Redirect;
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
+use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::{debug, error, info, Level};
 
 use crate::audit::{AuditEngine, CreateAuditEvent};
-use crate::core::{ClientId, RealmId, UserId};
-use crate::identity::IdentityEngine;
+use crate::core::{ClientId, RealmId, UserId, WebhookId};
+use crate::identity::email::{validate_email_template, EmailBranding, LocalizedEmailTemplate};
+use crate::identity::{IdentityEngine, UpdateRealmRequest};
 use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
 use crate::protocol::convert::identity::{
     proto_user_status_to_domain, realm_page_to_proto, user_bulk_result_to_proto,
@@ -36,6 +42,9 @@ use crate::protocol::proto::identity::v1 as pb;
 use crate::rbac::{
     AssignRoleRequest, CreateGroupRequest, CreateRoleRequest, GroupId, GroupMember, Permission,
     RbacEngine, RbacError, RoleId, Scope, Subject, UpdateGroupRequest, UpdateRoleRequest,
+};
+use crate::webhook::{
+    CreateWebhookRequest, DeliveryQuery, UpdateWebhookRequest, WebhookEngine, WebhookQuery,
 };
 
 /// Default maximum request body size (1 MiB).
@@ -61,11 +70,18 @@ pub struct AppState {
     pub rbac: Arc<dyn RbacEngine>,
     /// The audit engine for mutation logging.
     pub audit: Arc<dyn AuditEngine>,
+    /// Webhook subscription and delivery engine (optional; absent in test
+    /// harnesses that don't configure outbound delivery).
+    pub webhook: Option<Arc<dyn WebhookEngine>>,
     /// Whether the server is running in development mode.
     ///
     /// Enables the `POST /admin/bootstrap` endpoint for SDK integration
     /// tests and local development.
     pub dev_mode: bool,
+    /// Whether the `/metrics` Prometheus scrape endpoint is enabled.
+    ///
+    /// Controlled by `metrics.enabled` in `hearth.yaml` (default: `true`).
+    pub metrics_enabled: bool,
     /// Shared admin API rate limiter. Shared between the HTTP and gRPC
     /// admin surfaces so a caller cannot evade the limit by switching
     /// protocols.
@@ -83,7 +99,9 @@ impl AppState {
             identity,
             rbac,
             audit,
+            webhook: None,
             dev_mode: false,
+            metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
         }
     }
@@ -100,7 +118,9 @@ impl AppState {
             identity,
             rbac,
             audit,
+            webhook: None,
             dev_mode: true,
+            metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
         }
     }
@@ -119,9 +139,23 @@ impl AppState {
             identity,
             rbac,
             audit,
+            webhook: None,
             dev_mode: false,
+            metrics_enabled: true,
             admin_rate_limiter,
         }
+    }
+
+    /// Attaches a webhook engine, enabling the webhook management endpoints.
+    pub fn with_webhook(mut self, webhook: Arc<dyn WebhookEngine>) -> Self {
+        self.webhook = Some(webhook);
+        self
+    }
+
+    /// Sets whether the `/metrics` Prometheus scrape endpoint is exposed.
+    pub fn with_metrics_enabled(mut self, enabled: bool) -> Self {
+        self.metrics_enabled = enabled;
+        self
     }
 }
 
@@ -193,6 +227,10 @@ pub(crate) fn extract_admin_auth(
     let user_id = UserId::new(user_uuid);
 
     // Check admin role via the token's `permissions` claim (§ 5.2).
+    // Design decision: a single `hearth.admin` gate is intentional — all admin
+    // endpoints share the same all-or-nothing permission. Granular sub-scopes
+    // (e.g. `hearth.admin.users:read`) are not required by the current spec and
+    // would require changes to token issuance, RBAC seeding, and every handler.
     let is_admin = claims.permissions.iter().any(|p| p == "hearth.admin");
     if !is_admin {
         return Err((
@@ -240,10 +278,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(admin_list_users).post(admin_create_user),
         )
         .route("/users/bulk", axum::routing::post(admin_bulk_users))
+        .route("/users/import", axum::routing::post(admin_import_users))
+        .route("/users/export", axum::routing::get(admin_export_users))
         .route(
             "/users/{id}",
             axum::routing::get(admin_get_user)
-                .put(admin_update_user)
+                .patch(admin_update_user)
                 .delete(admin_delete_user),
         )
         .route(
@@ -255,6 +295,20 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(admin_get_realm)
                 .put(admin_update_realm)
                 .delete(admin_delete_realm),
+        )
+        .route(
+            "/realms/{id}/branding",
+            axum::routing::get(admin_get_realm_branding).patch(admin_patch_realm_branding),
+        )
+        .route(
+            "/realms/{id}/email-templates",
+            axum::routing::get(admin_list_realm_email_templates),
+        )
+        .route(
+            "/realms/{id}/email-templates/{kind}",
+            axum::routing::get(admin_get_realm_email_template)
+                .put(admin_put_realm_email_template)
+                .delete(admin_delete_realm_email_template),
         )
         .route(
             "/applications",
@@ -314,15 +368,34 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/assignments/{id}",
             axum::routing::delete(admin_unassign_role),
+        )
+        .route(
+            "/webhooks",
+            axum::routing::get(admin_list_webhooks).post(admin_create_webhook),
+        )
+        .route(
+            "/webhooks/{id}",
+            axum::routing::get(admin_get_webhook)
+                .put(admin_update_webhook)
+                .delete(admin_delete_webhook),
+        )
+        .route(
+            "/webhooks/{id}/deliveries",
+            axum::routing::get(admin_list_webhook_deliveries),
         );
 
     Router::new()
         .route("/health", axum::routing::get(health))
+        .route("/healthz", axum::routing::get(healthz))
+        .route("/readyz", axum::routing::get(readyz))
+        .route("/metrics", axum::routing::get(metrics_handler))
         .route(
             "/.well-known/openid-configuration",
             axum::routing::get(oidc_discovery),
         )
         .route("/jwks", axum::routing::get(jwks))
+        .route("/certs", axum::routing::get(jwks))
+        .route("/.well-known/jwks.json", axum::routing::get(jwks))
         .route("/users", axum::routing::post(create_user))
         .route("/clients", axum::routing::post(register_client))
         .route(
@@ -332,6 +405,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/authorize", axum::routing::post(authorize))
         .route("/token", axum::routing::post(token_exchange))
+        .route(
+            "/end_session",
+            axum::routing::get(end_session).post(end_session),
+        )
         .route(
             "/revoke",
             axum::routing::post(token_revocation)
@@ -380,6 +457,47 @@ pub fn router(state: Arc<AppState>) -> Router {
         .nest("/admin", admin_routes)
         .route("/admin/bootstrap", axum::routing::post(admin_bootstrap))
         .nest("/scim/v2", crate::protocol::scim::router())
+        .nest(
+            "/realms/{realm_name}",
+            Router::new()
+                .route(
+                    "/.well-known/openid-configuration",
+                    axum::routing::get(realm_oidc_discovery),
+                )
+                .route("/.well-known/jwks.json", axum::routing::get(realm_jwks))
+                .route("/authorize", axum::routing::post(realm_authorize))
+                .route("/token", axum::routing::post(realm_token_exchange))
+                .route(
+                    "/revoke",
+                    axum::routing::post(realm_token_revocation)
+                        .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+                )
+                .route(
+                    "/introspect",
+                    axum::routing::post(realm_token_introspection)
+                        .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+                )
+                .route(
+                    "/device_authorization",
+                    axum::routing::post(realm_device_authorization),
+                )
+                .route("/userinfo", axum::routing::get(realm_userinfo))
+                .route(
+                    "/register",
+                    axum::routing::post(realm_register_client_dynamic)
+                        .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+                ),
+        )
+        .route_layer(axum::middleware::from_fn(track_metrics))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(
+                    DefaultMakeSpan::new()
+                        .level(Level::INFO)
+                        .include_headers(false),
+                )
+                .on_response(DefaultOnResponse::new().level(Level::DEBUG)),
+        )
         .layer(DefaultBodyLimit::max(BODY_LIMIT_DEFAULT))
         .with_state(state)
 }
@@ -594,12 +712,107 @@ fn coerce_string_ints(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
+// === Observability middleware ===
+
+/// Tower middleware that records HTTP request latency into the Prometheus
+/// `hearth_http_request_duration_seconds` histogram.
+///
+/// Must be applied via [`Router::route_layer`] so that [`MatchedPath`] is
+/// already populated by the router before this middleware runs. Routes without
+/// a matched pattern (e.g. 404s) fall back to the raw URI path.
+pub(crate) async fn track_metrics(request: Request, next: Next) -> Response {
+    let path = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|mp| mp.as_str().to_owned())
+        .unwrap_or_else(|| request.uri().path().to_owned());
+    let method = request.method().as_str().to_owned();
+
+    let start = Instant::now();
+    let response = next.run(request).await;
+    let elapsed = start.elapsed().as_secs_f64();
+
+    let status = response.status().as_u16().to_string();
+    crate::metrics::metrics()
+        .http_request_duration_seconds
+        .with_label_values(&[&method, &path, &status])
+        .observe(elapsed);
+
+    response
+}
+
 // === Route handlers ===
+
+/// Liveness probe endpoint.
+///
+/// Returns `200 OK` immediately — if the process can serve HTTP it is alive.
+/// Kubernetes uses this to decide when to restart a crashed or deadlocked pod.
+/// Unlike `/readyz`, this endpoint does **not** check external dependencies.
+async fn healthz() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
+}
+
+/// Readiness probe endpoint.
+///
+/// Returns `200 OK` when the storage engine is accessible and the server is
+/// prepared to handle traffic. Returns `503 Service Unavailable` when the
+/// storage layer is unreachable (e.g. during startup or after a corruption
+/// event). Kubernetes gates inbound traffic behind this check.
+async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let identity = Arc::clone(&state.identity);
+    let healthy = tokio::task::spawn_blocking(move || identity.is_storage_healthy())
+        .await
+        .unwrap_or(false);
+
+    if healthy {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ready", "storage": "ok"})),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "not_ready", "storage": "unavailable"})),
+        )
+    }
+}
+
+/// Prometheus metrics scrape endpoint (`/metrics`).
+///
+/// Returns the current metric snapshot in the Prometheus text exposition
+/// format (version 0.0.4). Operators should point their Prometheus scrape
+/// config at this path.
+///
+/// No authentication is required by default — operators SHOULD firewall this
+/// endpoint from the public internet if the metric cardinality reveals
+/// sensitive business data (e.g. realm names in label sets).
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if !state.metrics_enabled {
+        return (
+            StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            String::new(),
+        )
+            .into_response();
+    }
+    let body = crate::metrics::metrics().render();
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
 
 /// Health check endpoint.
 ///
 /// Returns 200 OK with a JSON body indicating the server is healthy.
 /// Used by load balancers, monitoring, and CLI integration tests.
+///
+/// Prefer `/healthz` (liveness) or `/readyz` (readiness) for Kubernetes probes.
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"})))
 }
@@ -609,23 +822,27 @@ async fn health() -> impl IntoResponse {
 /// Returns the `OpenID` Connect Discovery 1.0 document describing the
 /// provider's configuration, endpoints, and supported features.
 async fn oidc_discovery(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Serialize the domain type directly so optional fields like
+    // end_session_endpoint are included without proto schema changes.
     let doc = state.identity.oidc_discovery();
-    (
-        StatusCode::OK,
-        Json(proto_to_rest_json(&pb::OidcDiscoveryDocument::from(&doc))),
-    )
+    (StatusCode::OK, Json(doc))
 }
 
-/// JWKS endpoint.
+/// JWKS endpoint (`/jwks`, `/certs`, and `/.well-known/jwks.json`).
 ///
 /// Returns the JSON Web Key Set containing the server's public signing
-/// keys for external token verification.
+/// keys for external token verification, per RFC 7517. Includes one entry
+/// per supported algorithm — Ed25519 (`EdDSA`) as the primary signer,
+/// plus RSA-2048 (`RS256`) and EC P-256 (`ES256`) for ecosystem
+/// compatibility with OIDC clients (e.g. `jose` / `python-jose`).
+///
+/// Renders the domain [`crate::identity::tokens::JwksDocument`] directly
+/// as JSON, bypassing the proto `JsonWebKey` type — that proto only
+/// carries the OKP/Ed25519 field set and would drop RSA `n`/`e` and EC
+/// `y` coordinates.
 async fn jwks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let doc = state.identity.jwks();
-    (
-        StatusCode::OK,
-        Json(proto_to_rest_json(&pb::JwksDocument::from(&doc))),
-    )
+    (StatusCode::OK, Json(doc))
 }
 
 // === User management endpoints ===
@@ -682,6 +899,105 @@ struct HttpTokenRequest {
     // Device code field
     #[serde(default)]
     device_code: Option<String>,
+}
+
+/// HTTP request body for token revocation (RFC 7009).
+///
+/// Extends the proto type with optional client credentials for HTTP endpoints.
+/// Clients may authenticate via HTTP Basic Auth or via these body fields
+/// per RFC 6749 §2.3.1.
+#[derive(Debug, Deserialize)]
+struct HttpRevocationBody {
+    token: String,
+    #[serde(default)]
+    token_type_hint: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client_secret: Option<String>,
+}
+
+/// HTTP request body for token introspection (RFC 7662).
+///
+/// Extends the proto type with optional client credentials for HTTP endpoints.
+/// Clients may authenticate via HTTP Basic Auth or via these body fields
+/// per RFC 6749 §2.3.1.
+#[derive(Debug, Deserialize)]
+struct HttpIntrospectionBody {
+    token: String,
+    #[serde(default)]
+    token_type_hint: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    client_secret: Option<String>,
+}
+
+/// Parses HTTP Basic Auth credentials from the `Authorization` header.
+///
+/// Returns `Some((client_id, client_secret))` on success, `None` if the header
+/// is absent or not Basic Auth.
+fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let encoded = value.strip_prefix("Basic ")?;
+    use base64::Engine as _;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let decoded_str = String::from_utf8(decoded).ok()?;
+    let (id, secret) = decoded_str.split_once(':')?;
+    Some((id.to_string(), secret.to_string()))
+}
+
+/// Extracts client credentials from HTTP Basic Auth or body parameters and
+/// verifies them against the stored client record.
+///
+/// Returns a 401 response if the client_id is missing, the client does not
+/// exist, or the secret is wrong. Confidential clients require a secret;
+/// public clients are accepted with client_id alone.
+fn verify_endpoint_client(
+    state: &AppState,
+    realm_id: &RealmId,
+    headers: &HeaderMap,
+    body_client_id: Option<&str>,
+    body_client_secret: Option<&str>,
+) -> Result<(), Response> {
+    // Prefer Basic Auth (RFC 6749 §2.3.1); fall back to body parameters.
+    let (raw_id, secret) = if let Some((id, sec)) = parse_basic_auth(headers) {
+        (id, Some(sec))
+    } else if let Some(id) = body_client_id {
+        (id.to_string(), body_client_secret.map(str::to_string))
+    } else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            [("www-authenticate", "Basic realm=\"hearth\"")],
+            Json(serde_json::json!({"error": "client_id required"})),
+        )
+            .into_response());
+    };
+
+    let client_uuid = raw_id.parse::<uuid::Uuid>().map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid client credentials"})),
+        )
+            .into_response()
+    })?;
+    let client_id = ClientId::new(client_uuid);
+
+    state
+        .identity
+        .authenticate_client(realm_id, &client_id, secret.as_deref())
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid client credentials"})),
+            )
+                .into_response()
+        })
 }
 
 /// Extracts a `RealmId` from the `X-Realm-ID` header.
@@ -868,6 +1184,14 @@ fn identity_error_to_response(
         }
         IdentityError::TokenTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "token too large"),
         IdentityError::InvalidAttribute { .. } => (StatusCode::BAD_REQUEST, "invalid attribute"),
+        IdentityError::AuthMethodNotAllowed { .. } => {
+            (StatusCode::FORBIDDEN, "authentication method not permitted")
+        }
+        IdentityError::PasswordExpired => (StatusCode::UNAUTHORIZED, "password expired"),
+        IdentityError::PasswordReused => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "password was recently used",
+        ),
         IdentityError::AuditFailure { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error: audit record failed",
@@ -1015,6 +1339,7 @@ async fn register_client_dynamic(
 /// Generates a unique client slug for DCR by appending a random suffix to the
 /// base name. Scans existing clients to avoid collisions, retrying up to 5
 /// times.
+#[allow(dead_code)]
 async fn generate_unique_slug(state: Arc<AppState>, realm_id: &RealmId, base: &str) -> String {
     for _ in 0..5 {
         let suffix = uuid::Uuid::new_v4().to_string();
@@ -1132,11 +1457,18 @@ async fn token_exchange(
                 .identity
                 .exchange_authorization_code(&realm_id, &request)
             {
-                Ok(response) => (
-                    StatusCode::OK,
-                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
-                )
-                    .into_response(),
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[&realm_id.as_uuid().to_string(), "authorization_code"])
+                        .inc();
+                    crate::metrics::metrics().active_sessions.inc();
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                    )
+                        .into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -1151,6 +1483,10 @@ async fn token_exchange(
 
             match state.identity.refresh_tokens(&realm_id, &refresh_token) {
                 Ok(tokens) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[&realm_id.as_uuid().to_string(), "refresh_token"])
+                        .inc();
                     let resp = pb::OidcTokenResponse {
                         access_token: tokens.access_token().to_string(),
                         id_token: String::new(),
@@ -1181,15 +1517,32 @@ async fn token_exchange(
                 }
             };
 
+            let realm_str = realm_id.as_uuid().to_string();
             match state.identity.client_credentials_token(&realm_id, &request) {
-                Ok(response) => (
-                    StatusCode::OK,
-                    Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(
-                        &response,
-                    ))),
-                )
-                    .into_response(),
-                Err(e) => identity_error_to_response(&e).into_response(),
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .auth_attempts_total
+                        .with_label_values(&[&realm_str, "success"])
+                        .inc();
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[&realm_str, "client_credentials"])
+                        .inc();
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::ClientCredentialsResponse::from(
+                            &response,
+                        ))),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    crate::metrics::metrics()
+                        .auth_attempts_total
+                        .with_label_values(&[&realm_str, "failure"])
+                        .inc();
+                    identity_error_to_response(&e).into_response()
+                }
             }
         }
         "urn:ietf:params:oauth:grant-type:device_code" => {
@@ -1218,11 +1571,21 @@ async fn token_exchange(
                 .identity
                 .poll_device_token(&realm_id, &device_code, &client_id)
             {
-                Ok(response) => (
-                    StatusCode::OK,
-                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
-                )
-                    .into_response(),
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[
+                            &realm_id.as_uuid().to_string(),
+                            "urn:ietf:params:oauth:grant-type:device_code",
+                        ])
+                        .inc();
+                    crate::metrics::metrics().active_sessions.inc();
+                    (
+                        StatusCode::OK,
+                        Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                    )
+                        .into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -1239,21 +1602,40 @@ async fn token_exchange(
 /// POST /revoke — revokes an OAuth 2.0 token.
 ///
 /// Per RFC 7009, returns 200 OK regardless of whether the token was
-/// actually revoked (to prevent information leakage).
+/// actually revoked (to prevent information leakage). Requires client
+/// authentication via HTTP Basic Auth or body `client_id`/`client_secret`.
 async fn token_revocation(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<pb::TokenRevocationRequest>,
+    Json(body): Json<HttpRevocationBody>,
 ) -> impl IntoResponse {
     let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
-    let request = crate::identity::TokenRevocationRequest::from(body);
+    if let Err(resp) = verify_endpoint_client(
+        &state,
+        &realm_id,
+        &headers,
+        body.client_id.as_deref(),
+        body.client_secret.as_deref(),
+    ) {
+        return resp;
+    }
+
+    let request = crate::identity::TokenRevocationRequest {
+        token: body.token,
+        token_type_hint: body.token_type_hint,
+    };
 
     match state.identity.revoke_token(&realm_id, &request) {
-        Ok(()) | Err(crate::identity::IdentityError::InvalidToken) => {
+        Ok(()) => {
+            // A successful revoke ends a session; keep the gauge consistent.
+            crate::metrics::metrics().active_sessions.dec();
+            StatusCode::OK.into_response()
+        }
+        Err(crate::identity::IdentityError::InvalidToken) => {
             // RFC 7009: always return 200 OK
             StatusCode::OK.into_response()
         }
@@ -1265,27 +1647,39 @@ async fn token_revocation(
 
 /// POST /introspect — introspects an OAuth 2.0 token.
 ///
-/// Returns metadata about the token including its active status.
+/// Returns metadata about the token including its active status. Requires
+/// client authentication via HTTP Basic Auth or body `client_id`/`client_secret`.
 async fn token_introspection(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<pb::TokenIntrospectionRequest>,
+    Json(body): Json<HttpIntrospectionBody>,
 ) -> impl IntoResponse {
     let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
-    let request = crate::identity::TokenIntrospectionRequest::from(body);
+    if let Err(resp) = verify_endpoint_client(
+        &state,
+        &realm_id,
+        &headers,
+        body.client_id.as_deref(),
+        body.client_secret.as_deref(),
+    ) {
+        return resp;
+    }
+
+    let request = crate::identity::TokenIntrospectionRequest {
+        token: body.token,
+        token_type_hint: body.token_type_hint,
+    };
 
     match state.identity.introspect_token(&realm_id, &request) {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(proto_to_rest_json(&pb::IntrospectionResponse::from(
-                &response,
-            ))),
-        )
-            .into_response(),
+        // Use the domain type directly: the domain IntrospectionResponse has
+        // #[derive(Serialize)] and always emits `active: false` for inactive
+        // tokens. The proto-generated serde omits proto3 default values (false)
+        // which would violate RFC 7662 §2.2 by leaving `active` absent.
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -1495,11 +1889,18 @@ fn rbac_error_to_response(err: &RbacError) -> (StatusCode, Json<serde_json::Valu
     )
 }
 
-/// Pagination query parameters.
+/// Pagination query parameters (also carries optional search query and field filters).
 #[derive(Debug, Deserialize)]
 struct PaginationParams {
     cursor: Option<String>,
     limit: Option<usize>,
+    search: Option<String>,
+    /// Exact email filter (case-insensitive, applied after normalisation).
+    email: Option<String>,
+    /// Substring filter on `display_name` (case-insensitive).
+    username: Option<String>,
+    /// Status filter: accepts `"active"`, `"disabled"`, or `"pending_verification"`.
+    status: Option<String>,
 }
 
 impl PaginationParams {
@@ -1509,7 +1910,8 @@ impl PaginationParams {
     }
 }
 
-/// Admin: list users (paginated).
+/// Admin: list users (paginated), search when `?search=<q>` is present, or
+/// field-filter when `?email=`, `?username=`, or `?status=` are present.
 async fn admin_list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1519,6 +1921,102 @@ async fn admin_list_users(
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
+
+    if let Some(q) = &params.search {
+        // Short queries return empty results immediately (no index hit).
+        if q.len() < 2 {
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({"items": [], "next_cursor": null})),
+            )
+                .into_response();
+        }
+        return match state
+            .identity
+            .search_users(&auth.realm_id, q, params.effective_limit())
+        {
+            Ok(users) => {
+                let items: Vec<serde_json::Value> = users
+                    .iter()
+                    .map(|u| proto_to_rest_json(&pb::User::from(u)))
+                    .collect();
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"items": items, "next_cursor": null})),
+                )
+                    .into_response()
+            }
+            Err(e) => identity_error_to_response(&e).into_response(),
+        };
+    }
+
+    let has_field_filters =
+        params.email.is_some() || params.username.is_some() || params.status.is_some();
+
+    if has_field_filters {
+        // Parse the status filter value if provided.
+        let status_filter = if let Some(s) = &params.status {
+            let parsed = match s.as_str() {
+                "active" => Some(crate::identity::UserStatus::Active),
+                "disabled" => Some(crate::identity::UserStatus::Disabled),
+                "pending_verification" => Some(crate::identity::UserStatus::PendingVerification),
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "invalid status filter; expected active, disabled, or pending_verification"})),
+                    )
+                        .into_response();
+                }
+            };
+            parsed
+        } else {
+            None
+        };
+
+        // Full scan up to a bounded cap, then apply predicates. Filtered results
+        // don't support cursor pagination — next_cursor is always null.
+        const FILTER_SCAN_CAP: usize = 10_000;
+        let all_users = match state
+            .identity
+            .list_users(&auth.realm_id, None, FILTER_SCAN_CAP)
+        {
+            Ok(page) => page.items,
+            Err(e) => return identity_error_to_response(&e).into_response(),
+        };
+
+        let email_norm = params.email.as_deref().map(|e| e.to_lowercase());
+        let username_lower = params.username.as_deref().map(|u| u.to_lowercase());
+
+        let items: Vec<serde_json::Value> = all_users
+            .iter()
+            .filter(|u| {
+                if let Some(ref ef) = email_norm {
+                    if u.email() != ef.as_str() {
+                        return false;
+                    }
+                }
+                if let Some(ref uf) = username_lower {
+                    if !u.display_name().to_lowercase().contains(uf.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(sf) = status_filter {
+                    if u.status() != sf {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(params.effective_limit())
+            .map(|u| proto_to_rest_json(&pb::User::from(u)))
+            .collect();
+
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"items": items, "next_cursor": null})),
+        )
+            .into_response();
+    }
 
     match state.identity.list_users(
         &auth.realm_id,
@@ -1532,6 +2030,178 @@ async fn admin_list_users(
             .into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+/// Import request body — one entry per user to import.
+#[derive(Debug, Deserialize)]
+struct ImportUsersBody {
+    users: Vec<ImportUserEntry>,
+}
+
+/// Single user entry in a bulk import request.
+#[derive(Debug, Deserialize)]
+struct ImportUserEntry {
+    email: String,
+    display_name: String,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    /// Accepts `"active"`, `"disabled"`, `"suspended"`, or `"pending_verification"`.
+    status: Option<String>,
+    #[serde(default)]
+    attributes: std::collections::BTreeMap<String, String>,
+}
+
+/// Admin: bulk import users (`POST /admin/users/import`).
+async fn admin_import_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<ImportUsersBody>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    if body.users.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "users array must not be empty"})),
+        )
+            .into_response();
+    }
+
+    let mut imported = 0u32;
+    let mut failed = 0u32;
+    let mut results = Vec::with_capacity(body.users.len());
+
+    for entry in &body.users {
+        let status = match entry.status.as_deref().unwrap_or("active") {
+            "active" => crate::identity::UserStatus::Active,
+            "disabled" => crate::identity::UserStatus::Disabled,
+            "pending_verification" => crate::identity::UserStatus::PendingVerification,
+            other => {
+                failed += 1;
+                results.push(serde_json::json!({
+                    "email": entry.email,
+                    "error": format!("unknown status: {other}")
+                }));
+                continue;
+            }
+        };
+
+        let req = crate::identity::ImportUserRequest {
+            id: None,
+            email: entry.email.clone(),
+            display_name: entry.display_name.clone(),
+            first_name: entry.first_name.clone(),
+            last_name: entry.last_name.clone(),
+            status,
+            credential: None,
+            attributes: entry.attributes.clone(),
+        };
+
+        match state.identity.import_user(&auth.realm_id, &req) {
+            Ok(u) => {
+                imported += 1;
+                results.push(serde_json::json!({
+                    "email": entry.email,
+                    "id": u.id().as_uuid().to_string(),
+                    "error": null
+                }));
+            }
+            Err(e) => {
+                failed += 1;
+                results.push(serde_json::json!({
+                    "email": entry.email,
+                    "error": e.to_string()
+                }));
+            }
+        }
+    }
+
+    let total = imported + failed;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "imported": imported,
+            "failed": failed,
+            "total": total,
+            "results": results
+        })),
+    )
+        .into_response()
+}
+
+/// Export format query parameter.
+#[derive(Debug, Deserialize)]
+struct ExportParams {
+    format: Option<String>,
+}
+
+/// Admin: bulk export users (`GET /admin/users/export`).
+///
+/// Default format is JSON (`{"count": N, "users": [...]}`).
+/// Pass `?format=ndjson` for newline-delimited JSON (one object per line).
+async fn admin_export_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<ExportParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    // Collect all users by draining pages.
+    let mut all_users: Vec<crate::identity::User> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = match state
+            .identity
+            .list_users(&auth.realm_id, cursor.as_deref(), 100)
+        {
+            Ok(p) => p,
+            Err(e) => return identity_error_to_response(&e).into_response(),
+        };
+        all_users.extend(page.items);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    let user_to_json = |u: &crate::identity::User| -> serde_json::Value {
+        let mut v = proto_to_rest_json(&pb::User::from(u));
+        if !u.attributes().is_empty() {
+            v["attributes"] = serde_json::json!(u.attributes());
+        }
+        v
+    };
+
+    let ndjson = params.format.as_deref() == Some("ndjson");
+    if ndjson {
+        let mut body = String::new();
+        for u in &all_users {
+            body.push_str(&serde_json::to_string(&user_to_json(u)).unwrap_or_default());
+            body.push('\n');
+        }
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
+            body,
+        )
+            .into_response();
+    }
+
+    let users: Vec<serde_json::Value> = all_users.iter().map(user_to_json).collect();
+    let count = users.len();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"count": count, "users": users})),
+    )
+        .into_response()
 }
 
 /// Admin: create user.
@@ -1956,6 +2626,358 @@ async fn admin_delete_realm(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Realm branding & email-template admin API
+// ---------------------------------------------------------------------------
+
+/// Request body for `PATCH /realms/{id}/branding`.
+#[derive(Debug, Deserialize)]
+struct PatchRealmBrandingRequest {
+    #[serde(default)]
+    logo_url: Option<String>,
+    #[serde(default)]
+    primary_color: Option<String>,
+    /// Email-level branding (accent_color, support_email, custom_footer_text).
+    #[serde(default)]
+    email_branding: Option<EmailBranding>,
+}
+
+/// Response body for `GET /realms/{id}/branding`.
+#[derive(Debug, Serialize)]
+struct RealmBrandingResponse {
+    logo_url: Option<String>,
+    primary_color: Option<String>,
+    email_branding: Option<EmailBranding>,
+}
+
+/// Parses a realm UUID from a path segment, returning 400 on bad input.
+fn parse_realm_id(id: &str) -> Result<RealmId, Response> {
+    id.parse::<uuid::Uuid>().map(RealmId::new).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid realm ID"})),
+        )
+            .into_response()
+    })
+}
+
+/// Resolves a live realm by ID, returning 404 when absent.
+fn require_realm(state: &AppState, realm_id: &RealmId) -> Result<crate::identity::Realm, Response> {
+    match state.identity.get_realm(realm_id) {
+        Ok(Some(r)) => Ok(r),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "realm not found"})),
+        )
+            .into_response()),
+        Err(e) => Err(identity_error_to_response(&e).into_response()),
+    }
+}
+
+/// `GET /realms/{id}/branding` — return current per-realm branding settings.
+async fn admin_get_realm_branding(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = extract_admin_auth(&headers, &state) {
+        return e.into_response();
+    }
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let cfg = realm.config();
+    (
+        StatusCode::OK,
+        Json(RealmBrandingResponse {
+            logo_url: cfg.logo_url.clone(),
+            primary_color: cfg.primary_color.clone(),
+            email_branding: cfg.email_branding.clone(),
+        }),
+    )
+        .into_response()
+}
+
+/// `PATCH /realms/{id}/branding` — update per-realm branding settings.
+///
+/// Only fields present in the request body are updated; omitted fields are
+/// left unchanged. Use `null` to clear a previously-set value.
+async fn admin_patch_realm_branding(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<PatchRealmBrandingRequest>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    // Validate hex color format if provided.
+    if let Some(color) = body.primary_color.as_deref() {
+        if !color.starts_with('#') || (color.len() != 4 && color.len() != 7) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error": "invalid_color",
+                    "message": "primary_color must be a CSS hex color (#RGB or #RRGGBB)"
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let mut new_config = realm.config().clone();
+    // Merge: explicit `Some` overwrites; `None` in request body clears.
+    // The PATCH semantics here treat the request as a partial update where
+    // serde's `#[serde(default)]` delivers `None` for absent fields — so
+    // we only overwrite when the caller explicitly sent the field.
+    // Use JSON `null` to explicitly clear a field.
+    if body.logo_url.is_some() {
+        new_config.logo_url = body.logo_url;
+    }
+    if body.primary_color.is_some() {
+        new_config.primary_color = body.primary_color;
+    }
+    if body.email_branding.is_some() {
+        new_config.email_branding = body.email_branding;
+    }
+
+    match state.identity.update_realm(
+        &realm_id,
+        &UpdateRealmRequest {
+            config: Some(new_config),
+            ..UpdateRealmRequest::default()
+        },
+    ) {
+        Ok(updated) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"via": "admin_api", "op": "patch_branding"})),
+            });
+            let cfg = updated.config();
+            (
+                StatusCode::OK,
+                Json(RealmBrandingResponse {
+                    logo_url: cfg.logo_url.clone(),
+                    primary_color: cfg.primary_color.clone(),
+                    email_branding: cfg.email_branding.clone(),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// `GET /realms/{id}/email-templates` — list all stored template overrides.
+async fn admin_list_realm_email_templates(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = extract_admin_auth(&headers, &state) {
+        return e.into_response();
+    }
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    (StatusCode::OK, Json(realm.config().email_templates.clone())).into_response()
+}
+
+/// `GET /realms/{id}/email-templates/{kind}` — get a single stored template.
+async fn admin_get_realm_email_template(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, kind)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(e) = extract_admin_auth(&headers, &state) {
+        return e.into_response();
+    }
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    match realm.config().email_templates.get(&kind) {
+        Some(tmpl) => (StatusCode::OK, Json(tmpl.clone())).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "template not found"})),
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /realms/{id}/email-templates/{kind}` — upsert a stored template.
+///
+/// Validates that all `{{placeholder}}` tokens in the body are in the
+/// allowlist for the given template kind before persisting.
+async fn admin_put_realm_email_template(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, kind)): Path<(String, String)>,
+    Json(body): Json<LocalizedEmailTemplate>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    // Validate template kind and placeholders in all body fields.
+    let fields_to_validate: Vec<(&str, &str)> = {
+        let mut v = Vec::new();
+        if let Some(ref s) = body.default.subject {
+            v.push(("default.subject", s.as_str()));
+        }
+        if let Some(ref s) = body.default.html_body {
+            v.push(("default.html_body", s.as_str()));
+        }
+        if let Some(ref s) = body.default.text_body {
+            v.push(("default.text_body", s.as_str()));
+        }
+        for (locale, lb) in &body.locales {
+            if let Some(ref s) = lb.subject {
+                v.push((locale.as_str(), s.as_str()));
+            }
+            if let Some(ref s) = lb.html_body {
+                v.push((locale.as_str(), s.as_str()));
+            }
+            if let Some(ref s) = lb.text_body {
+                v.push((locale.as_str(), s.as_str()));
+            }
+        }
+        v
+    };
+
+    for (_field, text) in &fields_to_validate {
+        if let Err(e) = validate_email_template(&kind, text) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error": "invalid_template",
+                    "message": format!("{e}")
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let mut new_config = realm.config().clone();
+    new_config.email_templates.insert(kind.clone(), body);
+
+    match state.identity.update_realm(
+        &realm_id,
+        &UpdateRealmRequest {
+            config: Some(new_config),
+            ..UpdateRealmRequest::default()
+        },
+    ) {
+        Ok(updated) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(
+                    serde_json::json!({"via": "admin_api", "op": "put_email_template", "kind": kind}),
+                ),
+            });
+            match updated.config().email_templates.get(&kind) {
+                Some(tmpl) => (StatusCode::OK, Json(tmpl.clone())).into_response(),
+                None => StatusCode::NO_CONTENT.into_response(),
+            }
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// `DELETE /realms/{id}/email-templates/{kind}` — remove a stored template override.
+async fn admin_delete_realm_email_template(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, kind)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let realm = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    if !realm.config().email_templates.contains_key(&kind) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "template not found"})),
+        )
+            .into_response();
+    }
+    let mut new_config = realm.config().clone();
+    new_config.email_templates.remove(&kind);
+
+    match state.identity.update_realm(
+        &realm_id,
+        &UpdateRealmRequest {
+            config: Some(new_config),
+            ..UpdateRealmRequest::default()
+        },
+    ) {
+        Ok(_) => {
+            let _ = state.audit.append(&CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(
+                    serde_json::json!({"via": "admin_api", "op": "delete_email_template", "kind": kind}),
+                ),
+            });
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
 /// Admin: list clients (paginated).
 async fn admin_list_clients(
     State(state): State<Arc<AppState>>,
@@ -2055,12 +3077,47 @@ async fn admin_get_client(
     }
 }
 
+/// JSON body for `PUT /admin/applications/{id}`.
+///
+/// Extends the proto `UpdateClientRequest` with logout URI fields that are
+/// not (yet) in the proto schema.
+#[derive(Debug, Deserialize, Default)]
+struct AdminUpdateClientBody {
+    client_name: Option<String>,
+    #[serde(default)]
+    redirect_uris: Vec<String>,
+    #[serde(default)]
+    grant_types: Vec<String>,
+    /// Back-channel logout URI. `null` clears it; omit to leave unchanged.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    backchannel_logout_uri: Option<Option<String>>,
+    /// Front-channel logout URI. `null` clears it; omit to leave unchanged.
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    frontchannel_logout_uri: Option<Option<String>>,
+    /// Replaces the allowed post-logout redirect URI list.
+    post_logout_redirect_uris: Option<Vec<String>>,
+}
+
+/// Deserializes an optional nullable string field.
+///
+/// - Field absent → `None` (leave unchanged)
+/// - `null` → `Some(None)` (clear the field)
+/// - `"uri"` → `Some(Some("uri"))` (set to value)
+fn deserialize_nullable_string<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    // Option<Option<String>> naturally handles null vs absent vs string.
+    Option::<Option<String>>::deserialize(d)
+}
+
 /// Admin: update client by ID.
 async fn admin_update_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<pb::UpdateClientRequest>,
+    Json(body): Json<AdminUpdateClientBody>,
 ) -> impl IntoResponse {
     let auth = match extract_admin_auth(&headers, &state) {
         Ok(a) => a,
@@ -2078,7 +3135,23 @@ async fn admin_update_client(
         }
     };
 
-    let request = crate::identity::UpdateClientRequest::from(body);
+    let request = crate::identity::UpdateClientRequest {
+        client_name: body.client_name,
+        redirect_uris: if body.redirect_uris.is_empty() {
+            None
+        } else {
+            Some(body.redirect_uris)
+        },
+        grant_types: if body.grant_types.is_empty() {
+            None
+        } else {
+            Some(body.grant_types)
+        },
+        backchannel_logout_uri: body.backchannel_logout_uri,
+        frontchannel_logout_uri: body.frontchannel_logout_uri,
+        post_logout_redirect_uris: body.post_logout_redirect_uris,
+        ..Default::default()
+    };
 
     match state
         .identity
@@ -3188,9 +4261,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 
 fn b64_decode(s: &str) -> Result<Vec<u8>, (StatusCode, Json<serde_json::Value>)> {
-    URL_SAFE_NO_PAD
-        .decode(s)
-        .map_err(|e| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("invalid base64url: {e}")}))))
+    URL_SAFE_NO_PAD.decode(s).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("invalid base64url: {e}")})),
+        )
+    })
 }
 
 fn b64_encode(data: &[u8]) -> String {
@@ -3298,7 +4374,10 @@ async fn webauthn_register_begin(
         rp_id: body.rp_id.unwrap_or_default(),
         discoverable: body.discoverable.unwrap_or(true),
     };
-    match state.identity.start_webauthn_registration(&realm_id, &user_id, &options) {
+    match state
+        .identity
+        .start_webauthn_registration(&realm_id, &user_id, &options)
+    {
         Ok(challenge) => (
             StatusCode::OK,
             Json(WbrBeginRes {
@@ -3533,6 +4612,974 @@ async fn webauthn_delete_credential(
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
     }
+}
+
+// ===== Per-realm OIDC routes ============================================================
+//
+// Each handler resolves the realm by URL-path name and forwards to the same
+// underlying engine methods as the global routes. Token `iss` claims are
+// automatically scoped to `{base_issuer}/realms/{name}`.
+
+fn resolve_realm_by_name(
+    state: &AppState,
+    name: &str,
+) -> Result<RealmId, axum::response::Response> {
+    match state.identity.get_realm_by_name(name) {
+        Ok(Some(realm)) => Ok(realm.id().clone()),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "realm_not_found"})),
+        )
+            .into_response()),
+        Err(e) => {
+            tracing::warn!(error = %e, realm_name = %name, "realm lookup failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal_error"})),
+            )
+                .into_response())
+        }
+    }
+}
+
+async fn realm_oidc_discovery(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    match state.identity.realm_oidc_discovery(&realm_id) {
+        Ok(doc) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::OidcDiscoveryDocument::from(&doc))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_jwks(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    match state.identity.realm_jwks(&realm_id) {
+        Ok(doc) => (StatusCode::OK, Json(doc)).into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_authorize(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<pb::AuthorizationRequest>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let request = match proto_authorize_to_domain(body) {
+        Ok(r) => r,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response()
+        }
+    };
+    match state.identity.authorize(&realm_id, &request) {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::AuthorizationResponse::from(
+                &response,
+            ))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn realm_token_exchange(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<HttpTokenRequest>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
+    match grant_type {
+        "authorization_code" => {
+            let (Some(code), Some(redirect_uri)) = (body.code, body.redirect_uri) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "code and redirect_uri required"})),
+                )
+                    .into_response();
+            };
+            let proto_req = pb::TokenExchangeRequest {
+                client_id: body.client_id,
+                code,
+                redirect_uri,
+                code_verifier: body.code_verifier,
+            };
+            let request = match proto_token_exchange_to_domain(&proto_req) {
+                Ok(r) => r,
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": msg})),
+                    )
+                        .into_response()
+                }
+            };
+            match state
+                .identity
+                .exchange_authorization_code(&realm_id, &request)
+            {
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                )
+                    .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "refresh_token" => {
+            let Some(refresh_token) = body.refresh_token else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "refresh_token required"})),
+                )
+                    .into_response();
+            };
+            match state.identity.refresh_tokens(&realm_id, &refresh_token) {
+                Ok(tokens) => {
+                    let resp = pb::OidcTokenResponse {
+                        access_token: tokens.access_token().to_string(),
+                        id_token: String::new(),
+                        token_type: "Bearer".to_string(),
+                        expires_in: 900,
+                        refresh_token: tokens.refresh_token().to_string(),
+                    };
+                    (StatusCode::OK, Json(proto_to_rest_json(&resp))).into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "client_credentials" => {
+            let proto_req = pb::ClientCredentialsRequest {
+                client_id: body.client_id,
+                client_secret: body.client_secret.unwrap_or_default(),
+                scope: body.scope,
+            };
+            let request = match proto_client_creds_to_domain(&proto_req) {
+                Ok(r) => r,
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": msg})),
+                    )
+                        .into_response()
+                }
+            };
+            match state.identity.client_credentials_token(&realm_id, &request) {
+                Ok(response) => {
+                    let resp = pb::OidcTokenResponse {
+                        access_token: response.access_token().to_string(),
+                        id_token: String::new(),
+                        token_type: "Bearer".to_string(),
+                        expires_in: response.expires_in(),
+                        refresh_token: String::new(),
+                    };
+                    (StatusCode::OK, Json(proto_to_rest_json(&resp))).into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "urn:ietf:params:oauth:grant-type:device_code" => {
+            let Some(device_code) = body.device_code else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "device_code required"})),
+                )
+                    .into_response();
+            };
+            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+                Ok(u) => ClientId::new(u),
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "invalid client_id UUID"})),
+                    )
+                        .into_response()
+                }
+            };
+            match state
+                .identity
+                .poll_device_token(&realm_id, &device_code, &client_id)
+            {
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
+                )
+                    .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("unsupported grant_type: {other}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn realm_token_revocation(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let token = match body.get("token").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "token required"})),
+            )
+                .into_response()
+        }
+    };
+    let request = crate::identity::TokenRevocationRequest {
+        token,
+        token_type_hint: None,
+    };
+    match state.identity.revoke_token(&realm_id, &request) {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_token_introspection(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let token = match body.get("token").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "token required"})),
+            )
+                .into_response()
+        }
+    };
+    let request = crate::identity::TokenIntrospectionRequest {
+        token,
+        token_type_hint: None,
+    };
+    match state.identity.introspect_token(&realm_id, &request) {
+        Ok(info) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::IntrospectionResponse::from(&info))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_userinfo(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let Some(token) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid_token"})),
+        )
+            .into_response();
+    };
+    match state.identity.userinfo(&realm_id, token) {
+        Ok(info) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::UserInfoResponse::from(&info))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_device_authorization(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let client_id_str = match body.get("client_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "client_id required"})),
+            )
+                .into_response()
+        }
+    };
+    let client_id = match client_id_str.parse::<uuid::Uuid>() {
+        Ok(u) => ClientId::new(u),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid client_id UUID"})),
+            )
+                .into_response()
+        }
+    };
+    let request = crate::identity::DeviceAuthorizationRequest {
+        client_id,
+        scope: body
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    };
+    match state.identity.device_authorize(&realm_id, &request) {
+        Ok(response) => (
+            StatusCode::OK,
+            Json(proto_to_rest_json(&pb::DeviceAuthorizationResponse::from(
+                &response,
+            ))),
+        )
+            .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+async fn realm_register_client_dynamic(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let realm = match state.identity.get_realm(&realm_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "realm not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+    let dcr_policy = realm.config().dcr_policy.clone().unwrap_or_default();
+    if !matches!(dcr_policy, crate::identity::DcrPolicy::Open) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "dynamic client registration is disabled for this realm"}),
+            ),
+        )
+            .into_response();
+    }
+    let client_name = body
+        .get("client_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Dynamic Client")
+        .to_string();
+    let redirect_uris: Vec<String> = body
+        .get("redirect_uris")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let base_slug = client_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let slug = generate_unique_slug(state.clone(), &realm_id, &base_slug).await;
+    let request = crate::identity::RegisterClientRequest {
+        client_name,
+        redirect_uris,
+        client_secret: None,
+        grant_types: vec!["authorization_code".to_string()],
+        require_consent: true,
+        client_logo_url: None,
+        slug: Some(slug),
+        trust_level: crate::identity::ClientTrustLevel::ThirdParty,
+        declared_scopes: vec![
+            "openid".to_string(),
+            "profile".to_string(),
+            "email".to_string(),
+        ],
+        consent_spans_orgs: false,
+    };
+    match state.identity.register_client(&realm_id, &request) {
+        Ok(client) => {
+            let resp = serde_json::json!({
+                "client_id": client.client_id().to_string(),
+                "client_name": client.client_name(),
+                "redirect_uris": client.redirect_uris(),
+                "grant_types": client.grant_types(),
+            });
+            (StatusCode::CREATED, Json(resp)).into_response()
+        }
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+// === Webhook management (admin) ===
+
+/// JSON body for `POST /admin/webhooks`.
+#[derive(Debug, Deserialize)]
+struct CreateWebhookBody {
+    url: String,
+    secret: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    event_filters: Vec<String>,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// JSON body for `PUT /admin/webhooks/{id}`.
+#[derive(Debug, Deserialize)]
+struct UpdateWebhookBody {
+    url: Option<String>,
+    secret: Option<String>,
+    enabled: Option<bool>,
+    event_filters: Option<Vec<String>>,
+}
+
+/// Query params for `GET /admin/webhooks`.
+#[derive(Debug, Deserialize, Default)]
+struct WebhookListParams {
+    enabled_only: Option<bool>,
+}
+
+/// Query params for `GET /admin/webhooks/{id}/deliveries`.
+#[derive(Debug, Deserialize, Default)]
+struct DeliveryListParams {
+    limit: Option<usize>,
+}
+
+fn require_webhook_engine(
+    state: &AppState,
+) -> Result<Arc<dyn WebhookEngine>, (StatusCode, Json<serde_json::Value>)> {
+    state.webhook.clone().ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(serde_json::json!({"error": "webhooks not configured"})),
+        )
+    })
+}
+
+fn parse_event_filters(
+    raw: &[String],
+) -> Result<Vec<crate::audit::AuditAction>, (StatusCode, Json<serde_json::Value>)> {
+    raw.iter()
+        .map(|s| {
+            s.parse::<crate::audit::AuditAction>().map_err(|_| {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({"error": format!("unknown event type: {s}")})),
+                )
+            })
+        })
+        .collect()
+}
+
+/// `GET /admin/webhooks` — list webhook subscriptions for the authenticated realm.
+async fn admin_list_webhooks(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<WebhookListParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+
+    let query = WebhookQuery {
+        realm_id: auth.realm_id,
+        enabled_only: params.enabled_only.unwrap_or(false),
+    };
+
+    match engine.list(&query) {
+        Ok(subs) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "webhooks": subs })),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("list webhooks failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "list webhooks failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /admin/webhooks` — create a webhook subscription.
+async fn admin_create_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CreateWebhookBody>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+
+    let event_filters = match parse_event_filters(&body.event_filters) {
+        Ok(f) => f,
+        Err(e) => return e.into_response(),
+    };
+
+    let req = CreateWebhookRequest {
+        realm_id: auth.realm_id,
+        url: body.url,
+        secret: body.secret,
+        enabled: body.enabled,
+        event_filters,
+    };
+
+    match engine.create(&req) {
+        Ok(sub) => (StatusCode::CREATED, Json(sub)).into_response(),
+        Err(crate::webhook::WebhookError::InvalidUrl { reason }) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": reason})),
+        )
+            .into_response(),
+        Err(crate::webhook::WebhookError::SecretTooShort) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "secret must be at least 16 bytes"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("create webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "create webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /admin/webhooks/{id}` — fetch a single webhook subscription.
+async fn admin_get_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    match engine.get(&auth.realm_id, &webhook_id) {
+        Ok(sub) => (StatusCode::OK, Json(sub)).into_response(),
+        Err(crate::webhook::WebhookError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "webhook not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("get webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "get webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `PUT /admin/webhooks/{id}` — update a webhook subscription.
+async fn admin_update_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateWebhookBody>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let event_filters = match body.event_filters.as_deref() {
+        Some(raw) => match parse_event_filters(raw) {
+            Ok(f) => Some(f),
+            Err(e) => return e.into_response(),
+        },
+        None => None,
+    };
+
+    let req = UpdateWebhookRequest {
+        url: body.url,
+        secret: body.secret,
+        enabled: body.enabled,
+        event_filters,
+    };
+
+    match engine.update(&auth.realm_id, &webhook_id, &req) {
+        Ok(sub) => (StatusCode::OK, Json(sub)).into_response(),
+        Err(crate::webhook::WebhookError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "webhook not found"})),
+        )
+            .into_response(),
+        Err(crate::webhook::WebhookError::InvalidUrl { reason }) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": reason})),
+        )
+            .into_response(),
+        Err(crate::webhook::WebhookError::SecretTooShort) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "secret must be at least 16 bytes"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("update webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "update webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `DELETE /admin/webhooks/{id}` — delete a webhook subscription.
+async fn admin_delete_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    match engine.delete(&auth.realm_id, &webhook_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(crate::webhook::WebhookError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "webhook not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("delete webhook failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "delete webhook failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /admin/webhooks/{id}/deliveries` — list delivery log for a subscription.
+async fn admin_list_webhook_deliveries(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(params): Query<DeliveryListParams>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    let engine = match require_webhook_engine(&state) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+    let webhook_id = match parse_webhook_id(&id) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let query = DeliveryQuery {
+        realm_id: auth.realm_id,
+        webhook_id: Some(webhook_id),
+        limit: Some(params.limit.unwrap_or(50).min(200)),
+    };
+
+    match engine.list_deliveries(&query) {
+        Ok(deliveries) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "deliveries": deliveries })),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("list webhook deliveries failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "list deliveries failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn parse_webhook_id(s: &str) -> Result<WebhookId, (StatusCode, Json<serde_json::Value>)> {
+    // IDs arrive either as bare UUIDs or as "wh_{uuid}" — strip the prefix.
+    let uuid_str = s.strip_prefix("wh_").unwrap_or(s);
+    uuid_str
+        .parse::<uuid::Uuid>()
+        .map(WebhookId::new)
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid webhook id"})),
+            )
+        })
+}
+
+// === RP-Initiated Logout (OIDC RPL §2 + OIDC BCL §2.5) ===
+
+/// Query parameters for `GET /end_session`.
+#[derive(Debug, Deserialize, Default)]
+struct EndSessionParams {
+    /// ID token previously issued to the RP. Accepted even when expired.
+    id_token_hint: Option<String>,
+    /// Post-logout URI (must be registered on the client when `client_id` is present).
+    post_logout_redirect_uri: Option<String>,
+    /// Client ID — used to validate `post_logout_redirect_uri`.
+    client_id: Option<String>,
+    /// Opaque state — echoed to `post_logout_redirect_uri` as `?state=…`.
+    state: Option<String>,
+}
+
+/// `GET /end_session` — RP-initiated logout.
+///
+/// Revokes the session identified by `id_token_hint`, fans out back-channel
+/// logout tokens to all registered RPs, and either redirects to
+/// `post_logout_redirect_uri` or renders a front-channel logout page.
+///
+/// All parameters are optional; when neither `id_token_hint` nor a session
+/// can be inferred, the endpoint returns 400.
+async fn end_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<EndSessionParams>,
+) -> impl IntoResponse {
+    let realm_id = match extract_realm_id(&headers) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+
+    let client_id = params
+        .client_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .map(crate::core::ClientId::new);
+
+    let request = crate::identity::oidc::RpLogoutRequest {
+        id_token_hint: params.id_token_hint,
+        session_id: None,
+        post_logout_redirect_uri: params.post_logout_redirect_uri.clone(),
+        client_id,
+        state: params.state.clone(),
+    };
+
+    let result = match state.identity.initiate_logout(&realm_id, &request) {
+        Ok(r) => r,
+        Err(crate::identity::IdentityError::SessionNotFound) => {
+            // Session already gone — still redirect cleanly.
+            return end_session_redirect(params.post_logout_redirect_uri, params.state);
+        }
+        Err(crate::identity::IdentityError::InvalidToken) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid_request", "error_description": "id_token_hint could not be parsed"})),
+            )
+                .into_response();
+        }
+        Err(e) => return identity_error_to_response(&e).into_response(),
+    };
+
+    // Fan out back-channel logout notifications asynchronously (fire-and-forget).
+    for target in result.backchannel_targets {
+        tokio::spawn(async move {
+            let client = HttpClient::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default();
+            let outcome = client
+                .post(&target.uri)
+                .form(&[("logout_token", &target.logout_token)])
+                .send()
+                .await;
+            if let Err(e) = outcome {
+                tracing::warn!(uri = %target.uri, error = %e, "backchannel logout delivery failed");
+            }
+        });
+    }
+
+    // Serve front-channel logout page (with iframes) or redirect directly.
+    if !result.frontchannel_targets.is_empty() {
+        let sid = result.session_id.as_uuid().to_string();
+        let issuer_enc =
+            form_urlencoded::byte_serialize(state.identity.oidc_discovery().issuer.as_bytes())
+                .collect::<String>();
+        let sid_enc = form_urlencoded::byte_serialize(sid.as_bytes()).collect::<String>();
+
+        let iframes: Vec<String> = result
+            .frontchannel_targets
+            .iter()
+            .map(|t| {
+                // Append iss and sid query params per OIDC FCL spec.
+                let sep = if t.uri.contains('?') { '&' } else { '?' };
+                format!(
+                    r#"<iframe src="{uri}{sep}iss={issuer}&sid={sid}" style="display:none;width:0;height:0;border:0"></iframe>"#,
+                    uri = html_escape(&t.uri),
+                    sep = sep,
+                    issuer = issuer_enc,
+                    sid = sid_enc,
+                )
+            })
+            .collect();
+
+        let redirect_meta = result
+            .post_logout_redirect_uri
+            .as_deref()
+            .map(|uri| {
+                let escaped = html_escape(uri);
+                format!(r#"<meta http-equiv="refresh" content="2;url={escaped}">"#)
+            })
+            .unwrap_or_default();
+
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signing out…</title>
+{redirect_meta}
+</head>
+<body>
+{iframes}
+</body>
+</html>"#,
+            redirect_meta = redirect_meta,
+            iframes = iframes.join("\n"),
+        );
+
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response();
+    }
+
+    end_session_redirect(result.post_logout_redirect_uri, result.state)
+}
+
+/// Builds the post-logout redirect response, appending `state` when present.
+fn end_session_redirect(uri: Option<String>, state: Option<String>) -> Response {
+    match uri {
+        None => (
+            StatusCode::OK,
+            Json(serde_json::json!({"message": "logged out"})),
+        )
+            .into_response(),
+        Some(base_uri) => {
+            let redirect_uri = match state {
+                None => base_uri,
+                Some(s) => {
+                    let sep = if base_uri.contains('?') { '&' } else { '?' };
+                    let state_enc =
+                        form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+                    format!("{base_uri}{sep}state={state_enc}")
+                }
+            };
+            Redirect::to(&redirect_uri).into_response()
+        }
+    }
+}
+
+/// HTML-escapes the five special characters to prevent XSS in inline HTML.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }
 
 #[cfg(test)]

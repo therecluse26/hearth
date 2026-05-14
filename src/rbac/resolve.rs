@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::core::{OrganizationId, RealmId, UserId, Uri};
+use crate::core::{OrganizationId, RealmId, Uri, UserId};
 use crate::identity::ClientTrustLevel;
 use crate::rbac::registry::{classify_scope_string, ScopeKind};
 
@@ -31,6 +31,12 @@ pub(crate) const MAX_GROUP_DEPTH: usize = 10;
 pub(crate) const MAX_GROUP_BREADTH: usize = 1000;
 /// Maximum depth for role-composition DFS.
 pub(crate) const MAX_ROLE_DEPTH: usize = 10;
+/// Maximum permissions in a single resolved token (AUTHORIZATION.md § 2.6).
+pub(crate) const MAX_PERMISSIONS_PER_TOKEN: usize = 100;
+/// Maximum role names in a single resolved token (AUTHORIZATION.md § 2.6).
+pub(crate) const MAX_ROLES_PER_TOKEN: usize = 50;
+/// Maximum group names in a single resolved token (AUTHORIZATION.md § 2.6).
+pub(crate) const MAX_GROUPS_PER_TOKEN: usize = 50;
 
 /// Rate window for `OrphanedReferenceSkipped` events: at most one emit per
 /// `(realm, reference)` per hour.
@@ -258,6 +264,30 @@ pub(crate) fn resolve_permissions<R: Resolver + ?Sized>(
         }
     }
 
+    // ----- Step 6: token-size caps (AUTHORIZATION.md § 2.6) -----
+    // Hard caps prevent oversized JWTs from escaping the issuance path.
+    if permissions.len() > MAX_PERMISSIONS_PER_TOKEN {
+        return Err(RbacError::TokenSizeExceeded {
+            limit: "permissions_per_token".to_string(),
+            limit_value: MAX_PERMISSIONS_PER_TOKEN,
+            actual: permissions.len(),
+        });
+    }
+    if role_names.len() > MAX_ROLES_PER_TOKEN {
+        return Err(RbacError::TokenSizeExceeded {
+            limit: "roles_per_token".to_string(),
+            limit_value: MAX_ROLES_PER_TOKEN,
+            actual: role_names.len(),
+        });
+    }
+    if group_slugs.len() > MAX_GROUPS_PER_TOKEN {
+        return Err(RbacError::TokenSizeExceeded {
+            limit: "groups_per_token".to_string(),
+            limit_value: MAX_GROUPS_PER_TOKEN,
+            actual: group_slugs.len(),
+        });
+    }
+
     Ok(ResolvedPermissions {
         roles: role_names.into_iter().collect(),
         groups: group_slugs.into_iter().collect(),
@@ -335,12 +365,8 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
                 // When resource indicator is present, permission scopes must
                 // belong to the resource's scope bundles' permission lists.
                 if let Some(uri) = resource {
-                    let in_resource_bundles = permission_in_resource_bundles(
-                        resolver,
-                        realm_id,
-                        uri,
-                        scope_str,
-                    )?;
+                    let in_resource_bundles =
+                        permission_in_resource_bundles(resolver, realm_id, uri, scope_str)?;
                     if !in_resource_bundles {
                         if client_trust_level == ClientTrustLevel::ThirdParty {
                             return Err(RbacError::InvalidScope {
@@ -410,12 +436,10 @@ pub(crate) fn resolve_with_scopes<R: Resolver + ?Sized>(
                             });
                         }
                         // FirstParty: silently skip.
-                        continue;
                     }
                     Some(bundle_perms) => {
                         // Full-satisfiability: user must have ALL bundle permissions.
-                        let fully_satisfied =
-                            bundle_perms.iter().all(|p| effective.contains(p));
+                        let fully_satisfied = bundle_perms.iter().all(|p| effective.contains(p));
                         if fully_satisfied {
                             granted_scopes.push(scope.clone());
                             for p in bundle_perms {

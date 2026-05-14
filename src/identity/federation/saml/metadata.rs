@@ -123,7 +123,7 @@ pub fn parse_idp_metadata(xml: &[u8]) -> Result<ParsedIdpMetadata, IdentityError
     loop {
         let ev = reader.read_event_into(&mut buf);
         match ev {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) => {
                 if is_element(e, ns::MD, "EntityDescriptor") && entity_id.is_none() {
                     entity_id = attr(e, "entityID");
                 } else if is_element(e, ns::MD, "IDPSSODescriptor") {

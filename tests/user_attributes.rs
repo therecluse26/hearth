@@ -25,7 +25,7 @@ async fn create_user(h: &common::TestHarness, realm: &RealmId) -> hearth::core::
                 display_name: "Test User".to_string(),
                 first_name: "Test".to_string(),
                 last_name: "User".to_string(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");

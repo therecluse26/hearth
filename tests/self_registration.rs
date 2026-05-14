@@ -297,6 +297,10 @@ async fn signup_enforces_realm_password_policy() {
                     require_uppercase: Some(true),
                     require_number: Some(true),
                     require_special: None,
+                    not_email: None,
+                    not_username: None,
+                    history_depth: None,
+                    max_age_days: None,
                 }),
                 ..RealmConfig::default()
             }),

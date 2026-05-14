@@ -10,8 +10,8 @@ Hearth is pre-1.0. Security fixes are applied to the `main` branch only. Once 1.
 
 Use one of the following channels:
 
-- **GitHub Security Advisories (preferred):** Use the "Report a vulnerability" button on the [Security tab](../../security/advisories/new) of this repository. This opens a private, encrypted channel between you and the maintainers. No GitHub account is required.
-- **Email:** security@hearthdb.dev — PGP key available on request.
+- **GitHub Security Advisories (preferred):** Use the "Report a vulnerability" button on the [Security tab](https://github.com/anthropics/hearth/security/advisories/new) of this repository. This opens a private, encrypted channel between you and the maintainers. No GitHub account is required.
+- **Email:** therecluse26@protonmail.com — PGP key available on request.
 
 ### What to include
 
@@ -84,13 +84,25 @@ A pre-release third-party security audit is in progress. This page will be updat
 |---|---|---|
 | RUSTSEC-2023-0071 | `rsa` | Marvin Attack timing side-channel affects PKCS#1 v1.5 decryption only. Hearth uses the `rsa` crate exclusively for RSA key generation and PKCS#8 serialization — no decryption operations are performed. |
 
+## Encryption at Rest
+
+Encryption at rest is **active** in Hearth 1.0. All data written to disk — WAL records and SST file sections — is encrypted using a three-tier key hierarchy:
+
+1. **Host Key (32 B)** — loaded from `HEARTH_MASTER_KEY` env var or auto-generated to `hearth.host_key` on first start. Protects realm KEKs.
+2. **Realm KEK (32 B per realm)** — stored encrypted in `hearth.keys`; wraps per-file DEKs.
+3. **File DEK (32 B per SST/WAL segment)** — randomly generated per file; stored in the 76-byte encryption header at the start of each file.
+
+Key rotation re-wraps only the DEK header in each file (O(file count), not O(data size)) — the ciphertext on disk is unchanged.
+
+If you self-host Hearth and need to rotate the host key, back up `hearth.host_key` and `hearth.keys` before any rotation operation. Loss of the host key makes all on-disk data permanently unrecoverable.
+
 ## Cryptographic Choices
 
 For transparency, Hearth's core cryptographic primitive selections:
 
 | Purpose | Algorithm | Library |
 |---|---|---|
-| At-rest encryption | AES-256-GCM | `ring` 0.17 |
+| At-rest encryption | AES-256-GCM (3-tier envelope, active in 1.0) | `ring` 0.17 |
 | JWT signing | Ed25519 (EdDSA) | `ring` 0.17 |
 | Password hashing | Argon2id (OWASP params: 19 MiB, 2 iterations, p=1) | `argon2` 0.5 |
 | TLS | TLS 1.2 / 1.3 | `rustls` 0.23 |

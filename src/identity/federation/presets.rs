@@ -99,10 +99,16 @@ mod tests {
 
     #[test]
     fn known_presets_lookup() {
-        assert_eq!(lookup("google").unwrap().kind, IdpKind::Oidc);
-        assert_eq!(lookup("microsoft").unwrap().kind, IdpKind::Oidc);
-        assert_eq!(lookup("apple").unwrap().kind, IdpKind::Oidc);
-        assert_eq!(lookup("github").unwrap().kind, IdpKind::GitHub);
+        assert_eq!(lookup("google").expect("google preset").kind, IdpKind::Oidc);
+        assert_eq!(
+            lookup("microsoft").expect("microsoft preset").kind,
+            IdpKind::Oidc
+        );
+        assert_eq!(lookup("apple").expect("apple preset").kind, IdpKind::Oidc);
+        assert_eq!(
+            lookup("github").expect("github preset").kind,
+            IdpKind::GitHub
+        );
     }
 
     #[test]

@@ -286,14 +286,7 @@ pub fn cookie_value_from_headers<'a>(
         for pair in header_str.split(';') {
             let trimmed = pair.trim();
             if let Some(v) = trimmed.strip_prefix(&prefix) {
-                let ptr = v.as_ptr();
-                let len = v.len();
-                // SAFETY: same argument as `cookie_value` — the slice borrows
-                // from `header_str` which borrows from the `HeaderValue` inside
-                // `headers`, and `headers` lives for `'a`.
-                let s: &'a str =
-                    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
-                return Some(s);
+                return Some(v);
             }
         }
     }
@@ -413,18 +406,7 @@ fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
         for pair in header_str.split(';') {
             let trimmed = pair.trim();
             if let Some(v) = trimmed.strip_prefix(&prefix) {
-                // Transmute lifetime: `v` borrows from `header_str`,
-                // which in turn borrows from `parts`. We mint a
-                // reference bound to `'a` directly.
-                let ptr = v.as_ptr();
-                let len = v.len();
-                // SAFETY: `v` is a slice of `header_str` which is itself
-                // a slice of the underlying `HeaderValue` bytes, and the
-                // `HeaderValue` lives for `'a` inside `parts.headers`.
-                // We preserve the pointer, length, and UTF-8 invariant.
-                let s: &'a str =
-                    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
-                return Some(s);
+                return Some(v);
             }
         }
     }

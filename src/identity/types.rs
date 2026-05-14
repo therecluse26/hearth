@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
 use crate::identity::claims_config::ClaimProfile;
 use crate::identity::credentials::CleartextPassword;
+use crate::identity::email::stored_templates::LocalizedEmailTemplate;
 use crate::identity::email::EmailBranding;
 use crate::identity::federation::LinkMode;
 use crate::rbac::{Group, PermissionDefinition, ProtectedResource, Role, ScopeBundle};
@@ -454,6 +455,14 @@ pub struct PasswordPolicy {
     pub require_number: Option<bool>,
     /// Require at least one special character.
     pub require_special: Option<bool>,
+    /// Password must not be equal to or contain the user's username/display name.
+    pub not_username: Option<bool>,
+    /// Password must not be equal to or contain the user's email address (local part).
+    pub not_email: Option<bool>,
+    /// Number of previous passwords to retain and reject on reuse. 0 or `None` disables.
+    pub history_depth: Option<usize>,
+    /// Maximum password age in days before the user must rotate. `None` disables expiry.
+    pub max_age_days: Option<u32>,
 }
 
 /// Per-realm configuration overrides.
@@ -469,6 +478,19 @@ pub struct RealmConfig {
     pub password_time_cost: Option<u32>,
     /// Per-realm email branding overrides.
     pub email_branding: Option<EmailBranding>,
+    /// Per-realm logo URL override. When set, overrides the global
+    /// `branding.logo_url` in outbound emails for this realm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
+    /// Per-realm primary/accent color (hex, e.g. `"#E85D04"`).
+    /// Overrides `EmailBranding.accent_color` when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_color: Option<String>,
+    /// Per-realm email template overrides keyed by template kind
+    /// (`"verification"`, `"password_reset"`, `"welcome"`, `"invitation"`).
+    /// Each value holds a default body plus optional locale variants.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub email_templates: std::collections::HashMap<String, LocalizedEmailTemplate>,
     /// Composed CSS block (named theme + optional custom file contents) served
     /// as the realm-specific theme stylesheet. `None` means no per-realm
     /// theme is configured — the global theme applies.
@@ -492,6 +514,9 @@ pub struct RealmConfig {
     pub access_token_ttl_micros: Option<i64>,
     /// Per-realm refresh token TTL in microseconds.
     pub refresh_token_ttl_micros: Option<i64>,
+    /// Per-realm password reset token TTL in microseconds.
+    /// `None` falls back to the compiled default (30 minutes).
+    pub password_reset_token_ttl_micros: Option<i64>,
     /// Maximum failed login attempts before lockout.
     pub max_failed_logins: Option<u32>,
     /// Lockout duration in microseconds after max failed logins.
@@ -500,6 +525,18 @@ pub struct RealmConfig {
     /// When `Some(true)`, passkey auth is treated like password auth
     /// with respect to MFA gating.
     pub passkey_requires_mfa: Option<bool>,
+    /// Whether passkeys are required for all users in this realm.
+    /// When `Some(true)`, users must register a passkey; password-only
+    /// login is rejected at the MFA gate.
+    pub webauthn_required: Option<bool>,
+    /// `residentKey` preference sent in `authenticatorSelection` during
+    /// registration. Values: `"required"`, `"preferred"`, `"discouraged"`.
+    /// `None` inherits the engine default (`"preferred"`).
+    pub webauthn_resident_key: Option<String>,
+    /// `userVerification` preference sent during registration and
+    /// authentication ceremonies. Values: `"required"`, `"preferred"`,
+    /// `"discouraged"`. `None` inherits the engine default (`"preferred"`).
+    pub webauthn_user_verification: Option<String>,
     /// Who may self-register in this realm. `None` means `Disabled`.
     pub registration_policy: Option<RegistrationPolicy>,
     /// Whether dynamic client registration (RFC 7591) is enabled. `None` means `Disabled`.
@@ -527,6 +564,12 @@ pub struct RealmConfig {
     /// YAML-authored claim profile overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_profile: Option<ClaimProfile>,
+    /// SHA-256 hash of the realm-scoped SCIM bearer token.
+    ///
+    /// The plaintext token is intended to remain in configuration input
+    /// only; persisted realm records store just the hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scim_bearer_token_hash: Option<String>,
 }
 
 /// A realm record.
@@ -848,6 +891,7 @@ impl OrganizationMembership {
     }
 
     /// Replaces the additional role set.
+    #[allow(dead_code)]
     pub(crate) fn set_additional_roles(&mut self, roles: Vec<String>) {
         self.additional_roles = roles;
     }

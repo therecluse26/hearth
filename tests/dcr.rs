@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Integration tests for Dynamic Client Registration (RFC 7591).
 //!
 //! Covers `POST /register` with per-realm DCR policy gating, secret

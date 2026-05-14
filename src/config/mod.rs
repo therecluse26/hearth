@@ -13,12 +13,13 @@ pub use types::parse_duration_to_micros;
 pub use types::{
     ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig, CompactionSection,
     EmailConfig, EmailTransport, FederationProviderYaml, FederationYamlConfig, LinkModeYaml,
-    MailgunConfig, MailgunRegion, MailtrapConfig, ObservabilityConfig, OidcYamlConfig,
-    OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, PasswordPolicyYaml,
-    PermissionYamlConfig, PostmarkConfig, ProtectedResourceYamlConfig, RateLimitYaml,
-    RealmAuthYaml, RealmEmailYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig, RoleYamlConfig,
-    SamlServiceProviderYaml, ScopeBundleYamlConfig, SendgridConfig, ServerConfig, SmtpConfig,
-    SmtpEncryption, StorageSection, TokenYamlConfig,
+    MailgunConfig, MailgunRegion, MailtrapConfig, MetricsConfig, ObservabilityConfig,
+    OidcYamlConfig, OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig,
+    OtlpConfig, OtlpProtocol, PasswordPolicyYaml, PermissionYamlConfig, PostmarkConfig,
+    ProtectedResourceYamlConfig, RateLimitYaml, RealmAuthYaml, RealmEmailYaml, RealmScimYaml,
+    RealmTokenYaml, RealmWebYaml, RealmYamlConfig, RoleYamlConfig, SamlServiceProviderYaml,
+    ScopeBundleYamlConfig, SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption,
+    StorageSection, TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -84,6 +85,9 @@ pub struct Config {
     /// Global authentication defaults (session TTL, password hashing params).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Prometheus metrics endpoint settings.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     /// Per-realm configuration overrides.
     ///
     /// When `Some`, realms are declaratively managed: YAML entries become
@@ -168,6 +172,7 @@ impl Config {
             observability: ObservabilityConfig {
                 log_level: "debug".to_string(),
                 log_format: "text".to_string(),
+                otlp: None,
             },
             operational: OperationalConfig::default(),
             email: EmailConfig::default(),
@@ -176,6 +181,7 @@ impl Config {
             oidc: OidcYamlConfig::default(),
             token: TokenYamlConfig::default(),
             auth: AuthConfig::default(),
+            metrics: MetricsConfig::default(),
             realms: None,
             dev_mode: true,
             config_warnings: Vec::new(),
@@ -545,6 +551,16 @@ fn validate_realm_auth_configs(
         return Ok(());
     };
     for (name, cfg) in realms {
+        if let Some(scim) = &cfg.scim {
+            if let Some(token) = &scim.bearer_token {
+                if token.trim().is_empty() {
+                    return Err(invalid(
+                        &format!("realms.{name}.scim.bearer_token"),
+                        "must not be empty when SCIM is configured",
+                    ));
+                }
+            }
+        }
         let Some(auth) = &cfg.auth else { continue };
         if let Some(methods) = &auth.mfa_methods {
             for m in methods {
@@ -1171,6 +1187,16 @@ fn validate_realm_auth_configs_all(
 ) {
     let Some(realms) = realms else { return };
     for (name, cfg) in realms {
+        if let Some(scim) = &cfg.scim {
+            if let Some(token) = &scim.bearer_token {
+                if token.trim().is_empty() {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{name}.scim.bearer_token"),
+                        reason: "must not be empty when SCIM is configured".to_string(),
+                    });
+                }
+            }
+        }
         let Some(auth) = &cfg.auth else { continue };
         if let Some(methods) = &auth.mfa_methods {
             for m in methods {
@@ -1225,6 +1251,19 @@ fn validate_realm_auth_configs_all(
                         field: format!("realms.{name}.auth.token.refresh_token_ttl"),
                         reason: "invalid duration format".to_string(),
                     });
+                }
+            }
+            if let Some(ttl) = &token.password_reset_token_ttl {
+                match types::parse_duration_to_micros(ttl) {
+                    Err(_) => issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.token.password_reset_token_ttl"),
+                        reason: "invalid duration format".to_string(),
+                    }),
+                    Ok(v) if v <= 0 => issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.token.password_reset_token_ttl"),
+                        reason: "must be > 0".to_string(),
+                    }),
+                    Ok(_) => {}
                 }
             }
         }

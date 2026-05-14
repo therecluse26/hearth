@@ -10,7 +10,6 @@
 //! WAL, memtable, SST, and hot tier components.
 
 pub mod auto_size;
-#[allow(dead_code)]
 pub mod encryption;
 mod engine;
 pub mod error;

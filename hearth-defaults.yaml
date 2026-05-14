@@ -2,6 +2,12 @@
 # Copy relevant sections into hearth.yaml; these are reference defaults only.
 # See docs/specs/AUTHZ_EXPANSION.md for the full model.
 
+# Token TTL defaults (shown here for reference; all values are optional).
+# auth:
+#   token:
+#     password_reset_token_ttl: "30m"   # default: 30 minutes
+
+
 # Example realm configuration showing standard org bridge roles.
 # These roles are created automatically via seed_realm() but can be
 # customized here for realm-specific overrides.

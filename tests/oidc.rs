@@ -25,7 +25,7 @@ fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
                 display_name: "OIDC Test User".to_string(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user")
@@ -119,10 +119,16 @@ async fn oidc_authorization_code_flow_roundtrip() {
     assert_eq!(id_claims.sub, user.id().to_string());
     assert_eq!(id_claims.token_type, "id_token");
 
-    // 7. Access token should be verifiable via JWKS
+    // 7. Access token should be verifiable via the EdDSA entry in JWKS
     let jwks = harness.identity().jwks();
+    let jwk = jwks
+        .keys
+        .iter()
+        .find(|j| j.alg == "EdDSA")
+        .expect("JWKS must include EdDSA signer");
+    let x_b64 = jwk.x.as_deref().expect("Ed25519 JWK must include x");
     let pub_bytes = URL_SAFE_NO_PAD
-        .decode(&jwks.keys[0].x)
+        .decode(x_b64)
         .expect("decode JWKS public key");
     let verified_claims =
         hearth::identity::verify_token_signature(token_response.access_token(), &pub_bytes)

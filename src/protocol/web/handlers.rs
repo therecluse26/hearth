@@ -158,7 +158,7 @@ pub(super) struct FederationButton {
 /// Login form template.
 #[derive(Template)]
 #[template(path = "ui/login.html")]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools, dead_code)]
 struct LoginTemplate {
     error: Option<String>,
     return_to: Option<String>,
@@ -181,6 +181,21 @@ struct LoginTemplate {
     /// Endpoint prefix for passkey AJAX calls, scope-matched.
     passkey_begin_url: String,
     passkey_complete_url: String,
+    locale: String,
+    heading_text: &'static str,
+    email_label: &'static str,
+    password_label: &'static str,
+    submit_label: &'static str,
+    or_continue_with_label: &'static str,
+    or_label: &'static str,
+    sign_in_with_label: &'static str,
+    forgot_password_label: &'static str,
+    create_account_label: &'static str,
+    passkey_sign_in_label: &'static str,
+    passkey_authenticating_label: &'static str,
+    passkey_unavailable_error: &'static str,
+    passkey_cancelled_error: &'static str,
+    passkey_failed_error: &'static str,
     /// Federation sign-in buttons, one per configured connector.
     federation_buttons: Vec<FederationButton>,
     chrome: bool,
@@ -202,19 +217,36 @@ impl LoginTemplate {
         return_to: Option<String>,
         action_prefix: &str,
         show_register: bool,
+        locale: &str,
         product_name: String,
         logo_url: String,
     ) -> Self {
+        let text = login_locale_text(locale);
         Self {
             error,
             return_to,
             email: String::new(),
             form_action: format!("{action_prefix}/login"),
-            forgot_url: format!("{action_prefix}/forgot-password"),
-            register_url: format!("{action_prefix}/register"),
+            forgot_url: with_locale_query(&format!("{action_prefix}/forgot-password"), locale),
+            register_url: with_locale_query(&format!("{action_prefix}/register"), locale),
             show_register,
             passkey_begin_url: format!("{action_prefix}/login/passkey-begin"),
             passkey_complete_url: format!("{action_prefix}/login/passkey-complete"),
+            locale: locale.to_string(),
+            heading_text: text.heading_text,
+            email_label: text.email_label,
+            password_label: text.password_label,
+            submit_label: text.submit_label,
+            or_continue_with_label: text.or_continue_with_label,
+            or_label: text.or_label,
+            sign_in_with_label: text.sign_in_with_label,
+            forgot_password_label: text.forgot_password_label,
+            create_account_label: text.create_account_label,
+            passkey_sign_in_label: text.passkey_sign_in_label,
+            passkey_authenticating_label: text.passkey_authenticating_label,
+            passkey_unavailable_error: text.passkey_unavailable_error,
+            passkey_cancelled_error: text.passkey_cancelled_error,
+            passkey_failed_error: text.passkey_failed_error,
             federation_buttons: Vec::new(),
             chrome: false,
             active: "",
@@ -329,6 +361,61 @@ impl VerifyInvalidTemplate {
         Self {
             heading,
             message,
+            chrome: false,
+            active: "",
+            user_email: None,
+            is_admin: false,
+            flash: None,
+            csrf: None,
+            narrow: true,
+            product_name,
+            logo_url,
+            theme_css: String::new(),
+            realm_theme_css: None,
+        }
+    }
+}
+
+/// Forced MFA enrollment template — shown when the realm requires MFA but the
+/// user has not yet enrolled. Mirrors the account enrollment UI but uses the
+/// narrow, chrome-free layout (no nav) because the user has no session yet.
+#[derive(Template)]
+#[template(path = "ui/mfa_enroll_required.html")]
+struct MfaEnrollRequiredTemplate {
+    error: Option<String>,
+    secret_base32: String,
+    provisioning_uri: String,
+    qr_svg: String,
+    recovery_codes: Vec<String>,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+impl MfaEnrollRequiredTemplate {
+    fn new(
+        error: Option<String>,
+        secret_base32: String,
+        provisioning_uri: String,
+        qr_svg: String,
+        recovery_codes: Vec<String>,
+        product_name: String,
+        logo_url: String,
+    ) -> Self {
+        Self {
+            error,
+            secret_base32,
+            provisioning_uri,
+            qr_svg,
+            recovery_codes,
             chrome: false,
             active: "",
             user_email: None,
@@ -481,7 +568,13 @@ pub async fn setup_submit(
 
     let password = CleartextPassword::from_string(form.admin_password.clone());
 
-    let base_url = derive_base_url(&headers);
+    let base_url = derive_base_url(
+        state
+            .config
+            .as_ref()
+            .and_then(|c| c.onboarding.base_url.as_deref()),
+        &headers,
+    );
     match state.onboarding.complete_setup(
         form.admin_email.trim(),
         form.admin_display_name.trim(),
@@ -645,37 +738,53 @@ fn verify_email_impl(state: Arc<WebState>, query: VerifyQuery, source: RealmSour
 pub struct LoginQuery {
     /// Relative path to redirect back to after a successful sign-in.
     pub return_to: Option<String>,
+    /// Optional locale tag for login UI copy (for example: `en`, `es`).
+    pub locale: Option<String>,
 }
 
 /// Renders the login form at the bare `/ui/login` URL.
 pub async fn login_form(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, RealmSource::Path(None))
+    login_form_impl(state, headers, query, RealmSource::Path(None))
 }
 
 /// Renders the login form under `/ui/realms/<name>/login`.
 pub async fn login_form_scoped(
     State(state): State<Arc<WebState>>,
     axum::extract::Path(realm_name): axum::extract::Path<String>,
+    headers: HeaderMap,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, RealmSource::Path(Some(realm_name)))
+    login_form_impl(state, headers, query, RealmSource::Path(Some(realm_name)))
 }
 
 /// Renders the admin login form at `/ui/admin/login`. The session
 /// created by a successful submit is always bound to the system realm.
 pub async fn admin_login_form(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    login_form_impl(state, query, RealmSource::Admin)
+    login_form_impl(state, headers, query, RealmSource::Admin)
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn login_form_impl(state: Arc<WebState>, query: LoginQuery, source: RealmSource) -> Response {
+fn login_form_impl(
+    state: Arc<WebState>,
+    headers: HeaderMap,
+    query: LoginQuery,
+    source: RealmSource,
+) -> Response {
     let return_to = query.return_to.as_deref().and_then(sanitize_return_to);
+    let locale = resolve_login_locale(
+        query.locale.as_deref(),
+        headers
+            .get(header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+    );
     let (realm, action_prefix) = match resolve_for_source(&state, source, false) {
         PreAuthRealm::Ok {
             realm,
@@ -683,13 +792,15 @@ fn login_form_impl(state: Arc<WebState>, query: LoginQuery, source: RealmSource)
         } => (realm, action_prefix),
         PreAuthRealm::Handled(resp) => return resp,
     };
+    let product_name = state.product_name_for(realm.id());
     let show_register = registration_enabled(&realm);
     let mut tmpl = LoginTemplate::new(
         None,
         return_to,
         &action_prefix,
         show_register,
-        state.product_name.clone(),
+        locale,
+        product_name,
         state.logo_url.clone(),
     );
     tmpl.theme_css.clone_from(&state.theme_css);
@@ -735,6 +846,9 @@ pub struct LoginForm {
     /// Optional `return_to` path submitted via hidden field.
     #[serde(default)]
     pub return_to: Option<String>,
+    /// Optional locale submitted via hidden field.
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 /// Handles login submission at the bare `/ui/login` URL.
@@ -780,6 +894,12 @@ fn login_submit_impl(
 ) -> Response {
     let email = form.email.trim();
     let return_to = form.return_to.as_deref().and_then(sanitize_return_to);
+    let locale = resolve_login_locale(
+        form.locale.as_deref(),
+        headers
+            .get(header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+    );
     let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
 
     let (realm, action_prefix) = match resolve_for_source(&state, source, true) {
@@ -790,7 +910,7 @@ fn login_submit_impl(
         PreAuthRealm::Handled(resp) => return resp,
     };
 
-    let product_name = state.product_name.clone();
+    let product_name = state.product_name_for(realm.id());
     let logo_url = state.logo_url.clone();
     let theme_css = state.theme_css.clone();
     let realm_theme = state.realm_theme_css_for(realm.id());
@@ -800,17 +920,23 @@ fn login_submit_impl(
     // and avoids a scoped mirror route that adds no security value.
     let mfa_url = "/ui/mfa-challenge".to_string();
 
+    // Extract the client IP once, after trusted-proxy stripping, for the
+    // per-IP rate limiter. Empty string = no IP available (skipped by engine).
+    let client_ip = session_ctx.ip_address.clone().unwrap_or_default();
+
     let generic_error = {
         let action_prefix = action_prefix.clone();
         let return_to = return_to.clone();
         let realm_theme = realm_theme.clone();
         let submitted_email = email.to_string();
+        let product_name = product_name.clone();
         move || {
             let mut tmpl = LoginTemplate::new(
                 Some("Sign-in failed. Check your credentials and try again.".to_string()),
                 return_to.clone(),
                 &action_prefix,
                 show_register,
+                locale,
                 product_name.clone(),
                 logo_url.clone(),
             );
@@ -825,8 +951,30 @@ fn login_submit_impl(
         }
     };
 
+    // Enforce realm policy: password auth must be in the allow-list.
+    if let Some(ref methods) = realm.config().allowed_auth_methods {
+        if !methods.iter().any(|m| m == "password") {
+            tracing::warn!(realm = %realm.id(), "login: password auth blocked by realm policy");
+            return generic_error();
+        }
+    }
+
+    // Per-IP rate limit check. Must happen before user lookup so a blocked
+    // IP cannot probe which email addresses exist.
+    if state
+        .identity
+        .check_ip_login_rate_limit(realm.id(), &client_ip)
+        .is_err()
+    {
+        tracing::warn!(ip = %client_ip, "login: IP rate limit exceeded");
+        return generic_error();
+    }
+
     // Resolved realm → single targeted lookup. No walk.
     let Ok(Some(user)) = state.identity.get_user_by_email(realm.id(), email) else {
+        state
+            .identity
+            .record_ip_login_attempt(realm.id(), &client_ip);
         return generic_error();
     };
 
@@ -836,9 +984,17 @@ fn login_submit_impl(
         .verify_password(realm.id(), user.id(), &password)
     {
         Ok(true) => {}
-        Ok(false) => return generic_error(),
+        Ok(false) => {
+            state
+                .identity
+                .record_ip_login_attempt(realm.id(), &client_ip);
+            return generic_error();
+        }
         Err(e) => {
             tracing::warn!(error = %e, "login: password verification failed");
+            state
+                .identity
+                .record_ip_login_attempt(realm.id(), &client_ip);
             return generic_error();
         }
     }
@@ -848,6 +1004,7 @@ fn login_submit_impl(
         .identity
         .mfa_enabled(realm.id(), user.id())
         .unwrap_or(false);
+    let realm_requires_mfa = realm.config().mfa_required.unwrap_or(false);
     if mfa_on {
         let cookie = issue_mfa_pending_cookie(
             &state.cookie_secret,
@@ -857,6 +1014,19 @@ fn login_submit_impl(
         );
         state.set_current_realm(realm.id().clone());
         let mut response = Redirect::to(&mfa_url).into_response();
+        append_cookie(&mut response, &cookie);
+        return response;
+    } else if realm_requires_mfa {
+        // Realm mandates MFA but this user has none enrolled. Issue the same
+        // pending cookie (proves identity) and redirect to forced enrollment.
+        let cookie = issue_mfa_pending_cookie(
+            &state.cookie_secret,
+            realm.id(),
+            user.id(),
+            return_to.as_deref(),
+        );
+        state.set_current_realm(realm.id().clone());
+        let mut response = Redirect::to("/ui/mfa-enroll-required").into_response();
         append_cookie(&mut response, &cookie);
         return response;
     }
@@ -896,7 +1066,8 @@ fn login_submit_impl(
                 return_to.clone(),
                 &action_prefix,
                 show_register,
-                state.product_name.clone(),
+                locale,
+                product_name.clone(),
                 state.logo_url.clone(),
             );
             tmpl.email = email.to_string();
@@ -1003,10 +1174,16 @@ fn passkey_login_begin_with_realm(
         }
     };
 
+    let user_verification = realm
+        .config()
+        .webauthn_user_verification
+        .as_deref()
+        .unwrap_or("preferred");
+
     let body = serde_json::json!({
         "challenge": challenge,
         "rpId": rp_id,
-        "userVerification": "preferred",
+        "userVerification": user_verification,
         "timeout": 300_000,
     });
     axum::Json(body).into_response()
@@ -1171,6 +1348,14 @@ fn passkey_complete_for_user(
     session_ctx: &SessionContext,
 ) -> Response {
     let _ = user_id;
+
+    // Enforce realm policy: passkey auth must be in the allow-list.
+    if let Some(ref methods) = realm.config().allowed_auth_methods {
+        if !methods.iter().any(|m| m == "passkey") {
+            tracing::warn!(realm = %realm.id(), "passkey-login: blocked by realm policy");
+            return (StatusCode::FORBIDDEN, "Authentication method not permitted").into_response();
+        }
+    }
 
     let params = CompleteAuthenticationParams {
         credential_id,
@@ -1409,6 +1594,179 @@ fn mfa_expired_response(product_name: String, logo_url: String, theme_css: &str)
 }
 
 // ============================================================================
+// Forced MFA enrollment (realm policy: mfa_required = true)
+// ============================================================================
+
+/// Renders the forced MFA enrollment page.
+///
+/// Reached when a realm's `mfa_required` policy is enabled and the user has
+/// no TOTP enrolled. Requires a valid MFA pending cookie (proves password was
+/// verified). Initiates a fresh enrollment ceremony and shows the QR code and
+/// recovery codes.
+pub async fn mfa_enroll_required_form(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+    let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+
+    let realm_id = pending.realm_id.clone();
+    let user_id = pending.user_id.clone();
+    let identity = state.identity.clone();
+    let enroll_result =
+        tokio::task::spawn_blocking(move || identity.enroll_totp(&realm_id, &user_id)).await;
+
+    let enroll_result = match enroll_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "forced enroll_totp spawn_blocking panicked");
+            Err(IdentityError::Storage(Box::new(e)))
+        }
+    };
+
+    match enroll_result {
+        Ok(enrollment) => {
+            use super::account::generate_qr_svg;
+            let qr_svg = generate_qr_svg(&enrollment.provisioning_uri);
+            let mut tmpl = MfaEnrollRequiredTemplate::new(
+                None,
+                enrollment.secret_base32,
+                enrollment.provisioning_uri,
+                qr_svg,
+                enrollment.recovery_codes.as_slice().to_vec(),
+                state.product_name.clone(),
+                state.logo_url.clone(),
+            );
+            tmpl.theme_css.clone_from(&state.theme_css);
+            render(&tmpl)
+        }
+        Err(IdentityError::MfaAlreadyEnabled) => {
+            // User somehow got here with MFA already set up — send to challenge.
+            Redirect::to("/ui/mfa-challenge").into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "forced enroll_totp failed");
+            let mut tmpl = MfaEnrollRequiredTemplate::new(
+                Some("Unable to start MFA enrollment. Please try signing in again.".to_string()),
+                String::new(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+                state.product_name.clone(),
+                state.logo_url.clone(),
+            );
+            tmpl.theme_css.clone_from(&state.theme_css);
+            render_status(&tmpl, StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Form body for `POST /ui/mfa-enroll-required/activate`.
+#[derive(Debug, Deserialize)]
+pub struct MfaEnrollRequiredForm {
+    #[serde(default)]
+    pub code: String,
+}
+
+/// Verifies the TOTP code during forced enrollment and completes the login.
+///
+/// Reads the MFA pending cookie, confirms the enrollment code, enables MFA,
+/// then issues full session + CSRF cookies (same as a successful MFA challenge).
+pub async fn mfa_enroll_required_submit(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Form(form): Form<MfaEnrollRequiredForm>,
+) -> Response {
+    let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+    let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
+        return Redirect::to("/ui/login").into_response();
+    };
+
+    let realm_id = pending.realm_id.clone();
+    let user_id = pending.user_id.clone();
+    let code = form.code.trim().to_string();
+    let identity = state.identity.clone();
+    let verify_result = tokio::task::spawn_blocking(move || {
+        identity.verify_totp_enrollment(&realm_id, &user_id, &code)
+    })
+    .await;
+
+    let verify_result = match verify_result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "forced verify_totp_enrollment panicked");
+            Err(IdentityError::Storage(Box::new(e)))
+        }
+    };
+
+    let err_response = |msg: &str| {
+        let mut tmpl = MfaEnrollRequiredTemplate::new(
+            Some(msg.to_string()),
+            String::new(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+            state.product_name.clone(),
+            state.logo_url.clone(),
+        );
+        tmpl.theme_css.clone_from(&state.theme_css);
+        render_status(&tmpl, StatusCode::UNPROCESSABLE_ENTITY)
+    };
+
+    match verify_result {
+        Ok(()) => {}
+        Err(IdentityError::InvalidMfaCode) => {
+            return err_response("Invalid code. Please re-scan the QR code and try again.");
+        }
+        Err(IdentityError::MfaNotEnabled) => {
+            return Redirect::to("/ui/mfa-enroll-required").into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "forced verify_totp_enrollment failed");
+            return err_response("Unable to activate MFA right now. Please try again.");
+        }
+    }
+
+    // Enrollment confirmed — complete login.
+    match state
+        .identity
+        .create_session(&pending.realm_id, &pending.user_id, &session_ctx)
+    {
+        Ok(session) => {
+            let IssuedCookies {
+                session_cookie,
+                csrf_cookie,
+            } = issue_auth_cookies(&state.cookie_secret, &pending.realm_id, session.id());
+
+            let location = pending.return_to.as_deref().unwrap_or("/ui");
+            let mut response = Redirect::to(location).into_response();
+            append_cookie(&mut response, &session_cookie);
+            append_cookie(&mut response, &csrf_cookie);
+            append_cookie(&mut response, &clear_mfa_pending_cookie());
+            append_cookie(
+                &mut response,
+                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
+                    state.identity.as_ref(),
+                    &pending.realm_id,
+                )),
+            );
+            response
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "forced enrollment: create_session failed");
+            internal_error_response()
+        }
+    }
+}
+
+// ============================================================================
 // Dashboard
 // ============================================================================
 
@@ -1634,22 +1992,120 @@ fn validate_setup_form(form: &SetupForm) -> Result<(), String> {
     Ok(())
 }
 
-/// Derives the base URL for email links from the `Host` header.
+/// Returns the base URL for security-sensitive email links.
 ///
-/// Falls back to `http://localhost` if no `Host` header is present
-/// (e.g. direct test harness calls). Uses `https://` when the request
-/// came in over TLS (`X-Forwarded-Proto: https`), else `http://`.
-fn derive_base_url(headers: &HeaderMap) -> String {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| *s == "https")
-        .map_or("http", |_| "https");
-    format!("{scheme}://{host}")
+/// Security invariant: this must not trust request-controlled headers
+/// (`Host`, `X-Forwarded-Proto`, etc.), to prevent link poisoning.
+/// Uses configured `onboarding.base_url` when present, otherwise the
+/// local fallback `http://localhost`.
+fn derive_base_url(configured_base_url: Option<&str>, _headers: &HeaderMap) -> String {
+    configured_base_url
+        .unwrap_or("http://localhost")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+const DEFAULT_LOGIN_LOCALE: &str = "en";
+
+#[derive(Clone, Copy)]
+struct LoginLocaleText {
+    heading_text: &'static str,
+    email_label: &'static str,
+    password_label: &'static str,
+    submit_label: &'static str,
+    or_continue_with_label: &'static str,
+    or_label: &'static str,
+    sign_in_with_label: &'static str,
+    forgot_password_label: &'static str,
+    create_account_label: &'static str,
+    passkey_sign_in_label: &'static str,
+    passkey_authenticating_label: &'static str,
+    passkey_unavailable_error: &'static str,
+    passkey_cancelled_error: &'static str,
+    passkey_failed_error: &'static str,
+}
+
+const LOGIN_LOCALE_EN: LoginLocaleText = LoginLocaleText {
+    heading_text: "Sign in to your account",
+    email_label: "Email",
+    password_label: "Password",
+    submit_label: "Sign in",
+    or_continue_with_label: "or continue with",
+    or_label: "or",
+    sign_in_with_label: "Sign in with",
+    forgot_password_label: "Forgot password?",
+    create_account_label: "Create account",
+    passkey_sign_in_label: "Sign in with passkey",
+    passkey_authenticating_label: "Authenticating…",
+    passkey_unavailable_error: "Passkey authentication is not available.",
+    passkey_cancelled_error: "Authentication was cancelled.",
+    passkey_failed_error: "Passkey authentication failed.",
+};
+
+const LOGIN_LOCALE_ES: LoginLocaleText = LoginLocaleText {
+    heading_text: "Inicia sesión en tu cuenta",
+    email_label: "Correo electrónico",
+    password_label: "Contraseña",
+    submit_label: "Iniciar sesión",
+    or_continue_with_label: "o continúa con",
+    or_label: "o",
+    sign_in_with_label: "Iniciar sesión con",
+    forgot_password_label: "¿Olvidaste tu contraseña?",
+    create_account_label: "Crear cuenta",
+    passkey_sign_in_label: "Iniciar sesión con passkey",
+    passkey_authenticating_label: "Autenticando…",
+    passkey_unavailable_error: "La autenticación con passkey no está disponible.",
+    passkey_cancelled_error: "La autenticación fue cancelada.",
+    passkey_failed_error: "La autenticación con passkey falló.",
+};
+
+fn login_locale_text(locale: &str) -> LoginLocaleText {
+    if locale == "es" {
+        LOGIN_LOCALE_ES
+    } else {
+        LOGIN_LOCALE_EN
+    }
+}
+
+fn resolve_login_locale(requested: Option<&str>, accept_language: Option<&str>) -> &'static str {
+    if let Some(locale) = requested.and_then(normalize_login_locale) {
+        return locale;
+    }
+
+    if let Some(header) = accept_language {
+        for candidate in header.split(',') {
+            if let Some(locale) = normalize_login_locale(candidate) {
+                return locale;
+            }
+        }
+    }
+
+    DEFAULT_LOGIN_LOCALE
+}
+
+fn normalize_login_locale(input: &str) -> Option<&'static str> {
+    let raw = input.trim().split(';').next()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let normalized = raw.to_ascii_lowercase().replace('_', "-");
+    if normalized == "es" || normalized.starts_with("es-") {
+        return Some("es");
+    }
+    if normalized == "en" || normalized.starts_with("en-") {
+        return Some("en");
+    }
+
+    None
+}
+
+fn with_locale_query(path: &str, locale: &str) -> String {
+    if locale == DEFAULT_LOGIN_LOCALE {
+        return path.to_string();
+    }
+    let encoded = form_urlencoded::byte_serialize(locale.as_bytes()).collect::<String>();
+    format!("{path}?locale={encoded}")
 }
 
 // ============================================================================
@@ -1904,14 +2360,27 @@ fn forgot_password_submit_impl(
 
     match state.identity.request_password_reset(realm.id(), email) {
         Ok(Some(token)) => {
-            let base = derive_base_url(&headers);
+            let base = derive_base_url(
+                state
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.onboarding.base_url.as_deref()),
+                &headers,
+            );
             let reset_url = format!("{base}{action_prefix}/reset-password?token={token}");
             if let Some(ref email_service) = state.email {
                 let realm_branding = realm.config().email_branding.clone();
+                let stored = realm
+                    .config()
+                    .email_templates
+                    .get("password_reset")
+                    .cloned();
                 if let Err(e) = email_service.send_password_reset_email(
                     email,
                     &reset_url,
                     realm_branding.as_ref(),
+                    stored.as_ref(),
+                    None,
                 ) {
                     tracing::warn!(error = %e, "forgot_password: failed to send email");
                 }
@@ -2447,15 +2916,26 @@ fn register_submit_impl(
     };
 
     if let Some(email_service) = state.email.as_ref() {
-        let base = derive_base_url(&headers);
+        let base = derive_base_url(
+            state
+                .config
+                .as_ref()
+                .and_then(|c| c.onboarding.base_url.as_deref()),
+            &headers,
+        );
         let verify_url = format!(
             "{base}{action_prefix}/verify-email?token={}",
             response.verification_token
         );
         let branding = realm.config().email_branding.clone();
-        if let Err(e) =
-            email_service.send_verification_email(&form.email, &verify_url, branding.as_ref())
-        {
+        let stored_verification = realm.config().email_templates.get("verification").cloned();
+        if let Err(e) = email_service.send_verification_email(
+            &form.email,
+            &verify_url,
+            branding.as_ref(),
+            stored_verification.as_ref(),
+            None,
+        ) {
             tracing::warn!(error = %e, "register_submit: failed to send verification email");
         }
     } else {
@@ -2914,30 +3394,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn derive_base_url_uses_host_header() {
+    fn derive_base_url_uses_configured_origin() {
         let mut h = HeaderMap::new();
         h.insert(
             header::HOST,
             "auth.example.com:8420".parse().expect("valid header"),
         );
-        assert_eq!(derive_base_url(&h), "http://auth.example.com:8420");
+        h.insert("x-forwarded-proto", "https".parse().expect("valid header"));
+        assert_eq!(
+            derive_base_url(Some("https://canonical.example.com"), &h),
+            "https://canonical.example.com"
+        );
     }
 
     #[test]
-    fn derive_base_url_honours_forwarded_proto_https() {
+    fn derive_base_url_ignores_host_and_forwarded_proto_headers() {
         let mut h = HeaderMap::new();
         h.insert(
             header::HOST,
-            "auth.example.com".parse().expect("valid header"),
+            "attacker.example".parse().expect("valid header"),
         );
         h.insert("x-forwarded-proto", "https".parse().expect("valid header"));
-        assert_eq!(derive_base_url(&h), "https://auth.example.com");
+        assert_eq!(
+            derive_base_url(Some("https://auth.example.com"), &h),
+            "https://auth.example.com"
+        );
     }
 
     #[test]
     fn derive_base_url_falls_back_without_host() {
         let h = HeaderMap::new();
-        assert_eq!(derive_base_url(&h), "http://localhost");
+        assert_eq!(derive_base_url(None, &h), "http://localhost");
+    }
+
+    #[test]
+    fn derive_base_url_trims_trailing_slash() {
+        let h = HeaderMap::new();
+        assert_eq!(
+            derive_base_url(Some("https://auth.example.com/"), &h),
+            "https://auth.example.com"
+        );
     }
 
     #[test]

@@ -207,20 +207,44 @@ impl TokenPair {
 }
 
 /// A JSON Web Key for the JWKS endpoint.
+///
+/// Covers the three key types Hearth currently emits via `/certs`:
+///
+/// - `OKP` / Ed25519: populates `crv` (`"Ed25519"`) and `x` (raw 32-byte
+///   public key, base64url-encoded).
+/// - `RSA` / RS256: populates `n` (modulus) and `e` (exponent), each
+///   big-endian bytes, base64url-encoded.
+/// - `EC` / P-256 / ES256: populates `crv` (`"P-256"`), `x`, and `y`
+///   (each 32-byte coordinate from the uncompressed SEC1 point,
+///   base64url-encoded).
+///
+/// Fields not relevant to a given key type are omitted from the
+/// serialized JSON per RFC 7517.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Jwk {
-    /// Key type — always `"OKP"` for Ed25519.
+    /// Key type — `"OKP"`, `"RSA"`, or `"EC"`.
     pub kty: String,
-    /// Curve — always `"Ed25519"`.
-    pub crv: String,
-    /// The public key, base64url-encoded.
-    pub x: String,
+    /// Curve — `"Ed25519"` for OKP, `"P-256"` for EC. Absent for RSA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crv: Option<String>,
+    /// OKP/EC public key x-coordinate, base64url-encoded. Absent for RSA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<String>,
+    /// EC public key y-coordinate, base64url-encoded. Absent for OKP/RSA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<String>,
+    /// RSA modulus, base64url-encoded big-endian bytes. Absent for OKP/EC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<String>,
+    /// RSA exponent, base64url-encoded big-endian bytes. Absent for OKP/EC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e: Option<String>,
     /// Key ID.
     pub kid: String,
     /// Key use — always `"sig"`.
     #[serde(rename = "use")]
     pub use_: String,
-    /// Algorithm — always `"EdDSA"`.
+    /// Algorithm — `"EdDSA"`, `"RS256"`, or `"ES256"`.
     pub alg: String,
 }
 
@@ -329,8 +353,11 @@ impl SigningKey {
     pub fn to_jwk(&self) -> Jwk {
         Jwk {
             kty: "OKP".to_string(),
-            crv: "Ed25519".to_string(),
-            x: URL_SAFE_NO_PAD.encode(self.public_key_bytes()),
+            crv: Some("Ed25519".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(self.public_key_bytes())),
+            y: None,
+            n: None,
+            e: None,
             kid: self.key_id.clone(),
             use_: "sig".to_string(),
             alg: JWT_ALGORITHM.to_string(),
@@ -370,12 +397,47 @@ impl SigningKey {
         Ok(format!("{signing_input}.{sig_b64}"))
     }
 
+    /// Issues an OIDC back-channel logout token (OIDC BCL §2.4).
+    ///
+    /// The `typ` header is set to `"logout+JWT"` to distinguish logout tokens
+    /// from regular access/ID tokens. The `events` claim in `claims` MUST
+    /// include the backchannel-logout event key.
+    pub fn issue_logout_token(&self, claims: &LogoutTokenClaims) -> Result<String, IdentityError> {
+        let header = JwtHeader {
+            alg: JWT_ALGORITHM.to_string(),
+            typ: LOGOUT_TOKEN_TYPE.to_string(),
+            kid: self.key_id.clone(),
+        };
+
+        let header_json =
+            serde_json::to_vec(&header).map_err(|e| IdentityError::Serialization {
+                reason: e.to_string(),
+            })?;
+        let claims_json = serde_json::to_vec(claims).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+
+        let header_b64 = URL_SAFE_NO_PAD.encode(&header_json);
+        let claims_b64 = URL_SAFE_NO_PAD.encode(&claims_json);
+
+        let signing_input = format!("{header_b64}.{claims_b64}");
+        let sig = self.sign(signing_input.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(&sig);
+
+        Ok(format!("{signing_input}.{sig_b64}"))
+    }
+
     /// Issues an access/refresh token pair for the given request.
     pub fn issue_token_pair(
         &self,
         request: &IssueTokenRequest,
     ) -> Result<TokenPair, IdentityError> {
         let iat = request.now.as_micros() / MICROS_PER_SEC;
+        let iss = request
+            .issuer_override
+            .as_deref()
+            .unwrap_or(&request.config.issuer)
+            .to_string();
 
         let aud = match request.resource {
             Some(res) => Audience::with_resource(&request.config.audience, res),
@@ -384,7 +446,7 @@ impl SigningKey {
 
         let access_claims = TokenClaims {
             sub: request.sub.to_string(),
-            iss: request.config.issuer.clone(),
+            iss: iss.clone(),
             aud: aud.clone(),
             exp: iat + request.config.access_token_ttl_secs,
             iat,
@@ -404,7 +466,7 @@ impl SigningKey {
 
         let refresh_claims = TokenClaims {
             sub: request.sub.to_string(),
-            iss: request.config.issuer.clone(),
+            iss,
             aud,
             exp: iat + request.config.refresh_token_ttl_secs,
             iat,
@@ -449,6 +511,11 @@ pub struct IssueTokenRequest<'a> {
     pub now: Timestamp,
     /// Token configuration (issuer, audience, TTLs).
     pub config: &'a TokenConfig,
+    /// Per-realm issuer URL override. When set, replaces `config.issuer`
+    /// in both access and refresh token `iss` claims. Used by per-realm
+    /// OIDC routes (`/realms/{name}/token`) so `iss` matches the
+    /// realm-scoped discovery document issuer.
+    pub issuer_override: Option<String>,
     /// Resolved role names to embed. Empty Vec is legal.
     pub roles: &'a [String],
     /// Resolved group slugs to embed. Empty Vec is legal.
@@ -540,6 +607,61 @@ pub fn validate_token_with_time(
 /// trusts its own tokens and validates via session lookup instead.
 ///
 /// Returns `Err(InvalidToken)` if the token is malformed.
+/// JWT claims for an OIDC back-channel logout token (OIDC BCL §2.4).
+///
+/// A logout token MUST NOT contain a `nonce` claim. It MUST contain the
+/// `events` claim with a `backchannel-logout` member, and either `sub` or
+/// `sid` (or both). The JWT header `typ` is `"logout+JWT"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogoutTokenClaims {
+    /// Issuer — identifies the OP.
+    pub iss: String,
+    /// Subject — the end-user's identifier (RECOMMENDED).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub: Option<String>,
+    /// Audience — the RP's client ID.
+    pub aud: Audience,
+    /// Issued-at time (Unix seconds).
+    pub iat: i64,
+    /// JWT ID — unique per logout token, used for replay prevention.
+    pub jti: String,
+    /// Session ID — identifies the OP session being terminated (RECOMMENDED).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
+    /// Events claim — MUST contain the backchannel-logout event key.
+    pub events: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl LogoutTokenClaims {
+    /// Builds a minimal logout token claim set for the given session and user.
+    pub fn new(
+        iss: String,
+        sub: String,
+        aud: Audience,
+        sid: String,
+        jti: String,
+        iat: i64,
+    ) -> Self {
+        let mut events = std::collections::BTreeMap::new();
+        events.insert(
+            "http://schemas.openid.net/event/backchannel-logout".to_string(),
+            serde_json::json!({}),
+        );
+        Self {
+            iss,
+            sub: Some(sub),
+            aud,
+            iat,
+            jti,
+            sid: Some(sid),
+            events,
+        }
+    }
+}
+
+/// The JWT `typ` header value for logout tokens (OIDC BCL §2.4).
+const LOGOUT_TOKEN_TYPE: &str = "logout+JWT";
+
 pub fn decode_claims_unverified(token: &str) -> Result<TokenClaims, IdentityError> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
@@ -674,6 +796,144 @@ impl RsaSigningKey {
             })?;
         Ok(sig)
     }
+
+    /// Builds the RFC 7517 JWK representation of the RSA public key
+    /// for the `/certs` JWKS endpoint.
+    ///
+    /// Emits `alg: "RS256"`, `kty: "RSA"`, and the modulus/exponent
+    /// (`n`, `e`) as base64url-encoded big-endian bytes. The `kid`
+    /// matches `key_id()` and is what JWT headers reference.
+    pub fn to_jwk(&self) -> Result<Jwk, IdentityError> {
+        use rsa::pkcs8::DecodePrivateKey as _;
+        use rsa::traits::PublicKeyParts as _;
+
+        let priv_key = rsa::RsaPrivateKey::from_pkcs8_der(&self.pkcs8_doc.0).map_err(|e| {
+            IdentityError::SigningError {
+                reason: format!("RSA PKCS#8 decode for JWK failed: {e}"),
+            }
+        })?;
+        let n_bytes = priv_key.n().to_bytes_be();
+        let e_bytes = priv_key.e().to_bytes_be();
+
+        Ok(Jwk {
+            kty: "RSA".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: Some(URL_SAFE_NO_PAD.encode(&n_bytes)),
+            e: Some(URL_SAFE_NO_PAD.encode(&e_bytes)),
+            kid: self.key_id.clone(),
+            use_: "sig".to_string(),
+            alg: "RS256".to_string(),
+        })
+    }
+}
+
+/// An ECDSA P-256 signing key for ES256 JWT issuance and JWKS publication.
+///
+/// Wraps `ring::signature::EcdsaKeyPair` configured for fixed-width
+/// SHA-256 signing. PKCS#8 bytes are zeroized on drop.
+///
+/// HEA-51 / OIDC M1: published alongside Ed25519 and RSA-2048 at `/certs`
+/// so OIDC clients that prefer ES256 (broad ecosystem support in
+/// `jose` / `python-jose`) can verify Hearth-issued tokens once the
+/// token endpoint (HEA-53) adopts multi-algorithm signing.
+pub struct EcdsaSigningKey {
+    /// The ECDSA P-256 key pair, used for signing.
+    key_pair: ring::signature::EcdsaKeyPair,
+    /// A stable key identifier derived from the public key.
+    key_id: String,
+    /// The raw PKCS#8 document, zeroized on drop.
+    pkcs8_doc: ZeroizingBytes,
+}
+
+impl std::fmt::Debug for EcdsaSigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EcdsaSigningKey")
+            .field("key_id", &self.key_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EcdsaSigningKey {
+    /// Generates a fresh P-256 key pair using ring's `SystemRandom`.
+    pub fn generate() -> Result<Self, IdentityError> {
+        let rng = SystemRandom::new();
+        let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &rng,
+        )
+        .map_err(|e| IdentityError::SigningError {
+            reason: format!("P-256 key generation failed: {e}"),
+        })?;
+        Self::from_pkcs8(pkcs8.as_ref())
+    }
+
+    /// Reconstructs a key from stored PKCS#8 DER bytes.
+    pub fn from_pkcs8(pkcs8_der: &[u8]) -> Result<Self, IdentityError> {
+        let rng = SystemRandom::new();
+        let key_pair = ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            pkcs8_der,
+            &rng,
+        )
+        .map_err(|e| IdentityError::SigningError {
+            reason: format!("P-256 PKCS#8 parse failed: {e}"),
+        })?;
+        // Derive kid from the uncompressed SEC1 public-key bytes so it's
+        // stable for the same key across restarts.
+        let key_id = compute_key_id(key_pair.public_key().as_ref());
+        Ok(Self {
+            key_pair,
+            key_id,
+            pkcs8_doc: ZeroizingBytes(pkcs8_der.to_vec()),
+        })
+    }
+
+    /// Returns the PKCS#8 DER bytes for persistence. Callers MUST NOT
+    /// log or display these bytes.
+    pub fn pkcs8_bytes(&self) -> &[u8] {
+        &self.pkcs8_doc.0
+    }
+
+    /// Returns the key identifier (deterministic from the public key).
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// Returns the uncompressed SEC1 public-key bytes
+    /// (`0x04 || x(32) || y(32)`, 65 bytes total).
+    pub fn public_key_bytes(&self) -> &[u8] {
+        use ring::signature::KeyPair as _;
+        self.key_pair.public_key().as_ref()
+    }
+
+    /// Builds the RFC 7517 JWK representation for `/certs`.
+    ///
+    /// Emits `alg: "ES256"`, `kty: "EC"`, `crv: "P-256"`, and the
+    /// `x`/`y` affine coordinates (32 bytes each, base64url-encoded).
+    pub fn to_jwk(&self) -> Jwk {
+        let pub_key = self.public_key_bytes();
+        // ring emits the uncompressed point: 0x04 || x || y.
+        // Defensive: ring's fixed-signing P-256 keypair always produces
+        // a 65-byte pubkey, but we slice safely either way.
+        let (x, y) = if pub_key.len() == 65 && pub_key[0] == 0x04 {
+            (&pub_key[1..33], &pub_key[33..65])
+        } else {
+            (&pub_key[..0], &pub_key[..0])
+        };
+        Jwk {
+            kty: "EC".to_string(),
+            crv: Some("P-256".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(x)),
+            y: Some(URL_SAFE_NO_PAD.encode(y)),
+            n: None,
+            e: None,
+            kid: self.key_id.clone(),
+            use_: "sig".to_string(),
+            alg: "ES256".to_string(),
+        }
+    }
 }
 
 /// Builds a minimal self-signed X.509 certificate wrapping the RSA public
@@ -772,7 +1032,10 @@ mod tests {
         let decoded: TokenClaims = serde_json::from_slice(&decoded_bytes).expect("claims parse");
         assert_eq!(decoded.sub, claims.sub, "sub mismatch");
         assert_eq!(decoded.iss, "hearth", "iss mismatch");
-        assert!(matches!(&decoded.aud, Audience::Single(a) if a == "hearth"), "aud mismatch");
+        assert!(
+            matches!(&decoded.aud, Audience::Single(a) if a == "hearth"),
+            "aud mismatch"
+        );
         assert_eq!(decoded.exp, now_secs + 900, "exp mismatch");
         assert_eq!(decoded.iat, now_secs, "iat mismatch");
         assert_eq!(decoded.sid, claims.sid, "sid mismatch");
@@ -882,6 +1145,7 @@ mod tests {
                 oid: None,
                 now,
                 config: &config,
+                issuer_override: None,
                 roles: &[],
                 groups: &[],
                 permissions: &[],
@@ -919,6 +1183,7 @@ mod tests {
                 oid: None,
                 now: later,
                 config: &config,
+                issuer_override: None,
                 roles: &[],
                 groups: &[],
                 permissions: &[],
@@ -947,14 +1212,15 @@ mod tests {
 
         let jwk = &jwks.keys[0];
         assert_eq!(jwk.kty, "OKP", "key type must be OKP");
-        assert_eq!(jwk.crv, "Ed25519", "curve must be Ed25519");
+        assert_eq!(jwk.crv.as_deref(), Some("Ed25519"), "curve must be Ed25519");
         assert_eq!(jwk.alg, "EdDSA", "algorithm must be EdDSA");
         assert_eq!(jwk.use_, "sig", "use must be sig");
         assert_eq!(jwk.kid, key.key_id(), "kid must match signing key id");
 
         // Verify the public key in JWK matches the signing key
+        let x_b64 = jwk.x.as_deref().expect("Ed25519 JWK must include x");
         let decoded_pub = URL_SAFE_NO_PAD
-            .decode(&jwk.x)
+            .decode(x_b64)
             .expect("x should be valid base64url");
         assert_eq!(
             decoded_pub,
@@ -976,9 +1242,8 @@ mod tests {
         // Extract public key from JWKS
         let jwks = key.to_jwks();
         let jwk = &jwks.keys[0];
-        let pub_bytes = URL_SAFE_NO_PAD
-            .decode(&jwk.x)
-            .expect("decode pub from JWKS");
+        let x_b64 = jwk.x.as_deref().expect("Ed25519 JWK must include x");
+        let pub_bytes = URL_SAFE_NO_PAD.decode(x_b64).expect("decode pub from JWKS");
 
         // Verify the token using the JWKS-provided public key
         let validated = verify_token_signature(&token, &pub_bytes).expect("should verify");
@@ -1290,7 +1555,8 @@ mod tests {
             "token_type":"access",
             "permissions":[]
         }"#;
-        let claims: TokenClaims = serde_json::from_str(json).expect("should deserialize old-format aud");
+        let claims: TokenClaims =
+            serde_json::from_str(json).expect("should deserialize old-format aud");
         assert!(
             matches!(&claims.aud, Audience::Single(a) if a == "hearth"),
             "old single-string aud should deserialize into Audience::Single"
@@ -1305,7 +1571,10 @@ mod tests {
         let uri = Uri::try_from("https://api.example.com".to_string()).expect("valid URI");
         let aud = Audience::with_resource("hearth", &uri);
         let json = serde_json::to_string(&aud).expect("serialize");
-        assert!(json.starts_with('['), "multi-audience should serialize as JSON array, got: {json}");
+        assert!(
+            json.starts_with('['),
+            "multi-audience should serialize as JSON array, got: {json}"
+        );
         assert!(json.contains("hearth"));
         assert!(json.contains("https://api.example.com"));
     }

@@ -1,0 +1,183 @@
+# Hearth Helm chart — default values.
+# Override with: helm install hearth ./deploy/helm/hearth -f my-values.yaml
+# or:            helm install hearth ./deploy/helm/hearth --set image.tag=v1.0.0
+
+# -- Image ----------------------------------------------------------------------
+image:
+  repository: ghcr.io/hearth-rs/hearth
+  pullPolicy: IfNotPresent
+  # Defaults to appVersion from Chart.yaml
+  tag: ""
+
+imagePullSecrets: []
+
+# -- Replicas -------------------------------------------------------------------
+replicaCount: 1
+
+# -- Service account ------------------------------------------------------------
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# -- Pod annotations/labels -----------------------------------------------------
+podAnnotations: {}
+podLabels: {}
+
+# -- Security context -----------------------------------------------------------
+podSecurityContext:
+  fsGroup: 10001
+  runAsNonRoot: true
+
+containerSecurityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# -- Resources ------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+# -- Service --------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8420
+  # Set to a fixed NodePort value when type: NodePort
+  nodePort: ""
+
+# -- Ingress --------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: auth.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: hearth-tls
+  #   hosts:
+  #     - auth.example.com
+
+# -- Persistent storage ---------------------------------------------------------
+persistence:
+  enabled: true
+  # storageClassName: "" # uses cluster default when empty
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  # Bind to an existing PVC instead of creating one
+  existingClaim: ""
+  # Mount path inside the container — must match storage.data_dir in config
+  mountPath: /var/lib/hearth
+
+# -- Hearth configuration -------------------------------------------------------
+# Values here are rendered into a ConfigMap and mounted at /etc/hearth/hearth.yaml.
+# Secret values (TLS keys, SMTP passwords, signing keys) go in `secret` below.
+config:
+  server:
+    bind_address: "0.0.0.0"
+    port: 8420
+    # tls_cert_path: "/etc/hearth/tls/tls.crt"
+    # tls_key_path: "/etc/hearth/tls/tls.key"
+
+  storage:
+    data_dir: "/var/lib/hearth"
+    wal_max_size_bytes: 268435456   # 256 MiB
+    memtable_flush_bytes: 67108864  # 64 MiB
+    hot_tier_capacity: 10000
+    fsync: true
+
+  observability:
+    log_level: "info"
+    log_format: "json"
+
+  operational:
+    request_timeout_secs: 30
+    shutdown_timeout_secs: 10
+    max_connections: 1024
+    queue_depth: 4096
+
+  email:
+    transport: log
+    # transport: smtp
+    # from: "Hearth <hearth@example.com>"
+    # smtp:
+    #   host: "smtp.example.com"
+    #   port: 587
+    #   encryption: starttls
+    #   username: "${SMTP_USERNAME}"
+    #   password: "${SMTP_PASSWORD}"
+
+  # oidc:
+  #   issuer: "https://auth.example.com"
+
+# -- Secret values --------------------------------------------------------------
+# These are stored in a Kubernetes Secret, not the ConfigMap.
+# Leave all values empty ("") to skip creating the Secret.
+secret:
+  # TLS certificate and key (PEM). If set, the chart mounts them at
+  # /etc/hearth/tls/ and sets config.server.tls_cert_path / tls_key_path.
+  # In production, prefer cert-manager + ingress TLS termination instead.
+  tlsCert: ""
+  tlsKey: ""
+
+  # Environment variables injected into the Hearth pod (e.g. ${SMTP_PASSWORD}).
+  # Each entry becomes a key/value pair in the Secret.
+  env: {}
+    # SMTP_PASSWORD: "s3cr3t"
+    # SENDGRID_API_KEY: "SG.xxx"
+
+# -- Extra environment variables (non-secret) -----------------------------------
+env:
+  RUST_LOG: "info,hearth=debug"
+
+# -- Liveness / readiness probes ------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# -- Node scheduling ------------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Pod disruption budget ------------------------------------------------------
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# -- Autoscaling ----------------------------------------------------------------
+# HPA is disabled by default; Hearth is stateful (embedded storage) so
+# horizontal scaling requires careful coordination.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80

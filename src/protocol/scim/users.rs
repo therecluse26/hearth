@@ -159,6 +159,12 @@ pub async fn create_user(
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
+    let _span = tracing::info_span!(
+        "hearth.scim.users.create",
+        "hearth.realm_id" = %auth.realm_id,
+        "hearth.scim.resource_type" = "User",
+    )
+    .entered();
 
     // Idempotency: if the client supplies an externalId already seen in
     // this realm, refuse with 409 uniqueness (rather than create a dup).
@@ -262,6 +268,13 @@ pub async fn get_user(
         Ok(a) => a,
         Err(e) => return e.into_response(),
     };
+    let _span = tracing::info_span!(
+        "hearth.scim.users.get",
+        "hearth.realm_id" = %auth.realm_id,
+        "hearth.scim.resource_type" = "User",
+        "enduser.id" = %id,
+    )
+    .entered();
     let Ok(uuid) = id.parse::<uuid::Uuid>() else {
         return ScimError::not_found("user not found").into_response();
     };

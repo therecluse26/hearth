@@ -1,6 +1,6 @@
 //! Integration tests for admin HTTP auth (permission-gated via `hearth.admin`).
 //!
-//! Covers `MIGRATE_TO_RBAC.md` § 7 — admin_rbac_auth.
+//! Covers `MIGRATE_TO_RBAC.md` § 7 — `admin_rbac_auth`.
 
 mod common;
 
@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{CreateUserRequest, SessionContext};
 use hearth::protocol::http::{router, AppState};
@@ -38,7 +40,7 @@ async fn issue_token_for(
                 display_name: "T".into(),
                 first_name: String::new(),
                 last_name: String::new(),
-                        attributes: Default::default(),
+                attributes: Default::default(),
             },
         )
         .expect("create user");
@@ -73,6 +75,31 @@ async fn issue_token_for(
         .expect("issue")
         .access_token()
         .to_string()
+}
+
+fn forge_admin_permission_claim(token: &str) -> String {
+    let mut parts = token.split('.').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3, "JWT must have three parts");
+
+    let payload = URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .expect("decode payload segment");
+    let mut payload_json: serde_json::Value =
+        serde_json::from_slice(&payload).expect("parse payload JSON");
+
+    let claims = payload_json
+        .as_object_mut()
+        .expect("token payload must be a JSON object");
+    claims.insert(
+        "permissions".to_string(),
+        serde_json::json!(["hearth.admin"]),
+    );
+
+    let tampered_payload = serde_json::to_vec(&payload_json).expect("serialize payload JSON");
+    let tampered_payload_b64 = URL_SAFE_NO_PAD.encode(tampered_payload);
+    parts[1] = tampered_payload_b64.as_str();
+
+    parts.join(".")
 }
 
 #[tokio::test]
@@ -119,6 +146,30 @@ async fn permission_gated_denies_non_admin() {
         .await
         .expect("resp");
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn permission_gated_rejects_tampered_unsigned_admin_claim() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    h.rbac().seed_realm(&realm).expect("seed");
+    let non_admin = issue_token_for(&h, &realm, "user@example.com", false).await;
+    let tampered = forge_admin_permission_claim(&non_admin);
+    let app = build_app(&h).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/roles")
+                .header("Authorization", format!("Bearer {tampered}"))
+                .header("X-Realm-ID", realm.as_uuid().to_string())
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("resp");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

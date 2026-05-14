@@ -1,7 +1,7 @@
 //! SCIM 2.0 provisioning endpoint (RFC 7643 + RFC 7644).
 //!
-//! Mounted at `/scim/v2/*`. Reuses the admin Bearer + `X-Realm-ID` auth
-//! extractor and the shared `AdminRateLimiter`.
+//! Mounted at `/scim/v2/*`. Auth is a realm-scoped bearer token plus
+//! `X-Realm-ID`, with rate limiting shared with the admin surface.
 //!
 //! # Phase 1 scope
 //!
@@ -26,8 +26,6 @@
 //! - Bracketed filter paths and PATCH complex value filters.
 //! - `/Bulk`, `/Me`, sorting, attribute projection.
 //! - Enterprise User schema extension + additional schema URNs.
-//! - Dedicated service-account / long-lived SCIM tokens (Phase 1 reuses
-//!   admin Bearer tokens).
 //! - `If-Match` enforcement / 412 responses.
 //! - Engine-level filter / pagination push-down.
 
@@ -38,6 +36,7 @@ use axum::Router;
 
 use crate::protocol::http::AppState;
 
+pub mod auth;
 pub mod discovery;
 pub mod error;
 pub mod filter;

@@ -1,0 +1,58 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Identity Providers{% endblock %}
+{% block body %}
+{% include "ui/admin/realms/_workspace_tabs.html" %}
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+  <div>
+    <h1 class="font-display text-2xl font-medium text-ht-content-primary">Identity Providers</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">Configure social login and enterprise SSO connectors for this realm.</p>
+  </div>
+  <a href="/ui/admin/realms/{{ realm_name }}/identity-providers/new"
+     class="inline-flex shrink-0 items-center gap-1.5 rounded bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-hover">
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    New provider
+  </a>
+</div>
+
+<div class="rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle overflow-hidden">
+  {% if providers.is_empty() %}
+  <p class="px-6 py-10 text-center text-sm text-ht-content-muted">
+    No identity providers configured. Add one to enable social login or enterprise SSO.
+  </p>
+  {% else %}
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-divider-subtle bg-ht-surface-elevated">
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Name</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Display name</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Protocol</th>
+        <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Issuer</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-divider-subtle">
+      {% for row in providers %}
+      <tr class="hover:bg-ht-surface-base">
+        <td class="px-4 py-3 whitespace-nowrap">
+          <a href="/ui/admin/realms/{{ realm_name }}/identity-providers/{{ row.id }}"
+             class="font-mono text-xs text-ht-content-brand hover:underline">{{ row.name }}</a>
+        </td>
+        <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ row.display_name }}</td>
+        <td class="px-4 py-3 whitespace-nowrap">
+          {% if row.kind == "oidc" %}
+            <span class="inline-flex items-center rounded-full bg-teal-bg px-2 py-0.5 text-xs font-medium text-teal-fg">OIDC</span>
+          {% else if row.kind == "github" %}
+            <span class="inline-flex items-center rounded-full bg-steel-bg px-2 py-0.5 text-xs font-medium text-steel-fg">GitHub</span>
+          {% else if row.kind == "saml" %}
+            <span class="inline-flex items-center rounded-full bg-violet-bg px-2 py-0.5 text-xs font-medium text-violet-fg">SAML</span>
+          {% else %}
+            <span class="inline-flex items-center rounded-full bg-ht-surface-elevated px-2 py-0.5 text-xs font-medium text-ht-content-muted ring-1 ring-divider-subtle">{{ row.kind }}</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-xs font-mono text-ht-content-muted truncate max-w-xs">{{ row.issuer }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

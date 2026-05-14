@@ -93,6 +93,29 @@ storage:
   hot_tier_max_memory: 4294967296  # 4 GiB
 ```
 
+### `metrics`
+
+Prometheus metrics endpoint configuration.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Expose the `GET /metrics` Prometheus scrape endpoint. Set to `false` when metrics are collected via a sidecar agent instead of a direct scrape. |
+
+```yaml
+metrics:
+  enabled: true
+```
+
+The `/metrics` endpoint returns metrics in Prometheus text exposition format (`text/plain; version=0.0.4`). It includes the following metric families:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `hearth_http_request_duration_seconds` | histogram | `method`, `route`, `status` | HTTP request latency |
+| `hearth_auth_attempts_total` | counter | `realm`, `outcome` | Authentication attempts by outcome (`success`/`failure`) |
+| `hearth_tokens_issued_total` | counter | `realm`, `grant_type` | Tokens issued by OAuth 2.0 grant type |
+| `hearth_active_sessions` | gauge | — | Current active session count across all realms |
+| `hearth_storage_operation_duration_seconds` | histogram | `operation` | Storage write/scan latency |
+
 ### `observability`
 
 Logging and tracing configuration.

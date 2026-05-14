@@ -4,15 +4,42 @@
 //! schemas, and resource types (RFC 7644 §4). Clients read them to know
 //! which operators and attributes Hearth accepts before sending writes.
 
-use axum::response::IntoResponse;
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
+
+use crate::protocol::http::{extract_admin_auth, AppState};
+use crate::protocol::scim::error::ScimError;
+
+fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<(), ScimError> {
+    extract_admin_auth(headers, state)
+        .map(|_| ())
+        .map_err(|(status, body)| {
+            let detail = body
+                .0
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("authentication failed")
+                .to_string();
+            ScimError::new(status, detail)
+        })
+}
 
 /// `GET /scim/v2/ServiceProviderConfig` — RFC 7644 §4.
 ///
 /// Advertises capabilities. Phase 1 supports: PATCH, filtering (limited),
-/// and bulk=false. Authentication is Bearer (admin tokens).
-pub async fn service_provider_config() -> impl IntoResponse {
+/// and bulk=false. Authentication is a realm-scoped admin token.
+pub async fn service_provider_config(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(err) = authenticate(&headers, &state) {
+        return err.into_response();
+    }
     Json(json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
         "documentationUri": "https://hearth.dev/docs/scim",
@@ -26,15 +53,20 @@ pub async fn service_provider_config() -> impl IntoResponse {
             {
                 "type": "oauthbearertoken",
                 "name": "Bearer Token",
-                "description": "Admin-scoped bearer token issued by Hearth.",
+                "description": "Realm-scoped SCIM bearer token configured in Hearth.",
                 "specUri": "https://www.rfc-editor.org/rfc/rfc6750"
             }
         ]
     }))
+    .into_response()
 }
 
 /// `GET /scim/v2/ResourceTypes` — RFC 7644 §4.
-pub async fn resource_types() -> impl IntoResponse {
+pub async fn resource_types(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(err) = authenticate(&headers, &state) {
+        return err.into_response();
+    }
+
     Json(json!([
         {
             "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
@@ -53,11 +85,16 @@ pub async fn resource_types() -> impl IntoResponse {
             "schema": crate::protocol::scim::types::GROUP_SCHEMA
         }
     ]))
+    .into_response()
 }
 
 /// `GET /scim/v2/Schemas` — RFC 7643 §8.
-pub async fn schemas() -> impl IntoResponse {
-    Json(json!([user_schema(), group_schema()]))
+pub async fn schemas(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(err) = authenticate(&headers, &state) {
+        return err.into_response();
+    }
+
+    Json(json!([user_schema(), group_schema()])).into_response()
 }
 
 fn user_schema() -> serde_json::Value {

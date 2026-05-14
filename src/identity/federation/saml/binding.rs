@@ -151,10 +151,10 @@ mod tests {
         let param = url
             .split("SAMLRequest=")
             .nth(1)
-            .unwrap()
+            .expect("SAMLRequest param present")
             .split('&')
             .next()
-            .unwrap();
+            .expect("first segment");
         let decoded = decode_redirect_request(param).expect("decode");
         assert_eq!(decoded, xml);
     }
