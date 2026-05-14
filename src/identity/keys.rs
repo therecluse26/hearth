@@ -1222,6 +1222,7 @@ mod tests {
 
     #[test]
     fn encode_oauth_code_format() {
+        // deepcode ignore HardcodedNonCryptoSecret: storage key format fixture — verifies encode_oauth_code prefix
         let hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
         let key = encode_oauth_code(hash);
         let key_str = std::str::from_utf8(&key).expect("utf8");

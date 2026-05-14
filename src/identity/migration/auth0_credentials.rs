@@ -167,6 +167,7 @@ mod tests {
 
     #[test]
     fn md5_returns_unsupported() {
+        // deepcode ignore HardcodedNonCryptoSecret: algorithm-rejection test fixture — MD5 hash of "password"
         let c = cred("md5", "5f4dcc3b5aa765d61d8327deb882cf99");
         match parse_auth0_credential(&c) {
             Err(MigrationError::UnsupportedAlgorithm { algorithm }) => {
@@ -178,6 +179,7 @@ mod tests {
 
     #[test]
     fn sha1_returns_unsupported() {
+        // deepcode ignore HardcodedNonCryptoSecret: algorithm-rejection test fixture — SHA-1 hash
         let c = cred("sha1", "7c4a8d09ca3762af61e59520943dc26494f8941b");
         assert!(matches!(
             parse_auth0_credential(&c),

@@ -1773,6 +1773,7 @@ mod tests {
         let cfg = yaml
             .to_realm_config(&AuthConfig::default(), None)
             .expect("to_realm_config");
+        // deepcode ignore HardcodedNonCryptoSecret: SHA-256 hash of "scim-secret-token" — SCIM bearer roundtrip fixture
         assert_eq!(
             cfg.scim_bearer_token_hash.as_deref(),
             Some("31c5b57bb0a5e7b9a064b0d08eaa2a74d532e36a261d02510120e45466187272")

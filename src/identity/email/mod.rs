@@ -209,11 +209,12 @@ mod tests {
 
     #[test]
     fn api_key_zeroize_and_redacted_debug() {
-        let key = ApiKey::new("sg-secret-key-12345".to_string());
+        let raw = format!("sg-test-{}", uuid::Uuid::new_v4());
+        let key = ApiKey::new(raw.clone());
         let debug = format!("{key:?}");
         assert_eq!(debug, "ApiKey(***)");
-        assert!(!debug.contains("secret"));
-        assert_eq!(key.expose_secret(), "sg-secret-key-12345");
+        assert!(!debug.contains(&raw));
+        assert_eq!(key.expose_secret(), &raw);
     }
 
     #[test]

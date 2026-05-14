@@ -11815,10 +11815,10 @@ mod tests {
 
         let (_dir, engine, _clock) = setup_engine();
         let realm_id = create_test_realm(&engine);
-        let secret = "super-secret-value-12345";
+        let secret = uuid::Uuid::new_v4().to_string();
 
         // Register confidential client
-        let client = register_confidential_client(&engine, &realm_id, secret);
+        let client = register_confidential_client(&engine, &realm_id, &secret);
         assert!(client.is_confidential());
         assert!(client
             .grant_types()
@@ -11830,7 +11830,7 @@ mod tests {
                 &realm_id,
                 &ClientCredentialsRequest {
                     client_id: client.client_id().clone(),
-                    client_secret: secret.to_string(),
+                    client_secret: secret.clone(),
                     scope: Some("read write".to_string()),
                 },
             )

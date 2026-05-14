@@ -376,6 +376,7 @@ mod tests {
     fn validate_totp_code_for_current_time_window_succeeds() {
         // RFC 6238 test vector: secret = "12345678901234567890" (ASCII)
         // Time = 59 → step = 1
+        // deepcode ignore HardcodedNonCryptoSecret: RFC 6238 §B.1 mandatory test vector
         let secret = b"12345678901234567890";
         let code = compute_totp(secret, 1); // step 1 = time 30..59
 
