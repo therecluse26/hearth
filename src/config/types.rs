@@ -378,11 +378,12 @@ impl Default for OperationalConfig {
 }
 
 /// Email delivery transport selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EmailTransport {
     /// Write email contents (subject, recipient, verification URL) to the
     /// `tracing` log at WARN level. No external delivery. Default.
+    #[default]
     Log,
     /// Deliver via SMTP to an external mail server. Requires an
     /// accompanying [`SmtpConfig`] block and a `from` address.
@@ -395,12 +396,6 @@ pub enum EmailTransport {
     Mailgun,
     /// Deliver via the `Mailtrap` Sending API. Requires a [`MailtrapConfig`].
     Mailtrap,
-}
-
-impl Default for EmailTransport {
-    fn default() -> Self {
-        Self::Log
-    }
 }
 
 /// SMTP transport-level encryption mode.
