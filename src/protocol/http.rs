@@ -1460,7 +1460,10 @@ async fn token_exchange(
                 Ok(response) => {
                     crate::metrics::metrics()
                         .tokens_issued_total
-                        .with_label_values(&[realm_id.as_uuid().to_string().as_str(), "authorization_code"])
+                        .with_label_values(&[
+                            realm_id.as_uuid().to_string().as_str(),
+                            "authorization_code",
+                        ])
                         .inc();
                     crate::metrics::metrics().active_sessions.inc();
                     (
@@ -1485,7 +1488,10 @@ async fn token_exchange(
                 Ok(tokens) => {
                     crate::metrics::metrics()
                         .tokens_issued_total
-                        .with_label_values(&[realm_id.as_uuid().to_string().as_str(), "refresh_token"])
+                        .with_label_values(&[
+                            realm_id.as_uuid().to_string().as_str(),
+                            "refresh_token",
+                        ])
                         .inc();
                     let resp = pb::OidcTokenResponse {
                         access_token: tokens.access_token().to_string(),
