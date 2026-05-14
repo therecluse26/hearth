@@ -1253,6 +1253,19 @@ fn validate_realm_auth_configs_all(
                     });
                 }
             }
+            if let Some(ttl) = &token.password_reset_token_ttl {
+                match types::parse_duration_to_micros(ttl) {
+                    Err(_) => issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.token.password_reset_token_ttl"),
+                        reason: "invalid duration format".to_string(),
+                    }),
+                    Ok(v) if v <= 0 => issues.push(ValidationIssue {
+                        field: format!("realms.{name}.auth.token.password_reset_token_ttl"),
+                        reason: "must be > 0".to_string(),
+                    }),
+                    Ok(_) => {}
+                }
+            }
         }
         if let Some(rl) = &auth.rate_limit {
             if let Some(dur) = &rl.lockout_duration {

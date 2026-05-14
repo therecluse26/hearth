@@ -5837,9 +5837,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::PasswordResetTokenInvalid);
         }
 
-        // 4. Check expiry (30 minutes)
+        // 4. Check expiry — use realm-specific TTL when configured, else default (30 minutes).
+        let expiry_micros = self
+            .get_realm(realm_id)
+            .ok()
+            .flatten()
+            .and_then(|r| r.config().password_reset_token_ttl_micros)
+            .unwrap_or(PASSWORD_RESET_EXPIRY_MICROS);
         let now = self.clock.now().as_micros();
-        if now - stored.created_at_micros > PASSWORD_RESET_EXPIRY_MICROS {
+        if now - stored.created_at_micros > expiry_micros {
             // Clean up stale record
             self.storage
                 .delete(realm_id, &key)
@@ -13805,6 +13811,66 @@ mod tests {
         assert!(
             !response.active,
             "forged token introspection must return inactive"
+        );
+    }
+
+    // ===== Password reset TTL =====
+
+    #[test]
+    fn password_reset_token_expires_after_configured_ttl() {
+        let (_dir, engine, clock) = setup_engine();
+
+        // Create a realm with a 5-minute password reset TTL.
+        let short_ttl_micros: i64 = 5 * 60 * 1_000_000;
+        let realm_req = crate::identity::CreateRealmRequest {
+            name: format!("ttl-test-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                password_reset_token_ttl_micros: Some(short_ttl_micros),
+                ..RealmConfig::default()
+            }),
+        };
+        let realm = engine.create_realm(&realm_req).expect("create realm");
+        let user = create_test_user(&engine, realm.id());
+        engine
+            .set_password(
+                realm.id(),
+                user.id(),
+                &CleartextPassword::from_string("ValidPassword1!".to_string()),
+            )
+            .expect("set password");
+
+        // Issue a reset token.
+        let token = engine
+            .request_password_reset(realm.id(), user.email())
+            .expect("request reset")
+            .expect("known user should produce token");
+
+        // Token is valid immediately.
+        engine
+            .reset_password_with_token(
+                realm.id(),
+                &token,
+                &CleartextPassword::from_string("NewValidPassword1!".to_string()),
+            )
+            .expect("reset should succeed within TTL");
+
+        // Issue a second token and advance the clock past the TTL.
+        let token2 = engine
+            .request_password_reset(realm.id(), user.email())
+            .expect("request second reset")
+            .expect("token");
+        clock.advance(short_ttl_micros + 1);
+
+        let err = engine
+            .reset_password_with_token(
+                realm.id(),
+                &token2,
+                &CleartextPassword::from_string("AnotherPass1!".to_string()),
+            )
+            .expect_err("expired token must be rejected");
+        assert!(
+            matches!(err, IdentityError::PasswordResetTokenInvalid),
+            "expected PasswordResetTokenInvalid after TTL expiry, got: {err}"
         );
     }
 }

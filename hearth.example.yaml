@@ -208,6 +208,7 @@ email:
 #       token:
 #         access_token_ttl: "30m"       # per-realm token TTL override
 #         refresh_token_ttl: "14d"
+#         password_reset_token_ttl: "1h" # default: 30m; use shorter TTLs for high-security realms
 #       rate_limit:
 #         max_failed_logins: 5
 #         lockout_duration: "15m"

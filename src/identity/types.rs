@@ -514,6 +514,9 @@ pub struct RealmConfig {
     pub access_token_ttl_micros: Option<i64>,
     /// Per-realm refresh token TTL in microseconds.
     pub refresh_token_ttl_micros: Option<i64>,
+    /// Per-realm password reset token TTL in microseconds.
+    /// `None` falls back to the compiled default (30 minutes).
+    pub password_reset_token_ttl_micros: Option<i64>,
     /// Maximum failed login attempts before lockout.
     pub max_failed_logins: Option<u32>,
     /// Lockout duration in microseconds after max failed logins.

@@ -869,6 +869,10 @@ pub struct RealmTokenYaml {
     /// Refresh token TTL as a duration string (e.g. `"7d"`).
     #[serde(default)]
     pub refresh_token_ttl: Option<String>,
+    /// Password reset token TTL as a duration string (e.g. `"30m"`).
+    /// Defaults to 30 minutes when absent.
+    #[serde(default)]
+    pub password_reset_token_ttl: Option<String>,
 }
 
 /// Per-realm rate limit overrides in YAML.
@@ -1386,6 +1390,11 @@ impl RealmYamlConfig {
             .and_then(|t| t.refresh_token_ttl.as_deref())
             .and_then(|s| parse_duration_to_micros(s).ok());
 
+        let password_reset_token_ttl_micros = auth
+            .and_then(|a| a.token.as_ref())
+            .and_then(|t| t.password_reset_token_ttl.as_deref())
+            .and_then(|s| parse_duration_to_micros(s).ok());
+
         let max_failed_logins = auth
             .and_then(|a| a.rate_limit.as_ref())
             .and_then(|r| r.max_failed_logins);
@@ -1635,6 +1644,7 @@ impl RealmYamlConfig {
             password_policy,
             access_token_ttl_micros,
             refresh_token_ttl_micros,
+            password_reset_token_ttl_micros,
             max_failed_logins,
             lockout_duration_micros,
             passkey_requires_mfa,
