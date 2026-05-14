@@ -296,7 +296,9 @@ async fn oidc_authorization_code_flow_via_http() {
     // 6. Verify JWKS endpoint returns keys
     let jwks_resp = http_client
         .get(format!("{base}/jwks"))
-        .timeout(Duration::from_secs(5))
+        // /jwks blocks until dev-mode RSA/EC signing keys are minted (5-8s on cold CI);
+        // see the matching budget in tests/cli.rs::serve_dev_exposes_jwks.
+        .timeout(Duration::from_secs(30))
         .send()
         .await
         .expect("jwks request");
