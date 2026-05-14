@@ -12,17 +12,12 @@ use serde::{Deserialize, Serialize};
 use crate::core::{ClientId, RealmId, Timestamp};
 
 /// Client trust posture used by authz and consent evaluation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientTrustLevel {
+    #[default]
     FirstParty,
     ThirdParty,
-}
-
-impl Default for ClientTrustLevel {
-    fn default() -> Self {
-        Self::FirstParty
-    }
 }
 
 /// Configuration for OIDC / OAuth 2.0 operations.

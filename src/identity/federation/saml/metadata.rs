@@ -144,10 +144,8 @@ pub fn parse_idp_metadata(xml: &[u8]) -> Result<ParsedIdpMetadata, IdentityError
                     expect_cert = true;
                 }
             }
-            Ok(Event::End(e)) => {
-                if e.name().as_ref().ends_with(b"IDPSSODescriptor") {
-                    in_idp = false;
-                }
+            Ok(Event::End(e)) if e.name().as_ref().ends_with(b"IDPSSODescriptor") => {
+                in_idp = false;
             }
             Ok(Event::Text(t)) if expect_cert => {
                 if let Ok(s) = t.unescape() {
