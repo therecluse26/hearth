@@ -129,9 +129,13 @@ async fn serve_dev_exposes_jwks() {
     );
 
     let client = reqwest::Client::new();
+    // /jwks blocks until the dev-mode signing keys (RSA/EC) are minted, which
+    // observably takes >5s on cold CI runners — the sibling /.well-known/openid-configuration
+    // test only returns precomputed metadata, so 5s is fine there. Use a longer per-request
+    // budget here to absorb cold-runner key-generation variance.
     let resp = client
         .get(format!("http://127.0.0.1:{port}/jwks"))
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
         .send()
         .await
         .expect("jwks request");
