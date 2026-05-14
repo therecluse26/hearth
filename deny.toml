@@ -15,6 +15,10 @@ allow = [
     "ISC",
     "Unicode-DFS-2016",
     "Unicode-3.0",
+    "AGPL-3.0-only",
+    "0BSD",
+    "CDLA-Permissive-2.0",
+    "Zlib",
 ]
 
 [bans]
