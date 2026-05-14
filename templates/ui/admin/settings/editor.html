@@ -303,6 +303,7 @@ function configEditor() {
     // Get nested value safely
     getVal(path, fallback) {
       const parts = path.split('.');
+      if (parts.some(p => p === '__proto__' || p === 'constructor' || p === 'prototype')) return fallback;
       let obj = this.config;
       for (const p of parts) {
         if (obj === undefined || obj === null) return fallback;
@@ -314,6 +315,7 @@ function configEditor() {
     // Set nested value (with type coercion for numeric fields)
     setVal(path, value) {
       const parts = path.split('.');
+      if (parts.some(p => p === '__proto__' || p === 'constructor' || p === 'prototype')) return;
       let obj = this.config;
       for (let i = 0; i < parts.length - 1; i++) {
         if (obj[parts[i]] === undefined || obj[parts[i]] === null) obj[parts[i]] = {};

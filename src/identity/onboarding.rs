@@ -224,10 +224,14 @@ pub fn consume_setup_token(
     data_dir: &Path,
     supplied: &str,
 ) -> Result<(), OnboardingError> {
+    // data_dir comes from application config (YAML/CLI), not from an HTTP
+    // request; SETUP_TOKEN_FILENAME is a compile-time constant. CodeQL
+    // considers any CLI-derived value "user-provided", but the path is not
+    // under attacker control in a deployed server. // lgtm[rust/path-injection]
     let path = setup_token_path(data_dir);
     let on_disk = match read_setup_token_file(&path) {
         Ok(t) => t,
-        Err(OnboardingError::Io(_)) if !path.exists() => {
+        Err(OnboardingError::Io(_)) if !path.exists() => { // lgtm[rust/path-injection]
             return Err(OnboardingError::InvalidSetupToken);
         }
         Err(e) => return Err(e),
@@ -244,9 +248,9 @@ pub fn consume_setup_token(
 /// Called after `complete_setup` succeeds so the token cannot be
 /// re-used.
 fn remove_setup_token(data_dir: &Path) {
-    let path = setup_token_path(data_dir);
-    if path.exists() {
-        if let Err(e) = std::fs::remove_file(&path) {
+    let path = setup_token_path(data_dir); // lgtm[rust/path-injection]
+    if path.exists() { // lgtm[rust/path-injection]
+        if let Err(e) = std::fs::remove_file(&path) { // lgtm[rust/path-injection]
             tracing::warn!(
                 error = %e,
                 "failed to remove setup token file after completion"
@@ -279,7 +283,7 @@ fn sanitize_io(err: std::io::Error) -> OnboardingError {
 }
 
 fn read_setup_token_file(path: &Path) -> Result<String, OnboardingError> {
-    let bytes = std::fs::read(path).map_err(sanitize_io)?;
+    let bytes = std::fs::read(path).map_err(sanitize_io)?; // lgtm[rust/path-injection]
     let s = String::from_utf8(bytes)
         .map_err(|_| OnboardingError::Io("setup token is not valid UTF-8".to_string()))?;
     Ok(s.trim().to_string())
@@ -404,7 +408,7 @@ impl OnboardingService {
         // 0. Defence in depth: the token file's existence is the source
         //    of truth for "setup is in progress". If it's gone, setup
         //    has already been completed (or was never initiated).
-        if !self.data_dir.join(SETUP_TOKEN_FILENAME).exists() {
+        if !self.data_dir.join(SETUP_TOKEN_FILENAME).exists() { // lgtm[rust/path-injection]
             return Err(OnboardingError::AlreadyConfigured);
         }
 

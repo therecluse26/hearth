@@ -22,11 +22,11 @@
 # transitive deps (e.g. ureq-proto 0.6) require edition 2024, which stabilized
 # in Rust 1.85. Bump in lockstep with the host toolchain when deps move.
 #
-# Supply-chain hardening: pin by digest as well as tag. Obtain with:
+# Supply-chain hardening: pinned by both tag and digest.
+# To re-pin after a base-image upgrade:
 #   docker pull rust:1.89-slim-bookworm && \
 #   docker inspect rust:1.89-slim-bookworm --format '{{index .RepoDigests 0}}'
-# Replace the tag with @sha256:<hash> once available in CI.
-FROM rust:1.89-slim-bookworm AS builder
+FROM rust:1.89-slim-bookworm@sha256:d7fc7de78bb8c1469933aeecbf801314d30d7d6e9f0578bba4cfa285bfa37fe6 AS builder
 
 # Build-time deps:
 #   - protobuf-compiler: `build.rs` calls `prost_build::compile_protos`, which
@@ -132,13 +132,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # authoritative lock. Re-pin after every intentional base-image upgrade:
 #   docker pull debian:bookworm-slim
 #   docker inspect debian:bookworm-slim --format '{{index .RepoDigests 0}}'
-#
-# NOTE: current digest placeholder must be updated to a real value before
-# shipping to production. To obtain it locally:
-#   docker pull debian:bookworm-slim && \
-#   docker inspect debian:bookworm-slim --format '{{index .RepoDigests 0}}'
-# then replace the tag with @sha256:<hash> in the FROM line.
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3 AS runtime
 
 # Runtime deps:
 #   - ca-certificates: for outbound TLS (SMTP relay, remote IdPs, webhook

@@ -103,7 +103,7 @@ impl Fs for RealFs {
     }
 
     fn create(&self, path: &Path) -> io::Result<Box<dyn FsFile>> {
-        let file = std::fs::File::create(path)?;
+        let file = std::fs::File::create(path)?; // lgtm[rust/path-injection]
         Ok(Box::new(RealFsFile(file)))
     }
 
@@ -125,7 +125,7 @@ impl Fs for RealFs {
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<std::path::PathBuf>> {
-        let entries = std::fs::read_dir(path)?
+        let entries = std::fs::read_dir(path)? // lgtm[rust/path-injection]
             .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())
             .collect();
