@@ -463,18 +463,23 @@ async fn groups_patch_renames_group_and_adds_member() {
     let group_id = gbody["id"].as_str().unwrap().to_string();
 
     // PATCH: rename the group and add the second user.
-    let patch = scim_request("PATCH", &format!("/scim/v2/Groups/{group_id}"), &realm, &token)
-        .body(Body::from(
-            json!({
-                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
-                "Operations": [
-                    {"op": "replace", "path": "displayName", "value": "NewName"},
-                    {"op": "add", "path": "members", "value": [{"value": u2_id}]}
-                ]
-            })
-            .to_string(),
-        ))
-        .unwrap();
+    let patch = scim_request(
+        "PATCH",
+        &format!("/scim/v2/Groups/{group_id}"),
+        &realm,
+        &token,
+    )
+    .body(Body::from(
+        json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [
+                {"op": "replace", "path": "displayName", "value": "NewName"},
+                {"op": "add", "path": "members", "value": [{"value": u2_id}]}
+            ]
+        })
+        .to_string(),
+    ))
+    .unwrap();
     let (status, body) = send(&rig.app, patch).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["displayName"], "NewName");
@@ -484,7 +489,10 @@ async fn groups_patch_renames_group_and_adds_member() {
         .iter()
         .filter_map(|m| m["value"].as_str())
         .collect();
-    assert!(member_ids.contains(&u1_id.as_str()), "original member retained");
+    assert!(
+        member_ids.contains(&u1_id.as_str()),
+        "original member retained"
+    );
     assert!(member_ids.contains(&u2_id.as_str()), "new member added");
 }
 

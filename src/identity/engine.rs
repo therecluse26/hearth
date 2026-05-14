@@ -3909,7 +3909,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 let ttl_micros = self.config.oidc.authorization_code_ttl_secs * 1_000_000;
                 let mut nonces = self.used_nonces.lock().expect("nonce lock");
                 // Sweep nonces older than the auth-code TTL to bound memory.
-                nonces.retain(|_, inserted_at| now.as_micros() - inserted_at.as_micros() < ttl_micros);
+                nonces.retain(|_, inserted_at| {
+                    now.as_micros() - inserted_at.as_micros() < ttl_micros
+                });
                 if nonces.insert(nonce.clone(), now).is_some() {
                     return Err(IdentityError::InvalidGrant {
                         reason: "nonce has already been used".to_string(),
@@ -11211,7 +11213,9 @@ mod tests {
 
         // Use the nonce at t=0.
         assert!(
-            engine.authorize(&realm, &make_request("expiry-nonce", "state-1")).is_ok(),
+            engine
+                .authorize(&realm, &make_request("expiry-nonce", "state-1"))
+                .is_ok(),
             "first use must succeed"
         );
 
@@ -11231,7 +11235,9 @@ mod tests {
         // The expired entry should be swept on the next call; the nonce is
         // now acceptable again because its original auth-code has expired.
         assert!(
-            engine.authorize(&realm, &make_request("expiry-nonce", "state-3")).is_ok(),
+            engine
+                .authorize(&realm, &make_request("expiry-nonce", "state-3"))
+                .is_ok(),
             "nonce must be accepted after TTL expiry"
         );
     }

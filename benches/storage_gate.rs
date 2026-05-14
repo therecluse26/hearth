@@ -90,7 +90,7 @@ fn make_identity_engine() -> (tempfile::TempDir, EmbeddedIdentityEngine, RealmId
 
 /// Sort `samples`, then panic if p50 or p99 exceeds their respective limits.
 fn assert_percentiles(
-    samples: &mut Vec<Duration>,
+    samples: &mut [Duration],
     gate: &str,
     p50_limit: Duration,
     p99_limit: Duration,
@@ -118,8 +118,8 @@ fn assert_percentiles(
 /// measurement begins, matching the steady-state `lookup_session` invariant.
 fn gate_storage_hot_tier() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let engine = EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf()))
-        .expect("open");
+    let engine =
+        EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf())).expect("open");
     let realm = RealmId::generate();
 
     // Pre-compute keys to avoid allocator noise inside the measurement loop.
@@ -137,7 +137,11 @@ fn gate_storage_hot_tier() {
     }
 
     for i in 0..GATE_WARMUP {
-        black_box(engine.get(&realm, black_box(&keys[i % 1_000])).expect("get"));
+        black_box(
+            engine
+                .get(&realm, black_box(&keys[i % 1_000]))
+                .expect("get"),
+        );
     }
 
     let mut samples = Vec::with_capacity(GATE_SAMPLES);
@@ -181,13 +185,21 @@ fn gate_session_lookup() {
 
     // Warm-up also promotes the session to the hot tier.
     for _ in 0..GATE_WARMUP {
-        black_box(engine.get_session(&realm, black_box(&session_id)).expect("get"));
+        black_box(
+            engine
+                .get_session(&realm, black_box(&session_id))
+                .expect("get"),
+        );
     }
 
     let mut samples = Vec::with_capacity(GATE_SAMPLES);
     for _ in 0..GATE_SAMPLES {
         let start = Instant::now();
-        black_box(engine.get_session(&realm, black_box(&session_id)).expect("get"));
+        black_box(
+            engine
+                .get_session(&realm, black_box(&session_id))
+                .expect("get"),
+        );
         samples.push(start.elapsed());
     }
 
@@ -286,8 +298,8 @@ fn gate_user_lookup_by_email() {
 
 fn bench_storage_hot_tier(c: &mut Criterion) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let engine = EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf()))
-        .expect("open");
+    let engine =
+        EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf())).expect("open");
     let realm = RealmId::generate();
 
     let keys: Vec<Vec<u8>> = (0..1_000_usize)

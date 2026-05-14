@@ -1581,7 +1581,6 @@ fn audit_session_event(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // User consents
 // ---------------------------------------------------------------------------
@@ -1753,7 +1752,6 @@ fn format_ts_admin(ts: crate::core::Timestamp) -> String {
     };
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02} UTC")
 }
-
 
 // ---------------------------------------------------------------------------
 // User role / permission HTMX handlers (render_roles_tab, render_permissions_tab)

@@ -1,8 +1,8 @@
 //! RBAC tooling: debugger, scopes viewer, role definitions, permissions browser,
 //! and org-member role/permission management.
 
-use super::*;
 use super::orgs::{org_redirect_flash, render_member_row_with_toast};
+use super::*;
 
 // =========================================================================
 // RBAC debug / token preview / scopes / realm admin picker
@@ -701,7 +701,6 @@ pub async fn admin_org_member_revoke_perm(
         }
     }
 }
-
 
 // =========================================================================
 // RBAC permissions browser + role definitions

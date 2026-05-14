@@ -18,8 +18,13 @@ use axum::response::{IntoResponse, Redirect, Response};
 use base64::Engine as _;
 use serde::Deserialize;
 
+use super::auth::{verify_csrf_form_field, RequireAdmin, TargetRealm};
+use super::handlers_common::FriendlyForm;
+use super::templates::{render, Flash};
+use super::WebState;
 use crate::config::{Config, ValidationIssue};
 use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId};
+use crate::identity::claims_config::ClaimSource;
 use crate::identity::oidc::{ClientTrustLevel, RegisterClientRequest, UpdateClientRequest};
 use crate::identity::{
     CleartextPassword, CreateInvitationRequest, CreateOrganizationRequest, CreateUserRequest,
@@ -27,15 +32,10 @@ use crate::identity::{
     OrganizationMembership, OrganizationRole, OrganizationStatus, Page, Realm, RealmStatus,
     Session, UpdateOrganizationRequest, UpdateUserRequest, User, UserStatus,
 };
-use crate::identity::claims_config::ClaimSource;
 use crate::rbac::{
     CreateGroupRequest, CreateRoleRequest, Group, GroupId, GroupMember, Permission, Role, RoleId,
     RoleScopeKind, Scope as RbacScope, UpdateGroupRequest, UpdateRoleRequest,
 };
-use super::auth::{verify_csrf_form_field, RequireAdmin, TargetRealm};
-use super::handlers_common::FriendlyForm;
-use super::templates::{render, Flash};
-use super::WebState;
 
 // Re-export web-layer modules so sub-modules can use `super::auth::*`,
 // `super::handlers_common::*`, and `super::templates::*`.
@@ -71,7 +71,6 @@ pub struct PaginationParams {
     /// Opaque cursor for the next page.
     pub cursor: Option<String>,
 }
-
 
 // ---------------------------------------------------------------------------
 // Shared RBAC view types (used by mod.rs helpers and/or multiple sub-modules)
@@ -134,7 +133,6 @@ pub struct UserPermissionGrantRow {
     /// Wire value sent back in the revoke form ("realm" | "org:{uuid}").
     pub scope_raw: String,
 }
-
 
 // ---------------------------------------------------------------------------
 // Shared cross-module helpers

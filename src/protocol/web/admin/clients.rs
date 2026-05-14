@@ -749,4 +749,3 @@ pub async fn admin_app_delete(
         }
     }
 }
-
