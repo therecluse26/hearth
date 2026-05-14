@@ -68,7 +68,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 tokio-stream = { version = "0.1", features = ["sync"] }
-tonic = { version = "0.12", features = ["transport", "tls", "gzip"] }
+tonic = { version = "0.14", features = ["transport", "tls", "gzip"] }
 tonic-health = "0.12"
 tonic-reflection = "0.12"
 tonic-types = "0.12"
