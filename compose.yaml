@@ -32,7 +32,7 @@ services:
       mailpit:
         condition: service_started
     ports:
-      - "8420:8420"
+      - "127.0.0.1:8420:8420"
     volumes:
       # Named volume keeps WAL + SSTs across `docker compose down`. Use
       # `docker compose down -v` to wipe.
@@ -60,16 +60,46 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    # ---------------------------------------------------------------------------
+    # Container hardening
+    # ---------------------------------------------------------------------------
+    # Prevent privilege escalation: disables setuid/setgid bits and all other
+    # privilege-gain mechanisms even if a setuid binary is somehow introduced.
+    security_opt:
+      - no-new-privileges:true
+    # Drop all Linux capabilities. Hearth binds to port 8420 (>1024, no
+    # NET_BIND_SERVICE needed), does not manipulate network interfaces, and runs
+    # entirely in user space — zero kernel capabilities are required.
+    cap_drop:
+      - ALL
+    # Immutable root filesystem. Writes are only possible to the named volume
+    # (/var/lib/hearth) and the /tmp tmpfs below. This makes persistence after
+    # RCE significantly harder and isolates data writes to auditable locations.
+    read_only: true
+    tmpfs:
+      # Scratch space for any temp files the process or glibc may create.
+      - /tmp:size=64m,mode=1777
+    # Resource limits: prevent a single container from starving the host.
+    # Adjust for your hardware; these are conservative defaults.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
   mailpit:
     # Dev-only SMTP sink + web UI. Captures every message Hearth sends and
     # renders it at http://localhost:8025. The SMTP listener on :1025 is
     # intentionally NOT published to the host — only reachable from inside
     # the compose network as `mailpit:1025`.
+    #
+    # TODO(security): pin to a specific version tag and digest before production use.
+    # Check https://github.com/axllent/mailpit/releases for the latest stable,
+    # then: docker pull axllent/mailpit:<tag> && docker inspect --format '{{index .RepoDigests 0}}'
     image: axllent/mailpit:latest
     container_name: mailpit
     ports:
-      - "8025:8025"       # web UI
+      - "127.0.0.1:8025:8025"       # web UI — dev only, localhost-bound
       # 1025 deliberately unpublished — see note above
     restart: unless-stopped
     healthcheck:
@@ -77,6 +107,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
 volumes:
   # Single named volume persists WAL, SSTs, signing keys, indexes — everything

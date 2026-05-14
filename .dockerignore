@@ -42,6 +42,18 @@ sdks/*/build/
 sdks/*/.next/
 sdks/go/bin/
 
+# Secrets and local runtime config — MUST NOT enter the build context.
+# Both are in .gitignore too, but .dockerignore is a separate filter; a file
+# gitignored is not automatically dockerignored.
+# The Dockerfile never COPYs these, but if they are in the context and a future
+# maintainer adds `COPY . .` they would end up in an image layer. Exclusion
+# here closes that class of accidental credential bake-in.
+.env
+.env.*
+*.env
+hearth.yaml
+hearth.example.yaml
+
 # Local runtime state — never ship a dev data dir into the image
 data/
 *.wal

@@ -12,13 +12,18 @@
 
 services:
   hearth:
+    # TODO(security): replace :latest with a pinned tag + digest before production.
+    # Pattern: ghcr.io/hearth-rs/hearth:<version>@sha256:<digest>
+    # Check releases at https://github.com/hearth-rs/hearth/releases.
     image: ghcr.io/hearth-rs/hearth:latest
     container_name: hearth
     depends_on:
       mailpit:
         condition: service_started
     ports:
-      - "8420:8420"
+      # Bind only to localhost by default. Override to "0.0.0.0:8420:8420" or
+      # put a reverse proxy (nginx/caddy/traefik) in front for public exposure.
+      - "127.0.0.1:8420:8420"
     volumes:
       # Named volume keeps WAL + SSTs across restarts. Use `down -v` to wipe.
       - hearth_data:/var/lib/hearth
@@ -30,7 +35,8 @@ services:
         required: false
     environment:
       RUST_LOG: "info,hearth=debug"
-      # Inside Docker the server must bind all interfaces.
+      # Inside Docker the server must bind all interfaces (the port mapping
+      # above constrains which host interfaces are reachable).
       HEARTH_BIND_ADDRESS: "0.0.0.0"
     restart: unless-stopped
     healthcheck:
@@ -39,14 +45,29 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    # Container hardening — defense in depth.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
   mailpit:
     # Dev-only SMTP sink + web UI. Captures outbound mail from Hearth and
     # renders it at http://localhost:8025.
+    #
+    # TODO(security): pin to a specific version tag before production use.
     image: axllent/mailpit:latest
     container_name: mailpit
     ports:
-      - "8025:8025"       # web UI
+      - "127.0.0.1:8025:8025"   # web UI — localhost-bound
       # Port 1025 is intentionally not published to the host — reachable
       # only from inside the compose network as mailpit:1025.
     restart: unless-stopped
@@ -55,6 +76,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
 volumes:
   hearth_data:

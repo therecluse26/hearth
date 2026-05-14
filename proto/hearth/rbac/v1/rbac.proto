@@ -1,0 +1,450 @@
+syntax = "proto3";
+
+package hearth.rbac.v1;
+
+option go_package = "github.com/hearthdb/hearth/sdks/go/generated/rbac/v1;rbacv1";
+
+// RBAC admin service: roles, groups, assignments. Mirrors the HTTP admin
+// surface in `docs/specs/AUTHORIZATION.md § 8.2`. There is NO service-to-service
+// Check RPC; callers decode the JWT's `permissions` claim locally.
+service RbacAdminService {
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc CreateRole(CreateRoleRequest) returns (Role);
+  rpc GetRole(GetRoleRequest) returns (Role);
+  rpc UpdateRole(UpdateRoleRequest) returns (Role);
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
+
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
+  rpc CreateGroup(CreateGroupRequest) returns (Group);
+  rpc GetGroup(GetGroupRequest) returns (Group);
+  rpc UpdateGroup(UpdateGroupRequest) returns (Group);
+  rpc DeleteGroup(DeleteGroupRequest) returns (DeleteGroupResponse);
+
+  rpc ListGroupMembers(ListGroupMembersRequest) returns (ListGroupMembersResponse);
+  rpc AddGroupMember(AddGroupMemberRequest) returns (GroupMembership);
+  rpc RemoveGroupMember(RemoveGroupMemberRequest) returns (RemoveGroupMemberResponse);
+
+  rpc AssignUserRole(AssignUserRoleRequest) returns (RoleAssignment);
+  rpc UnassignUserRole(UnassignUserRoleRequest) returns (UnassignUserRoleResponse);
+  rpc ListUserAssignments(ListUserAssignmentsRequest) returns (ListUserAssignmentsResponse);
+  rpc AssignGroupRole(AssignGroupRoleRequest) returns (RoleAssignment);
+  rpc UnassignGroupRole(UnassignGroupRoleRequest) returns (UnassignGroupRoleResponse);
+  rpc ListRoleMembers(ListRoleMembersRequest) returns (ListRoleMembersResponse);
+
+  rpc ResolveEffectivePermissions(ResolveEffectivePermissionsRequest)
+      returns (ResolveEffectivePermissionsResponse);
+
+  // User extras: direct per-user permission grants outside of roles.
+  rpc GrantUserPermission(GrantUserPermissionRequest)
+      returns (GrantUserPermissionResponse);
+  rpc RevokeUserPermission(RevokeUserPermissionRequest)
+      returns (RevokeUserPermissionResponse);
+  rpc ListUserPermissions(ListUserPermissionsRequest)
+      returns (ListUserPermissionsResponse);
+
+  // Additional org roles: per-user role assignments scoped to an org.
+  rpc AddAdditionalRole(AddAdditionalRoleRequest)
+      returns (AddAdditionalRoleResponse);
+  rpc RemoveAdditionalRole(RemoveAdditionalRoleRequest)
+      returns (RemoveAdditionalRoleResponse);
+  rpc ListAdditionalRoles(ListAdditionalRolesRequest)
+      returns (ListAdditionalRolesResponse);
+
+  // Read-only realm-level lookups.
+  rpc ListRealmPermissions(ListRealmPermissionsRequest)
+      returns (ListRealmPermissionsResponse);
+  rpc ListRealmRoles(ListRealmRolesRequest)
+      returns (ListRealmRolesResponse);
+
+  // ── Consent management ───────────────────────────────────────────────────
+
+  // Revoke OAuth consent for a specific (user, client) pair.
+  rpc RevokeConsent(RevokeConsentRequest)
+      returns (RevokeConsentResponse);
+
+  // List all active consents for a user.
+  rpc ListUserConsents(ListUserConsentsRequest)
+      returns (ListUserConsentsResponse);
+}
+
+// ── Consent revocation ───────────────────────────────────────────────────────
+
+message RevokeConsentRequest {
+  string realm_id = 1;
+  string user_id = 2;
+  string client_id = 3;
+}
+
+message RevokeConsentResponse {}
+
+message ListUserConsentsRequest {
+  string realm_id = 1;
+  string user_id = 2;
+}
+
+message ConsentEntry {
+  string client_id = 1;
+  string client_name = 2;
+  repeated string granted_scopes = 3;
+  int64 granted_at = 4;
+  int64 updated_at = 5;
+}
+
+message ListUserConsentsResponse {
+  repeated ConsentEntry consents = 1;
+}
+
+message Role {
+  string id = 1;
+  string realm_id = 2;
+  string name = 3;
+  string description = 4;
+  repeated string permissions = 5;
+  repeated string parent_role_ids = 6;
+  int64 created_at_micros = 7;
+  int64 updated_at_micros = 8;
+}
+
+message Group {
+  string id = 1;
+  string realm_id = 2;
+  string name = 3;
+  string slug = 4;
+  string description = 5;
+  int64 created_at_micros = 6;
+  int64 updated_at_micros = 7;
+}
+
+message GroupMember {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_USER = 1;
+    TYPE_GROUP = 2;
+  }
+  Type type = 1;
+  string id = 2;
+}
+
+message GroupMembership {
+  string group_id = 1;
+  GroupMember member = 2;
+  int64 added_at_micros = 3;
+  string added_by_user_id = 4;
+}
+
+message Scope {
+  oneof kind {
+    RealmScope realm = 1;
+    OrgScope org = 2;
+  }
+}
+
+message RealmScope {}
+
+message OrgScope {
+  string org_id = 1;
+}
+
+message RoleAssignment {
+  string id = 1;
+  string realm_id = 2;
+  string subject_id = 3;
+  GroupMember.Type subject_type = 4;
+  string role_id = 5;
+  Scope scope = 6;
+  int64 assigned_at_micros = 7;
+  string assigned_by_user_id = 8;
+}
+
+message ListRolesRequest {
+  string realm_id = 1;
+  string cursor = 2;
+  uint32 limit = 3;
+}
+
+message ListRolesResponse {
+  repeated Role roles = 1;
+  string next_cursor = 2;
+}
+
+message CreateRoleRequest {
+  string realm_id = 1;
+  string name = 2;
+  string description = 3;
+  repeated string permissions = 4;
+  repeated string parent_role_ids = 5;
+}
+
+message GetRoleRequest {
+  string realm_id = 1;
+  string role_id = 2;
+}
+
+message UpdateRoleRequest {
+  string realm_id = 1;
+  string role_id = 2;
+  // Fields left empty = unchanged.
+  string name = 3;
+  string description = 4;
+  repeated string permissions = 5;
+  repeated string parent_role_ids = 6;
+}
+
+message DeleteRoleRequest {
+  string realm_id = 1;
+  string role_id = 2;
+  bool cascade = 3;
+}
+
+message DeleteRoleResponse {}
+
+message ListGroupsRequest {
+  string realm_id = 1;
+  string cursor = 2;
+  uint32 limit = 3;
+}
+
+message ListGroupsResponse {
+  repeated Group groups = 1;
+  string next_cursor = 2;
+}
+
+message CreateGroupRequest {
+  string realm_id = 1;
+  string name = 2;
+  string slug = 3;
+  string description = 4;
+}
+
+message GetGroupRequest {
+  string realm_id = 1;
+  string group_id = 2;
+}
+
+message UpdateGroupRequest {
+  string realm_id = 1;
+  string group_id = 2;
+  string name = 3;
+  string slug = 4;
+  string description = 5;
+}
+
+message DeleteGroupRequest {
+  string realm_id = 1;
+  string group_id = 2;
+}
+
+message DeleteGroupResponse {}
+
+message ListGroupMembersRequest {
+  string realm_id = 1;
+  string group_id = 2;
+  string cursor = 3;
+  uint32 limit = 4;
+}
+
+message ListGroupMembersResponse {
+  repeated GroupMember members = 1;
+  string next_cursor = 2;
+}
+
+message AddGroupMemberRequest {
+  string realm_id = 1;
+  string group_id = 2;
+  GroupMember member = 3;
+}
+
+message RemoveGroupMemberRequest {
+  string realm_id = 1;
+  string group_id = 2;
+  GroupMember member = 3;
+}
+
+message RemoveGroupMemberResponse {}
+
+message AssignUserRoleRequest {
+  string realm_id = 1;
+  string user_id = 2;
+  string role_id = 3;
+  Scope scope = 4;
+}
+
+message UnassignUserRoleRequest {
+  string realm_id = 1;
+  string user_id = 2;
+  string assignment_id = 3;
+}
+
+message UnassignUserRoleResponse {}
+
+message ListUserAssignmentsRequest {
+  string realm_id = 1;
+  string user_id = 2;
+}
+
+message ListUserAssignmentsResponse {
+  repeated RoleAssignment assignments = 1;
+}
+
+message AssignGroupRoleRequest {
+  string realm_id = 1;
+  string group_id = 2;
+  string role_id = 3;
+  Scope scope = 4;
+}
+
+message UnassignGroupRoleRequest {
+  string realm_id = 1;
+  string group_id = 2;
+  string assignment_id = 3;
+}
+
+message UnassignGroupRoleResponse {}
+
+message ListRoleMembersRequest {
+  string realm_id = 1;
+  string role_id = 2;
+  string cursor = 3;
+  uint32 limit = 4;
+}
+
+message RoleSubject {
+  GroupMember.Type subject_type = 1;
+  string subject_id = 2;
+}
+
+message ListRoleMembersResponse {
+  repeated RoleSubject members = 1;
+  string next_cursor = 2;
+}
+
+message ResolveEffectivePermissionsRequest {
+  string realm_id = 1;
+  string user_id = 2;
+  string org_id = 3;     // optional; empty means realm-only
+  string scope = 4;      // optional; empty means no narrowing
+}
+
+message ResolveEffectivePermissionsResponse {
+  repeated string roles = 1;
+  repeated string groups = 2;
+  repeated string permissions = 3;
+}
+
+// ── User extras ──────────────────────────────────────────────────────────────
+
+message GrantUserPermissionRequest {
+  string realm_id = 1;
+  string user_id = 2;
+  string permission = 3;
+  // Scope type: "realm" or "org".
+  string scope_type = 4;
+  // Required when scope_type is "org".
+  string org_id = 5;
+  // Optional: user_id of the actor performing the grant.
+  string granted_by = 6;
+}
+
+message GrantUserPermissionResponse {}
+
+message RevokeUserPermissionRequest {
+  string realm_id = 1;
+  string user_id = 2;
+  string permission = 3;
+  string scope_type = 4;
+  // Required when scope_type is "org".
+  string org_id = 5;
+}
+
+message RevokeUserPermissionResponse {}
+
+message ListUserPermissionsRequest {
+  string realm_id = 1;
+  string user_id = 2;
+}
+
+message ListUserPermissionsResponse {
+  repeated UserPermissionEntry permissions = 1;
+}
+
+message UserPermissionEntry {
+  string permission = 1;
+  string scope_type = 2;
+  string org_id = 3;
+  string granted_by = 4;
+  // Unix timestamp (seconds).
+  int64 granted_at = 5;
+}
+
+// ── Additional org roles ─────────────────────────────────────────────────────
+
+message AddAdditionalRoleRequest {
+  string realm_id = 1;
+  string org_id = 2;
+  string user_id = 3;
+  string role_name = 4;
+  // Optional: user_id of the actor performing the grant.
+  string granted_by = 5;
+}
+
+message AddAdditionalRoleResponse {}
+
+message RemoveAdditionalRoleRequest {
+  string realm_id = 1;
+  string org_id = 2;
+  string user_id = 3;
+  string role_name = 4;
+}
+
+message RemoveAdditionalRoleResponse {}
+
+message ListAdditionalRolesRequest {
+  string realm_id = 1;
+  string org_id = 2;
+  string user_id = 3;
+}
+
+message ListAdditionalRolesResponse {
+  repeated string role_names = 1;
+}
+
+// ── Realm-level read-only lookups ────────────────────────────────────────────
+
+message ListRealmPermissionsRequest {
+  string realm_id = 1;
+  string cursor = 2;
+  uint32 limit = 3;
+}
+
+message ListRealmPermissionsResponse {
+  repeated PermissionEntry permissions = 1;
+  string next_cursor = 2;
+}
+
+message PermissionEntry {
+  string name = 1;
+  string description = 2;
+  // Optional grouping label (e.g. "users", "billing").
+  string category = 3;
+}
+
+message ListRealmRolesRequest {
+  string realm_id = 1;
+  string cursor = 2;
+  uint32 limit = 3;
+}
+
+message ListRealmRolesResponse {
+  repeated RoleEntry roles = 1;
+  string next_cursor = 2;
+}
+
+message RoleEntry {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  // Scope kind: "realm", "organization", or "any".
+  string scope_kind = 4;
+  repeated string permissions = 5;
+  repeated string parent_roles = 6;
+}
