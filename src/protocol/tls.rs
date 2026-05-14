@@ -5,8 +5,6 @@
 //! [`ReloadableResolver`] implements [`rustls::server::ResolvesServerCert`] and
 //! atomically swaps certificates on SIGHUP without dropping existing connections.
 
-use std::fs;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -14,6 +12,7 @@ use arc_swap::ArcSwap;
 use rustls::server::ResolvesServerCert;
 use rustls::sign::CertifiedKey;
 use rustls::ServerConfig;
+use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tracing::info;
 
@@ -98,17 +97,18 @@ impl std::error::Error for TlsError {
 /// Returns all certificates found in the file, in order. Returns an error
 /// if the file cannot be read or contains no certificates.
 pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    let file = fs::File::open(path).map_err(|e| TlsError::FileRead {
+    let map_pem_err = |e: rustls_pki_types::pem::Error| TlsError::FileRead {
         path: path.to_path_buf(),
-        source: e,
-    })?;
-    let mut reader = BufReader::new(file);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+        source: match e {
+            rustls_pki_types::pem::Error::Io(io_err) => io_err,
+            other => std::io::Error::other(other),
+        },
+    };
+
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+        .map_err(|e| map_pem_err(e))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| TlsError::FileRead {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+        .map_err(|e| map_pem_err(e))?;
 
     if certs.is_empty() {
         return Err(TlsError::NoCertificates {
@@ -124,37 +124,19 @@ pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError>
 /// Supports PKCS#8, RSA, and EC private key formats. Returns the first
 /// key found. Returns an error if the file cannot be read or contains no key.
 pub fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
-    let file = fs::File::open(path).map_err(|e| TlsError::FileRead {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-    let mut reader = BufReader::new(file);
-
-    loop {
-        match rustls_pemfile::read_one(&mut reader) {
-            Ok(Some(rustls_pemfile::Item::Pkcs1Key(key))) => {
-                return Ok(PrivateKeyDer::Pkcs1(key));
-            }
-            Ok(Some(rustls_pemfile::Item::Pkcs8Key(key))) => {
-                return Ok(PrivateKeyDer::Pkcs8(key));
-            }
-            Ok(Some(rustls_pemfile::Item::Sec1Key(key))) => {
-                return Ok(PrivateKeyDer::Sec1(key));
-            }
-            Ok(Some(_)) => {} // skip other PEM items (e.g. certs in the key file)
-            Ok(None) => {
-                return Err(TlsError::NoPrivateKey {
-                    path: path.to_path_buf(),
-                });
-            }
-            Err(e) => {
-                return Err(TlsError::FileRead {
-                    path: path.to_path_buf(),
-                    source: e,
-                });
-            }
-        }
-    }
+    PrivateKeyDer::from_pem_file(path).map_err(|e| match e {
+        rustls_pki_types::pem::Error::NoItemsFound => TlsError::NoPrivateKey {
+            path: path.to_path_buf(),
+        },
+        rustls_pki_types::pem::Error::Io(io_err) => TlsError::FileRead {
+            path: path.to_path_buf(),
+            source: io_err,
+        },
+        other => TlsError::FileRead {
+            path: path.to_path_buf(),
+            source: std::io::Error::other(other),
+        },
+    })
 }
 
 /// Builds a [`CertifiedKey`] from PEM files on disk.
@@ -315,6 +297,8 @@ pub fn build_server_config(params: TlsConfigParams) -> Result<ServerConfig, TlsE
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use tempfile::TempDir;
 

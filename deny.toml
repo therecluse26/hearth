@@ -1,33 +1,11 @@
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
-
-[[advisories.ignore]]
-id = "RUSTSEC-2023-0071"
-reason = """
-Hearth uses the `rsa` crate only for key generation and PKCS#8 serialization \
-(via `rsa::RsaPrivateKey::new` / `pkcs8::EncodePrivateKey`). \
-No PKCS#1 v1.5 decryption is performed anywhere in the codebase — the Marvin Attack \
-timing side-channel only affects the decrypt path. \
-All RSA signing is delegated to `ring::signature::RsaKeyPair`, which is unaffected. \
-Track the rsa 0.10+ upgrade when the tonic/tower ecosystem gains support (see HEA-116).
-"""
-
-[[advisories.ignore]]
-id = "RUSTSEC-2025-0141"
-reason = """
-bincode 1.3.3 enters via madsim 0.2.34 (simulation/Cargo.toml) and is only used in \
-deterministic simulation tests — never in production code or any deployed binary. \
-madsim 0.2.34 is the latest release and has not yet migrated off bincode 1.x. \
-The unmaintained status carries no runtime risk in this context: the crate is stable, \
-no known CVEs exist, and deserialization input is controlled within the simulator. \
-Revisit when madsim upgrades to bincode 2.x.
-"""
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "Hearth uses the rsa crate only for key generation and PKCS#8 serialization (via rsa::RsaPrivateKey::new / pkcs8::EncodePrivateKey). No PKCS#1 v1.5 decryption is performed anywhere in the codebase — the Marvin Attack timing side-channel only affects the decrypt path. All RSA signing is delegated to ring::signature::RsaKeyPair, which is unaffected. Track the rsa 0.10+ upgrade when the tonic/tower ecosystem gains support (see HEA-116)." },
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 enters via madsim 0.2.34 (simulation/Cargo.toml) and is only used in deterministic simulation tests — never in production code or any deployed binary. madsim 0.2.34 is the latest release and has not yet migrated off bincode 1.x. The unmaintained status carries no runtime risk in this context: the crate is stable, no known CVEs exist, and deserialization input is controlled within the simulator. Revisit when madsim upgrades to bincode 2.x." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.x remains as a transitive dependency via tonic; it is no longer a direct Hearth dependency. The crate is used only for PEM parsing inside tonic's TLS stack and is not on any hot or security-sensitive path in Hearth code. Revisit when tonic upgrades away from rustls-pemfile." },
+]
 
 [licenses]
-unlicensed = "deny"
 allow = [
     "Apache-2.0",
     "MIT",
@@ -38,7 +16,6 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
 ]
-copyleft = "deny"
 
 [bans]
 multiple-versions = "warn"

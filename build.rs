@@ -31,12 +31,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compile proto files with tonic_build (wraps prost). Emits both message
     // types and service traits/clients. The file descriptor set is shared
     // with pbjson below.
-    tonic_build::configure()
+    let proto_dir_str = proto_dir.to_str().expect("proto dir is valid UTF-8");
+    tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         .out_dir(&generated)
         .file_descriptor_set_path(&descriptor_path)
-        .compile_protos(protos, &[proto_dir])?;
+        .compile_protos(protos, &[proto_dir_str])?;
 
     // Duplicate the descriptor set into the generated dir so tonic-reflection
     // can `include_bytes!` it at compile time without relying on OUT_DIR
