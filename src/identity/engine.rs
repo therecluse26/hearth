@@ -3,7 +3,7 @@
 //! Implements `IdentityEngine` using the `StorageEngine` trait for persistence
 //! and `Clock` trait for deterministic timestamps.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -338,7 +338,11 @@ pub struct EmbeddedIdentityEngine {
     /// Stricter limits: 5 attempts, 5-minute lockout. Key format: `mfa:{realm}:{user}`.
     mfa_attempt_trackers: Mutex<HashMap<String, AttemptTracker>>,
     /// Used nonces for replay protection (when nonce enforcement is enabled).
-    used_nonces: Mutex<HashSet<String>>,
+    ///
+    /// Maps nonce value to the timestamp it was first seen. Entries are swept
+    /// on every insertion: any nonce older than `authorization_code_ttl_secs`
+    /// is removed, bounding the set to at most one TTL window of activity.
+    used_nonces: Mutex<HashMap<String, crate::core::Timestamp>>,
     /// Per-email magic link rate trackers.
     ///
     /// Limits the number of magic link requests per email per hour.
@@ -603,7 +607,7 @@ impl EmbeddedIdentityEngine {
             registration_email_rate_trackers: Mutex::new(HashMap::new()),
             registration_ip_rate_trackers: Mutex::new(HashMap::new()),
             ip_login_rate_trackers: Mutex::new(HashMap::new()),
-            used_nonces: Mutex::new(HashSet::new()),
+            used_nonces: Mutex::new(HashMap::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
         };
@@ -642,7 +646,7 @@ impl EmbeddedIdentityEngine {
             registration_email_rate_trackers: Mutex::new(HashMap::new()),
             registration_ip_rate_trackers: Mutex::new(HashMap::new()),
             ip_login_rate_trackers: Mutex::new(HashMap::new()),
-            used_nonces: Mutex::new(HashSet::new()),
+            used_nonces: Mutex::new(HashMap::new()),
             webauthn_challenges: WebAuthnChallengeStore::new(),
             realm_ops_lock: Mutex::new(()),
         };
@@ -3901,8 +3905,12 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // 2b. Nonce replay protection (when enforcement is enabled)
         if self.config.oidc.enforce_nonces {
             if let Some(ref nonce) = request.nonce {
+                let now = self.clock.now();
+                let ttl_micros = self.config.oidc.authorization_code_ttl_secs * 1_000_000;
                 let mut nonces = self.used_nonces.lock().expect("nonce lock");
-                if !nonces.insert(nonce.clone()) {
+                // Sweep nonces older than the auth-code TTL to bound memory.
+                nonces.retain(|_, inserted_at| now.as_micros() - inserted_at.as_micros() < ttl_micros);
+                if nonces.insert(nonce.clone(), now).is_some() {
                     return Err(IdentityError::InvalidGrant {
                         reason: "nonce has already been used".to_string(),
                     });
@@ -11169,6 +11177,122 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "nonce reuse should be allowed when enforcement is off"
+            );
+        }
+    }
+
+    #[test]
+    fn nonce_reusable_after_ttl_expiry() {
+        // After the authorization_code_ttl_secs window has passed, a previously
+        // used nonce must be accepted again (the old entry should have been swept).
+        let (_dir, engine, clock) = setup_engine_with_nonce_enforcement();
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
+
+        let make_request = |nonce: &str, state: &str| AuthorizationRequest {
+            client_id: client.client_id().clone(),
+            redirect_uri: "https://app.example.com/callback".to_string(),
+            scope: "openid".to_string(),
+            state: state.to_string(),
+            response_type: "code".to_string(),
+            user_id: user.id().clone(),
+            code_challenge: None,
+            code_challenge_method: None,
+            nonce: Some(nonce.to_string()),
+            resource: None,
+        };
+
+        // Use the nonce at t=0.
+        assert!(
+            engine.authorize(&realm, &make_request("expiry-nonce", "state-1")).is_ok(),
+            "first use must succeed"
+        );
+
+        // Immediate reuse must still be rejected.
+        assert!(
+            matches!(
+                engine.authorize(&realm, &make_request("expiry-nonce", "state-2")),
+                Err(IdentityError::InvalidGrant { .. })
+            ),
+            "same nonce reused before TTL must be rejected"
+        );
+
+        // Advance past the authorization_code_ttl_secs (default 600 s = 600_000_000 µs).
+        let ttl_micros = engine.config.oidc.authorization_code_ttl_secs * 1_000_000;
+        clock.advance(ttl_micros);
+
+        // The expired entry should be swept on the next call; the nonce is
+        // now acceptable again because its original auth-code has expired.
+        assert!(
+            engine.authorize(&realm, &make_request("expiry-nonce", "state-3")).is_ok(),
+            "nonce must be accepted after TTL expiry"
+        );
+    }
+
+    #[test]
+    fn nonce_set_does_not_grow_unbounded() {
+        // Repeatedly issue distinct nonces and advance the clock past the TTL
+        // between batches.  The set must stay bounded to one TTL window rather
+        // than accumulating every nonce ever used.
+        let (_dir, engine, clock) = setup_engine_with_nonce_enforcement();
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
+
+        let ttl_micros = engine.config.oidc.authorization_code_ttl_secs * 1_000_000;
+
+        // Batch A: insert 5 nonces.
+        for i in 0..5u32 {
+            let req = AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: format!("batch-a-state-{i}"),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+                nonce: Some(format!("batch-a-nonce-{i}")),
+                resource: None,
+            };
+            assert!(engine.authorize(&realm, &req).is_ok());
+        }
+
+        // Batch A nonces are present.
+        {
+            let nonces = engine.used_nonces.lock().expect("nonce lock");
+            assert_eq!(nonces.len(), 5, "5 nonces after batch A");
+        }
+
+        // Advance past TTL — batch A nonces are now stale.
+        clock.advance(ttl_micros);
+
+        // Batch B: insert 3 new nonces (triggers sweep of batch A).
+        for i in 0..3u32 {
+            let req = AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/callback".to_string(),
+                scope: "openid".to_string(),
+                state: format!("batch-b-state-{i}"),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: None,
+                code_challenge_method: None,
+                nonce: Some(format!("batch-b-nonce-{i}")),
+                resource: None,
+            };
+            assert!(engine.authorize(&realm, &req).is_ok());
+        }
+
+        // Only batch B nonces remain; batch A was evicted.
+        {
+            let nonces = engine.used_nonces.lock().expect("nonce lock");
+            assert_eq!(
+                nonces.len(),
+                3,
+                "set must contain only batch B nonces after TTL sweep, got {}",
+                nonces.len()
             );
         }
     }
