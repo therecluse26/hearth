@@ -16,9 +16,10 @@ use crate::core::{IdpId, SessionId, Timestamp, UserId};
 pub type AttributeMap = BTreeMap<String, String>;
 
 /// SAML `<NameID>` format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SamlNameIdFormat {
     /// `urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`
+    #[default]
     EmailAddress,
     /// `urn:oasis:names:tc:SAML:2.0:nameid-format:persistent`
     Persistent,
@@ -48,12 +49,6 @@ impl SamlNameIdFormat {
             "urn:oasis:names:tc:SAML:2.0:nameid-format:transient" => Self::Transient,
             _ => Self::Unspecified,
         }
-    }
-}
-
-impl Default for SamlNameIdFormat {
-    fn default() -> Self {
-        Self::EmailAddress
     }
 }
 

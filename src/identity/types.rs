@@ -401,10 +401,11 @@ pub enum RealmStatus {
 /// When `None` is stored on `RealmConfig.registration_policy`, the engine
 /// treats it as `Disabled` — a safe default so existing deployments don't
 /// silently open registration after upgrade.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "value")]
 pub enum RegistrationPolicy {
     /// Public signup is disabled. Only admin-created users exist.
+    #[default]
     Disabled,
     /// Anyone with a valid email may register.
     Open,
@@ -414,30 +415,19 @@ pub enum RegistrationPolicy {
     InviteOnly,
 }
 
-impl Default for RegistrationPolicy {
-    fn default() -> Self {
-        Self::Disabled
-    }
-}
-
 /// Controls whether Dynamic Client Registration (RFC 7591) is enabled for a realm.
 ///
 /// When `None` is stored on `RealmConfig.dcr_policy`, the engine treats it as
 /// `Disabled` — a safe default so existing deployments don't silently open
 /// DCR after upgrade.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DcrPolicy {
     /// Dynamic client registration is disabled. Only admins may create clients.
+    #[default]
     Disabled,
     /// Any caller may register an OAuth client via `POST /register`.
     Open,
-}
-
-impl Default for DcrPolicy {
-    fn default() -> Self {
-        Self::Disabled
-    }
 }
 
 /// Password complexity policy stored in a realm's configuration.
