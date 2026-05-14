@@ -79,7 +79,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.28"
 opentelemetry = { version = "0.27", features = ["trace"] }
 opentelemetry_sdk = { version = "0.27", features = ["trace", "rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "http-proto", "reqwest-rustls"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto", "reqwest-rustls"] }
 opentelemetry-semantic-conventions = "0.27"
 ureq = { version = "3", features = ["json"] }
 unicode-normalization = "0.1"
