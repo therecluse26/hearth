@@ -1319,7 +1319,7 @@ pub async fn admin_role_delete(
 
     match state.rbac.delete_role(target.id(), &role_id) {
         Ok(()) => {
-            Redirect::to(&format!("/ui/admin/realms/{}/rbac/roles", realm_name,)).into_response()
+            Redirect::to(&format!("/ui/admin/realms/{}/rbac/roles", realm_name)).into_response()
         }
         Err(crate::rbac::RbacError::RoleNotFound) => {
             super::handlers_common::not_found("Role not found")

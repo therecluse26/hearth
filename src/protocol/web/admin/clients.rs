@@ -738,7 +738,7 @@ pub async fn admin_app_delete(
     match state.identity.delete_client(target.id(), &client_id) {
         Ok(()) => {
             audit_app_event(&state, &session, &target.0, &client_id, "delete");
-            Redirect::to(&format!("/ui/admin/realms/{}/applications", realm_name,)).into_response()
+            Redirect::to(&format!("/ui/admin/realms/{}/applications", realm_name)).into_response()
         }
         Err(IdentityError::InvalidClient) => {
             super::handlers_common::not_found("Application not found")

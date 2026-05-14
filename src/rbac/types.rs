@@ -191,18 +191,13 @@ pub struct ProtectedResource {
 }
 
 /// Valid assignment boundary for a role definition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoleScopeKind {
+    #[default]
     Realm,
     Organization,
     Any,
-}
-
-impl Default for RoleScopeKind {
-    fn default() -> Self {
-        Self::Realm
-    }
 }
 
 /// A named set of permissions with optional parent-role composition edges.
