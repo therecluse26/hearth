@@ -223,7 +223,7 @@ async fn metrics_tokens_issued_counter_increments() {
     // Increment — mirrors what the HTTP token endpoint does internally.
     hearth::metrics::metrics()
         .tokens_issued_total
-        .with_label_values(&[&realm_label, "authorization_code"])
+        .with_label_values(&[realm_label.as_str(), "authorization_code"])
         .inc();
 
     // Snapshot after: the label and metric family must now be present.
