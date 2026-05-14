@@ -2,7 +2,6 @@
   "private": true,
   "description": "MCP server dependencies for Hearth development tooling",
   "devDependencies": {
-    "plenum": "^1.7.1",
     "reflex-search": "^1.2.0",
     "context-mode": "^1.0.111"
   },

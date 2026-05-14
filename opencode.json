@@ -6,11 +6,7 @@
       "type": "local",
       "command": ["node_modules/.bin/rfx", "mcp"]
     },
-    "plenum": {
-      "type": "local",
-      "command": ["node_modules/.bin/plenum", "mcp"]
-    },
-    "context-mode": {
+"context-mode": {
       "type": "local",
       "command": ["node", "node_modules/context-mode/start.mjs"]
     }

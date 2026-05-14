@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Removes npm-shrinkwrap.json files bundled by plenum and reflex-search so that
+// Removes npm-shrinkwrap.json files bundled by reflex-search so that
 // the root package.json overrides can pin their transitive deps to safe floors.
 // Runs as a postinstall hook: after the initial extraction (which delivers the
 // shrinkwrap files), we delete them and delete their nested node_modules, then
@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const packages = ['plenum', 'reflex-search'];
+const packages = ['reflex-search'];
 
 let needsReinstall = false;
 
