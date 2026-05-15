@@ -111,7 +111,7 @@ Calls `DELETE /v1/me/applications/{clientId}` with the current bearer token.
 ## React integration
 
 ```tsx
-import { HearthProvider, useHasPermission, useHasRole } from "@hearth/sdk/react";
+import { HearthProvider, useHasPermission, useHasRole } from "@hearth/sdk";
 
 function App() {
   return (
@@ -164,3 +164,18 @@ const info = await client.userinfo(accessToken);
 const jwks = await client.jwks();
 const discovery = await client.discovery();
 ```
+
+
+## Troubleshooting
+
+**`DiscoveryError`** — verify `issuerUrl` is reachable and returns a valid `/.well-known/openid-configuration`.
+
+**`JWKSFetchError`** — check network connectivity to the JWKS endpoint. The SDK retries once on a cache miss before returning this error.
+
+**`TokenExpiredError`** — the token's `exp` claim is in the past. Refresh the token or re-authenticate.
+
+**`TokenInvalidError`** — JWT signature does not match any key in the JWKS. If the server recently rotated keys the SDK will re-fetch once automatically; persistent failures indicate a key mismatch.
+
+**`TokenAudienceError`** — the token's `aud` claim does not contain the configured audience. Verify `clientId` matches the audience your authorization server issues.
+
+See [docs/sdk-spec.md](../../docs/sdk-spec.md) Section 5 for the full error taxonomy.

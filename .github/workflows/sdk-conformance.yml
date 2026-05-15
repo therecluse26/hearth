@@ -1,0 +1,43 @@
+name: SDK Spec Conformance
+
+# Runs on every PR or push that touches SDK source, the conformance script,
+# or the spec document. Fails the build if any SDK violates docs/sdk-spec.md.
+#
+# Implements Phase 4 of HEA-332: automated conformance enforcement.
+# See also: .github/PULL_REQUEST_TEMPLATE.md for the manual checklist.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "sdks/**"
+      - "scripts/check-sdk-conformance.sh"
+      - "docs/sdk-spec.md"
+  push:
+    branches: [main]
+    paths:
+      - "sdks/**"
+      - "scripts/check-sdk-conformance.sh"
+      - "docs/sdk-spec.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  sdk-conformance:
+    name: SDK spec conformance (docs/sdk-spec.md)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check SDK conformance (spec §§2,4,5,8,10)
+        run: bash scripts/check-sdk-conformance.sh

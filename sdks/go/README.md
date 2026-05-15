@@ -7,13 +7,13 @@ Go client for the [Hearth](https://github.com/therecluse26/hearth) identity API.
 ## Installation
 
 ```bash
-go get github.com/therecluse26/hearth/sdks/go
+go get github.com/anthropics/hearth/sdks/go
 ```
 
 ## Quick start
 
 ```go
-import "github.com/therecluse26/hearth/sdks/go/hearth"
+import "github.com/anthropics/hearth/sdks/go/hearth"
 
 client := hearth.NewClient("https://hearth.example.com", "your-realm-id")
 ```
@@ -157,3 +157,17 @@ realm, err := admin.CreateRealm(ctx, hearth.CreateRealmRequest{Name: "acme"})
 resp, err := hearth.Bootstrap(ctx, "http://localhost:8080")
 // resp.RealmID, resp.UserID, resp.AccessToken, resp.RefreshToken
 ```
+
+## Troubleshooting
+
+**`DiscoveryError`** — verify `IssuerURL` is reachable and returns a valid `/.well-known/openid-configuration`.
+
+**`JWKSFetchError`** — check network connectivity to the JWKS endpoint. The SDK retries once on a cache miss before returning this error.
+
+**`TokenExpiredError`** — the token's `exp` claim is in the past. Refresh the token or re-authenticate.
+
+**`TokenInvalidError`** — JWT signature does not match any key in the JWKS. If the server recently rotated keys the SDK will re-fetch once automatically; persistent failures indicate a key mismatch.
+
+**`TokenAudienceError`** — the token's `aud` claim does not contain the configured audience. Verify `ClientID` matches the audience your authorization server issues.
+
+See [docs/sdk-spec.md](../../docs/sdk-spec.md) Section 5 for the full error taxonomy.
