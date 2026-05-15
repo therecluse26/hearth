@@ -15,6 +15,13 @@
   <h1 class="font-display text-2xl font-medium text-ht-content-primary">Edit {{ app.client_name() }}</h1>
 </div>
 
+{% if app.is_yaml_managed() %}
+<div class="mb-6 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/[0.08] px-4 py-3">
+  <svg class="mt-0.5 h-4 w-4 shrink-0 text-warning-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  <p class="text-sm text-warning-fg">This application is managed by <code class="rounded-sm bg-warning/[0.15] px-1 py-0.5 font-mono text-xs">hearth.yaml</code>. Any changes saved here will be overwritten the next time the server restarts.</p>
+</div>
+{% endif %}
+
 <div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
   {% match error %}
     {% when Some with (msg) %}
