@@ -46,7 +46,7 @@ memmap2 = "0.9"
 password-hash = "0.5"
 pbkdf2 = { version = "0.12", default-features = false }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-quick-xml = "0.36"
+quick-xml = "0.40"
 rcgen = "0.13"
 rsa = { version = "0.9", features = ["pem"] }
 hex = "0.4"
