@@ -2040,6 +2040,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. See `realm_ops_lock` docs.
         let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+
+        // Reject duplicate names — if the name index already points at a
+        // realm, refuse rather than silently overwriting the index and
+        // leaving an orphaned realm record that the UUID scan would surface.
+        if self.get_realm_by_name(&request.name)?.is_some() {
+            return Err(IdentityError::DuplicateRealmName);
+        }
+
         let now = self.clock.now();
         let realm_id = RealmId::generate();
         let config = request.config.clone().unwrap_or_default();
@@ -11366,6 +11374,37 @@ mod tests {
 
         let result = engine.get_realm(&RealmId::generate()).expect("get realm");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn create_realm_rejects_duplicate_name() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        engine
+            .create_realm(&CreateRealmRequest {
+                name: "duplicate-corp".to_string(),
+                config: None,
+            })
+            .expect("first create_realm should succeed");
+
+        let err = engine
+            .create_realm(&CreateRealmRequest {
+                name: "duplicate-corp".to_string(),
+                config: None,
+            })
+            .expect_err("second create_realm with same name should fail");
+
+        assert!(
+            matches!(err, IdentityError::DuplicateRealmName),
+            "expected DuplicateRealmName, got {err:?}"
+        );
+
+        // Confirm only one realm record exists for that name
+        let realm = engine
+            .get_realm_by_name("duplicate-corp")
+            .expect("get_realm_by_name")
+            .expect("realm should exist");
+        assert_eq!(realm.name(), "duplicate-corp");
     }
 
     // --- Unit Scenario 2: Realm-scoped user creation; cross-realm lookup returns not-found ---
