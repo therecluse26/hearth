@@ -108,6 +108,8 @@ AGPL-3.0-only, self-hosted, no per-seat pricing, no vendor lock-in, no phone-hom
 **Migration**
 - Keycloak realm-export import (`hearth migrate keycloak`) — users, clients, realm roles, and PBKDF2-SHA256 credentials imported natively so existing passwords keep working without a forced reset
 
+For the full capability reference including implementation phases and known limitations, see [STATUS.md](docs/STATUS.md).
+
 ---
 
 ## How we build it
