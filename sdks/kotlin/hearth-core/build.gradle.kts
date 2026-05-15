@@ -17,7 +17,7 @@ dependencies {
     api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     // JWT + JWKS verification (nimbus-jose-jwt is the JVM standard)
-    api("com.nimbusds:nimbus-jose-jwt:9.40")
+    api("com.nimbusds:nimbus-jose-jwt:9.41.2")
 
     // OkHttp for HTTP transport (coroutine-compatible via suspendCoroutine bridge)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
