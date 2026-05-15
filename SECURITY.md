@@ -10,7 +10,7 @@ Hearth is pre-1.0. Security fixes are applied to the `main` branch only. Once 1.
 
 Use one of the following channels:
 
-- **GitHub Security Advisories (preferred):** Use the "Report a vulnerability" button on the [Security tab](https://github.com/anthropics/hearth/security/advisories/new) of this repository. This opens a private, encrypted channel between you and the maintainers. No GitHub account is required.
+- **GitHub Security Advisories (preferred):** Use the "Report a vulnerability" button on the [Security tab](https://github.com/therecluse26/hearth/security/advisories/new) of this repository. This opens a private, encrypted channel between you and the maintainers. No GitHub account is required.
 - **Email:** therecluse26@protonmail.com — PGP key available on request.
 
 ### What to include
