@@ -26,6 +26,15 @@ fn make_rt() -> tokio::runtime::Runtime {
         .expect("tokio runtime")
 }
 
+/// Returns the proptest case count: `PROPTEST_CASES` env var if set, else 256.
+/// CI sets `PROPTEST_CASES=10000` to satisfy the ≥10k requirement (HEA-330).
+fn proptest_cases() -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256)
+}
+
 // ---------------------------------------------------------------------------
 // Strategy: random DAG as topological-order node list.
 // Node i may reference any subset of nodes in 0..i as parents — no cycles.
@@ -103,7 +112,7 @@ fn arb_group_dag(size: usize) -> BoxedStrategy<Vec<GroupNode>> {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..Default::default() })]
+    #![proptest_config(ProptestConfig { cases: proptest_cases(), ..Default::default() })]
 
     #[test]
     fn random_role_dag_produces_correct_union(dag in arb_role_dag(6)) {
@@ -187,7 +196,7 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..Default::default() })]
+    #![proptest_config(ProptestConfig { cases: proptest_cases(), ..Default::default() })]
 
     #[test]
     fn random_group_graph_transitive_membership_resolves_role(dag in arb_group_dag(5)) {
@@ -304,7 +313,7 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..Default::default() })]
+    #![proptest_config(ProptestConfig { cases: proptest_cases(), ..Default::default() })]
 
     #[test]
     fn random_assign_unassign_sequence_maintains_invariants(
