@@ -9,6 +9,8 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Security
 
+- **Go SDK** — minimum Go version bumped from 1.23 to 1.24, clearing `SNYK-GOLANG-STDNETHTTP-16535158` (infinite loop in `std/net/http`) (HEA-515).
+- **Admin settings editor** — prototype-pollution guard strengthened in `setVal`: redundant point-of-use check on the final key segment added so static analysis can locally verify safety (HEA-515).
 - **Kotlin SDK — Spring Boot BOM** upgraded from 3.3.5 to 3.4.13 (resolves transitive CVEs in Spring Framework, Tomcat, and related dependencies) (HEA-515).
 - **Kotlin SDK — nimbus-jose-jwt** upgraded from 9.40 to 9.41.2 (patches JWT library CVEs) (HEA-515).
 - **SAML example — xmldom** replaced abandoned `xmldom ^0.6.0` (7 critical CVEs, no upstream fix) with maintained fork `@xmldom/xmldom ^0.9.10` (HEA-515).
