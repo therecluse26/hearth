@@ -55,9 +55,9 @@ if [[ ! -x "$HEARTH_BIN" ]]; then
   exit 1
 fi
 
-echo "▸ npm install (first run only)"
+echo "▸ npm ci (exact lockfile install)"
 if [[ ! -d "$HERE/node_modules" ]]; then
-  (cd "$HERE" && npm install --silent)
+  (cd "$HERE" && npm ci --silent)
 fi
 
 echo "▸ generating fake-IdP cert"

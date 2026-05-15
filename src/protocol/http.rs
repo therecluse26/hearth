@@ -2078,6 +2078,15 @@ async fn admin_import_users(
             .into_response();
     }
 
+    const MAX_BULK_IMPORT: usize = 10_000;
+    if body.users.len() > MAX_BULK_IMPORT {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("batch size {n} exceeds maximum of {MAX_BULK_IMPORT}", n = body.users.len())})),
+        )
+            .into_response();
+    }
+
     let mut imported = 0u32;
     let mut failed = 0u32;
     let mut results = Vec::with_capacity(body.users.len());

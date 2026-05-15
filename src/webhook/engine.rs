@@ -148,7 +148,8 @@ impl WebhookEngine for EmbeddedWebhookEngine {
         };
 
         let entries = self.storage.scan(&query.realm_id, &prefix, &end)?;
-        let limit = query.limit.unwrap_or(usize::MAX);
+        // Default to 1000 to avoid unbounded allocations when no limit is supplied.
+        let limit = query.limit.unwrap_or(1_000);
 
         let mut deliveries = Vec::with_capacity(entries.len().min(limit));
         for entry in entries.into_iter().rev().take(limit) {

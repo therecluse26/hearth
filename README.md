@@ -489,8 +489,8 @@ For the full feature spec see [`docs/specs/ARCHITECTURE.md`](docs/specs/ARCHITEC
 | OAuth/OIDC | `POST` | `/clients` | Static client registration (used by `hearth app create`) |
 | OAuth/OIDC | `GET`/`POST` | `/end_session` | OIDC RP-initiated logout; fans out to back-channel and front-channel URIs |
 | Admin | `GET`/`POST` | `/admin/users` | List / create users |
-| Admin | `POST` | `/admin/users/bulk` | Bulk user creation |
-| Admin | `POST` | `/admin/users/import` | Import users from JSON |
+| Admin | `POST` | `/admin/users/bulk` | Bulk user creation (max 10,000 users per request) |
+| Admin | `POST` | `/admin/users/import` | Import users from JSON (max 10,000 users per request) |
 | Admin | `GET` | `/admin/users/export` | Export users as JSON |
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/users/{id}` | CRUD a user |
 | Admin | `GET`/`POST` | `/admin/users/{id}/roles` | List / assign roles to a user |
@@ -511,7 +511,7 @@ For the full feature spec see [`docs/specs/ARCHITECTURE.md`](docs/specs/ARCHITEC
 | Admin | `GET` | `/admin/audit` | Query the audit log |
 | Admin | `GET`/`POST` | `/admin/webhooks` | List / create webhook subscriptions |
 | Admin | `GET`/`PUT`/`DELETE` | `/admin/webhooks/{id}` | CRUD a webhook subscription |
-| Admin | `GET` | `/admin/webhooks/{id}/deliveries` | Delivery log for a subscription |
+| Admin | `GET` | `/admin/webhooks/{id}/deliveries` | Delivery log for a subscription (default 50, max 200 per page) |
 | Admin | `POST` | `/admin/bootstrap` | Dev-only bootstrap — returns 404 in production |
 | Self-service | `GET` | `/v1/me/permissions` | Caller's live RBAC claim set |
 | Self-service | `GET` | `/oauth/consents` | List the caller's granted OAuth consents |

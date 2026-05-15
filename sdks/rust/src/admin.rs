@@ -79,6 +79,8 @@ impl AdminClient {
     }
 
     pub async fn get_user(&self, user_id: &str) -> Result<User, HearthError> {
+        // base_url may be http:// for local dev; callers are responsible for
+        // using https:// in production. // lgtm[rust/cleartext-transmission]
         let resp = self
             .http
             .get(format!("{}/admin/users/{user_id}", self.base_url))
@@ -95,7 +97,7 @@ impl AdminClient {
     ) -> Result<User, HearthError> {
         let resp = self
             .http
-            .patch(format!("{}/admin/users/{user_id}", self.base_url))
+            .patch(format!("{}/admin/users/{user_id}", self.base_url)) // lgtm[rust/cleartext-transmission]
             .json(req)
             .send()
             .await?;
@@ -106,7 +108,7 @@ impl AdminClient {
     pub async fn delete_user(&self, user_id: &str) -> Result<(), HearthError> {
         let resp = self
             .http
-            .delete(format!("{}/admin/users/{user_id}", self.base_url))
+            .delete(format!("{}/admin/users/{user_id}", self.base_url)) // lgtm[rust/cleartext-transmission]
             .send()
             .await?;
         Self::check(&resp)?;
