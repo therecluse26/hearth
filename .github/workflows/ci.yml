@@ -77,3 +77,4 @@ jobs:
 
       - name: make proto-check (regenerate SDKs and fail if generated code drifts)
         run: make proto-check
+
