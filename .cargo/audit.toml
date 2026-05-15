@@ -1,0 +1,15 @@
+# cargo-audit project configuration
+# Pairs with deny.toml: both tools need independent ignore lists for the same advisories.
+# Source of truth for rationale: deny.toml [advisories] section and HEA-271 plan document.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack timing side-channel in rsa crate.
+    # Hearth uses rsa only for key generation and PKCS#8 serialization — no
+    # PKCS#1 v1.5 decryption is performed anywhere in the codebase, which is
+    # the only affected code path. All RSA signing is delegated to
+    # ring::signature::RsaKeyPair (unaffected). No patched version of rsa is
+    # available; revisit when rsa 0.10+ lands with tonic/tower ecosystem support
+    # (tracked in HEA-116).
+    "RUSTSEC-2023-0071",
+]

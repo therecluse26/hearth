@@ -763,7 +763,11 @@ pub async fn admin_app_delete(
     if let Ok(Some(existing)) = state.identity.get_client(target.id(), &client_id) {
         if existing.is_yaml_managed() {
             return super::templates::redirect_with_flash(
-                &format!("/ui/admin/realms/{}/applications/{}", realm_name, client_id.as_uuid()),
+                &format!(
+                    "/ui/admin/realms/{}/applications/{}",
+                    realm_name,
+                    client_id.as_uuid()
+                ),
                 "This application is managed by hearth.yaml and cannot be deleted via the UI.",
                 "error",
             );
