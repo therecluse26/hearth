@@ -1253,7 +1253,10 @@ fn passkey_login_complete_impl(
     path_realm: Option<String>,
 ) -> Response {
     use base64::Engine as _;
-    let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    let mut session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    // Passkeys are inherently multi-factor (possession + biometric/PIN), so they
+    // satisfy any realm-level mfa_required policy without a separate TOTP gate.
+    session_ctx.satisfies_mfa_via_passkey = true;
 
     let b64 = &base64::engine::general_purpose::URL_SAFE_NO_PAD;
 

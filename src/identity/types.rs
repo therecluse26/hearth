@@ -192,6 +192,11 @@ pub struct SessionContext {
     pub user_agent_raw: Option<String>,
     /// Pre-parsed device label, e.g. `"Chrome, Mac OSX"`.
     pub device_label: Option<String>,
+    /// Set to `true` when the session originates from a completed WebAuthn
+    /// (passkey) ceremony. Passkeys are inherently multi-factor
+    /// (possession + biometric/PIN), so they satisfy a realm's `mfa_required`
+    /// policy without requiring a separate TOTP enrollment check.
+    pub satisfies_mfa_via_passkey: bool,
 }
 
 /// An authentication session bound to a user.

@@ -3078,6 +3078,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<bool, IdentityError> {
+        // Enforce realm policy: password must be in the allowed_auth_methods list.
+        self.check_allowed_auth_method(realm_id, "password")?;
+
         // Rate limit check: reject early if account is locked out
         self.check_rate_limit(realm_id, user_id)?;
 
@@ -3186,6 +3189,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         context: &SessionContext,
     ) -> Result<Session, IdentityError> {
+        // Enforce mfa_required policy unless the session originates from a
+        // passkey ceremony (passkeys are inherently multi-factor).
+        if !context.satisfies_mfa_via_passkey {
+            if let Ok(Some(realm)) = self.get_realm(realm_id) {
+                if realm.config().mfa_required.unwrap_or(false) {
+                    let has_mfa = self.mfa_enabled(realm_id, user_id).unwrap_or(false);
+                    if !has_mfa {
+                        return Err(IdentityError::MfaRequired);
+                    }
+                }
+            }
+        }
+
         // Ensure the user exists and is permitted to start a session.
         // Unverified users must complete the email-verification flow first;
         // disabled users are blocked entirely (distinguished from
@@ -10121,6 +10137,7 @@ mod tests {
             ip_address: Some("203.0.113.42".to_string()),
             user_agent_raw: Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()),
             device_label: Some("Chrome, Mac OSX".to_string()),
+            satisfies_mfa_via_passkey: false,
         };
 
         let session = engine

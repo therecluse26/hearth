@@ -95,11 +95,13 @@ fn build_rig() -> TestRig {
         ip_address: Some("198.51.100.10".to_string()),
         user_agent_raw: Some("Mozilla/5.0 (Macintosh; Intel Mac OS X)".to_string()),
         device_label: Some("This device".to_string()),
+        satisfies_mfa_via_passkey: false,
     };
     let ctx_other = SessionContext {
         ip_address: Some("198.51.100.20".to_string()),
         user_agent_raw: Some("Mozilla/5.0 (iPhone)".to_string()),
         device_label: Some("Other phone".to_string()),
+        satisfies_mfa_via_passkey: false,
     };
     let alice_session_current = identity
         .create_session(realm.id(), &alice, &ctx_current)
