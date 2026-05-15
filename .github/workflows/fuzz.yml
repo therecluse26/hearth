@@ -63,7 +63,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz
 
       - name: Fuzz smoke — ${{ matrix.target }} (1 000 runs)
         # fuzz/seeds/<target>/ holds hand-crafted seed inputs committed to the
