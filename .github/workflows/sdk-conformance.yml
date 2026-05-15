@@ -1,0 +1,41 @@
+name: SDK conformance
+
+# Enforces that all SDKs satisfy the Hearth SDK spec (docs/sdk-spec.md).
+# Runs on every PR that touches sdks/ and on every push to main.
+# A missing error type, claims API method, CHANGELOG, or README section fails the build.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "sdks/**"
+      - "scripts/check-sdk-conformance.sh"
+      - "docs/sdk-spec.md"
+  push:
+    branches: [main]
+    paths:
+      - "sdks/**"
+      - "scripts/check-sdk-conformance.sh"
+      - "docs/sdk-spec.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  sdk-conformance:
+    name: SDK spec conformance check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run SDK conformance checks
+        run: bash scripts/check-sdk-conformance.sh
