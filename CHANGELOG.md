@@ -11,7 +11,6 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 - **Go SDK** — minimum Go version bumped from 1.23 to 1.24, clearing `SNYK-GOLANG-STDNETHTTP-16535158` (infinite loop in `std/net/http`) (HEA-515).
 - **Admin settings editor** — prototype-pollution guard strengthened in `setVal`: redundant point-of-use check on the final key segment added so static analysis can locally verify safety (HEA-515).
-- **Kotlin SDK — Spring Boot BOM** upgraded from 3.3.5 to 3.4.13 (resolves transitive CVEs in Spring Framework, Tomcat, and related dependencies) (HEA-515).
 - **Kotlin SDK — nimbus-jose-jwt** upgraded from 9.40 to 9.41.2 (patches JWT library CVEs) (HEA-515).
 - **SAML example — xmldom** replaced abandoned `xmldom ^0.6.0` (7 critical CVEs, no upstream fix) with maintained fork `@xmldom/xmldom ^0.9.10` (HEA-515).
 
@@ -50,7 +49,7 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 - **Observability endpoints** — Prometheus `/metrics` (config-gated), `/healthz`, and `/readyz` with fault-injection test coverage.
 - **TypeScript SDK** — `createHearth()` factory, `HearthProvider` React context, `useHasPermission` / `useHasRole` / `useInGroup` / `useInOrg` hooks, JWKS validation, and admin CRUD helpers.
 - **Go SDK** — auth code flow client, admin CRUD, transparent token refresh, and `HasPermission` / `HasRole` / `InGroup` / `InOrg` / `Permissions` helpers.
-- **Kotlin / JVM SDK** — `hearth-core` library and Spring Boot starter (`hearth-spring-boot-starter`).
+- **Kotlin / JVM SDK** — `hearth-core` library for coroutine-based OIDC/JWT verification.
 - **Node.js SDK** — unified `HearthClient` entry point (HEA-366).
 - **SDK common specification** — `docs/sdk/SPEC.md` documents the cross-language contract; all SDK READMEs link it. CI spec-conformance checks added for TypeScript and Go.
 - **Deployment artifacts** — Helm chart templates, `systemd` unit file, and `docker-compose` configuration.

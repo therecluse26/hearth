@@ -2,7 +2,7 @@
 
 Official Kotlin/JVM client library for [Hearth](../../README.md) — an open-source identity server.
 
-Coroutines-first API, Spring Boot autoconfiguration included, and full OIDC/JWT support out of the box.
+Coroutines-first API with full OIDC/JWT support out of the box.
 
 ---
 
@@ -11,11 +11,7 @@ Coroutines-first API, Spring Boot autoconfiguration included, and full OIDC/JWT 
 ### Gradle (Kotlin DSL)
 
 ```kotlin
-// Core SDK
 implementation("io.hearth:hearth-core:0.1.0")
-
-// Spring Boot starter (optional)
-implementation("io.hearth:hearth-spring-boot-starter:0.1.0")
 ```
 
 ### Maven
@@ -186,50 +182,6 @@ admin.deleteRealm(realm.id)
 val oauthClient = admin.registerClient(
     RegisterClientRequest("My App", listOf("https://myapp.com/callback"))
 )
-```
-
----
-
-## Spring Boot Autoconfiguration
-
-Add `hearth-spring-boot-starter` and configure `application.yml`:
-
-```yaml
-hearth:
-  issuer-url: https://auth.example.com
-  client-id: my-app
-  client-secret: ${HEARTH_CLIENT_SECRET}
-  verify-audience: true
-```
-
-This auto-registers:
-- A shared `HearthClient` bean
-- A `HearthBearerTokenFilter` that validates Bearer tokens on every request
-
-### Using verified claims in controllers
-
-```kotlin
-import io.hearth.sdk.spring.hearthClaims
-
-@GetMapping("/profile")
-fun profile(request: HttpServletRequest): ResponseEntity<Map<String, Any>> {
-    val claims = request.hearthClaims()
-        ?: return ResponseEntity.status(401).build()
-    return ResponseEntity.ok(mapOf("sub" to claims.subject()))
-}
-```
-
-### Overriding the auto-configured bean
-
-```kotlin
-@Configuration
-class MyConfig {
-    @Bean
-    fun hearthClient(): HearthClient = HearthClient(
-        issuerUrl    = "https://internal.auth.example.com",
-        jwksTtl      = 30 * 60 * 1000L,  // 30 min
-    )
-}
 ```
 
 ---
