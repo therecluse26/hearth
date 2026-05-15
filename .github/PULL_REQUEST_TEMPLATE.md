@@ -1,21 +1,30 @@
-## Summary
+## Description
 
-<!-- Describe what this PR changes and why. -->
+<!-- What does this PR do? Why is it needed? Link the relevant issue. -->
 
----
+## SDK Conformance Checklist
 
-## SDK conformance checklist
+If this PR touches any SDK (`sdks/typescript`, `sdks/go`, `sdks/python`, `sdks/rust`),
+verify each item against the [Hearth SDK Common Specification](../docs/sdk-spec.md).
+Leave items unchecked only if they genuinely do not apply — CI will also enforce most of these automatically.
 
-> **Required for all PRs that touch `sdks/`.** Skip with `N/A` if this PR does not modify SDK code.
-> Spec reference: [docs/sdk-spec.md](../docs/sdk-spec.md)
+- [ ] **Error types (spec §5):** All 9 required error type names are present in the SDK source:
+  `ConfigurationError`, `DiscoveryError`, `JWKSFetchError`, `TokenExpiredError`,
+  `TokenNotYetValidError`, `TokenInvalidError`, `TokenIssuerError`, `TokenAudienceError`,
+  `IntrospectionError`
+- [ ] **Claims API (spec §4):** All required public methods are present:
+  `subject`, `issuer`, `audiences`, `expiry`, `issuedAt`, `jwtID`,
+  `scope`, `scopes`, `hasScope`, `hasRole`, `hasPermission`
+- [ ] **Secret hygiene (spec §11):** No tokens or secrets can appear in error messages or log output
+- [ ] **JWKS caching (spec §2):** Cache follows all 5 rules (kid-keyed, Cache-Control respected,
+  cache-miss re-fetch, 401 re-fetch, 24 h max age)
+- [ ] **Tests (spec §9):** New or updated tests cover JWKS key rotation and clock skew edge cases
+- [ ] **Documentation (spec §10):** README includes installation, quickstart, and troubleshooting sections
+- [ ] **Changelog (spec §8):** `CHANGELOG.md` is updated for any user-visible change
 
-- [ ] **Section 5 — Error types:** All 9 spec error type names are present (`ConfigurationError`, `DiscoveryError`, `JWKSFetchError`, `TokenExpiredError`, `TokenNotYetValidError`, `TokenInvalidError`, `TokenIssuerError`, `TokenAudienceError`, `IntrospectionError`)
-- [ ] **Section 4 — Claims API:** All required public Claims API methods are present (`subject`, `issuer`, `audiences`, `expiry`, `issuedAt`, `jwtID`, `scope`, `scopes`, `hasScope`, `hasRole`, `hasPermission`, `get`)
-- [ ] **Section 11 — Secret hygiene:** No tokens, secrets, or credential values appear in error messages, log output, or stack traces
-- [ ] **Section 2 — JWKS caching:** Caching follows the 5-rule contract (cache by `kid`, respect `Cache-Control`, re-fetch on cache miss, re-fetch on 401, 24 h max age)
-- [ ] **Section 9 — Tests:** Tests cover JWKS key rotation and clock skew edge cases
-- [ ] **Section 10 — Documentation:** README includes installation, quickstart, API reference, and troubleshooting sections
-- [ ] **Section 8 — Changelog:** `CHANGELOG.md` is present and updated for this release
+## Non-SDK PRs
+
+For PRs that do not touch any SDK directory, mark all checklist items `N/A` by striking them through.
 
 ---
 

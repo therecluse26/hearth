@@ -19,6 +19,26 @@ updates:
           - "*"
         update-types:
           - "patch"
+  - package-ecosystem: "npm"
+    directory: "/sdks/node"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+      - "sdk-node"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      node-sdk-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

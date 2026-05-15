@@ -1,6 +1,11 @@
 # Hearth SDK Common Specification
 
+> **Canonical reference.** This document is the board-approved specification for all Hearth client SDKs.  
+> Generated from [HEA-332](https://github.com/therecluse26/hearth) — do not edit without board approval.
+
 > **Pre-release note (board, 2026-05-15):** Hearth has not shipped yet. Breaking changes are fully acceptable during all remediation phases. No backward-compatibility work, deprecation periods, or migration guides are required.
+
+---
 
 ## 1. Configuration
 
@@ -182,3 +187,17 @@ Every SDK repo must contain:
 - Timing-safe comparison for any credential or secret comparison.
 - Dependencies must be minimal and pinned/audited (e.g., `dependabot` enabled).
 - No eval, exec, or dynamic code generation on token data.
+
+---
+
+## Conformance Checklist
+
+For use in PR reviews and automated CI checks (see `.github/workflows/sdk-conformance.yml` and `scripts/check-sdk-conformance.sh`):
+
+- [ ] Error types match the 9 names from Section 5 (`ConfigurationError`, `DiscoveryError`, `JWKSFetchError`, `TokenExpiredError`, `TokenNotYetValidError`, `TokenInvalidError`, `TokenIssuerError`, `TokenAudienceError`, `IntrospectionError`)
+- [ ] All public Claims API methods from Section 4 are present (`subject`, `issuer`, `audiences`, `expiry`, `issuedAt`, `jwtID`, `scope`, `scopes`, `hasScope`, `hasRole`, `hasPermission`, `get`)
+- [ ] No tokens or secrets can appear in error messages or logs (Section 11)
+- [ ] JWKS caching follows the 5-rule contract (Section 2)
+- [ ] Tests cover JWKS rotation and clock skew edge cases (Section 9)
+- [ ] README includes quickstart, API reference, and troubleshooting (Section 10)
+- [ ] CHANGELOG.md present and updated (Section 8)

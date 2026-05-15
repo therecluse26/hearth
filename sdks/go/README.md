@@ -2,7 +2,7 @@
 
 Go client for the [Hearth](https://github.com/therecluse26/hearth) identity API.
 
-**SDK Specification:** [docs/sdk-spec.md](../../docs/sdk-spec.md)
+> **SDK Specification:** This SDK must conform to the [Hearth SDK Common Specification](../../docs/sdk-spec.md).
 
 ## Installation
 
@@ -401,3 +401,17 @@ type APIError struct {
     Message    string // raw response body
 }
 ```
+
+## Troubleshooting
+
+**`DiscoveryError`** — verify `IssuerURL` is reachable and returns a valid `/.well-known/openid-configuration`.
+
+**`JWKSFetchError`** — check network connectivity to the JWKS endpoint. The SDK retries once on a cache miss before returning this error.
+
+**`TokenExpiredError`** — the token's `exp` claim is in the past. Refresh the token or re-authenticate.
+
+**`TokenInvalidError`** — JWT signature does not match any key in the JWKS. If the server recently rotated keys the SDK will re-fetch once automatically; persistent failures indicate a key mismatch.
+
+**`TokenAudienceError`** — the token's `aud` claim does not contain the configured audience. Verify `ClientID` matches the audience your authorization server issues.
+
+See [docs/sdk-spec.md](../../docs/sdk-spec.md) Section 5 for the full error taxonomy.

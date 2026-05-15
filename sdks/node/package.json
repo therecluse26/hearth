@@ -1,0 +1,35 @@
+{
+  "name": "@hearth/node",
+  "version": "1.0.0",
+  "description": "Hearth server-side Node.js SDK — JWKS verification, token introspection, Express/Fastify middleware",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "5.9.6"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^3.2.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

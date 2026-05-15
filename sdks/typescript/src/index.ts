@@ -11,8 +11,22 @@ export type {
   IntrospectionResult,
 } from "./introspection-client.js";
 
-// Error types.
-export { ConfigurationError, DiscoveryError } from "./errors.js";
+// Error types (spec §5).
+export {
+  ConfigurationError,
+  DiscoveryError,
+  HearthSdkError,
+  IntrospectionError,
+  JWKSFetchError,
+  TokenAudienceError,
+  TokenExpiredError,
+  TokenInvalidError,
+  TokenIssuerError,
+  TokenNotYetValidError,
+} from "./errors.js";
+
+// Claims API (spec §4).
+export { Claims } from "./claims.js";
 
 // Lower-level API client (kept for backwards-compatibility).
 export { HearthApiClient, HearthError } from "./client.js";
