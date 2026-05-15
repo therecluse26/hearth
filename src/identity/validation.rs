@@ -481,6 +481,17 @@ fn contains_null_or_control(s: &str) -> bool {
         .any(|c| c == '\0' || (c.is_control() && c != '\t'))
 }
 
+/// Exercises the redirect URI validation pipeline on arbitrary bytes.
+///
+/// Intended for fuzz testing: converts bytes to a lossy UTF-8 string and
+/// feeds it through `validate_redirect_uri`. Must never panic — always
+/// returns `Ok` or `Err`.
+pub fn fuzz_validate_redirect_uri(data: &[u8]) {
+    let input = String::from_utf8_lossy(data);
+    let _ = validate_redirect_uri(&input);
+    let _ = validate_scope_tokens(&input);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

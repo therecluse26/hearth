@@ -35,11 +35,12 @@ pub use engine::{
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
 pub use oidc::{
-    AuthorizationRequest, AuthorizationResponse, ClientCredentialsRequest,
-    ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod, DeviceAuthorizationRequest,
-    DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
-    OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
-    TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest, UserInfoResponse,
+    fuzz_parse_token_exchange, AuthorizationRequest, AuthorizationResponse,
+    ClientCredentialsRequest, ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod,
+    DeviceAuthorizationRequest, DeviceAuthorizationResponse, DeviceCodeStatus,
+    IntrospectionResponse, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
+    RegisterClientRequest, TokenExchangeRequest, TokenIntrospectionRequest, TokenRevocationRequest,
+    UpdateClientRequest, UserInfoResponse,
 };
 pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
@@ -56,6 +57,7 @@ pub use types::{
     RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session, SessionContext,
     UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User, UserStatus, Webhook,
 };
+pub use validation::fuzz_validate_redirect_uri;
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
     WebAuthnAuthResult, WebAuthnCredentialInfo,

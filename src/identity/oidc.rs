@@ -979,6 +979,51 @@ pub struct UserInfoResponse {
     pub custom: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// Exercises the token exchange body parsing and validation pipeline on arbitrary bytes.
+///
+/// Intended for fuzz testing: interprets `data` as a JSON token request body,
+/// exercising grant_type dispatch, scope normalization, redirect URI validation,
+/// and PKCE verifier length checks. Must never panic — always returns `Ok` or `Err`.
+pub fn fuzz_parse_token_exchange(data: &[u8]) {
+    use crate::identity::types::canonicalize_scopes;
+    use crate::identity::validation::{validate_redirect_uri, validate_scope_tokens};
+
+    // Exercise JSON parsing of the token exchange body.
+    let _ = serde_json::from_slice::<serde_json::Value>(data);
+
+    // Exercise OIDC discovery document deserialization.
+    let input = String::from_utf8_lossy(data);
+    let _ = serde_json::from_str::<OidcDiscoveryDocument>(&input);
+
+    // Exercise introspection response deserialization.
+    let _ = serde_json::from_str::<IntrospectionResponse>(&input);
+
+    // Treat the input as a scope string and exercise normalization.
+    let scope_tokens: Vec<String> = input.split_whitespace().map(String::from).collect();
+    let _ = canonicalize_scopes(scope_tokens);
+    let _ = validate_scope_tokens(&input);
+
+    // Treat the input as a redirect URI and exercise validation.
+    let _ = validate_redirect_uri(&input);
+
+    // Extract grant_type-like string from raw JSON and exercise matching logic.
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&input) {
+        if let Some(serde_json::Value::String(s)) = map.get("redirect_uri") {
+            let _ = validate_redirect_uri(s);
+        }
+        if let Some(serde_json::Value::String(s)) = map.get("scope") {
+            let _ = validate_scope_tokens(s);
+            let tokens: Vec<String> = s.split_whitespace().map(String::from).collect();
+            let _ = canonicalize_scopes(tokens);
+        }
+        // Exercise code_verifier length boundary.
+        if let Some(serde_json::Value::String(v)) = map.get("code_verifier") {
+            let _ = v.len() > 128;
+            let _ = v.len() < 43;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

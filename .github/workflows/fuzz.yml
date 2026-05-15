@@ -1,0 +1,78 @@
+name: Fuzz
+
+# Smoke-runs all fuzz targets against their seed corpora on every PR and
+# push to main. Each target runs for 1 000 iterations — enough to confirm
+# the target compiles, the seed corpus parses cleanly, and no immediate
+# panic is lurking. Extended / sustained fuzzing runs are out of scope here
+# and should be driven by a separate scheduled workflow or OSS-Fuzz.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fuzz-smoke:
+    name: Fuzz smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - config_parse
+          - jwt_parse
+          - wal_entry_deserialize
+          - credential_verify
+          - oidc_request_parse
+          - webauthn_cbor_parse
+          - federation_claims
+          - saml_xml_parse
+          - token_exchange_parse
+          - redirect_uri_parse
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust nightly (required by cargo-fuzz)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-05-14
+        with:
+          toolchain: nightly
+
+      - name: Cargo build cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: fuzz -> target
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz smoke — ${{ matrix.target }} (1 000 runs)
+        # fuzz/seeds/<target>/ holds hand-crafted seed inputs committed to the
+        # repo. fuzz/corpus/ (gitignored) is where libFuzzer accumulates
+        # discovered inputs during extended runs. CI uses seeds only.
+        run: |
+          SEEDS="fuzz/seeds/${{ matrix.target }}"
+          if [ -d "$SEEDS" ]; then
+            cargo fuzz run ${{ matrix.target }} "$SEEDS" -- -runs=1000
+          else
+            cargo fuzz run ${{ matrix.target }} -- -runs=1000
+          fi
