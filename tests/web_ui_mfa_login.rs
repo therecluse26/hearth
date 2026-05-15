@@ -266,19 +266,15 @@ async fn login_without_mfa_creates_session_immediately() {
 }
 
 #[tokio::test]
-async fn login_with_mfa_redirects_to_challenge() {
+async fn login_with_mfa_shows_totp_inline() {
+    // MFA gate now renders the TOTP input inline on the login page (200)
+    // rather than redirecting to /ui/mfa-challenge (303).
     let rig = build_rig();
     enroll_mfa(&rig);
 
     let response = post_login(rig.app, "alice@acme.test", PASSWORD, None).await;
 
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let location = response
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .expect("Location header");
-    assert_eq!(location, "/ui/mfa-challenge");
+    assert_eq!(response.status(), StatusCode::OK);
 
     let cookies = set_cookies(&response);
     assert!(
