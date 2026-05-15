@@ -1620,12 +1620,34 @@ async fn authorize(
 /// - `refresh_token`: exchange a refresh token for a new token pair
 /// - `client_credentials`: issue an access token for a confidential client
 /// - `urn:ietf:params:oauth:grant-type:device_code`: poll for device authorization
-#[allow(clippy::too_many_lines)]
 async fn token_exchange(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<HttpTokenRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    // Parse client_id and realm_id before dispatch so CORS can be applied to
+    // every response path, including grant-type-specific error branches.
+    let maybe_client_id = body.client_id.parse::<uuid::Uuid>().ok().map(ClientId::new);
+    let maybe_realm_id = extract_realm_id(&headers).ok();
+
+    let mut resp = token_exchange_impl(Arc::clone(&state), headers.clone(), body).await;
+
+    if let (Some(ref realm_id), Some(ref client_id)) = (&maybe_realm_id, &maybe_client_id) {
+        apply_cors_to_response(&mut resp, &state, realm_id, client_id, &headers);
+    }
+    resp
+}
+
+/// Inner implementation of [`token_exchange`].
+///
+/// Separated from the outer handler so that CORS application can wrap all
+/// exit paths without touching every early-return site.
+#[allow(clippy::too_many_lines)]
+async fn token_exchange_impl(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    body: HttpTokenRequest,
+) -> Response {
     let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
