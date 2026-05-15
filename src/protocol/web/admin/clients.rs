@@ -558,6 +558,17 @@ pub async fn admin_app_edit_form(
     };
     match state.identity.get_client(target.id(), &client_id) {
         Ok(Some(app)) => {
+            if app.is_yaml_managed() {
+                return super::templates::redirect_with_flash(
+                    &format!(
+                        "/ui/admin/realms/{}/applications/{}",
+                        target.0.name(),
+                        client_id.as_uuid()
+                    ),
+                    "This application is managed by hearth.yaml and cannot be edited via the UI.",
+                    "error",
+                );
+            }
             let realm_name = target.0.name().to_string();
             let mut tpl = AppEditTemplate::from_client(app.clone(), realm_name, &session, &state);
             tpl.form_client_name = app.client_name().to_string();
@@ -615,6 +626,20 @@ pub async fn admin_app_edit_submit(
         Ok(u) => ClientId::new(u),
         Err(_) => return super::handlers_common::not_found("Application not found"),
     };
+
+    if let Ok(Some(existing)) = state.identity.get_client(target.id(), &client_id) {
+        if existing.is_yaml_managed() {
+            return super::templates::redirect_with_flash(
+                &format!(
+                    "/ui/admin/realms/{}/applications/{}",
+                    target.0.name(),
+                    client_id.as_uuid()
+                ),
+                "This application is managed by hearth.yaml and cannot be edited via the UI.",
+                "error",
+            );
+        }
+    }
 
     let redirect_uris: Vec<String> = form
         .redirect_uris
@@ -734,6 +759,20 @@ pub async fn admin_app_delete(
     };
 
     let realm_name = target.0.name().to_string();
+
+    if let Ok(Some(existing)) = state.identity.get_client(target.id(), &client_id) {
+        if existing.is_yaml_managed() {
+            return super::templates::redirect_with_flash(
+                &format!(
+                    "/ui/admin/realms/{}/applications/{}",
+                    realm_name,
+                    client_id.as_uuid()
+                ),
+                "This application is managed by hearth.yaml and cannot be deleted via the UI.",
+                "error",
+            );
+        }
+    }
 
     match state.identity.delete_client(target.id(), &client_id) {
         Ok(()) => {

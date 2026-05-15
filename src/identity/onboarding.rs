@@ -231,7 +231,8 @@ pub fn consume_setup_token(
     let path = setup_token_path(data_dir);
     let on_disk = match read_setup_token_file(&path) {
         Ok(t) => t,
-        Err(OnboardingError::Io(_)) if !path.exists() => { // lgtm[rust/path-injection]
+        Err(OnboardingError::Io(_)) if !path.exists() => {
+            // lgtm[rust/path-injection]
             return Err(OnboardingError::InvalidSetupToken);
         }
         Err(e) => return Err(e),
@@ -249,8 +250,10 @@ pub fn consume_setup_token(
 /// re-used.
 fn remove_setup_token(data_dir: &Path) {
     let path = setup_token_path(data_dir); // lgtm[rust/path-injection]
-    if path.exists() { // lgtm[rust/path-injection]
-        if let Err(e) = std::fs::remove_file(&path) { // lgtm[rust/path-injection]
+    if path.exists() {
+        // lgtm[rust/path-injection]
+        if let Err(e) = std::fs::remove_file(&path) {
+            // lgtm[rust/path-injection]
             tracing::warn!(
                 error = %e,
                 "failed to remove setup token file after completion"
@@ -408,7 +411,8 @@ impl OnboardingService {
         // 0. Defence in depth: the token file's existence is the source
         //    of truth for "setup is in progress". If it's gone, setup
         //    has already been completed (or was never initiated).
-        if !self.data_dir.join(SETUP_TOKEN_FILENAME).exists() { // lgtm[rust/path-injection]
+        if !self.data_dir.join(SETUP_TOKEN_FILENAME).exists() {
+            // lgtm[rust/path-injection]
             return Err(OnboardingError::AlreadyConfigured);
         }
 
