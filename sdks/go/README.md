@@ -2,6 +2,8 @@
 
 Go client for the [Hearth](https://github.com/therecluse26/hearth) identity API.
 
+> **SDK Specification:** This SDK must conform to the [Hearth SDK Common Specification](../../docs/sdk-spec.md).
+
 ## Installation
 
 ```bash
