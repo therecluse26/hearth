@@ -373,6 +373,16 @@ impl OAuthClient {
     pub(crate) fn set_post_logout_redirect_uris(&mut self, uris: Vec<String>) {
         self.post_logout_redirect_uris = uris;
     }
+
+    /// Returns `true` if this client was provisioned from YAML configuration.
+    ///
+    /// YAML-managed clients have deterministic UUID v5 identifiers (derived
+    /// from realm name + app key via `reconcile_applications`). Manually-
+    /// registered clients always use random UUID v4. Edits made via the UI
+    /// will be overwritten on the next server restart when YAML is present.
+    pub fn is_yaml_managed(&self) -> bool {
+        self.client_id.as_uuid().get_version_num() == 5
+    }
 }
 
 /// Request to update an existing OAuth 2.0 client.

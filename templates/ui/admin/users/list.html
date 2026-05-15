@@ -1,11 +1,11 @@
 {% extends "ui/_layout.html" %}
 {% block title %}{{ product_name }} · Users{% endblock %}
 {% block body %}
-{% include "ui/admin/realms/_workspace_tabs.html" %}
+{% if !realm_name.is_empty() %}{% include "ui/admin/realms/_workspace_tabs.html" %}{% endif %}
 
 <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <h1 class="text-2xl font-semibold text-ht-content-primary">Users in this realm</h1>
-  <a href="/ui/admin/realms/{{ realm_name }}/users/new"
+  <a href="{{ list_url }}/new"
      class="btn-ember inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     Create user
@@ -50,7 +50,7 @@
 {% match next_cursor %}
   {% when Some with (cursor) %}
     <nav class="mt-4 flex justify-end">
-      <a href="/ui/admin/realms/{{ realm_name }}/users?cursor={{ cursor }}"
+      <a href="{{ list_url }}?cursor={{ cursor }}"
          class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
         Next page
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

@@ -30,6 +30,10 @@ struct UserListTemplate {
     /// operator surface.
     list_url: String,
     active_tab: &'static str,
+    /// See `UserRowsTemplate::user_base_url`.
+    user_base_url: String,
+    /// See `UserRowsTemplate::user_detail_qs`.
+    user_detail_qs: String,
     // Chrome fields.
     chrome: bool,
     active: &'static str,
@@ -51,7 +55,14 @@ struct UserListTemplate {
 #[template(path = "ui/admin/users/_rows.html")]
 struct UserRowsTemplate {
     users: Vec<User>,
-    realm_name: String,
+    /// Path prefix for user detail/edit links, e.g.
+    /// `/ui/admin/realms/foo/users`.
+    user_base_url: String,
+    /// Optional query-string suffix appended after each detail/edit
+    /// path segment, e.g. `""` for tenant realms or
+    /// `"?admin_target=system"` for the system realm so `TargetRealm`
+    /// resolves correctly without a path-segment realm name.
+    user_detail_qs: String,
 }
 
 /// `GET /ui/admin/users`.
@@ -80,19 +91,24 @@ pub async fn admin_users_list(
 
     match result {
         Ok(page) => {
+            let realm_name = target.0.name().to_string();
+            let user_base_url = format!("/ui/admin/realms/{realm_name}/users");
             if htmx.0 {
                 return render(&UserRowsTemplate {
                     users: page.items,
-                    realm_name: target.0.name().to_string(),
+                    user_base_url,
+                    user_detail_qs: String::new(),
                 });
             }
             render(&UserListTemplate {
                 users: page.items,
                 next_cursor: page.next_cursor,
                 search_query,
-                realm_name: target.0.name().to_string(),
-                list_url: format!("/ui/admin/realms/{}/users", target.0.name()),
+                list_url: format!("/ui/admin/realms/{realm_name}/users"),
                 active_tab: "users",
+                user_base_url,
+                user_detail_qs: String::new(),
+                realm_name,
                 chrome: true,
                 active: "realm-workspace",
                 user_email: Some(session.user_email.clone()),
@@ -158,7 +174,8 @@ pub async fn admin_admin_users_list(
             if htmx.0 {
                 return render(&UserRowsTemplate {
                     users: page.items,
-                    realm_name: String::new(),
+                    user_base_url: "/ui/admin/realms/system/users".to_string(),
+                    user_detail_qs: "?admin_target=system".to_string(),
                 });
             }
             render(&UserListTemplate {
@@ -168,6 +185,8 @@ pub async fn admin_admin_users_list(
                 realm_name: String::new(),
                 list_url: "/ui/admin/admin-users".to_string(),
                 active_tab: "",
+                user_base_url: "/ui/admin/realms/system/users".to_string(),
+                user_detail_qs: "?admin_target=system".to_string(),
                 chrome: true,
                 active: "admin-users",
                 user_email: Some(session.user_email.clone()),

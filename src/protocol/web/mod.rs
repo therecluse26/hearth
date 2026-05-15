@@ -1039,6 +1039,11 @@ pub fn router(state: WebState) -> Router {
             "/admin/realms/{realm}/applications/{id}/regenerate-secret",
             axum::routing::post(admin::admin_app_regenerate_secret),
         )
+        // --- Realm-scoped: identity providers ---
+        .route(
+            "/admin/realms/{realm}/identity-providers",
+            axum::routing::get(admin::admin_idp_list),
+        )
         // --- Realm-scoped: sessions ---
         .route(
             "/admin/realms/{realm}/sessions",
