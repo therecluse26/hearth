@@ -192,7 +192,8 @@ async function main(): Promise<void> {
 
   const app = express();
   // Demo only — CSRF protection omitted intentionally; this is not production code.
-  app.use(cookieParser()); // codeql[js/missing-token-validation] - demo server, not for production use
+  // codeql[js/missing-token-validation]
+  app.use(cookieParser());
   app.use(express.urlencoded({ extended: false }));
 
   // --- GET / : landing page ------------------------------------------------
