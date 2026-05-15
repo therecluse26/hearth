@@ -46,81 +46,24 @@ RUN apt-get update \
 
 WORKDIR /build
 
-# ----- Dependency caching pass ------------------------------------------------
-#
-# Copy only the manifest files and a stub `src/` so Docker can cache the
-# expensive dependency compile step. Any change to Hearth's own source code
-# invalidates the second stage but NOT this one.
-#
-# `simulation/` is a workspace member (see root Cargo.toml) — we must stub its
-# manifest + src too or `cargo build` refuses to resolve the workspace.
-#
-# `Cargo.lock` is gitignored in this repo, so we generate one if the host
-# didn't copy a cached one in (acceptable: `.dockerignore` doesn't exclude
-# Cargo.lock, so when a developer has one locally it's honoured). The missing
-# case produces a non-reproducible image, which is a pre-existing repo-wide
-# tradeoff, not something this Dockerfile fixes.
+# Copy all sources. BuildKit cache mounts on the cargo registry and target
+# directory persist compiled dep artifacts across builds, so unchanged
+# dependencies are never recompiled regardless of which source files changed.
+# Cargo.lock is gitignored in this repo; if absent, cargo generates one into
+# the cache mount on first build and reuses it on subsequent builds.
 COPY Cargo.toml ./
 COPY simulation/Cargo.toml simulation/Cargo.toml
 COPY build.rs ./
 COPY proto ./proto
+COPY src ./src
+COPY simulation ./simulation
+COPY templates ./templates
+COPY benches ./benches
 
-# Stub binaries + libs + benches so `cargo build` has something to compile.
-# Cargo validates every target path declared in `Cargo.toml` (including each
-# `[[bench]]`) at manifest-parse time, even with `--bin hearth` — a missing
-# file is a hard error, not a skip. The content doesn't matter; the second
-# pass overwrites it and uses `touch` to force rebuild of just the crate
-# root, not the 300+ dependency crates.
-RUN mkdir -p src simulation/src benches \
-    && echo 'fn main() {}' > src/main.rs \
-    && echo '' > src/lib.rs \
-    && echo '' > simulation/src/lib.rs \
-    && for b in user_lookup token_validation oidc_exchange \
-                session_lookup tiered_storage oauth admin audit rbac_check; do \
-         echo 'fn main() {}' > "benches/${b}.rs"; \
-       done \
-    && (test -f Cargo.lock || cargo generate-lockfile)
-
-# Dependency-only build. BuildKit cache mounts persist the cargo registry and
-# target directory across builds, so subsequent `docker compose up --build`
-# invocations skip already-compiled dependencies entirely.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
     cargo build --release --bin hearth \
-    && rm -rf src simulation/src benches src/protocol/generated
-
-# ----- Real source pass -------------------------------------------------------
-#
-# Now copy the real sources. `cargo build` will:
-#   1. See the new mtimes on `src/` and recompile the `hearth` crate only.
-#   2. Skip every dependency crate, which is already in `target/release/deps`.
-#   3. Re-run `build.rs` because `rerun-if-changed=proto/` is set and proto/
-#      is identical — so it's effectively a no-op beyond `protoc` being called
-#      once more.
-COPY src ./src
-COPY templates ./templates
-COPY simulation ./simulation
-# benches/ is not compiled by `--bin hearth`, but Cargo still validates every
-# `[[bench]]` target path at manifest-parse time — so the files must exist.
-COPY benches ./benches
-
-# `touch` forces cargo to detect the crate roots as changed even if the stub
-# had the same mtime (rare but possible with very fast builds). `build.rs`
-# is touched too so cargo re-runs it and regenerates `src/protocol/generated/`
-# (which was produced in the cache pass, then wiped with the stub src/).
-# Templates are touched for the same reason: Askama compiles them at build time
-# via proc macros, and the BuildKit cache mount can leave stale fingerprints
-# that cause Cargo to skip recompilation even when template files changed.
-# Final build: only the hearth crate recompiles (deps are cached). The binary
-# must be copied out of the cache mount within this RUN step — the mount
-# vanishes from the layer once the command finishes.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    touch src/main.rs src/lib.rs simulation/src/lib.rs build.rs \
-    && find templates -type f -exec touch {} + \
-    && cargo build --release --bin hearth \
     && strip target/release/hearth \
     && cp target/release/hearth /tmp/hearth
 
