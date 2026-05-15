@@ -192,8 +192,8 @@ async function main(): Promise<void> {
 
   const app = express();
   // Demo only — CSRF token validation intentionally omitted for brevity.
-  // See file header: "Not production code." // lgtm[js/missing-token-validation]
-  app.use(cookieParser());
+  // See file header: "Not production code."
+  app.use(cookieParser()); // lgtm[js/missing-token-validation]
   app.use(express.urlencoded({ extended: false }));
 
   // --- GET / : landing page ------------------------------------------------
