@@ -1,4 +1,4 @@
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/therecluse26/hearth/badge)](https://scorecard.dev/viewer/?uri=github.com/therecluse26/hearth)
+[![CI](https://github.com/therecluse26/hearth/actions/workflows/ci.yml/badge.svg)](https://github.com/therecluse26/hearth/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/therecluse26/hearth/badge)](https://scorecard.dev/viewer/?uri=github.com/therecluse26/hearth) [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0) [![Rust 1.75+](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org/) ![pre-1.0](https://img.shields.io/badge/status-pre--1.0-yellow)
 
 # Hearth — a purpose-built identity database
 
@@ -6,7 +6,37 @@
 
 Every other identity provider is an application sitting on top of a generic database — Keycloak on Postgres, Ory split across four binaries, Auth0 on its managed stack. That architecture is why auth is slow, operationally heavy, and fragile. Hearth inverts it: the storage engine is specialized for the identity access pattern, and the OAuth/OIDC/RBAC surfaces are thin protocol adapters on top. That's why it ships as one process instead of four.
 
+---
+
+**Sub-millisecond p99 · One binary · Zero external dependencies**
+
+Token validation, session lookup, and permission checks run in-process against memory-mapped structures — no network hop, no cache round-trip, no database query on the hot path. Deploy as a single static binary with one config file and a data directory. No Postgres to provision, no Redis to invalidate, no policy service to operate.
+
 > **Pre-1.0:** APIs and on-disk formats may change before 1.0.
+
+---
+
+## Try it in 30 seconds
+
+```bash
+cargo build --release
+./target/release/hearth serve --dev          # in-memory store, binds 127.0.0.1:8420
+curl -fsS http://127.0.0.1:8420/health       # → {"status":"ok"}
+curl -X POST http://127.0.0.1:8420/admin/bootstrap | jq .
+```
+
+The bootstrap call returns a realm, an admin user, and a signed JWT — everything you need to drive the OAuth flow immediately:
+
+```json
+{
+  "realm_id":    "01234567-89ab-cdef-0123-456789abcdef",
+  "user_id":     "fedcba98-7654-3210-fedc-ba9876543210",
+  "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSJ9...",
+  "refresh_token": "rt_..."
+}
+```
+
+> **No Docker, no Postgres, no config required** — `--dev` mode is fully self-contained. The bootstrap endpoint is disabled in production (`404 Not Found`).
 
 ---
 
@@ -97,7 +127,7 @@ Identity infrastructure has zero tolerance for data loss and low tolerance for i
 
 **CI tiers:** Fast (every commit) · Standard (merge) · Extended (nightly) · Full (weekly).
 
-**Current status.** Phase 0 complete (148/148 scenarios); Phase 1 complete (135/135 scenarios). 900+ Rust tests + 27 simulation tests + TypeScript and Go SDK tests passing.
+**Current status.** Phase 0 (148/148 scenarios) and Phase 1 (135/135 scenarios) complete. **900+ Rust tests · 27 deterministic simulation tests · TypeScript and Go SDK conformance tests — all green.**
 
 ---
 
