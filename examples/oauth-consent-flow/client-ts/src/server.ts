@@ -191,9 +191,8 @@ async function main(): Promise<void> {
   console.log(`Using realm '${HEARTH_REALM}' → ${realmId}`);
 
   const app = express();
-  // Demo only — CSRF token validation intentionally omitted for brevity.
-  // See file header: "Not production code."
-  app.use(cookieParser()); // codeql[js/missing-token-validation]
+  // Demo only — CSRF protection omitted intentionally; this is not production code.
+  app.use(cookieParser()); // codeql[js/missing-token-validation] - demo server, not for production use
   app.use(express.urlencoded({ extended: false }));
 
   // --- GET / : landing page ------------------------------------------------
