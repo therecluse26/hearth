@@ -1,0 +1,21 @@
+# Hearth configuration for the gRPC management API demo.
+#
+# Exposes both the HTTP surface (for the dev bootstrap endpoint, used to
+# mint the initial admin token) and the gRPC surface on port 9420 that
+# the Node client drives end-to-end.
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8420
+  grpc_port: 9420
+
+storage:
+  data_dir: "./data/grpc-admin-flow"
+  fsync: false
+
+observability:
+  log_level: info
+  log_format: text
+
+oidc:
+  issuer: "http://localhost:8420"

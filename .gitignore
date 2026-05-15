@@ -50,8 +50,8 @@ ui/tailwindcss
 
 .playwright-mcp/
 
-hearth.yaml
-hearth.yml
+/hearth.yaml
+/hearth.yml
 
 .codex
 

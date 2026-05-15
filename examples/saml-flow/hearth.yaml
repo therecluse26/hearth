@@ -1,0 +1,68 @@
+# Hearth configuration for the SAML 2.0 demo.
+#
+# Runs Hearth with a single realm `demo` that is both:
+# - A SAML SP federated against a local fake IdP (fields under
+#   `federation.providers.local-idp` with `type: saml`).
+# - A SAML IdP with one registered SP (`saml_service_providers.demo-sp`)
+#   that the Node script impersonates to exercise the IdP-side path.
+#
+# The RSA signing keys (one per side) are generated lazily on first
+# SAML operation and persisted under the system realm. The Node
+# driver fetches Hearth's metadata at runtime to obtain the signing
+# cert for round-trip verification.
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8420
+  default_realm: demo
+
+storage:
+  data_dir: "./data/saml-flow"
+  fsync: false
+
+observability:
+  log_level: info
+  log_format: text
+
+onboarding:
+  enabled: true
+  base_url: "http://localhost:8420"
+
+oidc:
+  issuer: "http://localhost:8420"
+
+realms:
+  demo:
+    federation:
+      link_existing_accounts: confirm
+      providers:
+        # SP-side: Hearth consumes assertions from this upstream IdP.
+        # The driver injects its generated cert into this field at boot
+        # (via envsubst in run.sh) because the IdP keypair is generated
+        # fresh each run.
+        local-idp:
+          type: saml
+          entity_id: "http://localhost:9190/saml/metadata"
+          sso_url: "http://localhost:9190/saml/sso"
+          slo_url: "http://localhost:9190/saml/slo"
+          idp_certificate_pem: |
+            __IDP_CERT_PEM__
+          sign_authn_requests: false
+          want_assertions_signed: false
+          attribute_map:
+            email: "NameID"
+            display_name: "http://schemas.xmlsoap.org/claims/CommonName"
+
+    # IdP-side: Hearth issues signed responses to this registered SP.
+    saml_service_providers:
+      demo-sp:
+        entity_id: "http://localhost:9290/saml/metadata"
+        acs_url: "http://localhost:9290/saml/acs"
+        slo_url: "http://localhost:9290/saml/slo"
+        sign_responses: true
+        sign_assertions: false
+        want_authn_requests_signed: false
+        nameid_format: "emailAddress"
+        attribute_map:
+          email: "email"
+          display_name: "displayName"

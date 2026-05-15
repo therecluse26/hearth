@@ -38,6 +38,13 @@ You'll run two processes:
 - Node.js 18 or later (for the client app).
 - Two free local ports: **8420** (Hearth) and **3000** (client).
 
+> **Build time.** The first `cargo run --release` compiles the full
+> Hearth binary from scratch — expect **5–15 minutes** on a typical
+> laptop. Subsequent runs skip compilation and start in under a second.
+> To overlap the wait: kick off the Cargo build first (step 1), then
+> open a second terminal and run `npm install` (step 4) while it
+> compiles.
+
 ---
 
 ## Steps
@@ -52,7 +59,9 @@ cargo run --release -- serve --dev \
   --config examples/oauth-consent-flow/hearth.yaml
 ```
 
-On a first run you'll see log lines like:
+On the very first run, Cargo compiles the binary before starting the
+server — this takes a few minutes. When compilation finishes, you'll
+see log lines like:
 
 ```
 INFO hearth: Hearth identity server starting dev_mode=true port=8420

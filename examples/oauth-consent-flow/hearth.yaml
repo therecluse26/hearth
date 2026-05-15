@@ -1,0 +1,73 @@
+# Hearth configuration for the OAuth consent flow demo.
+#
+# Declares a single realm `demo` with two OAuth applications that sit on
+# opposite sides of the `require_consent` toggle so the walkthrough can
+# demonstrate both the prompt flow and the trusted-client bypass without
+# a config reload.
+#
+# See ../../hearth.example.yaml at the repo root for the full, annotated
+# config reference. Everything omitted from this file falls back to
+# Hearth defaults.
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8420
+
+  # Multi-realm routing: when a user hits a bare /ui/* URL without the
+  # realm path segment, Hearth uses this realm. The example client links
+  # to /ui/oauth/authorize directly, so this avoids forcing the demo URL
+  # to carry /ui/realms/demo/... everywhere.
+  default_realm: demo
+
+storage:
+  data_dir: "./data/oauth-consent-flow"
+  # Dev-mode settings — `cargo run -- serve --dev` also flips fsync off.
+  fsync: false
+
+observability:
+  log_level: info
+  log_format: text
+
+realms:
+  demo:
+    # OIDC issuer URL is built from server.bind_address + port by default.
+    # Leaving the rest at defaults means:
+    #   - password + passkey + magic-link login all enabled
+    #   - scopes supported: openid, profile, email
+    #   - access-token TTL 15 min, refresh TTL 30 days
+    applications:
+      # A typical third-party app. Requires consent on first visit; the
+      # user is shown the consent screen with per-scope checkboxes.
+      third-party-app:
+        name: "Third-Party Analytics"
+        redirect_uris:
+          - "http://localhost:3000/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+        # This is the default (true) but listed explicitly here so the
+        # YAML reads like documentation for the feature.
+        require_consent: true
+        # Logo URL shown above the client name on the consent screen.
+        # `via.placeholder.com` keeps the demo free of external-image
+        # surprises while still exercising the logo render path.
+        client_logo_url: "https://via.placeholder.com/80/ff6b35/ffffff?text=TPA"
+
+      # A first-party client (e.g. an internal SSO portal that Hearth
+      # itself powers). require_consent=false skips the prompt entirely
+      # — appropriate only when the user already has an implicit trust
+      # relationship with the client.
+      first-party-sso:
+        name: "Internal SSO"
+        redirect_uris:
+          - "http://localhost:3000/callback"
+        grant_types:
+          - authorization_code
+          - refresh_token
+        require_consent: false
+
+onboarding:
+  # Keep /ui/setup enabled so the first-run flow creates the demo admin
+  # user. The walkthrough directs the reader to visit /ui/setup in a
+  # browser after starting the server.
+  enabled: true
