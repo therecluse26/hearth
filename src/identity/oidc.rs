@@ -516,12 +516,14 @@ pub struct AuthorizationResponse {
     code: String,
     /// The state value echoed back for CSRF verification.
     state: String,
+    /// RFC 9207 issuer identifier — appended to the redirect as `iss=`.
+    iss: String,
 }
 
 impl AuthorizationResponse {
     /// Creates a new authorization response.
-    pub(crate) fn new(code: String, state: String) -> Self {
-        Self { code, state }
+    pub(crate) fn new(code: String, state: String, iss: String) -> Self {
+        Self { code, state, iss }
     }
 
     /// Returns the authorization code.
@@ -532,6 +534,11 @@ impl AuthorizationResponse {
     /// Returns the state value.
     pub fn state(&self) -> &str {
         &self.state
+    }
+
+    /// Returns the RFC 9207 issuer identifier.
+    pub fn iss(&self) -> &str {
+        &self.iss
     }
 }
 
@@ -689,6 +696,9 @@ pub struct OidcDiscoveryDocument {
     /// Whether RFC 8707 resource indicators are supported.
     #[serde(default)]
     pub resource_indicators_supported: bool,
+    /// Whether the RFC 9207 `iss` parameter is included in authorization responses.
+    #[serde(default)]
+    pub authorization_response_iss_parameter_supported: bool,
     /// URL of the RP-initiated logout endpoint (OIDC RP-Initiated Logout 1.0 §3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_session_endpoint: Option<String>,
@@ -1016,9 +1026,14 @@ mod tests {
 
     #[test]
     fn authorization_response_accessors() {
-        let resp = AuthorizationResponse::new("code123".to_string(), "state456".to_string());
+        let resp = AuthorizationResponse::new(
+            "code123".to_string(),
+            "state456".to_string(),
+            "https://auth.example.com".to_string(),
+        );
         assert_eq!(resp.code(), "code123");
         assert_eq!(resp.state(), "state456");
+        assert_eq!(resp.iss(), "https://auth.example.com");
     }
 
     #[test]
@@ -1088,6 +1103,7 @@ mod tests {
             revocation_endpoint: Some("https://hearth.local/revoke".to_string()),
             introspection_endpoint: Some("https://hearth.local/introspect".to_string()),
             resource_indicators_supported: false,
+            authorization_response_iss_parameter_supported: true,
             end_session_endpoint: Some("https://hearth.local/end_session".to_string()),
             backchannel_logout_supported: false,
             backchannel_logout_session_supported: false,

@@ -1,0 +1,174 @@
+{
+  "dataType": "CVE_RECORD",
+  "dataVersion": "5.0",
+  "cveMetadata": {
+    "cveId": "CVE-XXXX-XXXXX",
+    "assignerOrgId": "00000000-0000-0000-0000-000000000000",
+    "assignerShortName": "hearth",
+    "state": "RESERVED",
+    "dateReserved": "TBD — pending MITRE request",
+    "datePublished": "EMBARGOED — publish only after fix confirmed deployed",
+    "dateUpdated": "2026-05-15"
+  },
+  "containers": {
+    "cna": {
+      "providerMetadata": {
+        "orgId": "00000000-0000-0000-0000-000000000000",
+        "shortName": "hearth",
+        "dateUpdated": "2026-05-15"
+      },
+      "title": "Hearth: PKCE not enforced for authorization code flow — authorization code injection",
+      "descriptions": [
+        {
+          "lang": "en",
+          "value": "Hearth, an OIDC/OAuth 2.0 identity provider, does not enforce Proof Key for Code Exchange (PKCE) on the authorization code flow. The `code_challenge` and `code_challenge_method` parameters in authorization requests are treated as optional for all client types, including public clients. An attacker who obtains a victim's authorization code — through redirect URI interception, referrer leakage, network eavesdropping, or a compromised intermediary — can exchange it at the token endpoint without supplying a `code_verifier`, bypassing the binding that PKCE is designed to enforce. This constitutes an authorization code injection attack as described in RFC 9700 §4.5 and draft-ietf-oauth-security-topics.",
+          "supportingMedia": [
+            {
+              "type": "text/html",
+              "base64": false,
+              "value": "<p>Hearth does not enforce PKCE on the authorization code flow. The <code>code_challenge</code> and <code>code_challenge_method</code> parameters are optional for all client types, including public clients. An attacker who obtains an authorization code can exchange it at the token endpoint without a <code>code_verifier</code>, bypassing PKCE's code-binding protection.</p>"
+            }
+          ]
+        }
+      ],
+      "affected": [
+        {
+          "vendor": "Hearth",
+          "product": "hearth",
+          "collectionURL": "https://github.com/therecluse26/hearth",
+          "packageName": "hearth",
+          "versions": [
+            {
+              "version": "0.0.0",
+              "status": "affected",
+              "lessThan": "*",
+              "versionType": "semver"
+            }
+          ],
+          "defaultStatus": "affected"
+        }
+      ],
+      "problemTypes": [
+        {
+          "descriptions": [
+            {
+              "lang": "en",
+              "description": "CWE-306: Missing Authentication for Critical Function — the token endpoint does not require a PKCE code verifier, meaning the proof-of-possession step is absent for clients that omit PKCE in the authorization request.",
+              "cweId": "CWE-306",
+              "type": "CWE"
+            },
+            {
+              "lang": "en",
+              "description": "CWE-287: Improper Authentication — public clients can complete an authorization code exchange without demonstrating they initiated the authorization request.",
+              "cweId": "CWE-287",
+              "type": "CWE"
+            }
+          ]
+        }
+      ],
+      "metrics": [
+        {
+          "format": "CVSS",
+          "scenarios": [
+            {
+              "lang": "en",
+              "value": "Attacker intercepts or acquires an authorization code and exchanges it without a code_verifier."
+            }
+          ],
+          "cvssV3_1": {
+            "version": "3.1",
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N",
+            "baseScore": 7.4,
+            "baseSeverity": "HIGH",
+            "attackVector": "NETWORK",
+            "attackComplexity": "HIGH",
+            "privilegesRequired": "NONE",
+            "userInteraction": "NONE",
+            "scope": "UNCHANGED",
+            "confidentialityImpact": "HIGH",
+            "integrityImpact": "HIGH",
+            "availabilityImpact": "NONE"
+          }
+        }
+      ],
+      "references": [
+        {
+          "url": "https://www.rfc-editor.org/rfc/rfc9700",
+          "name": "RFC 9700 — OAuth 2.0 Security Best Current Practice",
+          "tags": ["technical-description"]
+        },
+        {
+          "url": "https://www.rfc-editor.org/rfc/rfc7636",
+          "name": "RFC 7636 — Proof Key for Code Exchange by OAuth Public Clients",
+          "tags": ["technical-description"]
+        },
+        {
+          "url": "https://openid.net/specs/openid-financial-api-part-1-1_0.html",
+          "name": "FAPI 2.0 Security Profile — mandates PKCE S256 for all clients",
+          "tags": ["related"]
+        }
+      ],
+      "timeline": [
+        {
+          "time": "2026-05-15",
+          "lang": "en",
+          "value": "Finding identified via internal security audit (SecurityResearcher agent, HEA-481)."
+        },
+        {
+          "time": "TBD",
+          "lang": "en",
+          "value": "Remediation: PKCE S256 enforcement implemented (HEA-501)."
+        },
+        {
+          "time": "TBD",
+          "lang": "en",
+          "value": "Embargo lifted and advisory published after fix confirmed deployed."
+        }
+      ],
+      "credits": [
+        {
+          "lang": "en",
+          "value": "Hearth internal security audit — SecurityResearcher agent",
+          "type": "finder"
+        }
+      ],
+      "source": {
+        "discovery": "INTERNAL"
+      },
+      "workarounds": [
+        {
+          "lang": "en",
+          "value": "As an interim measure, configure all client applications to always send PKCE S256 parameters in authorization requests. Clients that omit `code_challenge` will still be accepted by the server until the fix is deployed, but enforcing PKCE client-side reduces the attack window. Only register clients over `https://` redirect URIs. Avoid use of the implicit flow.",
+          "supportingMedia": [
+            {
+              "type": "text/html",
+              "base64": false,
+              "value": "<p>Enforce PKCE S256 client-side in all OAuth clients. Avoid implicit flow and HTTP redirect URIs as mitigating posture until server-side enforcement is deployed.</p>"
+            }
+          ]
+        }
+      ],
+      "x_internalNotes": {
+        "embargoed": true,
+        "embargoLifts": "After fix confirmed deployed — NOT solely on merge of HEA-501.",
+        "ctoApprovalRequired": true,
+        "ctoApprovalStatus": "APPROVED — 2026-05-15 (CTO: brad@inteletech.io). Correction applied: A:H→A:N (PKCE bypass has no availability impact; C:H/I:H covers account takeover). Score revised 8.1→7.4. Code evidence line numbers reflect pre-fix snapshot; fix is now on feature/more-gap-fixes pending merge.",
+        "relatedIssues": {
+          "finding": "HEA-481",
+          "implementation": "HEA-501",
+          "thisAdvisory": "HEA-504"
+        },
+        "codeEvidence": {
+          "description": "Pre-fix state: PKCE fields are Option<T>; engine only validates PKCE when code_challenge is Some. NOTE: Fix is now in feature/more-gap-fixes — line numbers reflect pre-merge snapshot and have shifted. Verify against git history (commit before 'More gap fixes' on feature/more-gap-fixes) for exact pre-fix evidence.",
+          "files": [
+            "src/identity/oidc.rs — code_challenge: Option<String>, code_challenge_method: Option<CodeChallengeMethod> (still Option in fixed code; enforcement added at authorization layer)",
+            "src/identity/engine.rs (pre-fix) — no mandatory PKCE check on public clients at authorize step",
+            "src/identity/engine.rs (pre-fix) — token exchange PKCE check conditional on stored_code.code_challenge being Some, skipped entirely when absent",
+            "src/identity/engine.rs (post-fix ~line 4015) — added: if !client.is_confidential() && request.code_challenge.is_none() { return Err(...) } — now enforces PKCE for public clients"
+          ]
+        },
+        "specReference": "RFC 9700 §2.1.1 — 'Authorization servers MUST support PKCE [RFC7636]. ... Authorization servers MUST require the use of PKCE for public clients.' RFC 9700 §4.5 — Authorization Code Injection attack class."
+      }
+    }
+  }
+}

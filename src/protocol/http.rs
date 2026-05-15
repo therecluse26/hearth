@@ -29,7 +29,9 @@ use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::core::{ClientId, RealmId, UserId, WebhookId};
 use crate::identity::email::{validate_email_template, EmailBranding, LocalizedEmailTemplate};
 use crate::identity::{IdentityEngine, UpdateRealmRequest};
-use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
+use crate::protocol::admin_auth::{
+    AdminRateLimiter, RateLimitOutcome, TokenRateLimitOutcome, TokenRateLimiter,
+};
 use crate::protocol::convert::identity::{
     proto_user_status_to_domain, realm_page_to_proto, user_bulk_result_to_proto,
     user_page_to_proto, void_bulk_result_to_proto,
@@ -86,6 +88,10 @@ pub struct AppState {
     /// admin surfaces so a caller cannot evade the limit by switching
     /// protocols.
     pub admin_rate_limiter: Arc<AdminRateLimiter>,
+    /// Per-`(realm, client_id)` rate limiter for token, introspection, and
+    /// device-authorization endpoints. Returns 429 with `Retry-After` when
+    /// exceeded.
+    pub token_rate_limiter: Arc<TokenRateLimiter>,
 }
 
 impl AppState {
@@ -103,6 +109,7 @@ impl AppState {
             dev_mode: false,
             metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
+            token_rate_limiter: Arc::new(TokenRateLimiter::new()),
         }
     }
 
@@ -122,6 +129,7 @@ impl AppState {
             dev_mode: true,
             metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
+            token_rate_limiter: Arc::new(TokenRateLimiter::new()),
         }
     }
 
@@ -143,6 +151,7 @@ impl AppState {
             dev_mode: false,
             metrics_enabled: true,
             admin_rate_limiter,
+            token_rate_limiter: Arc::new(TokenRateLimiter::new()),
         }
     }
 
@@ -265,6 +274,41 @@ fn check_admin_rate_limit(
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({"error": "rate limit exceeded"})),
         )),
+    }
+}
+
+/// Checks the per-`(realm, client)` token endpoint rate limit.
+///
+/// Returns `Ok(())` when the request is allowed; `Err(Response)` with
+/// `429 Too Many Requests` and a `Retry-After` header when exceeded.
+fn check_token_rate_limit(
+    state: &AppState,
+    realm_id: &RealmId,
+    client_id: &ClientId,
+) -> Result<(), Response> {
+    #[allow(clippy::cast_possible_truncation)]
+    let now_micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as i64;
+
+    match state
+        .token_rate_limiter
+        .check(realm_id, client_id, now_micros)
+    {
+        TokenRateLimitOutcome::Allowed => Ok(()),
+        TokenRateLimitOutcome::Exceeded { retry_after_secs } => {
+            let retry_str = retry_after_secs.to_string();
+            Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", retry_str.as_str())],
+                Json(serde_json::json!({
+                    "error": "too_many_requests",
+                    "error_description": "rate limit exceeded"
+                })),
+            )
+                .into_response())
+        }
     }
 }
 
@@ -404,7 +448,10 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
         )
         .route("/authorize", axum::routing::post(authorize))
-        .route("/token", axum::routing::post(token_exchange))
+        .route(
+            "/token",
+            axum::routing::post(token_exchange).options(token_preflight),
+        )
         .route(
             "/end_session",
             axum::routing::get(end_session).post(end_session),
@@ -412,16 +459,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/revoke",
             axum::routing::post(token_revocation)
+                .options(token_preflight)
                 .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
         )
         .route(
             "/introspect",
             axum::routing::post(token_introspection)
+                .options(token_preflight)
                 .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
         )
         .route(
             "/device_authorization",
-            axum::routing::post(device_authorization),
+            axum::routing::post(device_authorization).options(token_preflight),
         )
         .route("/userinfo", axum::routing::get(userinfo))
         .route("/v1/me/permissions", axum::routing::get(me_permissions))
@@ -466,20 +515,25 @@ pub fn router(state: Arc<AppState>) -> Router {
                 )
                 .route("/.well-known/jwks.json", axum::routing::get(realm_jwks))
                 .route("/authorize", axum::routing::post(realm_authorize))
-                .route("/token", axum::routing::post(realm_token_exchange))
+                .route(
+                    "/token",
+                    axum::routing::post(realm_token_exchange).options(realm_token_preflight),
+                )
                 .route(
                     "/revoke",
                     axum::routing::post(realm_token_revocation)
+                        .options(realm_token_preflight)
                         .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
                 )
                 .route(
                     "/introspect",
                     axum::routing::post(realm_token_introspection)
+                        .options(realm_token_preflight)
                         .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
                 )
                 .route(
                     "/device_authorization",
-                    axum::routing::post(realm_device_authorization),
+                    axum::routing::post(realm_device_authorization).options(realm_token_preflight),
                 )
                 .route("/userinfo", axum::routing::get(realm_userinfo))
                 .route(
@@ -955,16 +1009,17 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
 /// Extracts client credentials from HTTP Basic Auth or body parameters and
 /// verifies them against the stored client record.
 ///
-/// Returns a 401 response if the client_id is missing, the client does not
-/// exist, or the secret is wrong. Confidential clients require a secret;
-/// public clients are accepted with client_id alone.
+/// Returns the authenticated `ClientId` on success, or a 401 response if
+/// client_id is missing, the client does not exist, or the secret is wrong.
+/// Confidential clients require a secret; public clients are accepted with
+/// client_id alone.
 fn verify_endpoint_client(
     state: &AppState,
     realm_id: &RealmId,
     headers: &HeaderMap,
     body_client_id: Option<&str>,
     body_client_secret: Option<&str>,
-) -> Result<(), Response> {
+) -> Result<ClientId, Response> {
     // Prefer Basic Auth (RFC 6749 §2.3.1); fall back to body parameters.
     let (raw_id, secret) = if let Some((id, sec)) = parse_basic_auth(headers) {
         (id, Some(sec))
@@ -991,6 +1046,7 @@ fn verify_endpoint_client(
     state
         .identity
         .authenticate_client(realm_id, &client_id, secret.as_deref())
+        .map(|()| client_id)
         .map_err(|_| {
             (
                 StatusCode::UNAUTHORIZED,
@@ -998,6 +1054,153 @@ fn verify_endpoint_client(
             )
                 .into_response()
         })
+}
+
+/// Returns the CORS `Access-Control-Allow-Origin` value for `origin` if it
+/// matches any base origin of a registered client's `redirect_uris`.
+///
+/// Base origin = scheme + "://" + host (+ optional port). E.g.
+/// `https://app.example.com` extracted from `https://app.example.com/callback`.
+fn cors_origin_for_client(
+    state: &AppState,
+    realm_id: &RealmId,
+    client_id: &ClientId,
+    request_origin: &str,
+) -> Option<axum::http::HeaderValue> {
+    let client = state.identity.get_client(realm_id, client_id).ok()??;
+    let origin_base = extract_origin_base(request_origin)?;
+    let allowed = client.redirect_uris().iter().any(|uri| {
+        extract_origin_base(uri)
+            .map(|base| base == origin_base)
+            .unwrap_or(false)
+    });
+    if allowed {
+        axum::http::HeaderValue::from_str(request_origin).ok()
+    } else {
+        None
+    }
+}
+
+/// Extracts `scheme://host[:port]` from a URI string.
+fn extract_origin_base(uri: &str) -> Option<String> {
+    // Fast path: find "://" then take up to the next "/"
+    let after_scheme = uri.find("://")?;
+    let rest = &uri[after_scheme + 3..];
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    Some(format!("{}://{host}", &uri[..after_scheme]))
+}
+
+/// Appends CORS headers to `response` when the request `Origin` is authorised
+/// for the given authenticated client.
+fn apply_cors_to_response(
+    resp: &mut Response,
+    state: &AppState,
+    realm_id: &RealmId,
+    client_id: &ClientId,
+    request_headers: &HeaderMap,
+) {
+    let Some(origin_val) = request_headers.get(axum::http::header::ORIGIN) else {
+        return;
+    };
+    let Ok(origin_str) = origin_val.to_str() else {
+        return;
+    };
+    if let Some(allow_origin) = cors_origin_for_client(state, realm_id, client_id, origin_str) {
+        let h = resp.headers_mut();
+        h.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            allow_origin,
+        );
+        h.insert(
+            axum::http::HeaderName::from_static("access-control-allow-credentials"),
+            axum::http::HeaderValue::from_static("true"),
+        );
+    }
+}
+
+/// Handles `OPTIONS` preflight for token endpoints. Validates that at least
+/// one registered client in the realm accepts the requesting origin, then
+/// responds `204 No Content` with the required CORS preflight headers.
+async fn token_options_preflight(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    realm_id: RealmId,
+) -> Response {
+    let Some(origin_val) = headers.get(axum::http::header::ORIGIN) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Ok(origin_str) = origin_val.to_str() else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Some(origin_base) = extract_origin_base(origin_str) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    // Check whether any registered client accepts this origin.
+    let allowed = state
+        .identity
+        .list_clients(&realm_id, None, 200)
+        .ok()
+        .map(|page| {
+            page.items.iter().any(|c| {
+                c.redirect_uris().iter().any(|uri| {
+                    extract_origin_base(uri)
+                        .map(|base| base == origin_base)
+                        .unwrap_or(false)
+                })
+            })
+        })
+        .unwrap_or(false);
+    if !allowed {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let Ok(allow_origin_hv) = axum::http::HeaderValue::from_str(origin_str) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let mut resp = StatusCode::NO_CONTENT.into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        allow_origin_hv,
+    );
+    h.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+        axum::http::HeaderValue::from_static("POST, OPTIONS"),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static("access-control-allow-headers"),
+        axum::http::HeaderValue::from_static("Authorization, Content-Type"),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static("access-control-allow-credentials"),
+        axum::http::HeaderValue::from_static("true"),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static("access-control-max-age"),
+        axum::http::HeaderValue::from_static("86400"),
+    );
+    resp
+}
+
+/// `OPTIONS /token` — CORS preflight.
+async fn token_preflight(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let Ok(realm_id) = extract_realm_id(&headers) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    token_options_preflight(State(state), headers, realm_id).await
+}
+
+/// `OPTIONS /realms/{realm}/token` — CORS preflight.
+async fn realm_token_preflight(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NO_CONTENT.into_response(),
+    };
+    token_options_preflight(State(state), headers, realm_id).await
 }
 
 /// Extracts a `RealmId` from the `X-Realm-ID` header.
@@ -1428,6 +1631,14 @@ async fn token_exchange(
         Err(e) => return e.into_response(),
     };
 
+    // Rate limit per client_id before any grant-type dispatch.
+    if let Ok(client_uuid) = body.client_id.parse::<uuid::Uuid>() {
+        let client_id = ClientId::new(client_uuid);
+        if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+            return resp;
+        }
+    }
+
     let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
 
     match grant_type {
@@ -1628,13 +1839,17 @@ async fn token_revocation(
         Err(e) => return e.into_response(),
     };
 
-    if let Err(resp) = verify_endpoint_client(
+    let client_id = match verify_endpoint_client(
         &state,
         &realm_id,
         &headers,
         body.client_id.as_deref(),
         body.client_secret.as_deref(),
     ) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
         return resp;
     }
 
@@ -1643,7 +1858,7 @@ async fn token_revocation(
         token_type_hint: body.token_type_hint,
     };
 
-    match state.identity.revoke_token(&realm_id, &request) {
+    let mut resp = match state.identity.revoke_token(&realm_id, &request) {
         Ok(()) => {
             // A successful revoke ends a session; keep the gauge consistent.
             crate::metrics::metrics().active_sessions.dec();
@@ -1654,7 +1869,9 @@ async fn token_revocation(
             StatusCode::OK.into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
-    }
+    };
+    apply_cors_to_response(&mut resp, &state, &realm_id, &client_id, &headers);
+    resp
 }
 
 // === Token Introspection (RFC 7662) ===
@@ -1673,13 +1890,17 @@ async fn token_introspection(
         Err(e) => return e.into_response(),
     };
 
-    if let Err(resp) = verify_endpoint_client(
+    let client_id = match verify_endpoint_client(
         &state,
         &realm_id,
         &headers,
         body.client_id.as_deref(),
         body.client_secret.as_deref(),
     ) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
         return resp;
     }
 
@@ -1688,14 +1909,16 @@ async fn token_introspection(
         token_type_hint: body.token_type_hint,
     };
 
-    match state.identity.introspect_token(&realm_id, &request) {
+    let mut resp = match state.identity.introspect_token(&realm_id, &request) {
         // Use the domain type directly: the domain IntrospectionResponse has
         // #[derive(Serialize)] and always emits `active: false` for inactive
         // tokens. The proto-generated serde omits proto3 default values (false)
         // which would violate RFC 7662 §2.2 by leaving `active` absent.
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
-    }
+    };
+    apply_cors_to_response(&mut resp, &state, &realm_id, &client_id, &headers);
+    resp
 }
 
 // === Device Authorization (RFC 8628) ===
@@ -1723,6 +1946,9 @@ async fn device_authorization(
                 .into_response();
         }
     };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+        return resp;
+    }
 
     let request = crate::identity::DeviceAuthorizationRequest {
         client_id,
@@ -4752,6 +4978,13 @@ async fn realm_token_exchange(
         Ok(id) => id,
         Err(e) => return e,
     };
+    // Rate limit per client_id before any grant-type dispatch.
+    if let Ok(client_uuid) = body.client_id.parse::<uuid::Uuid>() {
+        let client_id = ClientId::new(client_uuid);
+        if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+            return resp;
+        }
+    }
     let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
     match grant_type {
         "authorization_code" => {
@@ -5001,6 +5234,9 @@ async fn realm_device_authorization(
                 .into_response()
         }
     };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+        return resp;
+    }
     let request = crate::identity::DeviceAuthorizationRequest {
         client_id,
         scope: body

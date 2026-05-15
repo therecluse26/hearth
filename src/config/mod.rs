@@ -159,6 +159,7 @@ impl Config {
                 grpc_port: None,
                 grpc_bind_address: None,
                 assets_dir: None,
+                trust_forwarded_proto: false,
             },
             storage: StorageSection {
                 data_dir: String::new(),

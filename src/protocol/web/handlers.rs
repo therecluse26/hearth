@@ -1030,12 +1030,14 @@ fn login_submit_impl(
         .mfa_enabled(realm.id(), user.id())
         .unwrap_or(false);
     let realm_requires_mfa = realm.config().mfa_required.unwrap_or(false);
+    let secure = state.is_secure_request(&headers);
     if mfa_on {
         let cookie = issue_mfa_pending_cookie(
             &state.cookie_secret,
             realm.id(),
             user.id(),
             return_to.as_deref(),
+            secure,
         );
         state.set_current_realm(realm.id().clone());
         // Return the login page with the inline TOTP section visible rather than
@@ -1065,6 +1067,7 @@ fn login_submit_impl(
             realm.id(),
             user.id(),
             return_to.as_deref(),
+            secure,
         );
         state.set_current_realm(realm.id().clone());
         let mut response = Redirect::to("/ui/mfa-enroll-required").into_response();
@@ -1080,7 +1083,7 @@ fn login_submit_impl(
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id());
+            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id(), secure);
 
             state.set_current_realm(realm.id().clone());
 
@@ -1090,10 +1093,10 @@ fn login_submit_impl(
             append_cookie(&mut response, &csrf_cookie);
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    realm.id(),
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), realm.id()),
+                    secure,
+                ),
             );
             response
         }
@@ -1372,6 +1375,7 @@ fn passkey_login_complete_impl(
         user_handle_bytes.as_ref(),
         &origin,
         &session_ctx,
+        state.is_secure_request(&headers),
     )
 }
 
@@ -1390,6 +1394,7 @@ fn passkey_complete_for_user(
     user_handle_bytes: Option<&Vec<u8>>,
     origin: &str,
     session_ctx: &SessionContext,
+    secure: bool,
 ) -> Response {
     let _ = user_id;
 
@@ -1436,6 +1441,7 @@ fn passkey_complete_for_user(
                 realm.id(),
                 auth_result.user_id(),
                 None, // no return_to for passkey flow
+                secure,
             );
             state.set_current_realm(realm.id().clone());
             let response_json = axum::Json(serde_json::json!({
@@ -1458,7 +1464,7 @@ fn passkey_complete_for_user(
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id());
+            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id(), secure);
 
             state.set_current_realm(realm.id().clone());
 
@@ -1470,10 +1476,10 @@ fn passkey_complete_for_user(
             append_cookie(&mut response, &csrf_cookie);
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    realm.id(),
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), realm.id()),
+                    secure,
+                ),
             );
             response
         }
@@ -1609,22 +1615,28 @@ pub async fn mfa_challenge_submit(
         .create_session(&pending.realm_id, &pending.user_id, &session_ctx)
     {
         Ok(session) => {
+            let secure = state.is_secure_request(&headers);
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, &pending.realm_id, session.id());
+            } = issue_auth_cookies(
+                &state.cookie_secret,
+                &pending.realm_id,
+                session.id(),
+                secure,
+            );
 
             let location = pending.return_to.as_deref().unwrap_or("/ui");
             let mut response = Redirect::to(location).into_response();
             append_cookie(&mut response, &session_cookie);
             append_cookie(&mut response, &csrf_cookie);
-            append_cookie(&mut response, &clear_mfa_pending_cookie());
+            append_cookie(&mut response, &clear_mfa_pending_cookie(secure));
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    &pending.realm_id,
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), &pending.realm_id),
+                    secure,
+                ),
             );
             response
         }
@@ -1790,6 +1802,7 @@ pub async fn mfa_enroll_required_submit(
     }
 
     // Enrollment confirmed — complete login.
+    let secure = state.is_secure_request(&headers);
     match state
         .identity
         .create_session(&pending.realm_id, &pending.user_id, &session_ctx)
@@ -1798,19 +1811,24 @@ pub async fn mfa_enroll_required_submit(
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, &pending.realm_id, session.id());
+            } = issue_auth_cookies(
+                &state.cookie_secret,
+                &pending.realm_id,
+                session.id(),
+                secure,
+            );
 
             let location = pending.return_to.as_deref().unwrap_or("/ui");
             let mut response = Redirect::to(location).into_response();
             append_cookie(&mut response, &session_cookie);
             append_cookie(&mut response, &csrf_cookie);
-            append_cookie(&mut response, &clear_mfa_pending_cookie());
+            append_cookie(&mut response, &clear_mfa_pending_cookie(secure));
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    &pending.realm_id,
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), &pending.realm_id),
+                    secure,
+                ),
             );
             response
         }
@@ -1970,12 +1988,15 @@ pub struct LogoutForm {
 /// sign-out twice), we still clear the cookies and redirect.
 pub async fn logout_submit(
     State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
     session: super::auth::UiSession,
     Form(form): Form<LogoutForm>,
 ) -> Response {
     if let Err(resp) = super::auth::verify_csrf_form_field(&session, &form.csrf) {
         return resp;
     }
+
+    let secure = state.is_secure_request(&headers);
 
     // Resolve the realm *before* revoking — the session record is about
     // to disappear. System-realm sessions route back to /ui/admin/login;
@@ -2009,13 +2030,13 @@ pub async fn logout_submit(
 
     let login_url = super::auth::login_url_for_realm(redirect_realm.as_deref());
     let mut response = Redirect::to(&login_url).into_response();
-    for cookie in super::auth::clearing_cookies() {
+    for cookie in super::auth::clearing_cookies(secure) {
         append_cookie(&mut response, &cookie);
     }
     // Refresh the last-realm cookie so the user returns here on the
     // next unauthenticated request even if they clear other cookies.
     if let Some(ref name) = redirect_realm {
-        append_cookie(&mut response, &super::auth::last_realm_cookie(name));
+        append_cookie(&mut response, &super::auth::last_realm_cookie(name, secure));
     }
     response
 }

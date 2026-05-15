@@ -966,7 +966,9 @@ async fn run_serve(
         .with_theme_css(global_theme_css)
         .with_realm_themes(realm_themes)
         .with_realm_product_names(realm_product_names)
-        .with_reload_notify(Arc::clone(&reload_notify));
+        .with_reload_notify(Arc::clone(&reload_notify))
+        .with_tls_enabled(config.server.tls_cert_path.is_some())
+        .with_trust_forwarded_proto(config.server.trust_forwarded_proto);
     if let Some(ref cfg_path) = reload_config_path {
         web_state = web_state.with_config_path(cfg_path.clone());
     }

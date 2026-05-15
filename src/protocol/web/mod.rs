@@ -59,6 +59,7 @@ pub(crate) mod handlers_common;
 pub mod oauth_consent;
 pub mod realm_resolver;
 pub mod saml;
+pub mod security;
 pub(crate) mod templates;
 pub mod themes;
 
@@ -171,6 +172,12 @@ pub struct WebState {
     /// `ETag` for [`WebState::app_css`]. SHA-256 prefix of the bytes,
     /// computed once at startup. Updated by [`WebState::with_app_css`].
     pub app_css_etag: String,
+    /// Whether the Hearth listener itself is TLS-enabled. When `true`,
+    /// cookies always receive the `Secure` attribute.
+    pub tls_enabled: bool,
+    /// Whether to trust `X-Forwarded-Proto: https` for Secure-cookie
+    /// decisions. Derived from `server.trust_forwarded_proto`.
+    pub trust_forwarded_proto: bool,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -222,6 +229,8 @@ impl WebState {
             federation_http: None,
             app_css: Arc::new(APP_CSS_FALLBACK.to_vec()),
             app_css_etag: etag_for_bytes(APP_CSS_FALLBACK),
+            tls_enabled: false,
+            trust_forwarded_proto: false,
         }
     }
 
@@ -353,6 +362,49 @@ impl WebState {
     pub fn with_default_realm(mut self, name: Option<String>) -> Self {
         self.default_realm_name = name;
         self
+    }
+
+    /// Marks whether the server listener is TLS-enabled.
+    ///
+    /// When `true`, all cookies issued by the UI receive the `Secure`
+    /// attribute unconditionally.
+    #[must_use]
+    pub fn with_tls_enabled(mut self, enabled: bool) -> Self {
+        self.tls_enabled = enabled;
+        self
+    }
+
+    /// Configures proxy-forwarded HTTPS detection.
+    ///
+    /// When `true`, the server trusts `X-Forwarded-Proto: https` from
+    /// reverse proxies in `trusted_proxies` and sets the `Secure` cookie
+    /// attribute accordingly.
+    #[must_use]
+    pub fn with_trust_forwarded_proto(mut self, trust: bool) -> Self {
+        self.trust_forwarded_proto = trust;
+        self
+    }
+
+    /// Returns `true` when cookies issued for this request should carry the
+    /// `Secure` attribute.
+    ///
+    /// Checks (in order):
+    /// 1. Direct TLS (`tls_enabled`) — always secure.
+    /// 2. `trust_forwarded_proto` + `X-Forwarded-Proto: https` — secure
+    ///    when the proxy signals HTTPS.
+    #[must_use]
+    pub fn is_secure_request(&self, headers: &axum::http::HeaderMap) -> bool {
+        if self.tls_enabled {
+            return true;
+        }
+        if self.trust_forwarded_proto {
+            return headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.eq_ignore_ascii_case("https"))
+                .unwrap_or(false);
+        }
+        false
     }
 
     /// Looks up the per-realm theme CSS for a specific realm, bypassing
@@ -1183,6 +1235,7 @@ pub fn router(state: WebState) -> Router {
     // axum 0.8 nest does NOT match `/ui/` (trailing slash) — only `/ui`
     // and `/ui/*`. Add a permanent redirect so bookmarks and old links
     // still work.
+    let tls_enabled = shared.tls_enabled;
     Router::new()
         .route(
             "/ui/",
@@ -1200,6 +1253,11 @@ pub fn router(state: WebState) -> Router {
         // same template as the explicit `not_found_authed` calls.
         .fallback(serve_branded_404)
         .with_state(shared)
+        .layer(security::SecurityHeadersLayer::new(
+            security::SecurityConfig {
+                hsts_enabled: tls_enabled,
+            },
+        ))
 }
 
 /// Default 404 handler. Returns the branded error page rather than letting
@@ -1246,6 +1304,9 @@ fn is_not_modified(headers: &HeaderMap, etag: &str) -> bool {
 
 /// HTMX v1.9.12 — pinned, checksum recorded in `assets/CHECKSUMS.txt`.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
+/// Global Alpine.js component registrations and keyboard shortcuts, extracted
+/// from inline `<script>` tags so the CSP can omit `unsafe-inline`.
+const LAYOUT_JS: &[u8] = include_bytes!("assets/layout.js");
 /// Tailwind-generated CSS for the admin UI, embedded at compile time.
 ///
 /// Used as the fallback when `server.assets_dir` is unset or the runtime
@@ -1428,6 +1489,7 @@ async fn serve_static(
     // Other embedded assets are immutable for the life of this binary.
     let embedded: Option<(&[u8], &str)> = match file.as_str() {
         "htmx.min.js" => Some((HTMX_JS, "application/javascript; charset=utf-8")),
+        "layout.js" => Some((LAYOUT_JS, "application/javascript; charset=utf-8")),
         "favicon.svg" => Some((FAVICON_SVG, "image/svg+xml")),
         "img/hearth-wide-web.svg" => Some((HEARTH_WIDE_SVG, "image/svg+xml")),
         "img/hearth-icon.svg" => Some((HEARTH_ICON_SVG, "image/svg+xml")),

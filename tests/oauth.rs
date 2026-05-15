@@ -13,6 +13,13 @@ use hearth::identity::{
 };
 
 /// Helper: creates a real realm with a signing key.
+fn pkce_challenge(verifier: &str) -> String {
+    use data_encoding::BASE64URL_NOPAD;
+    BASE64URL_NOPAD
+        .encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()).as_ref())
+}
+const TEST_PKCE_VERIFIER: &str = "S4gKJfVNgWiFl2PQ8RxXS7E6Mhr9BqyTvUIe3WoA5Zc";
+
 fn create_realm(harness: &common::TestHarness) -> RealmId {
     let realm = harness
         .identity()
@@ -231,7 +238,7 @@ async fn device_authorization_full_flow() {
 
 #[tokio::test]
 async fn refresh_token_rotation_e2e() {
-    use hearth::identity::{AuthorizationRequest, TokenExchangeRequest};
+    use hearth::identity::{AuthorizationRequest, CodeChallengeMethod, TokenExchangeRequest};
 
     let harness = common::TestHarness::embedded()
         .await
@@ -268,8 +275,8 @@ async fn refresh_token_rotation_e2e() {
                 state: "rotation-test".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -284,7 +291,7 @@ async fn refresh_token_rotation_e2e() {
                 client_id: client.client_id().clone(),
                 code: auth_resp.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         )
         .expect("exchange code");
@@ -335,7 +342,9 @@ async fn refresh_token_rotation_e2e() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn conformance_rfc7662_introspection_response() {
-    use hearth::identity::{AuthorizationRequest, TokenExchangeRequest, TokenIntrospectionRequest};
+    use hearth::identity::{
+        AuthorizationRequest, CodeChallengeMethod, TokenExchangeRequest, TokenIntrospectionRequest,
+    };
 
     let harness = common::TestHarness::embedded()
         .await
@@ -370,8 +379,8 @@ async fn conformance_rfc7662_introspection_response() {
                 state: "rfc7662-state".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -386,7 +395,7 @@ async fn conformance_rfc7662_introspection_response() {
                 client_id: client.client_id().clone(),
                 code: auth.code().to_string(),
                 redirect_uri: "https://app.example.com/cb".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         )
         .expect("exchange");
