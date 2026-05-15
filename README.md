@@ -725,4 +725,4 @@ After cloning, run `make setup` to install the repo-managed git hooks, then `mak
 
 ## License
 
-AGPL-3.0-only (declared in [`Cargo.toml`](Cargo.toml)). Commercial licenses are available for organizations that need different terms — see the [Vision doc](docs/vision/VISION.md) for the dual-licensing rationale. A formal `LICENSE` file at the repo root is pending.
+AGPL-3.0-only (see [`LICENSE`](LICENSE)). Commercial licenses are available for organizations that need different terms — see [`NOTICE`](NOTICE) for the dual-licensing overview and [`LICENSE-COMMERCIAL`](LICENSE-COMMERCIAL) for commercial terms.
