@@ -1196,9 +1196,14 @@ fn identity_error_to_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error: audit record failed",
         ),
+        IdentityError::WebhookNotFound => (StatusCode::NOT_FOUND, "webhook not found"),
     };
 
-    (status, Json(serde_json::json!({"error": message})))
+    let error_code = crate::protocol::error_codes::for_identity_error(err);
+    (
+        status,
+        Json(serde_json::json!({"error": message, "error_code": error_code})),
+    )
 }
 
 /// Register an OAuth 2.0 client.
@@ -1597,7 +1602,10 @@ async fn token_exchange(
         }
         _ => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "unsupported_grant_type"})),
+            Json(serde_json::json!({
+                "error": "unsupported_grant_type",
+                "error_code": crate::protocol::error_codes::UNSUPPORTED_GRANT_TYPE,
+            })),
         )
             .into_response(),
     }
@@ -3666,13 +3674,27 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
         Err(e) => return identity_error_to_response(&e).into_response(),
     };
 
+    let realm_id_str = realm_id.as_uuid().to_string();
+    let access_token_str = tokens.access_token().to_string();
+    let quickstart = format!(
+        r#"# 1. Register an OAuth application
+curl -fsS -X POST http://127.0.0.1:8420/clients \
+  -H "Authorization: Bearer {access_token_str}" \
+  -H "X-Realm-ID: {realm_id_str}" \
+  -H "Content-Type: application/json" \
+  -d '{{"client_name":"my-app","redirect_uris":["https://myapp.example.com/callback"]}}'
+
+# 2. Full PKCE flow — see docs/guides/getting-started.md"#
+    );
+
     (
         StatusCode::OK,
         Json(pb::BootstrapResponse {
-            realm_id: realm_id.as_uuid().to_string(),
+            realm_id: realm_id_str,
             user_id: user_id.as_uuid().to_string(),
-            access_token: tokens.access_token().to_string(),
+            access_token: access_token_str,
             refresh_token: tokens.refresh_token().to_string(),
+            quickstart,
         }),
     )
         .into_response()

@@ -11,7 +11,9 @@ use base64::Engine as _;
 use ring::rand::SecureRandom;
 
 use crate::audit::{Actor, AuditAction, AuditContext, AuditEngine, CreateAuditEvent};
-use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, Uri, UserId};
+use crate::core::{
+    ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, Uri, UserId, WebhookId,
+};
 use crate::identity::claims_config::{
     resolve_claims_for_target, ClaimEvaluationContext, ClaimTarget,
 };
@@ -1011,10 +1013,10 @@ impl EmbeddedIdentityEngine {
 
     // ===== Password reset rate limiting helpers =====
 
-    /// Password reset rate limit: 3 requests per email per hour.
+    /// Password reset rate limit: 3 requests per email per 15 minutes.
     const PASSWORD_RESET_MAX_REQUESTS: u32 = 3;
-    /// Password reset rate limit window: 1 hour in microseconds.
-    const PASSWORD_RESET_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
+    /// Password reset rate limit window: 15 minutes in microseconds.
+    const PASSWORD_RESET_RATE_WINDOW_MICROS: i64 = 15 * 60 * 1_000_000;
 
     /// Builds a password reset rate tracker key from realm and email.
     fn password_reset_tracker_key(realm_id: &RealmId, email: &str) -> String {
@@ -5897,6 +5899,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let user_id = UserId::new(uuid);
         self.set_password(realm_id, &user_id, new_password)?;
 
+        // 7. Invalidate all existing sessions — credential change should force re-auth.
+        let page = self.list_sessions_by_user(realm_id, &user_id, None, 1000)?;
+        for session in page.items {
+            if let Err(e) = self.revoke_session(realm_id, session.id()) {
+                tracing::warn!(
+                    session_id = %session.id(),
+                    error = %e,
+                    "reset_password: failed to revoke session"
+                );
+            }
+        }
+
         self.record_audit(
             realm_id,
             None,
@@ -8828,6 +8842,102 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.get_organization(realm_id, &org_id)
     }
 
+    // ===== Webhooks =====
+
+    fn create_webhook(
+        &self,
+        realm_id: &RealmId,
+        req: &crate::identity::CreateWebhookRequest,
+    ) -> Result<crate::identity::Webhook, IdentityError> {
+        use crate::identity::types::Webhook;
+        let id = WebhookId::generate();
+        let now = self.clock.now();
+        let webhook = Webhook::new(
+            id.clone(),
+            realm_id.clone(),
+            req.url.clone(),
+            req.secret.clone(),
+            req.events.clone(),
+            req.enabled,
+            now,
+            now,
+        );
+        let value = serde_json::to_vec(&webhook).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(realm_id, &keys::encode_webhook_id(&id), &value)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+        Ok(webhook)
+    }
+
+    fn get_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<Option<crate::identity::Webhook>, IdentityError> {
+        use crate::identity::types::Webhook;
+        match self
+            .storage
+            .get(realm_id, &keys::encode_webhook_id(webhook_id))
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?
+        {
+            Some(bytes) => {
+                let wh: Webhook =
+                    serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(wh))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_webhooks(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<Vec<crate::identity::Webhook>, IdentityError> {
+        use crate::identity::types::Webhook;
+        let prefix = keys::webhook_id_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match serde_json::from_slice::<Webhook>(&entry.value) {
+                Ok(wh) => out.push(wh),
+                Err(e) => {
+                    tracing::warn!(error = %e, "webhook deserialization failed, skipping");
+                }
+            }
+        }
+        out.sort_by_key(|w| w.created_at);
+        Ok(out)
+    }
+
+    fn delete_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_webhook_id(webhook_id);
+        match self
+            .storage
+            .get(realm_id, &key)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?
+        {
+            None => Err(IdentityError::WebhookNotFound),
+            Some(_) => {
+                self.storage
+                    .delete(realm_id, &key)
+                    .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+                Ok(())
+            }
+        }
+    }
+
     // ===== Periodic cleanup =====
 
     fn sweep_expired(
@@ -11738,8 +11848,9 @@ mod tests {
             /// consistent realm count and clean storage.
             #[test]
             fn create_delete_maintains_consistent_count(
-                names in proptest::collection::vec(valid_realm_name(), 2..8),
+                names in proptest::collection::hash_set(valid_realm_name(), 2..8),
             ) {
+                let names: Vec<String> = names.into_iter().collect();
                 let (_dir, engine, _clock) = setup_engine();
                 let mut created_realms = Vec::new();
 

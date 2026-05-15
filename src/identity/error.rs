@@ -368,6 +368,8 @@ pub enum IdentityError {
         /// The method that was attempted (e.g. `"password"`, `"passkey"`, `"magic_link"`).
         method: &'static str,
     },
+    /// The requested webhook was not found in this realm.
+    WebhookNotFound,
 }
 
 impl fmt::Display for IdentityError {
@@ -529,6 +531,7 @@ impl fmt::Display for IdentityError {
                     "authentication method '{method}' is not permitted by realm policy"
                 )
             }
+            Self::WebhookNotFound => write!(f, "webhook not found"),
         }
     }
 }
@@ -623,7 +626,8 @@ impl std::error::Error for IdentityError {
             | Self::AuditFailure { .. }
             | Self::PasswordExpired
             | Self::PasswordReused
-            | Self::AuthMethodNotAllowed { .. } => None,
+            | Self::AuthMethodNotAllowed { .. }
+            | Self::WebhookNotFound => None,
         }
     }
 }

@@ -179,6 +179,9 @@ message BootstrapResponse {
   string user_id = 2;
   string access_token = 3;
   string refresh_token = 4;
+  // Ready-to-copy shell commands with actual realm_id and token interpolated.
+  // Only populated in --dev mode.
+  string quickstart = 5;
 }
 
 // ---------------------------------------------------------------------------

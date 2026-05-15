@@ -17,7 +17,7 @@ use std::sync::Arc;
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::core::{Clock, RealmId, SystemClock, UserId};
 use hearth::identity::{
-    CleartextPassword, CredentialConfig, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig,
+    CleartextPassword, CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
     IdentityEngine, IdentityError, RateLimitConfig,
 };
 use hearth::rbac::EmbeddedRbacEngine;

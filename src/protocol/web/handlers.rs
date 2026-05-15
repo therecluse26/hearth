@@ -196,6 +196,17 @@ struct LoginTemplate {
     passkey_unavailable_error: &'static str,
     passkey_cancelled_error: &'static str,
     passkey_failed_error: &'static str,
+    /// When `true`, the TOTP step is shown inline instead of email+password.
+    /// Set by the handler when password is correct but MFA is required.
+    show_totp: bool,
+    /// URL the inline TOTP form POSTs to (scope-matched).
+    totp_action: String,
+    /// URL of the MFA recovery code page (scope-matched).
+    recovery_code_url: String,
+    /// Shown alongside error when email is unverified — "Resend verification email".
+    resend_verification_url: Option<String>,
+    /// Shown alongside error when a magic link is expired — "Request a new magic link".
+    new_magic_link_url: Option<String>,
     /// Federation sign-in buttons, one per configured connector.
     federation_buttons: Vec<FederationButton>,
     chrome: bool,
@@ -247,6 +258,11 @@ impl LoginTemplate {
             passkey_unavailable_error: text.passkey_unavailable_error,
             passkey_cancelled_error: text.passkey_cancelled_error,
             passkey_failed_error: text.passkey_failed_error,
+            show_totp: false,
+            totp_action: format!("{action_prefix}/mfa-challenge"),
+            recovery_code_url: format!("{action_prefix}/mfa-recovery"),
+            resend_verification_url: None,
+            new_magic_link_url: None,
             federation_buttons: Vec::new(),
             chrome: false,
             active: "",
@@ -437,6 +453,12 @@ impl MfaEnrollRequiredTemplate {
 #[template(path = "ui/mfa_challenge.html")]
 struct MfaChallengeTemplate {
     error: Option<String>,
+    /// URL the form POSTs to (scope-matched).
+    form_action: String,
+    /// URL of the MFA recovery code page (scope-matched).
+    recovery_code_url: String,
+    /// Carry through the post-login redirect.
+    return_to: Option<String>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -451,9 +473,17 @@ struct MfaChallengeTemplate {
 }
 
 impl MfaChallengeTemplate {
-    fn new(error: Option<String>, product_name: String, logo_url: String) -> Self {
+    fn new(
+        error: Option<String>,
+        product_name: String,
+        logo_url: String,
+        return_to: Option<String>,
+    ) -> Self {
         Self {
             error,
+            form_action: "/ui/mfa-challenge".to_string(),
+            recovery_code_url: "/ui/mfa-recovery".to_string(),
+            return_to,
             chrome: false,
             active: "",
             user_email: None,
@@ -915,11 +945,6 @@ fn login_submit_impl(
     let theme_css = state.theme_css.clone();
     let realm_theme = state.realm_theme_css_for(realm.id());
     let show_register = registration_enabled(&realm);
-    // MFA challenge is cookie-driven — the pending cookie carries the
-    // realm_id, so the URL doesn't need to. Bare URL keeps routing simple
-    // and avoids a scoped mirror route that adds no security value.
-    let mfa_url = "/ui/mfa-challenge".to_string();
-
     // Extract the client IP once, after trusted-proxy stripping, for the
     // per-IP rate limiter. Empty string = no IP available (skipped by engine).
     let client_ip = session_ctx.ip_address.clone().unwrap_or_default();
@@ -1013,7 +1038,23 @@ fn login_submit_impl(
             return_to.as_deref(),
         );
         state.set_current_realm(realm.id().clone());
-        let mut response = Redirect::to(&mfa_url).into_response();
+        // Return the login page with the inline TOTP section visible rather than
+        // redirecting to /ui/mfa-challenge. The pending cookie still grants the
+        // challenge handler proof of password validation.
+        let mut tmpl = LoginTemplate::new(
+            None,
+            return_to.clone(),
+            &action_prefix,
+            show_register,
+            locale,
+            product_name.clone(),
+            state.logo_url.clone(),
+        );
+        tmpl.show_totp = true;
+        tmpl.email = email.to_string();
+        tmpl.theme_css = state.theme_css.clone();
+        tmpl.realm_theme_css.clone_from(&realm_theme);
+        let mut response = render(&tmpl);
         append_cookie(&mut response, &cookie);
         return response;
     } else if realm_requires_mfa {
@@ -1469,12 +1510,16 @@ pub async fn mfa_challenge_form(
     let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
         return Redirect::to("/ui/login").into_response();
     };
-    if parse_mfa_pending_cookie(&state.cookie_secret, raw).is_none() {
+    let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
         return Redirect::to("/ui/login").into_response();
-    }
+    };
 
-    let mut tmpl =
-        MfaChallengeTemplate::new(None, state.product_name.clone(), state.logo_url.clone());
+    let mut tmpl = MfaChallengeTemplate::new(
+        None,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+        pending.return_to,
+    );
     tmpl.theme_css.clone_from(&state.theme_css);
     render(&tmpl)
 }
@@ -1523,8 +1568,14 @@ pub async fn mfa_challenge_submit(
     let product_name = state.product_name.clone();
     let logo_url = state.logo_url.clone();
     let theme_css = state.theme_css.clone();
+    let return_to = pending.return_to.clone();
     let mfa_err = |msg: String, status: StatusCode| {
-        let mut tmpl = MfaChallengeTemplate::new(Some(msg), product_name.clone(), logo_url.clone());
+        let mut tmpl = MfaChallengeTemplate::new(
+            Some(msg),
+            product_name.clone(),
+            logo_url.clone(),
+            return_to.clone(),
+        );
         tmpl.theme_css.clone_from(&theme_css);
         render_status(&tmpl, status)
     };
@@ -1591,6 +1642,7 @@ fn mfa_expired_response(product_name: String, logo_url: String, theme_css: &str)
         Some("Your session has expired. Please sign in again.".to_string()),
         product_name,
         logo_url,
+        None,
     );
     tmpl.theme_css = theme_css.to_string();
     render_status(&tmpl, StatusCode::UNAUTHORIZED)

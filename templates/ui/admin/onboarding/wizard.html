@@ -1,0 +1,173 @@
+{# Step 1 of 4 — Create your first realm.
+   Rust handler vars: product_name, logo_url, theme_css, realm_theme_css, csrf,
+     chrome: bool, active: &str ("onboarding"),
+     error: Option<String>,
+     form_realm_name: String,   -- slug/internal name
+     form_display_name: String, -- human-readable title
+     form_theme: String,        -- selected theme name (default "ember") #}
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Setup{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-xl py-6">
+
+  {# ── Page header ── #}
+  <div class="mb-6">
+    <p class="font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Getting started</p>
+    <h1 class="font-display text-3xl font-medium text-ht-content-primary">Welcome to {{ product_name }}</h1>
+    <p class="mt-2 text-sm text-ht-content-secondary">
+      Set up takes about two minutes. We'll create a realm, an OAuth application, and send a test email.
+    </p>
+  </div>
+
+  {# ── Step progress ── #}
+  {% let step = 1_u8 %}
+  {% include "ui/admin/onboarding/_progress.html" %}
+
+  {# ── Step card ── #}
+  <div class="rounded-lg bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+    <div class="mb-5">
+      <h2 class="text-base font-semibold text-ht-content-primary">Create your first realm</h2>
+      <p class="mt-0.5 text-sm text-ht-content-muted">
+        A realm is a fully isolated tenant — its own users, applications, and signing keys.
+      </p>
+    </div>
+
+    {# Error banner #}
+    {% match error %}
+      {% when Some with (msg) %}
+        <div class="mb-4 rounded-md bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
+      {% when None %}
+    {% endmatch %}
+
+    <form method="post"
+          action="/ui/admin/onboarding/realm"
+          autocomplete="off"
+          class="space-y-5"
+          x-data="{
+            displayName: '{{ form_display_name }}',
+            realmName: '{{ form_realm_name }}',
+            nameTouched: {% if form_realm_name.is_empty() %}false{% else %}true{% endif %}
+          }">
+      {% match csrf %}
+        {% when Some with (token) %}
+          <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+
+      {# Display name #}
+      <div>
+        <label for="display_name" class="block text-sm font-medium text-ht-content-secondary">
+          Display name
+        </label>
+        <input type="text"
+               id="display_name"
+               name="display_name"
+               required
+               autofocus
+               maxlength="80"
+               placeholder="Acme Corp"
+               x-model="displayName"
+               @input="if (!nameTouched) realmName = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63)"
+               value="{{ form_display_name }}"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        <p class="mt-1 text-xs text-ht-content-muted">Shown in the login UI and emails.</p>
+      </div>
+
+      {# Realm name (slug) #}
+      <div>
+        <div class="flex items-center gap-1">
+          <label for="realm_name" class="block text-sm font-medium text-ht-content-secondary">Realm name</label>
+          {# Tooltip — token lifetime #}
+          <span x-data="{ tip: false }" class="relative inline-flex">
+            <button type="button" @mouseenter="tip=true" @mouseleave="tip=false" @focus="tip=true" @blur="tip=false"
+                    class="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-divider bg-ht-surface-elevated text-ht-content-muted transition-colors hover:text-ht-content-secondary"
+                    aria-label="About realm names">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </button>
+            <span x-show="tip" x-cloak role="tooltip"
+                  class="absolute left-6 top-1/2 z-50 w-60 -translate-y-1/2 rounded-md bg-ht-surface-raised p-3 text-xs text-ht-content-secondary shadow ring-1 ring-divider-subtle">
+              Used in API paths and config files. Cannot be changed after creation. Lowercase letters, digits, and hyphens only.
+            </span>
+          </span>
+        </div>
+        <input type="text"
+               id="realm_name"
+               name="realm_name"
+               required
+               minlength="3"
+               maxlength="63"
+               pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]"
+               x-model="realmName"
+               @input="nameTouched = true"
+               value="{{ form_realm_name }}"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 font-mono text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        <p class="mt-1 text-xs text-ht-content-muted">3–63 chars · lowercase, digits, hyphens · auto-fills from display name</p>
+      </div>
+
+      {# Theme picker #}
+      <div>
+        <p class="block text-sm font-medium text-ht-content-secondary">Theme</p>
+        <p class="mt-0.5 text-xs text-ht-content-muted">Choose a visual theme for this realm's login pages.</p>
+        <div class="mt-2 flex flex-wrap gap-2" role="radiogroup" aria-label="Realm theme">
+          <label class="cursor-pointer">
+            <input type="radio" name="theme" value="ember" class="sr-only"
+                   {% if form_theme == "ember" %}checked{% endif %} required>
+            <span class="flex items-center gap-2 rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm font-medium text-ht-content-secondary transition-colors
+                         [input:checked+&]:border-ht-content-brand [input:checked+&]:text-ht-content-primary [input:checked+&]:bg-brand-subtle">
+              <span class="h-3 w-3 rounded-full shrink-0" style="background:#e8743b"></span>
+              Ember
+            </span>
+          </label>
+          <label class="cursor-pointer">
+            <input type="radio" name="theme" value="ocean" class="sr-only"
+                   {% if form_theme == "ocean" %}checked{% endif %} required>
+            <span class="flex items-center gap-2 rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm font-medium text-ht-content-secondary transition-colors
+                         [input:checked+&]:border-ht-content-brand [input:checked+&]:text-ht-content-primary [input:checked+&]:bg-brand-subtle">
+              <span class="h-3 w-3 rounded-full shrink-0" style="background:#3b82f6"></span>
+              Ocean
+            </span>
+          </label>
+          <label class="cursor-pointer">
+            <input type="radio" name="theme" value="midnight" class="sr-only"
+                   {% if form_theme == "midnight" %}checked{% endif %} required>
+            <span class="flex items-center gap-2 rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm font-medium text-ht-content-secondary transition-colors
+                         [input:checked+&]:border-ht-content-brand [input:checked+&]:text-ht-content-primary [input:checked+&]:bg-brand-subtle">
+              <span class="h-3 w-3 rounded-full shrink-0" style="background:#6d68d8"></span>
+              Midnight
+            </span>
+          </label>
+          <label class="cursor-pointer">
+            <input type="radio" name="theme" value="forest" class="sr-only"
+                   {% if form_theme == "forest" %}checked{% endif %} required>
+            <span class="flex items-center gap-2 rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm font-medium text-ht-content-secondary transition-colors
+                         [input:checked+&]:border-ht-content-brand [input:checked+&]:text-ht-content-primary [input:checked+&]:bg-brand-subtle">
+              <span class="h-3 w-3 rounded-full shrink-0" style="background:#22a66a"></span>
+              Forest
+            </span>
+          </label>
+          <label class="cursor-pointer">
+            <input type="radio" name="theme" value="slate" class="sr-only"
+                   {% if form_theme == "slate" %}checked{% endif %} required>
+            <span class="flex items-center gap-2 rounded-sm border border-divider bg-ht-surface-input px-3 py-1.5 text-sm font-medium text-ht-content-secondary transition-colors
+                         [input:checked+&]:border-ht-content-brand [input:checked+&]:text-ht-content-primary [input:checked+&]:bg-brand-subtle">
+              <span class="h-3 w-3 rounded-full shrink-0" style="background:#64748b"></span>
+              Slate
+            </span>
+          </label>
+        </div>
+      </div>
+
+      {# Actions #}
+      <div class="flex items-center gap-4 pt-2">
+        <button type="submit"
+                class="btn-ember rounded px-5 py-2 text-sm font-semibold">
+          Create realm
+          <svg class="ml-1.5 inline-block h-4 w-4 align-[-2px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+        <a href="/ui" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Skip setup</a>
+      </div>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

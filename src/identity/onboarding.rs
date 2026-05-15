@@ -525,6 +525,19 @@ impl OnboardingService {
         &self.identity
     }
 
+    /// Returns `true` when the admin wizard should be shown.
+    ///
+    /// The wizard is shown only when no non-system realms exist yet.
+    /// Once a realm is created (step 1), this returns `false` and the
+    /// landing page redirects to the dashboard instead of re-showing step 1.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the underlying `list_realms` call.
+    pub fn is_wizard_needed(&self) -> Result<bool, IdentityError> {
+        self.is_first_run()
+    }
+
     /// Exposes the underlying data dir (used by tests).
     #[must_use]
     pub fn data_dir(&self) -> &Path {

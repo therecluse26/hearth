@@ -722,6 +722,37 @@ pub fn router(state: WebState) -> Router {
             "/oauth/consent",
             axum::routing::get(oauth_consent::consent_page).post(oauth_consent::consent_submit),
         )
+        // --- First-run onboarding wizard ---
+        .route(
+            "/admin/onboarding",
+            axum::routing::get(admin::admin_onboarding_get),
+        )
+        .route(
+            "/admin/onboarding/realm",
+            axum::routing::post(admin::admin_onboarding_realm_post),
+        )
+        .route(
+            "/admin/onboarding/app",
+            axum::routing::get(admin::admin_onboarding_app_get)
+                .post(admin::admin_onboarding_app_post),
+        )
+        .route(
+            "/admin/onboarding/invite",
+            axum::routing::get(admin::admin_onboarding_invite_get)
+                .post(admin::admin_onboarding_invite_post),
+        )
+        .route(
+            "/admin/onboarding/email",
+            axum::routing::get(admin::admin_onboarding_email_get),
+        )
+        .route(
+            "/admin/onboarding/email/test",
+            axum::routing::post(admin::admin_onboarding_email_test_post),
+        )
+        .route(
+            "/admin/onboarding/complete",
+            axum::routing::get(admin::admin_onboarding_complete_get),
+        )
         .route(
             "/admin/admin-users",
             axum::routing::get(admin::admin_admin_users_list),
@@ -1109,6 +1140,42 @@ pub fn router(state: WebState) -> Router {
         .route(
             "/admin/test-email",
             axum::routing::post(admin::admin_test_email),
+        )
+        // --- Realm-scoped: bulk user actions ---
+        .route(
+            "/admin/realms/{realm}/users/bulk-action",
+            axum::routing::post(admin::admin_users_bulk_action),
+        )
+        .route(
+            "/admin/realms/{realm}/users/import",
+            axum::routing::get(admin::admin_users_import_form)
+                .post(admin::admin_users_import_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/users/import/template.csv",
+            axum::routing::get(admin::admin_users_import_template_csv),
+        )
+        // --- Realm-scoped: webhooks ---
+        .route(
+            "/admin/realms/{realm}/webhooks",
+            axum::routing::get(admin::admin_webhooks_list),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/new",
+            axum::routing::get(admin::admin_webhook_create_form)
+                .post(admin::admin_webhook_create_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/test-ping",
+            axum::routing::post(admin::admin_webhook_test_ping),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/{id}/delete",
+            axum::routing::post(admin::admin_webhook_delete),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/{id}/test",
+            axum::routing::post(admin::admin_webhook_test),
         )
         .route("/static/{*file}", axum::routing::get(serve_static))
         .with_state(Arc::clone(&shared));

@@ -6,6 +6,7 @@
 pub mod admin_auth;
 pub(crate) mod client_info;
 pub mod convert;
+pub mod error_codes;
 pub mod grpc;
 pub mod http;
 pub mod proto;

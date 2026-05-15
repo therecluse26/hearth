@@ -1,0 +1,129 @@
+{# Onboarding completion — summary screen with curl examples.
+   Rust handler vars: product_name, logo_url, theme_css, realm_theme_css, csrf,
+     chrome: bool, active: &str ("onboarding"),
+     realm_name: String,
+     app_name: Option<String>,
+     app_client_id: Option<String>,
+     base_url: String,           -- e.g. "https://auth.example.com"
+     invited_email: Option<String> #}
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Setup complete{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-2xl py-6">
+
+  {# ── Success hero ── #}
+  <div class="mb-8 text-center">
+    <div class="mb-4 flex items-center justify-center">
+      <div class="flex h-16 w-16 items-center justify-center rounded-full bg-success/[0.12]">
+        <svg class="h-8 w-8 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </div>
+    </div>
+    <h1 class="font-display text-3xl font-medium text-ht-content-primary">You're all set</h1>
+    <p class="mt-2 text-sm text-ht-content-secondary">
+      Realm <code class="rounded bg-elevated-half px-1.5 py-0.5 font-mono text-xs">{{ realm_name }}</code> is ready.
+      {% match invited_email %}
+        {% when Some with (email) %}
+          An invitation was sent to <strong class="text-ht-content-primary">{{ email }}</strong>.
+        {% when None %}
+      {% endmatch %}
+    </p>
+  </div>
+
+  {# ── Summary cards ── #}
+  <div class="mb-6 grid gap-4 sm:grid-cols-3">
+
+    <div class="rounded-lg bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+      <p class="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Realm</p>
+      <p class="mt-1 truncate font-mono text-sm font-medium text-ht-content-primary">{{ realm_name }}</p>
+      <a href="/ui/admin/realms/{{ realm_name }}"
+         class="mt-3 inline-flex items-center gap-1 text-xs text-ht-content-brand hover:underline">
+        Open realm
+        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </a>
+    </div>
+
+    {% match app_name %}
+      {% when Some with (name) %}
+      <div class="rounded-lg bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+        <p class="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Application</p>
+        <p class="mt-1 truncate text-sm font-medium text-ht-content-primary">{{ name }}</p>
+        <a href="/ui/admin/realms/{{ realm_name }}/applications"
+           class="mt-3 inline-flex items-center gap-1 text-xs text-ht-content-brand hover:underline">
+          View application
+          <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </a>
+      </div>
+      {% when None %}
+      <div class="rounded-lg border border-dashed border-divider p-4 text-center">
+        <p class="text-xs text-ht-content-muted">No application created</p>
+        <a href="/ui/admin/realms/{{ realm_name }}/applications/new"
+           class="mt-2 inline-flex items-center gap-1 text-xs text-ht-content-brand hover:underline">
+          Add one now →
+        </a>
+      </div>
+    {% endmatch %}
+
+    <div class="rounded-lg bg-ht-surface-elevated p-4 ring-1 ring-divider-subtle">
+      <p class="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">JWKS endpoint</p>
+      <p class="mt-1 truncate font-mono text-xs text-ht-content-secondary">{{ base_url }}/.well-known/jwks.json</p>
+      <a href="{{ base_url }}/.well-known/openid-configuration"
+         target="_blank" rel="noopener"
+         class="mt-3 inline-flex items-center gap-1 text-xs text-ht-content-brand hover:underline">
+        Discovery doc
+        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      </a>
+    </div>
+
+  </div>
+
+  {# ── curl examples ── #}
+  <div class="rounded-lg bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+    <h2 class="mb-4 text-sm font-semibold text-ht-content-primary">Quick start</h2>
+
+    {# Health check #}
+    <div class="mb-4">
+      <p class="mb-1.5 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Health check</p>
+      <pre class="overflow-x-auto rounded-md bg-ht-surface-raised px-4 py-3 font-mono text-xs text-ht-content-secondary ring-1 ring-divider-subtle"><code>curl {{ base_url }}/health</code></pre>
+    </div>
+
+    {# OIDC discovery #}
+    <div class="mb-4">
+      <p class="mb-1.5 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">OIDC discovery</p>
+      <pre class="overflow-x-auto rounded-md bg-ht-surface-raised px-4 py-3 font-mono text-xs text-ht-content-secondary ring-1 ring-divider-subtle"><code>curl {{ base_url }}/realms/{{ realm_name }}/.well-known/openid-configuration</code></pre>
+    </div>
+
+    {% match app_client_id %}
+      {% when Some with (client_id) %}
+      {# Token endpoint (authorization_code) #}
+      <div class="mb-4">
+        <p class="mb-1.5 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Exchange authorization code for tokens</p>
+        <pre class="overflow-x-auto rounded-md bg-ht-surface-raised px-4 py-3 font-mono text-xs text-ht-content-secondary ring-1 ring-divider-subtle"><code>curl -X POST {{ base_url }}/realms/{{ realm_name }}/protocol/openid-connect/token \
+  -d 'grant_type=authorization_code' \
+  -d 'client_id={{ client_id }}' \
+  -d 'code=CODE_FROM_REDIRECT' \
+  -d 'code_verifier=PKCE_VERIFIER' \
+  -d 'redirect_uri=YOUR_REDIRECT_URI'</code></pre>
+      </div>
+      {% when None %}
+    {% endmatch %}
+
+    {# List realm users (admin API) #}
+    <div>
+      <p class="mb-1.5 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">List realm users (admin API)</p>
+      <pre class="overflow-x-auto rounded-md bg-ht-surface-raised px-4 py-3 font-mono text-xs text-ht-content-secondary ring-1 ring-divider-subtle"><code>curl {{ base_url }}/admin/realms/{{ realm_name }}/users \
+  -H 'Authorization: Bearer ADMIN_TOKEN'</code></pre>
+    </div>
+  </div>
+
+  {# ── CTA row ── #}
+  <div class="mt-6 flex flex-wrap items-center gap-3">
+    <a href="/ui/admin/realms/{{ realm_name }}"
+       class="btn-ember rounded px-5 py-2 text-sm font-semibold">
+      Open realm dashboard
+      <svg class="ml-1.5 inline-block h-4 w-4 align-[-2px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+    </a>
+    <a href="/ui" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Go to admin home</a>
+  </div>
+
+</div>
+{% endblock %}

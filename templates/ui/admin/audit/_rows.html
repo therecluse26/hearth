@@ -1,5 +1,21 @@
 {% for row in events %}
-<tr class="border-b border-divider-subtle hover-bg-divider">
+{# Each row manages its own open/closed state independently via Alpine.js.
+   The detail row below is a sibling <tr> rendered immediately after,
+   hidden until the toggle is clicked — no HTMX round-trip needed since
+   the full event payload is embedded in the server render. #}
+<tr class="border-b border-divider-subtle hover-bg-divider"
+    x-data="{ open: false }"
+    :class="open ? 'bg-ht-surface-overlay' : ''">
+  <td class="w-8 px-3 py-3">
+    <button type="button"
+            @click="open = !open"
+            :aria-expanded="open"
+            :aria-label="open ? 'Collapse event detail' : 'Expand event detail'"
+            class="flex h-5 w-5 items-center justify-center rounded text-ht-content-muted transition-transform hover:text-ht-content-secondary focus:outline-none focus:ring-1 focus:ring-ht-content-brand"
+            :class="open ? 'rotate-90' : ''">
+      <svg class="h-3.5 w-3.5 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+  </td>
   <td class="whitespace-nowrap px-4 py-3 text-sm text-ht-content-muted">{{ row.timestamp_display }}</td>
   <td class="px-4 py-3">
     <code class="rounded-sm bg-ht-surface-elevated px-1.5 py-0.5 font-mono text-xs text-ht-content-secondary">{{ row.event.action }}</code>
@@ -12,7 +28,12 @@
     <span class="ml-1">{{ row.resource_display }}</span>
   </td>
 </tr>
+<tr x-show="open" x-cloak class="border-b border-divider-subtle bg-ht-surface-overlay">
+  <td colspan="5" class="px-6 py-4">
+    {% include "ui/admin/audit/_detail.html" %}
+  </td>
+</tr>
 {% endfor %}
 {% if events.is_empty() %}
-<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-ht-content-muted">No audit events found.</td></tr>
+<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-ht-content-muted">No audit events found.</td></tr>
 {% endif %}

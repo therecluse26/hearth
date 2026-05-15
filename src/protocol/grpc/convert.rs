@@ -30,6 +30,7 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::OrganizationNotFound
         | IdentityError::WebAuthnCredentialNotFound
         | IdentityError::ConsentNotFound
+        | IdentityError::WebhookNotFound
         | IdentityError::FederationNotLinked => (Code::NotFound, err.to_string()),
         IdentityError::DuplicateEmail
         | IdentityError::DuplicateRealmName

@@ -330,81 +330,172 @@ hearth migrate keycloak --file <export.json> [--data-dir <path>] [--realm <uuid>
 
 ---
 
-## Integrating: Authorization Code Flow (end-to-end)
+## End-to-End curl Walkthrough
 
-Every step below uses live HTTP endpoints. Multi-tenancy is header-based: every request carries `X-Realm-ID: <realm_uuid>`.
+**Prerequisites:** `docker` + `curl` + `jq` + `openssl`. No Rust toolchain needed.
+Time to first token: under 30 minutes from a clean clone.
 
-### 1. Create a realm
+### 0. Start Hearth
 
 ```bash
-REALM_ID=$(./target/release/hearth realm create | jq -r .realm_id)
+# Docker Compose (recommended for quick start — no compilation required)
+docker compose up --build -d
+
+# Alternative: build from source and run in dev mode
+cargo build --release
+./target/release/hearth serve --dev
 ```
 
-(In dev mode you can skip this and use the realm from `/admin/bootstrap`.)
+Both paths bind to `http://127.0.0.1:8420`. Subsequent steps are identical.
+
+### 1. Bootstrap realm + admin user (dev only)
+
+```bash
+BOOTSTRAP=$(curl -fsS -X POST http://127.0.0.1:8420/admin/bootstrap)
+REALM_ID=$(echo "$BOOTSTRAP" | jq -r .realm_id)
+USER_ID=$(echo "$BOOTSTRAP" | jq -r .user_id)
+ADMIN_TOKEN=$(echo "$BOOTSTRAP" | jq -r .access_token)
+
+echo "Realm: $REALM_ID"
+echo "User:  $USER_ID"
+```
+
+The bootstrap endpoint is available only in `--dev` mode. It creates a realm, an admin user, assigns the `realm.admin` role (which carries the `hearth.admin` permission), and returns short-lived tokens. In production it returns `404 Not Found`.
 
 ### 2. Register a client
 
 ```bash
-./target/release/hearth app create \
-  --server http://127.0.0.1:8420 \
-  --realm_id "$REALM_ID" \
-  --name "my-app" \
-  --redirect_uri "https://myapp.example.com/callback"
-```
-
-Response includes `client_id` and `client_secret`. Save both.
-
-### 3. Start an authorization request
-
-```bash
-curl -fsS -X POST http://127.0.0.1:8420/authorize \
+CLIENT=$(curl -fsS -X POST http://127.0.0.1:8420/clients \
   -H "X-Realm-ID: $REALM_ID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "client_id":            "<client_id>",
-    "redirect_uri":         "https://myapp.example.com/callback",
-    "response_type":        "code",
-    "scope":                "openid profile email",
-    "state":                "<csrf_state>",
-    "code_challenge":       "<S256(verifier)>",
-    "code_challenge_method":"S256",
-    "user_id":              "<authenticated_user_uuid>"
-  }'
+    "client_name":   "my-app",
+    "redirect_uris": ["https://myapp.example.com/callback"]
+  }')
+
+CLIENT_ID=$(echo "$CLIENT" | jq -r .client_id)
+CLIENT_SECRET=$(echo "$CLIENT" | jq -r .client_secret)
+
+echo "Client ID:     $CLIENT_ID"
+echo "Client secret: $CLIENT_SECRET"
 ```
 
-Returns an authorization `code`.
+### 3. Generate PKCE verifier and challenge
 
-### 4. Exchange the code for tokens
+PKCE prevents authorization code interception. Generate a verifier locally; send only the challenge to the server.
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:8420/token \
-  -H "X-Realm-ID: $REALM_ID" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=authorization_code&code=<code>&client_id=<cid>&client_secret=<secret>&redirect_uri=https://myapp.example.com/callback&code_verifier=<verifier>"
+CODE_VERIFIER=$(openssl rand -hex 32)
+CODE_CHALLENGE=$(printf '%s' "$CODE_VERIFIER" \
+  | openssl dgst -sha256 -binary \
+  | openssl base64 -A \
+  | tr '+/' '-_' \
+  | tr -d '=')
+
+echo "Verifier:  $CODE_VERIFIER"
+echo "Challenge: $CODE_CHALLENGE"
 ```
 
-Returns `access_token`, `id_token`, `refresh_token`, `expires_in`, `token_type=Bearer`.
+### 4. Start an authorization request
 
-### 5. Fetch user info
+```bash
+AUTH=$(curl -fsS -X POST http://127.0.0.1:8420/authorize \
+  -H "X-Realm-ID: $REALM_ID" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"client_id\":             \"$CLIENT_ID\",
+    \"redirect_uri\":          \"https://myapp.example.com/callback\",
+    \"response_type\":         \"code\",
+    \"scope\":                 \"openid profile email\",
+    \"state\":                 \"$(openssl rand -hex 16)\",
+    \"code_challenge\":        \"$CODE_CHALLENGE\",
+    \"code_challenge_method\": \"S256\",
+    \"user_id\":               \"$USER_ID\"
+  }")
+
+CODE=$(echo "$AUTH" | jq -r .code)
+echo "Authorization code: $CODE"
+```
+
+### 5. Exchange the code for tokens
+
+```bash
+TOKENS=$(curl -fsS -X POST http://127.0.0.1:8420/token \
+  -H "X-Realm-ID: $REALM_ID" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=authorization_code" \
+  --data-urlencode "code=$CODE" \
+  --data-urlencode "client_id=$CLIENT_ID" \
+  --data-urlencode "client_secret=$CLIENT_SECRET" \
+  --data-urlencode "redirect_uri=https://myapp.example.com/callback" \
+  --data-urlencode "code_verifier=$CODE_VERIFIER")
+
+ACCESS_TOKEN=$(echo "$TOKENS" | jq -r .access_token)
+REFRESH_TOKEN=$(echo "$TOKENS" | jq -r .refresh_token)
+EXPIRES_IN=$(echo "$TOKENS" | jq -r .expires_in)
+
+echo "Access token (first 60 chars): ${ACCESS_TOKEN:0:60}..."
+echo "Expires in: ${EXPIRES_IN}s"
+```
+
+### 6. Inspect the token claims
+
+```bash
+# Decode the JWT payload (base64url → JSON) — no signature verification
+echo "$ACCESS_TOKEN" \
+  | cut -d. -f2 \
+  | tr '_-' '/+' \
+  | awk '{ pad = (4 - length($0) % 4) % 4; for(i=0;i<pad;i++) $0=$0"="; print }' \
+  | base64 -d \
+  | jq .
+```
+
+The decoded payload contains:
+- `sub` — stable user identifier
+- `roles` — array of role names assigned to the user
+- `groups` — array of group slugs
+- `permissions` — effective permission set resolved at issuance time
+- `oid` — organization ID (if the user belongs to an org)
+- `exp`, `iat`, `iss` — standard JWT claims
+
+### 7. Fetch user info (scope-filtered claims)
 
 ```bash
 curl -fsS http://127.0.0.1:8420/userinfo \
   -H "X-Realm-ID: $REALM_ID" \
-  -H "Authorization: Bearer <access_token>"
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  | jq .
 ```
 
-Returns OIDC claims filtered by the granted scopes (`sub` always; `profile` → `name`; `email` → `email`, `email_verified`).
+Returns OIDC claims filtered by the granted scopes: `sub` always; `profile` → `name`; `email` → `email`, `email_verified`.
 
-### 6. Refresh the access token
+### 8. Check live permissions
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:8420/token \
+curl -fsS http://127.0.0.1:8420/v1/me/permissions \
   -H "X-Realm-ID: $REALM_ID" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=refresh_token&refresh_token=<rt>&client_id=<cid>&client_secret=<secret>"
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  | jq .
 ```
 
-Refresh tokens rotate on use. Presenting an already-rotated refresh token triggers theft detection and revokes the grant family.
+Returns the freshly-resolved RBAC claim set from the server — reflects any role or group changes made since the token was issued.
+
+### 9. Refresh the access token
+
+```bash
+NEW_TOKENS=$(curl -fsS -X POST http://127.0.0.1:8420/token \
+  -H "X-Realm-ID: $REALM_ID" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=refresh_token" \
+  --data-urlencode "refresh_token=$REFRESH_TOKEN" \
+  --data-urlencode "client_id=$CLIENT_ID" \
+  --data-urlencode "client_secret=$CLIENT_SECRET")
+
+echo "$NEW_TOKENS" | jq '{access_token: .access_token[:60], expires_in}'
+```
+
+Refresh tokens rotate on use. Presenting an already-rotated refresh token triggers theft detection and revokes the entire grant family, invalidating all tokens issued under it.
 
 ---
 
@@ -672,6 +763,20 @@ Optionally pass `--realm <uuid>` to force a specific Hearth `RealmId` (defaults 
 
 Groups, composite roles, client roles, federated identity providers, and required actions are out of scope for the initial importer. Users affected by unsupported credentials land in the store with no password set and appear in the report's `warnings` list so operators can reconcile.
 
+See the [full Keycloak migration guide](docs/guides/migrating-from-keycloak.md) for a complete conceptual mapping, export procedure, post-migration checklist, and rollback plan.
+
+## Migrating from Auth0
+
+```bash
+hearth migrate auth0 \
+  --file auth0-bundle.json \
+  --data-dir /var/lib/hearth
+```
+
+Auth0 does not provide a single-endpoint export. A reference bundler script at [`examples/auth0-migration-bundler/`](examples/auth0-migration-bundler/) assembles the bundle from the Auth0 Management API. Run `--dry-run` first to validate.
+
+See the [full Auth0 migration guide](docs/guides/migrating-from-auth0.md) for bundle assembly steps, a complete conceptual mapping, and the post-migration checklist.
+
 ---
 
 ## Architecture at a glance
@@ -713,7 +818,7 @@ Groups, composite roles, client roles, federated identity providers, and require
 
 Dependencies flow strictly downward; `identity/` is the only layer allowed to call `rbac/` (to resolve permissions at token-issue time).
 
-**Guides:** [RBAC](docs/guides/rbac.md) · [SCIM Provisioning](docs/guides/scim-provisioning.md) · [Webhooks](docs/guides/webhooks.md) · [Organizations](docs/guides/organizations.md) · [Client-Scoped Roles](docs/guides/client-scoped-roles.md)
+**Guides:** [Getting Started](docs/guides/getting-started.md) · [Concepts](docs/guides/concepts.md) · [RBAC](docs/guides/rbac.md) · [SCIM Provisioning](docs/guides/scim-provisioning.md) · [Webhooks](docs/guides/webhooks.md) · [Organizations](docs/guides/organizations.md) · [Client-Scoped Roles](docs/guides/client-scoped-roles.md) · [Troubleshooting](docs/guides/troubleshooting.md) · [Migrating from Keycloak](docs/guides/migrating-from-keycloak.md) · [Migrating from Auth0](docs/guides/migrating-from-auth0.md)
 
 ---
 

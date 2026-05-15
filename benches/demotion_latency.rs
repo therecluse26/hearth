@@ -74,7 +74,7 @@ fn make_keys(count: usize, prefix: &str) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn sorted_p99(samples: &mut Vec<Duration>) -> Duration {
+fn sorted_p99(samples: &mut [Duration]) -> Duration {
     samples.sort_unstable();
     samples[samples.len() * 99 / 100]
 }
@@ -175,7 +175,11 @@ fn bench_pre_demotion_read(c: &mut Criterion) {
     group.bench_function("pre_demotion_read", |b| {
         let mut i = 0usize;
         b.iter(|| {
-            black_box(engine.get(&realm, black_box(&keys[i % ENTRY_COUNT])).expect("get"));
+            black_box(
+                engine
+                    .get(&realm, black_box(&keys[i % ENTRY_COUNT]))
+                    .expect("get"),
+            );
             i += 1;
         });
     });
@@ -210,7 +214,11 @@ fn bench_post_demotion_read(c: &mut Criterion) {
     group.bench_function("post_demotion_read", |b| {
         let mut i = 0usize;
         b.iter(|| {
-            black_box(engine.get(&realm, black_box(&keys[i % ENTRY_COUNT])).expect("get"));
+            black_box(
+                engine
+                    .get(&realm, black_box(&keys[i % ENTRY_COUNT]))
+                    .expect("get"),
+            );
             i += 1;
         });
     });

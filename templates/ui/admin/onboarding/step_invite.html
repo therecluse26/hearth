@@ -1,0 +1,112 @@
+{# Step 3 of 4 — Invite first admin user.
+   Rust handler vars: product_name, logo_url, theme_css, realm_theme_css, csrf,
+     chrome: bool, active: &str ("onboarding"),
+     realm_name: String,
+     error: Option<String>,
+     form_email: String,
+     form_role: String,          -- default "admin"
+     available_roles: Vec<String> #}
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Setup · Invite{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-xl py-6">
+
+  <div class="mb-6">
+    <p class="font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Getting started · Realm: <span class="text-ht-content-secondary">{{ realm_name }}</span></p>
+    <h1 class="font-display text-3xl font-medium text-ht-content-primary">Invite a team member</h1>
+    <p class="mt-2 text-sm text-ht-content-secondary">
+      They'll receive an email with a magic link to set their password and accept the invitation.
+    </p>
+  </div>
+
+  {% let step = 3_u8 %}
+  {% include "ui/admin/onboarding/_progress.html" %}
+
+  <div class="rounded-lg bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+    <div class="mb-5">
+      <h2 class="text-base font-semibold text-ht-content-primary">User invitation</h2>
+      <p class="mt-0.5 text-sm text-ht-content-muted">You can invite more users later from the Users page.</p>
+    </div>
+
+    {% match error %}
+      {% when Some with (msg) %}
+        <div class="mb-4 rounded-md bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
+      {% when None %}
+    {% endmatch %}
+
+    <form method="post"
+          action="/ui/admin/onboarding/invite"
+          autocomplete="off"
+          class="space-y-5">
+      {% match csrf %}
+        {% when Some with (token) %}
+          <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+
+      {# Email #}
+      <div>
+        <label for="email" class="block text-sm font-medium text-ht-content-secondary">Email address</label>
+        <input type="email"
+               id="email"
+               name="email"
+               required
+               autofocus
+               maxlength="254"
+               placeholder="colleague@example.com"
+               value="{{ form_email }}"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+        <p class="mt-1 text-xs text-ht-content-muted">A setup link will be sent to this address. It expires in 7 days.</p>
+      </div>
+
+      {# Role #}
+      <div>
+        <div class="flex items-center gap-1">
+          <label for="role" class="block text-sm font-medium text-ht-content-secondary">Role</label>
+          <span x-data="{ tip: false }" class="relative inline-flex">
+            <button type="button" @mouseenter="tip=true" @mouseleave="tip=false" @focus="tip=true" @blur="tip=false"
+                    class="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-divider bg-ht-surface-elevated text-ht-content-muted transition-colors hover:text-ht-content-secondary"
+                    aria-label="About roles">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </button>
+            <span x-show="tip" x-cloak role="tooltip"
+                  class="absolute left-6 top-1/2 z-50 w-64 -translate-y-1/2 rounded-md bg-ht-surface-raised p-3 text-xs text-ht-content-secondary shadow ring-1 ring-divider-subtle">
+              Roles bundle permissions into named sets. Admin grants full realm management. Member is a standard authenticated user with no admin access.
+            </span>
+          </span>
+        </div>
+        <select id="role"
+                name="role"
+                class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+          {% for r in available_roles %}
+          <option value="{{ r }}" {% if r.as_str() == form_role %}selected{% endif %}>{{ r }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {# Role descriptions #}
+      <dl class="rounded-sm bg-ht-surface-raised p-4 text-xs">
+        <div class="flex gap-2">
+          <dt class="shrink-0 font-mono font-medium text-ht-content-brand">admin</dt>
+          <dd class="text-ht-content-muted">Full realm management — users, applications, RBAC, audit logs.</dd>
+        </div>
+        <div class="mt-2 flex gap-2">
+          <dt class="shrink-0 font-mono font-medium text-ht-content-secondary">member</dt>
+          <dd class="text-ht-content-muted">Authenticated access only — no admin console access.</dd>
+        </div>
+      </dl>
+
+      {# Actions #}
+      <div class="flex items-center gap-4 pt-2">
+        <button type="submit"
+                class="btn-ember rounded px-5 py-2 text-sm font-semibold">
+          Send invitation
+          <svg class="ml-1.5 inline-block h-4 w-4 align-[-2px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+        <a href="/ui/admin/onboarding/email" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Skip this step</a>
+      </div>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

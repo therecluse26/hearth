@@ -1702,7 +1702,10 @@ pub async fn admin_api_nav_realms(
                 continue;
             }
             if !seen_names.insert(realm.name().to_string()) {
-                tracing::warn!(name = realm.name(), "duplicate realm name in nav listing — skipping extra entry");
+                tracing::warn!(
+                    name = realm.name(),
+                    "duplicate realm name in nav listing — skipping extra entry"
+                );
                 continue;
             }
             items.push(serde_json::json!({

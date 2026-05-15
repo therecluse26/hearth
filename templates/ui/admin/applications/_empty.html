@@ -1,0 +1,26 @@
+{# Empty state for the applications list within a realm.
+   Rust handler vars: realm_name: String #}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-ht-surface-elevated ring-1 ring-divider-subtle">
+    <svg class="h-7 w-7 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+      <line x1="8" y1="21" x2="16" y2="21"/>
+      <line x1="12" y1="17" x2="12" y2="21"/>
+    </svg>
+  </div>
+  <h3 class="font-display text-lg font-medium text-ht-content-primary">No applications yet</h3>
+  <p class="mt-2 max-w-sm text-sm text-ht-content-muted">
+    Applications are OAuth 2.0 clients — web apps, mobile apps, or APIs that authenticate users and services against this realm.
+  </p>
+  <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+    <a href="/ui/admin/realms/{{ realm_name }}/applications/new"
+       class="btn-ember rounded px-4 py-2 text-sm font-semibold">
+      <svg class="mr-1.5 inline-block h-4 w-4 align-[-2px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Register your first application
+    </a>
+    <a href="/ui/admin/settings/editor?section=oidc"
+       class="text-sm text-ht-content-muted hover:text-ht-content-secondary">
+      Configure OIDC defaults →
+    </a>
+  </div>
+</div>

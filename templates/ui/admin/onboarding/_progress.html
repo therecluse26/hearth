@@ -1,0 +1,79 @@
+{# Onboarding wizard progress indicator.
+   Expects: step: u8 (1–4) — the currently active step.
+   Include at the top of each wizard step template. #}
+<div class="mb-8" aria-label="Setup progress" role="list">
+  <ol class="flex items-start">
+
+    {# Step 1 — Realm #}
+    <li class="flex flex-1 flex-col items-center" role="listitem">
+      <div class="flex w-full items-center">
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold
+          {% if step > 1 %}bg-success text-white
+          {% else if step == 1 %}border-2 border-ht-content-brand bg-ht-surface-elevated text-ht-content-brand
+          {% else %}border border-divider bg-ht-surface-elevated text-ht-content-muted{% endif %}">
+          {% if step > 1 %}
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          {% else %}1{% endif %}
+        </div>
+        <div class="mx-2 h-px flex-1
+          {% if step > 1 %}bg-success{% else %}bg-ht-divider/[0.18]{% endif %}"></div>
+      </div>
+      <span class="mt-2 text-xs font-medium
+        {% if step == 1 %}text-ht-content-primary
+        {% else if step > 1 %}text-success
+        {% else %}text-ht-content-muted{% endif %}">Realm</span>
+    </li>
+
+    {# Step 2 — App #}
+    <li class="flex flex-1 flex-col items-center" role="listitem">
+      <div class="flex w-full items-center">
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold
+          {% if step > 2 %}bg-success text-white
+          {% else if step == 2 %}border-2 border-ht-content-brand bg-ht-surface-elevated text-ht-content-brand
+          {% else %}border border-divider bg-ht-surface-elevated text-ht-content-muted{% endif %}">
+          {% if step > 2 %}
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          {% else %}2{% endif %}
+        </div>
+        <div class="mx-2 h-px flex-1
+          {% if step > 2 %}bg-success{% else %}bg-ht-divider/[0.18]{% endif %}"></div>
+      </div>
+      <span class="mt-2 text-xs font-medium
+        {% if step == 2 %}text-ht-content-primary
+        {% else if step > 2 %}text-success
+        {% else %}text-ht-content-muted{% endif %}">Application</span>
+    </li>
+
+    {# Step 3 — Invite #}
+    <li class="flex flex-1 flex-col items-center" role="listitem">
+      <div class="flex w-full items-center">
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold
+          {% if step > 3 %}bg-success text-white
+          {% else if step == 3 %}border-2 border-ht-content-brand bg-ht-surface-elevated text-ht-content-brand
+          {% else %}border border-divider bg-ht-surface-elevated text-ht-content-muted{% endif %}">
+          {% if step > 3 %}
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          {% else %}3{% endif %}
+        </div>
+        <div class="mx-2 h-px flex-1
+          {% if step > 3 %}bg-success{% else %}bg-ht-divider/[0.18]{% endif %}"></div>
+      </div>
+      <span class="mt-2 text-xs font-medium
+        {% if step == 3 %}text-ht-content-primary
+        {% else if step > 3 %}text-success
+        {% else %}text-ht-content-muted{% endif %}">Team</span>
+    </li>
+
+    {# Step 4 — Email (last step, no trailing connector) #}
+    <li class="flex flex-col items-center" role="listitem">
+      <div class="flex h-8 w-8 items-center justify-center rounded-full text-sm font-semibold
+        {% if step == 4 %}border-2 border-ht-content-brand bg-ht-surface-elevated text-ht-content-brand
+        {% else %}border border-divider bg-ht-surface-elevated text-ht-content-muted{% endif %}">
+        4
+      </div>
+      <span class="mt-2 text-xs font-medium
+        {% if step == 4 %}text-ht-content-primary{% else %}text-ht-content-muted{% endif %}">Email</span>
+    </li>
+
+  </ol>
+</div>
