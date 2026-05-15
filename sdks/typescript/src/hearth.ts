@@ -1,5 +1,5 @@
 import { decodeJwt } from "jose";
-import { HearthClient } from "./client.js";
+import { HearthApiClient } from "./client.js";
 import type { MePermissionsResponse } from "./types.js";
 
 /** Options for creating a {@link HearthClient} facade. */
@@ -90,7 +90,7 @@ function arrayContains(claim: unknown, value: string): boolean {
  * JWT returned by `opts.getToken()`.
  */
 export function createHearth(opts: HearthOptions): HearthFacade {
-  const http = new HearthClient({
+  const http = new HearthApiClient({
     baseUrl: opts.baseUrl,
     realmId: opts.realmId,
   });

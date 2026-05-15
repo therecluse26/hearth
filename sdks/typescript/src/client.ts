@@ -22,23 +22,24 @@ export class HearthError extends Error {
   }
 }
 
-/** Configuration for HearthClient. */
-export interface HearthClientConfig {
+/** Configuration for HearthApiClient. */
+export interface HearthApiClientConfig {
   baseUrl: string;
   realmId: string;
 }
 
 /**
- * TypeScript client for the Hearth identity API.
- *
- * Wraps the Hearth HTTP API for auth code flows, token management,
+ * Low-level Hearth HTTP API client for auth code flows, token management,
  * JWKS retrieval, and live RBAC claim resolution.
+ *
+ * @deprecated Use {@link HearthClient} from `hearth-client.js` as the
+ * recommended entry point. This class is kept as a lower-level primitive.
  */
-export class HearthClient {
+export class HearthApiClient {
   private readonly baseUrl: string;
   private readonly realmId: string;
 
-  constructor(config: HearthClientConfig) {
+  constructor(config: HearthApiClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, "");
     this.realmId = config.realmId;
   }
@@ -157,6 +158,7 @@ export class HearthClient {
   admin(accessToken: string): AdminClient {
     return new AdminClient(this.baseUrl, this.realmId, accessToken);
   }
+
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const resp = await fetch(`${this.baseUrl}${path}`, {
