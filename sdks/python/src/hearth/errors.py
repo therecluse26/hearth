@@ -1,94 +1,117 @@
-"""Hearth SDK error hierarchy — spec §5."""
+"""Hearth SDK error hierarchy — spec §5.
 
-from typing import Optional, List
+All 9 required exception types. Messages never include raw tokens or
+secrets (spec §11). Cause-chaining via standard ``raise … from exc``
+exposes the underlying exception as ``__cause__``.
+"""
+from __future__ import annotations
+
+from typing import List, Optional
 
 
 class HearthError(Exception):
-    """Raised when the Hearth API returns an error response."""
+    """Root exception for all Hearth SDK errors.
 
-    def __init__(self, status_code: int, message: str, details: Optional[dict] = None):
-        self.status_code = status_code
+    Subclass for every typed failure path; catch this to handle any
+    Hearth-SDK error in one place.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
         self.message = message
-        self.details = details
-        super().__init__(f"HTTP {status_code}: {message}")
 
 
-class HearthSdkError(Exception):
-    """Base class for all Hearth SDK client-side errors (spec §5)."""
+class ConfigurationError(HearthError):
+    """Client is misconfigured (missing required field, invalid URL, etc.)."""
 
-
-class ConfigurationError(HearthSdkError):
-    """Raised when the client is misconfigured (missing base_url, realm_id, etc.)."""
-
-    def __init__(self, message: str, field: Optional[str] = None):
+    def __init__(self, message: str, field: Optional[str] = None) -> None:
         self.field = field
-        prefix = f"configuration error ({field}): " if field else "configuration error: "
-        super().__init__(prefix + message)
+        prefix = f"[{field}] " if field else ""
+        super().__init__(f"ConfigurationError: {prefix}{message}")
 
 
-class DiscoveryError(HearthSdkError):
-    """Raised when the OIDC discovery document cannot be fetched or parsed."""
+class DiscoveryError(HearthError):
+    """OIDC discovery document unreachable or returned invalid JSON."""
 
-    def __init__(self, message: str, url: Optional[str] = None, cause: Optional[Exception] = None):
+    def __init__(self, message: str, url: Optional[str] = None) -> None:
         self.url = url
-        self.cause = cause
-        super().__init__(message)
+        super().__init__(f"DiscoveryError: {message}")
 
 
-class JWKSFetchError(HearthSdkError):
-    """Raised when the JWKS document cannot be retrieved or parsed."""
+class JwksFetchError(HearthError):
+    """JWKS endpoint unreachable or returned an invalid response."""
 
-    def __init__(self, message: str, url: Optional[str] = None, cause: Optional[Exception] = None):
+    def __init__(self, message: str, url: Optional[str] = None) -> None:
         self.url = url
-        self.cause = cause
-        super().__init__(message)
+        super().__init__(f"JwksFetchError: {message}")
 
 
-class TokenExpiredError(HearthSdkError):
-    """Raised when a token's exp claim is in the past."""
-
-    def __init__(self, expired_at: int, message: Optional[str] = None):
-        self.expired_at = expired_at
-        super().__init__(message or f"Token expired at unix={expired_at}")
+# Uppercase alias kept for spec conformance checklist.
+JWKSFetchError = JwksFetchError
 
 
-class TokenNotYetValidError(HearthSdkError):
-    """Raised when a token's nbf claim is in the future."""
+class TokenVerificationError(HearthError):
+    """Token signature invalid, JWT malformed, or algorithm not supported."""
 
-    def __init__(self, not_before: int, message: Optional[str] = None):
-        self.not_before = not_before
-        super().__init__(message or f"Token not yet valid until unix={not_before}")
-
-
-class TokenInvalidError(HearthSdkError):
-    """Raised when a token fails structural or signature validation."""
-
-    def __init__(self, reason: str):
+    def __init__(self, reason: str) -> None:
         self.reason = reason
-        super().__init__("Token invalid: " + reason)
+        super().__init__(f"TokenVerificationError: {reason}")
 
 
-class TokenIssuerError(HearthSdkError):
-    """Raised when the token's iss claim does not match the expected issuer."""
+# Alias used internally and by pre-existing callers.
+TokenInvalidError = TokenVerificationError
 
-    def __init__(self, expected: str, actual: str):
+
+class TokenExpiredError(HearthError):
+    """Token's ``exp`` claim is in the past (beyond clock-skew tolerance)."""
+
+    def __init__(self, expired_at: int, message: Optional[str] = None) -> None:
+        self.expired_at = expired_at
+        super().__init__(message or "TokenExpiredError: token has expired")
+
+
+class TokenClaimsError(HearthError):
+    """A required JWT claim (``iss``, ``aud``, ``nbf``) failed validation."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"TokenClaimsError: {message}")
+
+
+class TokenIssuerError(TokenClaimsError):
+    """``iss`` claim does not match the configured issuer."""
+
+    def __init__(self, expected: str, actual: str) -> None:
         self.expected = expected
         self.actual = actual
-        super().__init__(f'Token issuer mismatch: expected "{expected}", got "{actual}"')
+        super().__init__("issuer mismatch")
 
 
-class TokenAudienceError(HearthSdkError):
-    """Raised when the token's aud claim does not include the expected audience."""
+class TokenAudienceError(TokenClaimsError):
+    """``aud`` claim does not contain the expected audience."""
 
-    def __init__(self, expected: str, actual: List[str]):
+    def __init__(self, expected: str, actual: List[str]) -> None:
         self.expected = expected
         self.actual = actual
-        super().__init__(f'Token audience mismatch: expected "{expected}", got {actual}')
+        super().__init__("audience mismatch")
 
 
-class IntrospectionError(HearthSdkError):
-    """Raised when a token introspection request fails or returns inactive."""
+class TokenNotYetValidError(TokenClaimsError):
+    """``nbf`` claim is in the future (beyond clock-skew tolerance)."""
 
-    def __init__(self, message: str, cause: Optional[Exception] = None):
-        self.cause = cause
-        super().__init__(message)
+    def __init__(self, not_before: int) -> None:
+        self.not_before = not_before
+        super().__init__("token not yet valid")
+
+
+class IntrospectionError(HearthError):
+    """Introspection endpoint unreachable or returned an error."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"IntrospectionError: {message}")
+
+
+class MiddlewareError(HearthError):
+    """An error occurred within the Hearth HTTP middleware."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"MiddlewareError: {message}")

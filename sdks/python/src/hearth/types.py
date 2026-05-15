@@ -1,8 +1,9 @@
 """Hearth API request and response types."""
+from __future__ import annotations
 
-from typing import Optional, List, Any, Generic, TypeVar
+from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 T = TypeVar("T")
 
@@ -110,13 +111,85 @@ class RegisterClientRequest(BaseModel):
 
 
 class Jwk(BaseModel):
+    """JSON Web Key — supports both RSA and EC key types."""
+
+    model_config = ConfigDict(extra="allow")
+
     kty: str
-    crv: str
-    x: str
-    kid: str
-    use: str
-    alg: str
+    kid: Optional[str] = None
+    use: Optional[str] = None
+    alg: Optional[str] = None
+    # EC fields
+    crv: Optional[str] = None
+    x: Optional[str] = None
+    y: Optional[str] = None
+    # RSA fields
+    n: Optional[str] = None
+    e: Optional[str] = None
 
 
 class JwksDocument(BaseModel):
     keys: List[Jwk]
+
+
+# ---------------------------------------------------------------------------
+# §3 Token Introspection (RFC 7662)
+# ---------------------------------------------------------------------------
+
+_INTROSPECTION_STANDARD_FIELDS = frozenset(
+    {"active", "sub", "iss", "aud", "exp", "iat", "scope", "client_id",
+     "username", "token_type", "jti"}
+)
+
+
+class IntrospectionResult(BaseModel):
+    """RFC 7662 token introspection response (spec §3).
+
+    Non-standard claims are collected in ``extra``.
+    Results must never be cached (RFC 7662 §2.1).
+    """
+
+    active: bool
+    sub: Optional[str] = None
+    iss: Optional[str] = None
+    aud: Optional[Union[str, List[str]]] = None
+    exp: Optional[int] = None
+    iat: Optional[int] = None
+    scope: Optional[str] = None
+    client_id: Optional[str] = None
+    extra: Dict[str, Any] = {}
+
+    @classmethod
+    def _from_dict(cls, data: Dict[str, Any]) -> "IntrospectionResult":
+        extra = {k: v for k, v in data.items() if k not in _INTROSPECTION_STANDARD_FIELDS}
+        return cls(
+            active=bool(data.get("active", False)),
+            sub=data.get("sub"),
+            iss=data.get("iss"),
+            aud=data.get("aud"),
+            exp=data.get("exp"),
+            iat=data.get("iat"),
+            scope=data.get("scope"),
+            client_id=data.get("client_id"),
+            extra=extra,
+        )
+
+    def to_verified_token(self) -> "VerifiedToken":
+        """Construct a :class:`VerifiedToken` from introspection claims."""
+        from .verified_token import VerifiedToken
+
+        payload: Dict[str, Any] = {}
+        if self.sub is not None:
+            payload["sub"] = self.sub
+        if self.iss is not None:
+            payload["iss"] = self.iss
+        if self.aud is not None:
+            payload["aud"] = self.aud
+        if self.exp is not None:
+            payload["exp"] = self.exp
+        if self.iat is not None:
+            payload["iat"] = self.iat
+        if self.scope is not None:
+            payload["scope"] = self.scope
+        payload.update(self.extra)
+        return VerifiedToken(payload)

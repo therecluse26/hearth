@@ -1,25 +1,29 @@
 """Hearth identity platform Python SDK.
 
-Provides HearthClient (auth flows, RBAC predicates), AdminClient
-(user/realm CRUD), and all request/response types.
+Provides :class:`HearthClient` (token verification, introspection, OAuth
+flows), :class:`AdminClient` (user/realm CRUD), typed claims via
+:class:`VerifiedToken`, and all required error types.
 """
 
 from .client import HearthClient
 from .admin import AdminClient
+from .verified_token import VerifiedToken
 from .errors import (
     HearthError,
-    HearthSdkError,
     ConfigurationError,
     DiscoveryError,
-    JWKSFetchError,
+    JwksFetchError,
+    JWKSFetchError,         # uppercase alias for spec conformance checklist
+    TokenVerificationError,
+    TokenInvalidError,      # alias for TokenVerificationError
     TokenExpiredError,
-    TokenNotYetValidError,
-    TokenInvalidError,
+    TokenClaimsError,
     TokenIssuerError,
     TokenAudienceError,
+    TokenNotYetValidError,
     IntrospectionError,
+    MiddlewareError,
 )
-from .claims import Claims
 from .types import (
     BootstrapResponse,
     User,
@@ -36,23 +40,31 @@ from .types import (
     OAuthClient,
     RegisterClientRequest,
     JwksDocument,
+    IntrospectionResult,
 )
 
 __all__ = [
+    # Clients
     "HearthClient",
     "AdminClient",
+    # Claims
+    "VerifiedToken",
+    # Errors — 9 spec types
     "HearthError",
-    "HearthSdkError",
     "ConfigurationError",
     "DiscoveryError",
+    "JwksFetchError",
     "JWKSFetchError",
-    "TokenExpiredError",
-    "TokenNotYetValidError",
+    "TokenVerificationError",
     "TokenInvalidError",
+    "TokenExpiredError",
+    "TokenClaimsError",
     "TokenIssuerError",
     "TokenAudienceError",
+    "TokenNotYetValidError",
     "IntrospectionError",
-    "Claims",
+    "MiddlewareError",
+    # Types
     "BootstrapResponse",
     "User",
     "CreateUserRequest",
@@ -68,4 +80,5 @@ __all__ = [
     "OAuthClient",
     "RegisterClientRequest",
     "JwksDocument",
+    "IntrospectionResult",
 ]
