@@ -7,6 +7,15 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ## [Unreleased]
 
+### Security
+
+- **Mutating operations on Suspended/Archived realms are now rejected** — `create_user`,
+  `update_user`, `create_session`, `authorize` (OAuth 2.0 code issuance), `create_organization`,
+  `create_invitation`, and `accept_invitation` now return a `RealmSuspended` error when the
+  target realm's status is `Suspended` or `Archived`. Previously only `register_user` enforced
+  this gate; all other write paths were fully open, allowing data to be written to or new sessions
+  created in a decommissioned realm (HEA-552).
+
 ### Fixed
 
 - **`onboarding.base_url` fallback is now an absolute URL** — when `onboarding.base_url` is not

@@ -1961,6 +1961,19 @@ impl EmbeddedIdentityEngine {
         }
     }
 
+    /// Enforce that a realm exists and is `Active`.
+    ///
+    /// Call this at the top of every mutating operation. Both `Suspended` and
+    /// `Archived` realms return `RealmSuspended`; a missing realm returns
+    /// `RealmNotFound`.
+    fn require_active_realm(&self, realm_id: &RealmId) -> Result<(), IdentityError> {
+        let realm = self.get_realm(realm_id)?.ok_or(IdentityError::RealmNotFound)?;
+        if realm.status() != RealmStatus::Active {
+            return Err(IdentityError::RealmSuspended);
+        }
+        Ok(())
+    }
+
     fn build_discovery_document(&self, issuer: &str) -> OidcDiscoveryDocument {
         OidcDiscoveryDocument {
             issuer: issuer.to_string(),
@@ -2753,6 +2766,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 operation: "create_user",
             });
         }
+        self.require_active_realm(realm_id)?;
         self.create_user_with_status(realm_id, request, self.config.default_status)
     }
 
@@ -2830,6 +2844,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         request: &UpdateUserRequest,
     ) -> Result<User, IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // 1. Load existing user
         let mut user = self
             .get_user(realm_id, user_id)?
@@ -3339,6 +3355,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         context: &SessionContext,
     ) -> Result<Session, IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // Enforce mfa_required policy unless the session originates from a
         // passkey ceremony (passkeys are inherently multi-factor).
         if !context.satisfies_mfa_via_passkey {
@@ -4088,6 +4106,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 reason: "state parameter is required for CSRF protection".to_string(),
             });
         }
+
+        // 2a. Realm lifecycle guard — suspended/archived realms must not issue codes.
+        self.require_active_realm(realm_id)?;
 
         // 2b. Nonce replay protection (when enforcement is enabled)
         if self.config.oidc.enforce_nonces {
@@ -7506,6 +7527,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 operation: "create_organization",
             });
         }
+        self.require_active_realm(realm_id)?;
         let slug = validation::validate_slug(&request.slug)?;
         let name = validation::validate_display_name(&request.name)?;
 
@@ -8162,6 +8184,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &CreateInvitationRequest,
     ) -> Result<(OrganizationInvitation, String), IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // Verify org exists and is active
         let org = self
             .get_organization(realm_id, &request.org_id)?
@@ -8262,6 +8286,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         token: &str,
     ) -> Result<OrganizationMembership, IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // Hash the token
         let token_hash = {
             use ring::digest;
