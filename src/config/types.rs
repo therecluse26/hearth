@@ -686,6 +686,10 @@ pub struct TokenYamlConfig {
     /// Default: 7 days.
     #[serde(default)]
     pub refresh_token_ttl: Option<String>,
+    /// Grace period during which the old signing key remains in JWKS after
+    /// rotation (e.g. `"24h"`). Default: 24 hours.
+    #[serde(default)]
+    pub signing_key_rotation_grace_period: Option<String>,
 }
 
 // ===== Auth & Realm YAML config =====
@@ -1036,6 +1040,56 @@ pub struct GroupYamlConfig {
     pub description: Option<String>,
 }
 
+/// Conflict-handling policy when migrating users between realms.
+///
+/// Determines what happens when a user with the same email already exists
+/// in the destination realm.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MigrateConflictPolicy {
+    /// Collect all conflicts and fail startup with the full list. Default.
+    #[default]
+    Error,
+    /// Leave conflicting users in the source realm as orphans and continue.
+    Skip,
+}
+
+/// Options for the `migrate:` sub-block inside a destination realm's YAML.
+///
+/// Controls which data categories are included in the migration and how
+/// conflicts are handled. All fields have production-safe defaults.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RealmMigrateYaml {
+    /// Whether to migrate user records and credentials. Default: `true`.
+    #[serde(default = "default_true")]
+    pub users: bool,
+    /// Whether to migrate org memberships for migrated users. Default: `true`.
+    #[serde(default = "default_true")]
+    pub orgs: bool,
+    /// Whether to migrate OAuth applications (clients). Default: `false`.
+    #[serde(default)]
+    pub applications: bool,
+    /// What to do when a user with the same email already exists in the
+    /// destination realm. Default: `error` (fail startup with conflict list).
+    #[serde(default)]
+    pub on_conflict: MigrateConflictPolicy,
+}
+
+impl Default for RealmMigrateYaml {
+    fn default() -> Self {
+        Self {
+            users: true,
+            orgs: true,
+            applications: false,
+            on_conflict: MigrateConflictPolicy::default(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Per-realm YAML configuration block.
 ///
 /// Fields are optional — `None` inherits from global `auth:` defaults.
@@ -1100,6 +1154,35 @@ pub struct RealmYamlConfig {
     /// Optional groups declared for this realm.
     #[serde(default)]
     pub groups: Option<Vec<GroupYamlConfig>>,
+    /// When set, declares that this realm is the migration destination for the
+    /// named archived realm slug.  The orphan-detection pass treats the named
+    /// slug as resolved and suppresses its warning banner.  If `copy_from` is
+    /// used instead, the source realm is NOT archived after migration.
+    #[serde(default)]
+    pub migrate_from: Option<String>,
+    /// Like `migrate_from` but with copy semantics: the source realm is left
+    /// intact after users are copied to this destination.
+    #[serde(default)]
+    pub copy_from: Option<String>,
+    /// Fine-grained migration options. Only meaningful when `migrate_from` or
+    /// `copy_from` is set. Defaults apply when the block is absent.
+    #[serde(default)]
+    pub migrate: Option<RealmMigrateYaml>,
+    /// When `true` and the realm slug is re-added to the `realms:` map, the
+    /// reconciler skips unarchiving it and the orphan-detection pass treats
+    /// the slug as intentionally discarded (suppresses the warning banner).
+    /// Has no effect on active realms.
+    #[serde(default)]
+    pub archive_drop: Option<bool>,
+    /// One-shot signing key rotation trigger.
+    ///
+    /// When `true`, the server generates a new Ed25519 key for this realm,
+    /// serves both the old and new keys in JWKS during the grace period, and
+    /// records the flag as consumed so the next restart does not re-rotate.
+    /// Operators may also call `POST /admin/realms/{id}/rotate-signing-key`
+    /// instead of setting this flag.
+    #[serde(default)]
+    pub rotate_signing_key: Option<bool>,
 }
 
 /// YAML for `realms.{name}.scim.*`.
@@ -1537,6 +1620,8 @@ impl RealmYamlConfig {
                     permissions: role_permissions,
                     parent_roles,
                     scope_kind,
+                    status: crate::rbac::RoleStatus::Active,
+                    yaml_managed: true,
                     created_at: crate::core::Timestamp::from_micros(0),
                     updated_at: crate::core::Timestamp::from_micros(0),
                 }

@@ -20,6 +20,23 @@ pub enum ClientTrustLevel {
     ThirdParty,
 }
 
+/// The lifecycle status of an OAuth 2.0 application client.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationStatus {
+    /// Client is active; all OAuth flows are permitted.
+    #[default]
+    Active,
+    /// Client was removed from YAML config and soft-deleted.
+    ///
+    /// New OAuth flows are rejected. The client record is preserved so that
+    /// existing sessions and tokens can be audited. Restored to `Active` if
+    /// the application re-appears in YAML. Permanently deleted only when the
+    /// admin chooses "Delete permanently" in the UI or via the API.
+    Archived,
+}
+
 /// Configuration for OIDC / OAuth 2.0 operations.
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
@@ -149,6 +166,10 @@ pub struct OAuthClient {
     /// Whether a realm-level consent covers all org contexts.
     #[serde(default)]
     consent_spans_orgs: bool,
+    /// Lifecycle status. Defaults to `Active` for backward-compatible deserialization
+    /// of records written before the status field was introduced.
+    #[serde(default)]
+    status: ApplicationStatus,
     /// OIDC back-channel logout URI (OIDC BCL §2.5).
     ///
     /// When set, Hearth delivers a signed logout token to this URI after
@@ -194,6 +215,7 @@ impl OAuthClient {
             trust_level: ClientTrustLevel::FirstParty,
             declared_scopes: Vec::new(),
             consent_spans_orgs: false,
+            status: ApplicationStatus::Active,
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             post_logout_redirect_uris: Vec::new(),
@@ -222,6 +244,7 @@ impl OAuthClient {
             trust_level: ClientTrustLevel::FirstParty,
             declared_scopes: Vec::new(),
             consent_spans_orgs: false,
+            status: ApplicationStatus::Active,
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             post_logout_redirect_uris: Vec::new(),
@@ -374,6 +397,16 @@ impl OAuthClient {
         self.post_logout_redirect_uris = uris;
     }
 
+    /// Returns the client's lifecycle status.
+    pub fn status(&self) -> ApplicationStatus {
+        self.status
+    }
+
+    /// Sets the lifecycle status. Used internally during archive/restore operations.
+    pub(crate) fn set_status(&mut self, status: ApplicationStatus) {
+        self.status = status;
+    }
+
     /// Returns `true` if this client was provisioned from YAML configuration.
     ///
     /// YAML-managed clients have deterministic UUID v5 identifiers (derived
@@ -415,6 +448,8 @@ pub struct UpdateClientRequest {
     pub frontchannel_logout_uri: Option<Option<String>>,
     /// Allowed post-logout redirect URIs. Replaces the existing list.
     pub post_logout_redirect_uris: Option<Vec<String>>,
+    /// New lifecycle status. Used to archive or restore a client.
+    pub status: Option<ApplicationStatus>,
 }
 
 // ===== RP-Initiated Logout =====

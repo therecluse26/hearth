@@ -36,6 +36,22 @@ pub enum StorageError {
         /// Description of what went wrong. MUST NOT contain key material.
         reason: String,
     },
+    /// The WAL file uses a format version newer than this binary supports.
+    ///
+    /// The file was likely written by a newer version of Hearth. Downgrading
+    /// is not supported — upgrade the binary or restore from backup.
+    UnsupportedWalVersion {
+        /// The version number found in the file.
+        found: u16,
+    },
+    /// Realm KEKs cannot be decrypted with the current (or previous) host key.
+    ///
+    /// Startup is blocked. The operator must either set `HEARTH_PREVIOUS_MASTER_KEY`
+    /// to the old value or restore from backup.
+    HostKeyMismatch {
+        /// Display names of the realms whose KEKs could not be decrypted.
+        affected_realms: Vec<String>,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -58,6 +74,21 @@ impl fmt::Display for StorageError {
             Self::Crypto { reason } => {
                 write!(f, "cryptographic operation failed: {reason}")
             }
+            Self::UnsupportedWalVersion { found } => {
+                write!(
+                    f,
+                    "WAL format version {found} is not supported by this binary; \
+                     upgrade Hearth or restore from backup"
+                )
+            }
+            Self::HostKeyMismatch { affected_realms } => {
+                let realms = affected_realms.join(", ");
+                write!(
+                    f,
+                    "realm KEKs could not be decrypted with the current HEARTH_MASTER_KEY; \
+                     affected realms: {realms}"
+                )
+            }
         }
     }
 }
@@ -71,7 +102,9 @@ impl std::error::Error for StorageError {
             | Self::Corrupted { .. }
             | Self::InvalidSstFormat { .. }
             | Self::HotTierFull
-            | Self::Crypto { .. } => None,
+            | Self::Crypto { .. }
+            | Self::UnsupportedWalVersion { .. }
+            | Self::HostKeyMismatch { .. } => None,
         }
     }
 }

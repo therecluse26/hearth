@@ -67,7 +67,10 @@ fn org_to_proto(o: &domain::Organization) -> pb::Organization {
         display_name: o.name().to_string(),
         status: match o.status() {
             domain::OrganizationStatus::Active => pb::OrganizationStatus::Active as i32,
-            domain::OrganizationStatus::Suspended => pb::OrganizationStatus::Suspended as i32,
+            // Archived behaves like Suspended on the wire (no proto value yet).
+            domain::OrganizationStatus::Suspended | domain::OrganizationStatus::Archived => {
+                pb::OrganizationStatus::Suspended as i32
+            }
         },
         created_at: o.created_at().as_micros(),
         updated_at: o.updated_at().as_micros(),

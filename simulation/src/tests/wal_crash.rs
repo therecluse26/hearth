@@ -13,6 +13,7 @@ use hearth::core::{RealmId, Timestamp};
 use hearth::storage::encryption;
 use hearth::storage::error::StorageError;
 use hearth::storage::fs::RealFs;
+use hearth::storage::migrations::WAL_VERSION_HEADER_SIZE;
 use hearth::storage::wal::{SyncMode, Wal, WalConfig, WalEntry, WalOperation};
 
 /// Deterministic test KEK for WAL crash tests.
@@ -346,8 +347,8 @@ fn simulation_aead_detects_tampered_ciphertext_with_valid_crc() {
     // structural check passes. This isolates the AEAD tag check.
     {
         let mut data = std::fs::read(&wal_path).expect("read wal");
-        let header_size = encryption::ENCRYPTION_HEADER_SIZE;
-        // Record 0 starts at header_size: [u32 len][ciphertext][u32 crc]
+        // Record 0 starts after the version header + encryption header.
+        let header_size = WAL_VERSION_HEADER_SIZE + encryption::ENCRYPTION_HEADER_SIZE;
         let len_off = header_size;
         let ct_off = len_off + 4;
         let len = u32::from_le_bytes(data[len_off..len_off + 4].try_into().unwrap()) as usize;

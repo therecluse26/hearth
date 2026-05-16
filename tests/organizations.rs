@@ -5,7 +5,7 @@
 
 mod common;
 
-use hearth::core::OrganizationId;
+use hearth::core::{OrganizationId, UserId};
 use hearth::identity::{
     CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest,
     IdentityEngine, OrganizationConfig, OrganizationRole, OrganizationStatus,
@@ -1027,4 +1027,149 @@ async fn slug_injection_rejected() {
             "slug '{slug}' should be rejected but was accepted"
         );
     }
+}
+
+// ===== HEA-537: Soft-delete + restore cycle tests =====
+
+/// Archiving an org blocks add_member; restoring it allows add_member again.
+#[tokio::test]
+async fn org_archived_blocks_and_restore_allows_add_member() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+    let realm_id = setup_realm(identity);
+
+    let org = identity
+        .create_organization(
+            &realm_id,
+            &CreateOrganizationRequest {
+                name: "Soft Delete Test Org".to_string(),
+                slug: "soft-delete-org".to_string(),
+                description: None,
+                config: None,
+            },
+        )
+        .expect("create org");
+
+    let user_id = UserId::generate();
+
+    // Archive the org.
+    identity
+        .update_organization(
+            &realm_id,
+            org.id(),
+            &UpdateOrganizationRequest {
+                status: Some(OrganizationStatus::Archived),
+                ..Default::default()
+            },
+        )
+        .expect("archive org");
+
+    // add_member must be rejected while archived.
+    let err = identity
+        .add_member(&realm_id, org.id(), &user_id, OrganizationRole::Member)
+        .expect_err("add_member on archived org must fail");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::OrganizationSuspended),
+        "expected OrganizationSuspended, got {err}"
+    );
+
+    // Restore to Active.
+    identity
+        .update_organization(
+            &realm_id,
+            org.id(),
+            &UpdateOrganizationRequest {
+                status: Some(OrganizationStatus::Active),
+                ..Default::default()
+            },
+        )
+        .expect("restore org");
+
+    // Now the op is blocked only because the user doesn't exist — not because
+    // the org is archived.
+    let err2 = identity
+        .add_member(&realm_id, org.id(), &user_id, OrganizationRole::Member)
+        .expect_err("user doesn't exist");
+    assert!(
+        !matches!(err2, hearth::identity::IdentityError::OrganizationSuspended),
+        "restored org should no longer reject with OrganizationSuspended"
+    );
+}
+
+/// Archiving an org blocks create_invitation; restoring it allows invitations again.
+#[tokio::test]
+async fn org_archived_blocks_and_restore_allows_invitation() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+    let realm_id = setup_realm(identity);
+
+    let org = identity
+        .create_organization(
+            &realm_id,
+            &CreateOrganizationRequest {
+                name: "Invite Test Org".to_string(),
+                slug: "invite-test-org".to_string(),
+                description: None,
+                config: None,
+            },
+        )
+        .expect("create org");
+
+    identity
+        .update_organization(
+            &realm_id,
+            org.id(),
+            &UpdateOrganizationRequest {
+                status: Some(OrganizationStatus::Archived),
+                ..Default::default()
+            },
+        )
+        .expect("archive org");
+
+    let admin_id = UserId::generate();
+    let err = identity
+        .create_invitation(
+            &realm_id,
+            &CreateInvitationRequest {
+                org_id: org.id().clone(),
+                email: "new@example.com".to_string(),
+                role: OrganizationRole::Member,
+                invited_by: admin_id.clone(),
+            },
+        )
+        .expect_err("invitation on archived org must fail");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::OrganizationSuspended),
+        "expected OrganizationSuspended, got {err}"
+    );
+
+    // Restore and verify the error is gone.
+    identity
+        .update_organization(
+            &realm_id,
+            org.id(),
+            &UpdateOrganizationRequest {
+                status: Some(OrganizationStatus::Active),
+                ..Default::default()
+            },
+        )
+        .expect("restore org");
+
+    // Invitation should now proceed (or fail for a different reason).
+    let result = identity.create_invitation(
+        &realm_id,
+        &CreateInvitationRequest {
+            org_id: org.id().clone(),
+            email: "new@example.com".to_string(),
+            role: OrganizationRole::Member,
+            invited_by: admin_id,
+        },
+    );
+    assert!(
+        !matches!(
+            result,
+            Err(hearth::identity::IdentityError::OrganizationSuspended)
+        ),
+        "restored org must not return OrganizationSuspended"
+    );
 }

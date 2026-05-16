@@ -337,6 +337,8 @@ struct DashboardTemplate {
     theme_css: String,
     realm_theme_css: Option<String>,
     config_warnings: Vec<crate::config::EnvVarWarning>,
+    /// Orphaned realms detected at startup (archived + has users + no resolution).
+    orphaned_realms: Vec<crate::identity::reconcile::OrphanRecord>,
     /// Entity counts for the admin stats row.
     user_count: usize,
     realm_count: usize,
@@ -1927,6 +1929,11 @@ pub async fn dashboard(
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
         config_warnings,
+        orphaned_realms: if is_admin {
+            state.orphaned_realms.clone()
+        } else {
+            Vec::new()
+        },
         user_count,
         realm_count,
         app_count,

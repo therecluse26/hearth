@@ -35,7 +35,7 @@ pub use engine::{
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
 pub use oidc::{
-    fuzz_parse_token_exchange, AuthorizationRequest, AuthorizationResponse,
+    fuzz_parse_token_exchange, ApplicationStatus, AuthorizationRequest, AuthorizationResponse,
     ClientCredentialsRequest, ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod,
     DeviceAuthorizationRequest, DeviceAuthorizationResponse, DeviceCodeStatus,
     IntrospectionResponse, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
@@ -110,8 +110,20 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns the JWKS document for a specific realm.
     ///
     /// Each realm has its own signing key, so its JWKS document contains
-    /// only that realm's public key.
+    /// only that realm's public key. During a key rotation grace period both
+    /// the new active key and any non-expired retiring keys are included.
     fn realm_jwks(&self, realm_id: &RealmId) -> Result<JwksDocument, IdentityError>;
+
+    /// Rotates the Ed25519 signing key for a realm.
+    ///
+    /// Generates a new key, writes it as the active key, and stores the old
+    /// key as a retiring key with a deadline of `now + grace_period_secs`.
+    /// The JWKS endpoint will serve both keys until the deadline passes.
+    fn rotate_realm_signing_key(
+        &self,
+        realm_id: &RealmId,
+        grace_period_secs: u64,
+    ) -> Result<(), IdentityError>;
 
     /// Creates a new user in the given realm.
     ///

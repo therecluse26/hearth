@@ -656,6 +656,8 @@ mod tests {
             permissions: vec![],
             parent_roles: vec![],
             scope_kind: RoleScopeKind::Realm,
+            status: crate::rbac::RoleStatus::Active,
+            yaml_managed: false,
             created_at: Timestamp::from_micros(0),
             updated_at: Timestamp::from_micros(0),
         }

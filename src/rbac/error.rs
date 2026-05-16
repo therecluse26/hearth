@@ -74,6 +74,12 @@ pub enum RbacError {
         /// The offending permission string.
         permission: String,
     },
+    /// The role is archived; new assignments are rejected.
+    ///
+    /// Archived roles were removed from YAML config and soft-deleted. Existing
+    /// assignments are preserved for audit coherence. Restore the role to
+    /// `Active` before creating new assignments.
+    RoleArchived,
     /// One or more requested OAuth scopes could not be granted.
     ///
     /// Returned by `resolve_with_scopes` when a `ThirdParty` client requests
@@ -124,6 +130,7 @@ impl fmt::Display for RbacError {
                 f,
                 "permission '{permission}' is in the reserved namespace and may not be granted by operator roles"
             ),
+            Self::RoleArchived => f.write_str("role is archived; restore it before assigning"),
             Self::InvalidScope { reason } => write!(f, "invalid_scope: {reason}"),
             Self::Storage(err) => write!(f, "storage error: {err}"),
             Self::Serialization { reason } => write!(f, "serialization error: {reason}"),

@@ -10,7 +10,7 @@ mod common;
 use hearth::core::{OrganizationId, RealmId, UserId};
 use hearth::rbac::{
     AssignRoleRequest, CreateGroupRequest, CreateRoleRequest, CycleKind, GroupMember, Permission,
-    RbacError, Scope, Subject, TraversalKind,
+    RbacError, RoleStatus, Scope, Subject, TraversalKind, UpdateRoleRequest,
 };
 
 fn perms(list: &[&str]) -> Vec<Permission> {
@@ -467,4 +467,83 @@ async fn scope_intersection_narrows_permissions() {
         );
     }
     assert!(nn.contains(&"org.admin"), "org.admin should survive");
+}
+
+// ===== HEA-537: Role soft-delete + restore =====
+
+/// Archiving a role blocks new assignments; restoring it allows assignments again.
+#[tokio::test]
+async fn archived_role_blocks_and_restore_allows_assignment() {
+    let h = common::TestHarness::embedded().await.expect("harness");
+    let realm = RealmId::generate();
+    let user = UserId::generate();
+
+    let role = h
+        .rbac()
+        .create_role(
+            &realm,
+            &CreateRoleRequest {
+                name: "archivist-role".into(),
+                description: None,
+                permissions: perms(&["docs.read"]),
+                parent_roles: vec![],
+                scope_kind: Default::default(),
+            },
+        )
+        .expect("create role");
+
+    // Archive the role.
+    h.rbac()
+        .update_role(
+            &realm,
+            &role.id,
+            &UpdateRoleRequest {
+                status: Some(RoleStatus::Archived),
+                ..Default::default()
+            },
+        )
+        .expect("archive role");
+
+    // New assignment must be rejected.
+    let err = h
+        .rbac()
+        .assign_role(
+            &realm,
+            &AssignRoleRequest {
+                role_id: role.id.clone(),
+                subject: Subject::User(user.clone()),
+                scope: Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect_err("assign to archived role must fail");
+    assert!(
+        matches!(err, RbacError::RoleArchived),
+        "expected RoleArchived, got {err}"
+    );
+
+    // Restore to Active.
+    h.rbac()
+        .update_role(
+            &realm,
+            &role.id,
+            &UpdateRoleRequest {
+                status: Some(RoleStatus::Active),
+                ..Default::default()
+            },
+        )
+        .expect("restore role");
+
+    // Assignment must now succeed.
+    h.rbac()
+        .assign_role(
+            &realm,
+            &AssignRoleRequest {
+                role_id: role.id.clone(),
+                subject: Subject::User(user),
+                scope: Scope::Realm,
+                assigned_by: None,
+            },
+        )
+        .expect("assign to restored role must succeed");
 }

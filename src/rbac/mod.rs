@@ -29,9 +29,9 @@ pub use seed::seed_permission_description;
 pub use types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
     GroupId, GroupMember, GroupMembership, Page, Permission, PermissionDefinition,
-    ProtectedResource, ResolvedPermissions, Role, RoleAssignment, RoleId, RoleScopeKind, RoleSpec,
-    RoleSubject, Scope, ScopeBundle, ScopeSpec, Subject, TraversalKind, UpdateGroupRequest,
-    UpdateRoleRequest, UserPermissionGrant,
+    PermissionRecord, PermissionStatus, ProtectedResource, ResolvedPermissions, Role,
+    RoleAssignment, RoleId, RoleScopeKind, RoleSpec, RoleStatus, RoleSubject, Scope, ScopeBundle,
+    ScopeSpec, Subject, TraversalKind, UpdateGroupRequest, UpdateRoleRequest, UserPermissionGrant,
 };
 
 use crate::core::{OrganizationId, RealmId, Uri, UserId};
@@ -314,4 +314,28 @@ pub trait RbacEngine: Send + Sync {
     /// Persists each declared group into per-realm storage by slug. Groups
     /// that already exist are updated if drifted. Idempotent.
     fn reconcile_groups(&self, realm_id: &RealmId, groups: &[Group]) -> Result<(), RbacError>;
+
+    /// Archives any YAML-managed permissions in this realm whose names are
+    /// absent from `yaml_names`. Seed permissions (`hearth.*` namespace) are
+    /// never archived. Idempotent: already-archived permissions are skipped.
+    ///
+    /// Call AFTER `reconcile_permissions` so newly-added permissions are
+    /// already present before the sweep runs.
+    fn archive_removed_permissions(
+        &self,
+        realm_id: &RealmId,
+        yaml_names: &std::collections::HashSet<String>,
+    ) -> Result<(), RbacError>;
+
+    /// Archives any YAML-managed roles in this realm whose names are absent
+    /// from `yaml_names`. Only roles with `yaml_managed = true` are eligible;
+    /// admin-UI-created roles are left untouched. Idempotent.
+    ///
+    /// Call AFTER `reconcile_roles` so newly-added roles are already present
+    /// before the sweep runs.
+    fn archive_removed_roles(
+        &self,
+        realm_id: &RealmId,
+        yaml_names: &std::collections::HashSet<String>,
+    ) -> Result<(), RbacError>;
 }

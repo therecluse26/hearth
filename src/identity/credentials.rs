@@ -185,6 +185,35 @@ pub(crate) fn verify_password(
     verify_hash(password, &credential.hash)
 }
 
+/// Returns `true` if the Argon2id hash was produced with parameters that differ
+/// from `config`, meaning the credential should be transparently re-hashed on
+/// the next successful login.
+///
+/// Always returns `false` for non-Argon2id hash strings (those are handled by
+/// the separate legacy-algorithm upgrade path).
+pub(crate) fn argon2_params_need_rehash(hash_str: &str, config: &CredentialConfig) -> bool {
+    if !hash_str.starts_with("$argon2id$") {
+        return false;
+    }
+    // Argon2id PHC format: $argon2id$v=19$m=N,t=N,p=N$<salt>$<hash>
+    // Locate the params segment — the one that contains "m=" (memory cost).
+    let mut m: Option<u32> = None;
+    let mut t: Option<u32> = None;
+    for seg in hash_str.split('$') {
+        if seg.contains("m=") {
+            for kv in seg.split(',') {
+                if let Some(v) = kv.strip_prefix("m=") {
+                    m = v.parse().ok();
+                } else if let Some(v) = kv.strip_prefix("t=") {
+                    t = v.parse().ok();
+                }
+            }
+            break;
+        }
+    }
+    m.map_or(false, |v| v != config.memory_cost_kib) || t.map_or(false, |v| v != config.time_cost)
+}
+
 /// Verifies a password against a hash string.
 ///
 /// Dispatches to the correct algorithm based on the hash prefix.
@@ -583,6 +612,54 @@ mod tests {
         // Should still verify
         let result = verify_password(&pw, &cred).expect("verify");
         assert!(result, "custom-params hash should still verify");
+    }
+
+    // ===== argon2_params_need_rehash =====
+
+    #[test]
+    fn params_need_rehash_detects_memory_change() {
+        let config = CredentialConfig {
+            memory_cost_kib: 512,
+            time_cost: 2,
+            parallelism: 1,
+        };
+        let pw = CleartextPassword::from_string("pw".to_string());
+        let cred = hash_password(&pw, &config, 0).expect("hash");
+
+        // Same params → no rehash needed
+        assert!(!argon2_params_need_rehash(&cred.hash, &config));
+
+        // Different memory cost → rehash needed
+        let new_config = CredentialConfig {
+            memory_cost_kib: 1024,
+            ..config.clone()
+        };
+        assert!(argon2_params_need_rehash(&cred.hash, &new_config));
+    }
+
+    #[test]
+    fn params_need_rehash_detects_time_change() {
+        let config = CredentialConfig {
+            memory_cost_kib: 512,
+            time_cost: 1,
+            parallelism: 1,
+        };
+        let pw = CleartextPassword::from_string("pw".to_string());
+        let cred = hash_password(&pw, &config, 0).expect("hash");
+
+        let new_config = CredentialConfig {
+            time_cost: 3,
+            ..config.clone()
+        };
+        assert!(argon2_params_need_rehash(&cred.hash, &new_config));
+    }
+
+    #[test]
+    fn params_need_rehash_false_for_non_argon2id() {
+        let config = CredentialConfig::default();
+        // bcrypt hash should never trigger Argon2 param rehash
+        let bcrypt_hash = "$2b$12$fakebcrypthashfakebcrypthashfakebcrypthashfakebcrypt";
+        assert!(!argon2_params_need_rehash(bcrypt_hash, &config));
     }
 
     // ===== Dummy hash for timing =====

@@ -1264,6 +1264,7 @@ pub async fn admin_role_edit_submit(
         permissions: Some(permissions),
         parent_roles: None,
         scope_kind: Some(parse_scope_kind(&form.scope_kind)),
+        status: None,
     };
 
     match state.rbac.update_role(target.id(), &role_id, &req) {

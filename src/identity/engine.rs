@@ -134,10 +134,10 @@ struct StoredEmailVerification {
     used: bool,
 }
 use crate::identity::oidc::{
-    AuthorizationRequest, AuthorizationResponse, BackchannelTarget, CodeChallengeMethod,
-    FrontchannelTarget, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
-    RegisterClientRequest, RpLogoutRequest, RpLogoutResult, StoredAuthorizationCode,
-    StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
+    ApplicationStatus, AuthorizationRequest, AuthorizationResponse, BackchannelTarget,
+    CodeChallengeMethod, FrontchannelTarget, OAuthClient, OidcConfig, OidcDiscoveryDocument,
+    OidcTokenResponse, RegisterClientRequest, RpLogoutRequest, RpLogoutResult,
+    StoredAuthorizationCode, StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
 };
 use crate::identity::tokens::{
     self, Audience, IssueTokenRequest, JwksDocument, LogoutTokenClaims, SigningKey, TokenClaims,
@@ -2598,8 +2598,78 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     fn realm_jwks(&self, realm_id: &RealmId) -> Result<JwksDocument, IdentityError> {
-        let key = self.get_or_load_realm_signing_key(realm_id)?;
-        Ok(key.to_jwks())
+        let active_key = self.get_or_load_realm_signing_key(realm_id)?;
+        let mut jwks = active_key.to_jwks();
+
+        // Include retiring keys that have not yet passed their grace-period deadline.
+        let sys_realm = keys::system_realm_id();
+        let scan_prefix = keys::realm_retiring_key_scan_prefix(realm_id);
+        let scan_end = keys::prefix_end(&scan_prefix);
+        let now_secs = self.clock.now().as_micros() / 1_000_000;
+        if let Ok(entries) = self.storage.scan(&sys_realm, &scan_prefix, &scan_end) {
+            for entry in entries {
+                let Some(deadline) = keys::parse_retiring_key_deadline(&entry.key) else {
+                    continue;
+                };
+                if deadline <= now_secs as u64 {
+                    continue; // Grace period expired — omit from JWKS.
+                }
+                if let Ok(retiring_key) = SigningKey::from_pkcs8(&entry.value) {
+                    let retiring_jwk = retiring_key.to_jwks();
+                    jwks.keys.extend(retiring_jwk.keys);
+                }
+            }
+        }
+
+        Ok(jwks)
+    }
+
+    fn rotate_realm_signing_key(
+        &self,
+        realm_id: &RealmId,
+        grace_period_secs: u64,
+    ) -> Result<(), IdentityError> {
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+
+        // Ensure the realm exists before rotating.
+        let sys_realm = keys::system_realm_id();
+        let old_key = self.get_or_load_realm_signing_key(realm_id)?;
+        let old_key_id = old_key.key_id().to_string();
+        let old_pkcs8 = old_key.pkcs8_bytes().to_vec();
+
+        // Generate and store the new active signing key.
+        let new_key = SigningKey::generate()?;
+        let new_pkcs8 = new_key.pkcs8_bytes().to_vec();
+        let key_storage_key = keys::encode_realm_signing_key(realm_id);
+        self.storage
+            .put(&sys_realm, &key_storage_key, &new_pkcs8)
+            .map_err(Self::storage_err)?;
+
+        // Store the old key as a retiring key with its expiry deadline.
+        let now_secs = (self.clock.now().as_micros() / 1_000_000) as u64;
+        let deadline_secs = now_secs.saturating_add(grace_period_secs);
+        let retiring_key_storage =
+            keys::encode_realm_retiring_key(realm_id, deadline_secs, &old_key_id);
+        self.storage
+            .put(&sys_realm, &retiring_key_storage, &old_pkcs8)
+            .map_err(Self::storage_err)?;
+
+        // Invalidate the active key cache so realm_jwks / token issuance pick up the new key.
+        {
+            let mut cache = self.realm_signing_keys.lock().expect("key cache lock");
+            cache.remove(&realm_id.as_uuid().to_string());
+        }
+
+        tracing::info!(
+            realm = %realm_id.as_uuid(),
+            old_kid = %old_key_id,
+            new_kid = %new_key.key_id(),
+            grace_period_secs,
+            deadline_secs,
+            "signing key rotated; old key enters grace period"
+        );
+
+        Ok(())
     }
 
     // ===== User CRUD =====
@@ -3153,6 +3223,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 self.storage
                     .put(realm_id, &cred_key, &upgraded_bytes)
                     .map_err(Self::storage_err)?;
+            } else {
+                // Lazy Argon2 rehash: transparently upgrade when config params change.
+                let credential_cfg = self.credential_config_for_realm(realm_id)?;
+                if credentials::argon2_params_need_rehash(&cred.hash, &credential_cfg) {
+                    let now = self.clock.now().as_micros();
+                    let mut upgraded = credentials::hash_password(password, &credential_cfg, now)?;
+                    // Preserve original age for expiry policy continuity.
+                    upgraded.created_at = cred.created_at;
+                    let upgraded_bytes = Self::serialize_credential(&upgraded)?;
+                    self.storage
+                        .put(realm_id, &cred_key, &upgraded_bytes)
+                        .map_err(Self::storage_err)?;
+                }
             }
         } else {
             let count = self.record_failed_attempt(realm_id, user_id);
@@ -3960,6 +4043,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
+        if client.status() != ApplicationStatus::Active {
+            return Err(IdentityError::InvalidClient);
+        }
 
         // 4. Validate redirect_uri matches a registered URI
         if !client.redirect_uris().contains(&request.redirect_uri) {
@@ -6479,6 +6565,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         if let Some(uris) = &request.post_logout_redirect_uris {
             client.set_post_logout_redirect_uris(uris.clone());
         }
+        if let Some(status) = request.status {
+            client.set_status(status);
+        }
 
         let updated_bytes =
             serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
@@ -7673,7 +7762,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let org = self
             .get_organization(realm_id, org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
-        if org.status() == OrganizationStatus::Suspended {
+        if org.status() != OrganizationStatus::Active {
             return Err(IdentityError::OrganizationSuspended);
         }
 
@@ -7998,7 +8087,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let org = self
             .get_organization(realm_id, &request.org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
-        if org.status() == OrganizationStatus::Suspended {
+        if org.status() != OrganizationStatus::Active {
             return Err(IdentityError::OrganizationSuspended);
         }
 
