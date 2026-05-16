@@ -665,6 +665,12 @@ pub struct OidcYamlConfig {
     /// Whether to enforce nonce uniqueness in authorization requests.
     #[serde(default)]
     pub enforce_nonces: Option<bool>,
+    /// Require PKCE for confidential clients (RFC 9700 §2.1.1). Default: true.
+    ///
+    /// Set to `false` only for legacy confidential clients that cannot supply
+    /// `code_challenge`. Production systems should leave this enabled.
+    #[serde(default)]
+    pub require_pkce_for_confidential_clients: Option<bool>,
 }
 
 /// Token configuration from the `token:` YAML section.

@@ -2227,7 +2227,40 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             &realm_id.as_uuid().to_string(),
         )?;
 
+        // When suspending or archiving a realm, revoke all active sessions so
+        // existing tokens backed by those sessions fail immediately on the
+        // session-validity check inside validate_token (defense-in-depth on
+        // top of the realm-status check added to validate_token).
+        if matches!(
+            request.status,
+            Some(RealmStatus::Suspended) | Some(RealmStatus::Archived)
+        ) {
+            self.bulk_revoke_realm_sessions(realm_id);
+        }
+
         Ok(realm)
+    }
+
+    /// Marks every non-revoked session in a realm as revoked.
+    ///
+    /// Used on suspend/archive transitions. Skips per-session audit events;
+    /// the caller's `RealmUpdated` event covers the status change.
+    fn bulk_revoke_realm_sessions(&self, realm_id: &RealmId) {
+        let prefix = keys::session_id_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let Ok(entries) = self.storage.scan(realm_id, &prefix, &end) else {
+            return;
+        };
+        for entry in &entries {
+            if let Ok(mut session) = serde_json::from_slice::<Session>(&entry.value) {
+                if !session.is_revoked() {
+                    session.revoke();
+                    if let Ok(bytes) = serde_json::to_vec(&session) {
+                        let _ = self.storage.put(realm_id, &entry.key, &bytes);
+                    }
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3728,6 +3761,16 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Verify the token was issued for this realm.
         if claims.tid != realm_id.to_string() {
             return Err(IdentityError::InvalidToken);
+        }
+
+        // Fail-closed on realm lifecycle: suspended or archived realms must not
+        // accept tokens. Checked after signature verification so forged tokens
+        // never trigger a storage read.
+        let realm = self
+            .get_realm(realm_id)?
+            .ok_or(IdentityError::RealmNotFound)?;
+        if realm.status() != RealmStatus::Active {
+            return Err(IdentityError::RealmSuspended);
         }
 
         // RFC 7519 §4.1.3 — audience must include the configured value.

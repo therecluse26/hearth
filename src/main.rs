@@ -719,6 +719,13 @@ async fn run_serve(
         }
     }
 
+    // Re-seed RBAC defaults on every realm that exists in storage, not just
+    // YAML-declared ones. Repairs realms whose original seed failed silently.
+    hearth::identity::reconcile::reconcile_rbac_seeds(
+        identity_engine.as_ref(),
+        rbac_engine.as_ref(),
+    );
+
     // Persist the current config snapshot after a successful reconciliation so
     // the next startup can compute an accurate diff.
     // NOTE: We do NOT clear rotate_signing_key in consumed realms. Leaving it as

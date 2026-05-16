@@ -147,7 +147,7 @@ impl Config {
     /// - `fsync` disabled for faster writes
     /// - No TLS
     /// - Debug-level logging
-    /// - Relaxed validation (empty `data_dir` allowed)
+    /// - Relaxed validation (empty `data_dir` and missing `oidc.issuer` allowed)
     pub fn dev() -> Self {
         Self {
             server: ServerConfig {
@@ -315,7 +315,7 @@ impl Config {
         }
 
         // OIDC
-        validate_oidc_all(&self.oidc, &mut issues);
+        validate_oidc_all(&self.oidc, self.dev_mode, &mut issues);
         // Token
         validate_token_all(&self.token, &mut issues);
         // Email
@@ -449,7 +449,7 @@ impl Config {
             });
         }
 
-        validate_oidc(&self.oidc)?;
+        validate_oidc(&self.oidc, self.dev_mode)?;
         validate_token(&self.token)?;
         validate_email(&self.email)?;
         validate_branding(&self.branding)?;
@@ -776,7 +776,15 @@ fn validate_realm_applications(
 }
 
 /// Validates the `oidc` section.
-fn validate_oidc(oidc: &OidcYamlConfig) -> Result<(), ConfigError> {
+fn validate_oidc(oidc: &OidcYamlConfig, dev_mode: bool) -> Result<(), ConfigError> {
+    if oidc.issuer.is_none() && !dev_mode {
+        return Err(invalid(
+            "oidc.issuer",
+            "required for production; set it to your public HTTPS URL \
+             (e.g. https://auth.example.com). Use --dev to skip this check \
+             in local development.",
+        ));
+    }
     if let Some(issuer) = &oidc.issuer {
         if issuer.is_empty() {
             return Err(invalid("oidc.issuer", "must not be empty"));
@@ -786,6 +794,15 @@ fn validate_oidc(oidc: &OidcYamlConfig) -> Result<(), ConfigError> {
             return Err(invalid(
                 "oidc.issuer",
                 "must be a URL starting with https:// or http://",
+            ));
+        }
+        // .local hostnames are never publicly reachable; OIDC clients validate
+        // the iss claim against the discovery URL and will reject all tokens.
+        if issuer.contains(".local") {
+            return Err(invalid(
+                "oidc.issuer",
+                "uses a .local hostname which is not publicly reachable; \
+                 set it to your public HTTPS URL (e.g. https://auth.example.com)",
             ));
         }
     }
@@ -962,7 +979,15 @@ fn validate_from_address(email: &EmailConfig) -> Result<(), ConfigError> {
 // ---------------------------------------------------------------------------
 
 /// Collects OIDC validation issues without short-circuiting.
-fn validate_oidc_all(oidc: &OidcYamlConfig, issues: &mut Vec<ValidationIssue>) {
+fn validate_oidc_all(oidc: &OidcYamlConfig, dev_mode: bool, issues: &mut Vec<ValidationIssue>) {
+    if oidc.issuer.is_none() && !dev_mode {
+        issues.push(ValidationIssue {
+            field: "oidc.issuer".to_string(),
+            reason: "required for production; set it to your public HTTPS URL \
+                     (e.g. https://auth.example.com)"
+                .to_string(),
+        });
+    }
     if let Some(issuer) = &oidc.issuer {
         if issuer.is_empty() {
             issues.push(ValidationIssue {
@@ -973,6 +998,13 @@ fn validate_oidc_all(oidc: &OidcYamlConfig, issues: &mut Vec<ValidationIssue>) {
             issues.push(ValidationIssue {
                 field: "oidc.issuer".to_string(),
                 reason: "must be a URL starting with https:// or http://".to_string(),
+            });
+        } else if issuer.contains(".local") {
+            issues.push(ValidationIssue {
+                field: "oidc.issuer".to_string(),
+                reason: "uses a .local hostname which is not publicly reachable; \
+                         set it to your public HTTPS URL (e.g. https://auth.example.com)"
+                    .to_string(),
             });
         }
     }
@@ -1458,6 +1490,8 @@ operational:
   shutdown_timeout_secs: 30
   max_connections: 2048
   queue_depth: 8192
+oidc:
+  issuer: "https://auth.example.com"
 "#;
         let config = Config::from_yaml_str(yaml).expect("valid YAML should parse");
 
@@ -1486,7 +1520,10 @@ operational:
 
     #[test]
     fn default_values_applied_for_omitted_fields() {
-        let config = Config::from_yaml_str("{}").expect("empty YAML should use defaults");
+        // oidc.issuer is required in production mode; supply it so we can
+        // verify all other fields still receive their defaults.
+        let yaml = "oidc:\n  issuer: \"https://auth.example.com\"\n";
+        let config = Config::from_yaml_str(yaml).expect("minimal YAML should use defaults");
 
         assert_eq!(config.server.bind_address, "127.0.0.1");
         assert_eq!(config.server.port, 8420);
@@ -1512,12 +1549,33 @@ operational:
     }
 
     #[test]
+    fn missing_oidc_issuer_fails_in_production_mode() {
+        let result = Config::from_yaml_str("{}");
+        assert!(result.is_err(), "missing oidc.issuer should fail in production mode");
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("oidc.issuer"), "got: {display}");
+        assert!(display.contains("required"), "got: {display}");
+    }
+
+    #[test]
+    fn local_domain_oidc_issuer_is_rejected() {
+        let yaml = "oidc:\n  issuer: \"https://auth.hearth.local\"\n";
+        let result = Config::from_yaml_str(yaml);
+        assert!(result.is_err(), ".local issuer should be rejected");
+        let display = format!("{}", result.expect_err("should fail"));
+        assert!(display.contains("oidc.issuer"), "got: {display}");
+        assert!(display.contains(".local"), "got: {display}");
+    }
+
+    #[test]
     fn partial_override_preserves_other_defaults() {
         let yaml = r#"
 server:
   port: 3000
 storage:
   data_dir: "/custom/path"
+oidc:
+  issuer: "https://auth.example.com"
 "#;
         let config = Config::from_yaml_str(yaml).expect("partial YAML should parse");
 
@@ -1635,7 +1693,7 @@ storage:
         let config_path = dir.path().join("hearth.yaml");
         std::fs::write(
             &config_path,
-            "server:\n  port: 7777\nstorage:\n  data_dir: /tmp/hearth\n",
+            "server:\n  port: 7777\nstorage:\n  data_dir: /tmp/hearth\noidc:\n  issuer: \"https://auth.example.com\"\n",
         )
         .expect("write config file");
 
@@ -1655,7 +1713,7 @@ storage:
         .expect("write .env");
         std::fs::write(
             dir.path().join("hearth.yaml"),
-            "server:\n  port: ${HEARTH_FFILE_DOTENV_PORT}\nstorage:\n  data_dir: ${HEARTH_FFILE_DOTENV_DIR}\n",
+            "server:\n  port: ${HEARTH_FFILE_DOTENV_PORT}\nstorage:\n  data_dir: ${HEARTH_FFILE_DOTENV_DIR}\noidc:\n  issuer: \"https://auth.example.com\"\n",
         )
         .expect("write hearth.yaml");
 
@@ -1682,7 +1740,7 @@ storage:
         .expect("write .env");
         std::fs::write(
             dir.path().join("hearth.yaml"),
-            "storage:\n  data_dir: ${HEARTH_FFILE_PRIORITY}\n",
+            "storage:\n  data_dir: ${HEARTH_FFILE_PRIORITY}\noidc:\n  issuer: \"https://auth.example.com\"\n",
         )
         .expect("write hearth.yaml");
 
@@ -1715,6 +1773,8 @@ server:
   port: ${HEARTH_CFG_PORT}
 storage:
   data_dir: "${HEARTH_CFG_DIR}/data"
+oidc:
+  issuer: "https://auth.example.com"
 "#;
         let config = Config::from_yaml_str(yaml).expect("env var substitution");
         assert_eq!(config.server.port, 4242);
@@ -1779,6 +1839,8 @@ server:
   tls_require_client_cert: true
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 "#;
         let result = Config::from_yaml_str(yaml);
         assert!(result.is_ok(), "valid TLS config should pass: {result:?}");
@@ -1799,6 +1861,8 @@ storage:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"
@@ -1813,6 +1877,8 @@ email:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   smtp:
@@ -1829,6 +1895,8 @@ email:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "not an address"
@@ -1846,6 +1914,8 @@ email:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"
@@ -1864,6 +1934,8 @@ email:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"
@@ -1882,6 +1954,8 @@ email:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "Hearth <auth@example.com>"
@@ -1904,6 +1978,8 @@ email:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 onboarding:
   notification_email: "ops@example.com"
 "#;
@@ -1919,6 +1995,8 @@ onboarding:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 onboarding:
   notification_email: "not an address"
 "#;
@@ -1936,6 +2014,8 @@ onboarding:
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 onboarding: {}
 "#;
         let config = Config::from_yaml_str(yaml).expect("absent notification_email is fine");
@@ -1947,6 +2027,8 @@ onboarding: {}
         let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"
