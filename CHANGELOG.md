@@ -9,6 +9,7 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Security
 
+- **OIDC nonce replay protection** — `enforce_nonces` now defaults to `true`; new deployments reject replayed authorization responses for confidential clients out of the box. Operators who need legacy-client compatibility can set `oidc.enforce_nonces: false` in `hearth.yaml`; doing so emits a startup warning (HEA-548).
 - **Go SDK** — minimum Go version bumped from 1.23 to 1.24, clearing `SNYK-GOLANG-STDNETHTTP-16535158` (infinite loop in `std/net/http`) (HEA-515).
 - **Admin settings editor** — prototype-pollution guard strengthened in `setVal`: redundant point-of-use check on the final key segment added so static analysis can locally verify safety (HEA-515).
 - **Kotlin SDK — nimbus-jose-jwt** upgraded from 9.40 to 9.41.2 (patches JWT library CVEs) (HEA-515).
