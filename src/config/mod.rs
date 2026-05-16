@@ -346,6 +346,16 @@ impl Config {
             }
         }
 
+        if self.onboarding.notification_email.is_some() && self.onboarding.base_url.is_none() {
+            issues.push(ValidationIssue {
+                field: "onboarding.base_url".to_string(),
+                reason: "onboarding.base_url is required when onboarding.notification_email is \
+                         set; without it the emailed setup URL uses the bind address which may \
+                         not be reachable from outside the server"
+                    .to_string(),
+            });
+        }
+
         issues
     }
 
@@ -467,6 +477,17 @@ impl Config {
                     format!("could not parse as an RFC 5322 mailbox: {e}"),
                 )
             })?;
+        }
+
+        // notification_email without base_url would email a bare bind-address URL that
+        // is likely unreachable from outside the server.
+        if self.onboarding.notification_email.is_some() && self.onboarding.base_url.is_none() {
+            return Err(invalid(
+                "onboarding.base_url",
+                "onboarding.base_url is required when onboarding.notification_email is set; \
+                 without it the emailed setup URL uses the bind address which may not be \
+                 reachable from outside the server",
+            ));
         }
 
         Ok(())
@@ -1981,12 +2002,32 @@ storage:
 oidc:
   issuer: "https://auth.example.com"
 onboarding:
+  base_url: "https://auth.example.com"
   notification_email: "ops@example.com"
 "#;
         let config = Config::from_yaml_str(yaml).expect("valid notification_email should parse");
         assert_eq!(
             config.onboarding.notification_email.as_deref(),
             Some("ops@example.com")
+        );
+    }
+
+    #[test]
+    fn onboarding_notification_email_without_base_url_fails() {
+        let yaml = r#"
+storage:
+  data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
+onboarding:
+  notification_email: "ops@example.com"
+"#;
+        let err = Config::from_yaml_str(yaml)
+            .expect_err("notification_email without base_url must fail");
+        let display = format!("{err}");
+        assert!(
+            display.contains("onboarding.base_url"),
+            "error must reference onboarding.base_url, got: {display}"
         );
     }
 

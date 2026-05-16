@@ -700,6 +700,40 @@ fn ensure_setup_token_sends_notification_email_when_configured() {
     );
 }
 
+/// When `base_url` is absent the emailed setup URL must still be absolute so
+/// that operators on headless installs can navigate to it.
+#[test]
+fn ensure_setup_token_absolute_url_when_base_url_absent() {
+    let env = TestEnv::new();
+    let recording_sender = Arc::new(RecordingEmailSender::default());
+    let email_service = EmailService::new(
+        Arc::clone(&recording_sender) as hearth::identity::SharedEmailSender,
+        "Hearth".to_string(),
+        None,
+        EmailBranding::default(),
+        String::new(),
+        None,
+    )
+    .expect("email service");
+
+    ensure_setup_token(
+        env.identity.as_ref(),
+        env.data_dir(),
+        None,
+        Some(&email_service),
+        Some("ops@example.com"),
+    )
+    .expect("ensure")
+    .expect("token on first run");
+
+    let msg = recording_sender.last().expect("message recorded");
+    assert!(
+        msg.text_body.contains("http://"),
+        "setup URL must be absolute even when base_url is absent: {}",
+        msg.text_body
+    );
+}
+
 #[test]
 fn ensure_setup_token_no_email_when_sender_absent() {
     let env = TestEnv::new();

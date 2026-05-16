@@ -9,6 +9,16 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Fixed
 
+- **`onboarding.base_url` fallback is now an absolute URL** — when `onboarding.base_url` is not
+  set, the setup URL logged at startup (and the `notification_email` delivery) now uses the bind
+  address (`http://{bind_address}:{port}`) instead of a bare relative path (`/ui/setup?token=…`)
+  that cannot be navigated to from a remote browser. A startup warning is also emitted advising
+  operators to set `onboarding.base_url` for production deployments (HEA-547).
+- **`onboarding.notification_email` without `onboarding.base_url` is now a startup error** —
+  emailing a setup URL built from the bind address is likely unreachable by the recipient.
+  Operators must now set `onboarding.base_url` explicitly when `notification_email` is configured
+  (HEA-547).
+
 - **`token.audience` now defaults to `oidc.issuer`** — the previous default `"hearth"` placeholder
   caused OIDC clients that validate `aud` against their `client_id` or resource server URL to
   silently reject all tokens. When `token.audience` is not explicitly set, the server now inherits
