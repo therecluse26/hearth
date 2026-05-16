@@ -274,7 +274,31 @@ async fn main() {
             if let Err(e) = run_serve(dev, config_path, port, bind, verbose).await {
                 // Use eprintln! here — tracing may not be initialized yet if
                 // the error occurred during config loading.
-                eprintln!("error: {e}");
+                //
+                // HostKeyMismatch requires exit code 2 and an actionable message
+                // so operators know exactly how to recover.
+                match e.downcast::<hearth::storage::StorageError>() {
+                    Ok(storage_err) => {
+                        if let hearth::storage::StorageError::HostKeyMismatch {
+                            ref affected_realms,
+                        } = *storage_err
+                        {
+                            let realms = affected_realms.join(", ");
+                            eprintln!(
+                                "FATAL: Realm KEKs could not be decrypted with the current \
+                                 HEARTH_MASTER_KEY.\nIf you recently rotated the master key, \
+                                 set HEARTH_PREVIOUS_MASTER_KEY to the previous value. If the \
+                                 previous key is unavailable, restore from backup.\n\
+                                 Affected realms: {realms}"
+                            );
+                            std::process::exit(2);
+                        }
+                        eprintln!("error: {storage_err}");
+                    }
+                    Err(other) => {
+                        eprintln!("error: {other}");
+                    }
+                }
                 std::process::exit(1);
             }
         }
@@ -524,6 +548,11 @@ async fn run_serve(
                 tc.refresh_token_ttl_secs = micros / 1_000_000;
             }
         }
+        if let Some(ttl) = &config.token.signing_key_rotation_grace_period {
+            if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
+                tc.signing_key_rotation_grace_period_secs = (micros / 1_000_000) as u64;
+            }
+        }
         tc
     };
 
@@ -607,6 +636,42 @@ async fn run_serve(
         }
     }
 
+    // Load the previous config snapshot (absent on first startup) so we can
+    // compute a typed diff against the current config before reconciliation.
+    let prev_snapshot = match hearth::identity::reconcile::load_snapshot(storage.as_ref()) {
+        Ok(snap) => snap,
+        Err(e) => {
+            error!(error = %e, "failed to load config snapshot; treating as first startup");
+            None
+        }
+    };
+
+    // Compute diff: absent snapshot → empty baseline (all realms "added").
+    let baseline = prev_snapshot.clone().unwrap_or_else(|| {
+        hearth::config::ConfigSnapshot::from_config(&hearth::config::Config::default())
+    });
+    let config_diffs = hearth::config::compute_diff(&baseline, &config);
+    if !config_diffs.is_empty() {
+        info!(
+            count = config_diffs.len(),
+            "config diff detected on startup"
+        );
+    }
+
+    // Apply diff handlers (Phase C: config-only items logged; data items reconciled).
+    let _consumed_rotations = match hearth::identity::reconcile::apply_diff(
+        &config_diffs,
+        &config,
+        identity_engine.as_ref(),
+        rbac_engine.as_ref(),
+    ) {
+        Ok(rotated) => rotated,
+        Err(e) => {
+            error!(error = %e, "config diff application failed");
+            Vec::new()
+        }
+    };
+
     // Reconcile YAML-declared realms with storage. Runs after setup-token
     // generation so reconciliation-created realms don't suppress the
     // setup URL on a fresh instance.
@@ -634,6 +699,143 @@ async fn run_serve(
             error!(error = %e, "realm reconciliation failed");
         }
     }
+
+    // Persist the current config snapshot after a successful reconciliation so
+    // the next startup can compute an accurate diff.
+    // NOTE: We do NOT clear rotate_signing_key in consumed realms. Leaving it as
+    // true (matching the YAML) means the next startup sees true→true, which is
+    // not a transition and does not re-trigger rotation. Clearing to false would
+    // cause an immediate re-trigger on the next restart while the flag is still
+    // in YAML.
+    let current_snapshot = hearth::config::ConfigSnapshot::from_config(&config);
+    match hearth::identity::reconcile::save_snapshot(storage.as_ref(), &current_snapshot) {
+        Ok(()) => {}
+        Err(e) => {
+            error!(error = %e, "failed to persist config snapshot; next startup will treat config as unchanged");
+        }
+    }
+
+    // Phase E: cross-realm user migration (migrate_from / copy_from).
+    // Runs after realm reconciliation so destination realms exist.
+    // `on_conflict: error` causes a hard exit; all other errors are warnings.
+    if let Some(realms_cfg) = config.realms.as_ref() {
+        for (dst_slug, realm_cfg) in realms_cfg {
+            let (src_slug, move_semantics) =
+                match (&realm_cfg.migrate_from, &realm_cfg.copy_from) {
+                    (Some(src), _) => (src.as_str(), true),
+                    (None, Some(src)) => (src.as_str(), false),
+                    (None, None) => continue,
+                };
+
+            let dst_realm = match identity_engine.get_realm_by_name(dst_slug) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    error!(realm_name = %dst_slug, "cross-realm migration: destination realm not found after reconciliation");
+                    continue;
+                }
+                Err(e) => {
+                    error!(error = %e, "cross-realm migration: destination realm lookup failed");
+                    continue;
+                }
+            };
+            let src_realm = match identity_engine.get_realm_by_name(src_slug) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    warn!(src_slug, "cross-realm migration: source realm not found; skipping");
+                    continue;
+                }
+                Err(e) => {
+                    error!(error = %e, "cross-realm migration: source realm lookup failed");
+                    continue;
+                }
+            };
+
+            let migrate_cfg = realm_cfg.migrate.clone().unwrap_or_default();
+            let opts = hearth::identity::migration::cross_realm::CrossRealmMigrateOptions {
+                move_semantics,
+                users: migrate_cfg.users,
+                orgs: migrate_cfg.orgs,
+                on_conflict: migrate_cfg.on_conflict,
+            };
+
+            let now = {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                hearth::identity::reconcile::format_unix_secs_rfc3339(secs)
+            };
+            match hearth::identity::migration::cross_realm::execute_cross_realm_migration(
+                identity_engine.as_ref(),
+                rbac_engine.as_ref(),
+                storage.as_ref(),
+                src_realm.id(),
+                dst_realm.id(),
+                src_slug,
+                &opts,
+            ) {
+                Ok(report) => {
+                    info!(
+                        src_slug,
+                        dst_realm = %dst_slug,
+                        migrated = report.migrated,
+                        skipped = report.skipped,
+                        role_assignments_translated = report.role_assignments_translated,
+                        "cross-realm migration complete"
+                    );
+                    let status = if report.skipped > 0 {
+                        hearth::identity::reconcile::MigrationHistoryStatus::CompletedWithSkips
+                    } else {
+                        hearth::identity::reconcile::MigrationHistoryStatus::Completed
+                    };
+                    hearth::identity::reconcile::write_migration_history(
+                        storage.as_ref(),
+                        &hearth::identity::reconcile::MigrationHistoryRecord {
+                            source_slug: src_slug.to_string(),
+                            destination_slug: dst_slug.clone(),
+                            move_semantics,
+                            users_migrated: report.migrated,
+                            users_skipped: report.skipped,
+                            role_assignments_translated: report.role_assignments_translated,
+                            completed_at: now,
+                            status,
+                            conflict_emails: Vec::new(),
+                        },
+                    );
+                }
+                Err(conflict_err) => {
+                    error!(error = %conflict_err, "cross-realm migration conflict; refusing to start");
+                    hearth::identity::reconcile::write_migration_history(
+                        storage.as_ref(),
+                        &hearth::identity::reconcile::MigrationHistoryRecord {
+                            source_slug: src_slug.to_string(),
+                            destination_slug: dst_slug.clone(),
+                            move_semantics,
+                            users_migrated: 0,
+                            users_skipped: 0,
+                            role_assignments_translated: 0,
+                            completed_at: now,
+                            status: hearth::identity::reconcile::MigrationHistoryStatus::Failed,
+                            conflict_emails: conflict_err.emails.clone(),
+                        },
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    // Phase D: detect archived realms with live users but no declared
+    // migration destination.  Non-blocking — startup continues regardless.
+    let orphaned_realms = hearth::identity::reconcile::detect_orphaned_realms(
+        identity_engine.as_ref(),
+        &config,
+        storage.as_ref(),
+    );
+
+    // Load migration history for the admin UI.
+    let migration_records =
+        hearth::identity::reconcile::load_migration_records(storage.as_ref());
 
     // --verbose: emit resolved config, realm list, and key fingerprints at debug level.
     if verbose {
@@ -764,6 +966,14 @@ async fn run_serve(
         data_dir.clone(),
     ));
 
+    let rotation_grace_period_secs = config
+        .token
+        .signing_key_rotation_grace_period
+        .as_deref()
+        .and_then(|s| hearth::config::parse_duration_to_micros(s).ok())
+        .map(|micros| (micros / 1_000_000) as u64)
+        .unwrap_or(86_400);
+
     let app_state = if config.dev_mode {
         Arc::new(
             AppState::new_dev(
@@ -772,7 +982,8 @@ async fn run_serve(
                 Arc::clone(&audit_engine),
             )
             .with_webhook(Arc::clone(&webhook_engine))
-            .with_metrics_enabled(config.metrics.enabled),
+            .with_metrics_enabled(config.metrics.enabled)
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs),
         )
     } else {
         Arc::new(
@@ -782,7 +993,8 @@ async fn run_serve(
                 Arc::clone(&audit_engine),
             )
             .with_webhook(Arc::clone(&webhook_engine))
-            .with_metrics_enabled(config.metrics.enabled),
+            .with_metrics_enabled(config.metrics.enabled)
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs),
         )
     };
 
@@ -808,6 +1020,8 @@ async fn run_serve(
         Some(Arc::clone(&email_service)),
     )
     .with_config_warnings(config.config_warnings.clone())
+    .with_orphaned_realms(orphaned_realms)
+    .with_migration_records(migration_records)
     .with_email_log_transport(config.email.transport == EmailTransport::Log)
     .with_product_name(config.branding.product_name_or_default().to_string())
     .with_logo_url(web_logo_url)
@@ -1407,7 +1621,7 @@ fn run_config_reconciliation(
             let app_archived = report
                 .applications
                 .iter()
-                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Deleted)
+                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Archived)
                 .count();
             info!(
                 realms_created = report.created.len(),
