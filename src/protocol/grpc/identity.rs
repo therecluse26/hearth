@@ -212,12 +212,14 @@ impl IdentityAdminService for IdentityAdminSvc {
             .identity
             .create_realm(&body)
             .map_err(identity_to_status)?;
-        // Seed the RBAC defaults on every new realm. Logged-only on failure:
-        // the realm record is already committed and `seed_realm` is
-        // idempotent on retry.
-        if let Err(e) = self.state.rbac.seed_realm(realm.id()) {
-            tracing::warn!(error = %e, "create_realm: RBAC seed failed");
-        }
+        // Seed the RBAC defaults on the new realm. Hard error: the caller
+        // must see the failure so they can retry or rollback. The realm record
+        // is already committed but the unsurfaced-failure path would leave the
+        // realm permanently broken with no admin roles.
+        self.state
+            .rbac
+            .seed_realm(realm.id())
+            .map_err(|e| Status::internal(format!("RBAC seed failed: {e}")))?;
         Ok(Response::new(pb::Realm::from(&realm)))
     }
 

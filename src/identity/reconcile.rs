@@ -280,6 +280,33 @@ pub fn reconcile_realms(
     Ok(report)
 }
 
+/// Scans every realm in storage and re-seeds RBAC defaults for any that are
+/// missing them (e.g. API-created realms whose original seed failed).
+///
+/// Runs once at startup after `reconcile_realms`. `seed_realm` is idempotent,
+/// so re-running it on healthy realms is safe. Errors are logged but do not
+/// abort startup — one broken realm must not prevent others from serving.
+pub fn reconcile_rbac_seeds(engine: &dyn IdentityEngine, rbac: &dyn RbacEngine) {
+    const PAGE: usize = 100;
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = match engine.list_realms(cursor.as_deref(), PAGE) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "reconcile_rbac_seeds: failed to list realms");
+                return;
+            }
+        };
+        for realm in &page.items {
+            seed_realm_or_log(rbac, realm.id(), realm.name());
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+}
+
 /// Seeds default roles, permissions, and scopes on a freshly created realm,
 /// logging (but not failing) if the seed errors. The realm record is already
 /// durable at this point; a missing seed is recoverable (seed_realm is

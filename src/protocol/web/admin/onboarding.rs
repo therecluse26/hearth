@@ -536,32 +536,59 @@ pub async fn admin_onboarding_invite_post(
         }
     };
 
-    // Assign RBAC role when "admin" is selected.
+    // Assign RBAC role when "admin" is selected. All RBAC failures are
+    // surfaced to the operator via the UI — silently swallowing them would
+    // leave the invited user with no admin role and no way to detect it.
     if role == "admin" {
+        macro_rules! rbac_err {
+            ($msg:expr) => {
+                return render(&StepInviteTemplate {
+                    product_name: state.product_name.clone(),
+                    logo_url: state.logo_url.clone(),
+                    theme_css: state.theme_css.clone(),
+                    realm_theme_css: state.realm_theme_css(),
+                    csrf: session.csrf.clone(),
+                    chrome: true,
+                    active: "onboarding",
+                    user_email: Some(session.user_email.clone()),
+                    is_admin: true,
+                    flash: None,
+                    narrow: false,
+                    realm_name: realm_name.clone(),
+                    error: Some($msg),
+                    form_email: email.clone(),
+                    form_role: role.clone(),
+                    available_roles: vec!["admin".to_string(), "member".to_string()],
+                })
+            };
+        }
+
         if let Err(e) = state.rbac.seed_realm(&realm_id) {
-            tracing::warn!(error = %e, realm = %realm_name, "onboarding: seed_realm failed");
-        } else {
-            match state.rbac.get_role_by_name(&realm_id, "realm.admin") {
-                Ok(Some(admin_role)) => {
-                    if let Err(e) = state.rbac.assign_role(
-                        &realm_id,
-                        &AssignRoleRequest {
-                            subject: Subject::User(user.id().clone()),
-                            role_id: admin_role.id.clone(),
-                            scope: RbacScope::Realm,
-                            assigned_by: None,
-                        },
-                    ) {
-                        tracing::warn!(error = %e, "onboarding: assign realm.admin failed");
-                    }
-                }
-                Ok(None) => {
-                    tracing::warn!("onboarding: realm.admin role not found after seed");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "onboarding: get_role_by_name failed");
-                }
+            tracing::error!(error = %e, realm = %realm_name, "onboarding: seed_realm failed");
+            rbac_err!(format!("Failed to initialise realm roles: {e}"));
+        }
+        let admin_role = match state.rbac.get_role_by_name(&realm_id, "realm.admin") {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                tracing::error!(realm = %realm_name, "onboarding: realm.admin role not found after seed");
+                rbac_err!("Role 'realm.admin' missing after seed — please contact support".to_string());
             }
+            Err(e) => {
+                tracing::error!(error = %e, "onboarding: get_role_by_name failed");
+                rbac_err!(format!("Failed to look up realm.admin role: {e}"));
+            }
+        };
+        if let Err(e) = state.rbac.assign_role(
+            &realm_id,
+            &AssignRoleRequest {
+                subject: Subject::User(user.id().clone()),
+                role_id: admin_role.id.clone(),
+                scope: RbacScope::Realm,
+                assigned_by: None,
+            },
+        ) {
+            tracing::error!(error = %e, "onboarding: assign realm.admin failed");
+            rbac_err!(format!("Failed to assign admin role: {e}"));
         }
     }
 

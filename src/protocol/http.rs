@@ -3924,11 +3924,15 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     let realm_id = realm.id().clone();
 
-    // Seed RBAC defaults on the new realm. Logged-only on failure so the
-    // dev bootstrap doesn't brick on a storage blip — the realm record
-    // already exists and seeding is idempotent.
+    // Seed RBAC defaults on the new realm. Hard error: a dev bootstrap
+    // with a broken seed produces a realm where the admin user cannot be
+    // granted realm.admin, making the bootstrap useless.
     if let Err(e) = state.rbac.seed_realm(&realm_id) {
-        tracing::warn!(error = %e, "dev bootstrap: RBAC seed failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("RBAC seed failed: {e}")})),
+        )
+            .into_response();
     }
 
     // Create admin user
