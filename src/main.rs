@@ -522,7 +522,26 @@ async fn run_serve(
             }
         }
         if let Some(enforce) = config.oidc.enforce_nonces {
+            if !enforce {
+                tracing::warn!(
+                    "oidc.enforce_nonces is disabled — nonce replay protection is off. \
+                     Confidential clients are vulnerable to authorization-response replay \
+                     attacks. Set enforce_nonces: true (the default) unless you require \
+                     legacy client compatibility."
+                );
+            }
             oc.enforce_nonces = enforce;
+        }
+        if let Some(require) = config.oidc.require_pkce_for_confidential_clients {
+            if !require {
+                tracing::warn!(
+                    "oidc.require_pkce_for_confidential_clients is disabled — confidential \
+                     clients are exempt from PKCE (RFC 9700 §2.1.1). Authorization code \
+                     interception attacks are possible. Enable this setting for all new \
+                     deployments."
+                );
+            }
+            oc.require_pkce_for_confidential_clients = require;
         }
         oc
     };

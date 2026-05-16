@@ -53,9 +53,17 @@ pub struct OidcConfig {
 
     /// Whether to enforce nonce uniqueness in authorization requests.
     ///
-    /// When enabled, duplicate nonces in authorization requests are
-    /// rejected to prevent replay attacks.
+    /// Enabled by default. When enabled, duplicate nonces in authorization
+    /// requests are rejected to prevent replay attacks. Set to `false` only for
+    /// legacy clients that cannot supply nonces; a startup warning is emitted.
     pub enforce_nonces: bool,
+
+    /// Require PKCE for confidential clients (RFC 9700 §2.1.1).
+    ///
+    /// `true` (default) — all clients, including those with a `client_secret`,
+    /// must supply `code_challenge`/`code_verifier`.  Set to `false` only for
+    /// legacy clients that cannot be updated; document the exemption.
+    pub require_pkce_for_confidential_clients: bool,
 }
 
 impl Default for OidcConfig {
@@ -63,7 +71,8 @@ impl Default for OidcConfig {
         Self {
             authorization_code_ttl_secs: 600, // 10 minutes
             issuer: "https://hearth.local".to_string(),
-            enforce_nonces: false,
+            enforce_nonces: true,
+            require_pkce_for_confidential_clients: true,
         }
     }
 }

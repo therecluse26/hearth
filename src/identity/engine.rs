@@ -4092,10 +4092,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // 5. PKCE enforcement (RFC 9700 §2.1.1)
-        // Public clients (no client secret) MUST provide PKCE with S256.
-        if !client.is_confidential() && request.code_challenge.is_none() {
+        // All clients must provide PKCE by default. Confidential clients may be
+        // exempted via `require_pkce_for_confidential_clients: false` for legacy
+        // compatibility only.
+        let pkce_required = !client.is_confidential()
+            || self.config.oidc.require_pkce_for_confidential_clients;
+        if pkce_required && request.code_challenge.is_none() {
             return Err(IdentityError::InvalidInput {
-                reason: "public clients must use PKCE (code_challenge with S256 required)"
+                reason: "PKCE is required (code_challenge with S256 must be supplied)"
                     .to_string(),
             });
         }
@@ -11404,10 +11408,39 @@ mod tests {
         assert!(result.is_ok(), "different nonce should succeed");
     }
 
+    fn setup_engine_with_nonce_disabled(
+    ) -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            oidc: OidcConfig {
+                enforce_nonces: false,
+                ..OidcConfig::default()
+            },
+            ..IdentityConfig::default()
+        };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            identity_config,
+            audit as Arc<dyn AuditEngine>,
+        )
+        .expect("engine creation");
+        (dir, engine, clock)
+    }
+
     #[test]
     fn nonce_not_enforced_when_disabled() {
-        // Default config has enforce_nonces: false
-        let (_dir, engine, _clock) = setup_engine();
+        // Explicitly opt out of nonce enforcement to verify the bypass path.
+        let (_dir, engine, _clock) = setup_engine_with_nonce_disabled();
         let realm = RealmId::generate();
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
