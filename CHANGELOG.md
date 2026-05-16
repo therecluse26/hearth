@@ -16,6 +16,26 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Added
 
+- **Migration history page** — `/admin/migrations` lists all past cross-realm migration runs with
+  source realm, destination realm, operation kind (move/copy), user counts, and status badge.
+  Orphaned realms without a declared migration destination are shown in an inline recovery panel
+  with an HTMX-powered YAML snippet generator to resolve or discard each orphan. The admin
+  sidebar and dashboard orphan banner both link to this page (HEA-542).
+- **Cross-realm user migration** — declare `migrate_from: <source-realm>` (move semantics) or
+  `copy_from: <source-realm>` (copy semantics) on a destination realm's YAML block to atomically
+  transfer users, credentials (Argon2id/PBKDF2/bcrypt, TOTP, WebAuthn), and RBAC role assignments
+  at server startup. Role names are translated by name across realms; org memberships are matched
+  by slug. A `migrate:` sub-block controls `users`, `orgs`, and `on_conflict` (`error` or `skip`).
+  Migration is crash-safe: per-user progress markers in the system realm enable idempotent resume
+  after an interrupted startup (HEA-541).
+- **Signing key rotation** — `POST /admin/realms/{id}/rotate-signing-key` generates a new Ed25519
+  key and serves both the new active key and the retiring key in JWKS for a configurable grace
+  period (default 24 h), allowing clients to refresh their JWKS cache before the old key expires.
+  Configure with `token.signing_key_rotation_grace_period: "24h"` (HEA-539).
+- **Declarative rotation trigger** — set `rotate_signing_key: true` under a realm's YAML block to
+  trigger rotation on the next server startup via config diff. The flag is auto-cleared from the
+  stored snapshot so subsequent restarts do not re-rotate while the YAML still contains the flag
+  (HEA-539).
 - **Storage engine** — custom embedded WAL + memtable + SST storage engine with tiered hot/cold storage, crash-safe `fsync`-before-ack semantics, per-realm key prefix scoping, and background SST compaction via atomic rename.
 - **Hot-path latency targets** — `benches/storage_gate.rs` CI gate enforces p50/p99 read latency; hot-tier auto-sizes from system memory / cgroup limits at startup.
 - **Encryption at rest** — all stored realm data encrypted; configurable key material per deployment.
