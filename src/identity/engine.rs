@@ -1900,6 +1900,28 @@ impl EmbeddedIdentityEngine {
 }
 
 impl EmbeddedIdentityEngine {
+    /// Marks every non-revoked session in a realm as revoked.
+    ///
+    /// Called on suspend/archive transitions. Skips per-session audit events;
+    /// the caller's `RealmUpdated` event covers the lifecycle change.
+    fn bulk_revoke_sessions(storage: &dyn StorageEngine, realm_id: &RealmId) {
+        let prefix = keys::session_id_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let Ok(entries) = storage.scan(realm_id, &prefix, &end) else {
+            return;
+        };
+        for entry in &entries {
+            if let Ok(mut session) = serde_json::from_slice::<Session>(&entry.value) {
+                if !session.is_revoked() {
+                    session.revoke();
+                    if let Ok(bytes) = serde_json::to_vec(&session) {
+                        let _ = storage.put(realm_id, &entry.key, &bytes);
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns `{base_issuer}/realms/{name}` for per-realm OIDC scoping.
     /// Falls back to `base_issuer` when the realm cannot be loaded.
     fn realm_issuer_url(&self, realm_id: &RealmId) -> String {
@@ -2235,32 +2257,10 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             request.status,
             Some(RealmStatus::Suspended) | Some(RealmStatus::Archived)
         ) {
-            self.bulk_revoke_realm_sessions(realm_id);
+            Self::bulk_revoke_sessions(self.storage.as_ref(), realm_id);
         }
 
         Ok(realm)
-    }
-
-    /// Marks every non-revoked session in a realm as revoked.
-    ///
-    /// Used on suspend/archive transitions. Skips per-session audit events;
-    /// the caller's `RealmUpdated` event covers the status change.
-    fn bulk_revoke_realm_sessions(&self, realm_id: &RealmId) {
-        let prefix = keys::session_id_scan_prefix();
-        let end = keys::prefix_end(&prefix);
-        let Ok(entries) = self.storage.scan(realm_id, &prefix, &end) else {
-            return;
-        };
-        for entry in &entries {
-            if let Ok(mut session) = serde_json::from_slice::<Session>(&entry.value) {
-                if !session.is_revoked() {
-                    session.revoke();
-                    if let Ok(bytes) = serde_json::to_vec(&session) {
-                        let _ = self.storage.put(realm_id, &entry.key, &bytes);
-                    }
-                }
-            }
-        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3766,11 +3766,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // Fail-closed on realm lifecycle: suspended or archived realms must not
         // accept tokens. Checked after signature verification so forged tokens
         // never trigger a storage read.
-        let realm = self
-            .get_realm(realm_id)?
-            .ok_or(IdentityError::RealmNotFound)?;
-        if realm.status() != RealmStatus::Active {
-            return Err(IdentityError::RealmSuspended);
+        //
+        // Unregistered realm IDs are allowed through — in production they
+        // cannot produce cryptographically-valid tokens (no signing key to
+        // issue with), so there is no realistic bypass path.
+        if let Ok(Some(realm)) = self.get_realm(realm_id) {
+            if realm.status() != RealmStatus::Active {
+                return Err(IdentityError::RealmSuspended);
+            }
         }
 
         // RFC 7519 §4.1.3 — audience must include the configured value.

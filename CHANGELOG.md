@@ -9,6 +9,11 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Security
 
+- **`validate_token` now rejects tokens from Suspended or Archived realms** — suspending or
+  archiving a realm immediately blocks all token validation for that realm. Previously, tokens
+  remained valid until natural expiry even after a realm was suspended or archived. As a
+  belt-and-suspenders measure, `update_realm` also revokes all active sessions in the realm when
+  transitioning to Suspended or Archived status (HEA-544).
 - **PKCE mandatory for all clients** — confidential clients (those with a `client_secret`) are now
   required to supply `code_challenge`/`code_verifier` in the authorization code flow, matching the
   RFC 9700 §2.1.1 recommendation. Operators who need legacy-client compatibility can set
