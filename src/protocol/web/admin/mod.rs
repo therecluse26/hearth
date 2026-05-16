@@ -46,19 +46,23 @@ pub(crate) use super::templates;
 pub mod clients;
 pub mod groups;
 pub mod identity_providers;
+pub mod onboarding;
 pub mod orgs;
 pub mod rbac;
 pub mod realms;
 pub mod users;
+pub mod webhooks;
 
 // Re-export all public handlers so `web/mod.rs` keeps `admin::fn_name` paths.
 pub use clients::*;
 pub use groups::*;
 pub use identity_providers::*;
+pub use onboarding::*;
 pub use orgs::*;
 pub use rbac::*;
 pub use realms::*;
 pub use users::*;
+pub use webhooks::*;
 
 // ---------------------------------------------------------------------------
 // Shared query type

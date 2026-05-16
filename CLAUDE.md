@@ -192,3 +192,48 @@ All UI code MUST comply with `docs/specs/THEME.md`. Read it before touching anyt
 
 - New deps must be justified, pass `cargo-audit`, and have compatible license (Apache 2.0/MIT/BSD/MPL-2.0).
 - Bans: no ORM, no `lazy_static`, no `async-trait` on hot path, no `reqwest` in production.
+
+## Changelog Process
+
+Every PR that ships a user-visible change **MUST** include a `CHANGELOG.md` entry written at implementation time — not after review, not at release. "User-visible" means any new or changed HTTP endpoint, config key, CLI flag, gRPC method, SDK surface, or security fix.
+
+### Entry format
+
+Entries go under `## [Unreleased]` in `CHANGELOG.md`, in the appropriate category:
+
+| Category | When to use |
+|----------|-------------|
+| `### Added` | New endpoint, config key, CLI flag, feature, or SDK method |
+| `### Changed` | Behavioral change to an existing surface (including breaking changes) |
+| `### Fixed` | Bug fix visible to operators or integrators |
+| `### Security` | Any security fix, hardening, or CVE remediation |
+| `### Removed` | Deleted endpoint, config key, CLI flag, or SDK method |
+
+Write entries from the operator/integrator perspective, not the implementation perspective. One bullet per logical change; reference the issue or PR number in parentheses when relevant (e.g., `(HEA-501)`).
+
+**Example:**
+
+```markdown
+### Added
+- **PKCE mandatory** — all public clients must supply a `code_challenge`; server rejects
+  authorization requests without one (HEA-501).
+
+### Fixed
+- Double-slash 404s on Admin Users workspace links (HEA-306).
+```
+
+### What does NOT need a changelog entry
+
+- Refactoring with no behavior change
+- Test additions or test fixes
+- CI/tooling/build changes with no operator-visible effect
+- Doc-only PRs (like this one)
+
+### Release-cut procedure
+
+When cutting a versioned release (`vX.Y.Z`):
+
+1. Replace `## [Unreleased]` with `## [X.Y.Z] — YYYY-MM-DD`.
+2. Add a fresh `## [Unreleased]` section above it (empty categories can be omitted).
+3. Tag the commit: `git tag -s vX.Y.Z -m "Release vX.Y.Z"`.
+4. The changelog entry for the release commit itself is the version heading — no bullet needed.

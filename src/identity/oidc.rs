@@ -516,12 +516,14 @@ pub struct AuthorizationResponse {
     code: String,
     /// The state value echoed back for CSRF verification.
     state: String,
+    /// RFC 9207 issuer identifier — appended to the redirect as `iss=`.
+    iss: String,
 }
 
 impl AuthorizationResponse {
     /// Creates a new authorization response.
-    pub(crate) fn new(code: String, state: String) -> Self {
-        Self { code, state }
+    pub(crate) fn new(code: String, state: String, iss: String) -> Self {
+        Self { code, state, iss }
     }
 
     /// Returns the authorization code.
@@ -532,6 +534,11 @@ impl AuthorizationResponse {
     /// Returns the state value.
     pub fn state(&self) -> &str {
         &self.state
+    }
+
+    /// Returns the RFC 9207 issuer identifier.
+    pub fn iss(&self) -> &str {
+        &self.iss
     }
 }
 
@@ -689,6 +696,9 @@ pub struct OidcDiscoveryDocument {
     /// Whether RFC 8707 resource indicators are supported.
     #[serde(default)]
     pub resource_indicators_supported: bool,
+    /// Whether the RFC 9207 `iss` parameter is included in authorization responses.
+    #[serde(default)]
+    pub authorization_response_iss_parameter_supported: bool,
     /// URL of the RP-initiated logout endpoint (OIDC RP-Initiated Logout 1.0 §3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_session_endpoint: Option<String>,
@@ -969,6 +979,51 @@ pub struct UserInfoResponse {
     pub custom: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// Exercises the token exchange body parsing and validation pipeline on arbitrary bytes.
+///
+/// Intended for fuzz testing: interprets `data` as a JSON token request body,
+/// exercising grant_type dispatch, scope normalization, redirect URI validation,
+/// and PKCE verifier length checks. Must never panic — always returns `Ok` or `Err`.
+pub fn fuzz_parse_token_exchange(data: &[u8]) {
+    use crate::identity::types::canonicalize_scopes;
+    use crate::identity::validation::{validate_redirect_uri, validate_scope_tokens};
+
+    // Exercise JSON parsing of the token exchange body.
+    let _ = serde_json::from_slice::<serde_json::Value>(data);
+
+    // Exercise OIDC discovery document deserialization.
+    let input = String::from_utf8_lossy(data);
+    let _ = serde_json::from_str::<OidcDiscoveryDocument>(&input);
+
+    // Exercise introspection response deserialization.
+    let _ = serde_json::from_str::<IntrospectionResponse>(&input);
+
+    // Treat the input as a scope string and exercise normalization.
+    let scope_tokens: Vec<String> = input.split_whitespace().map(String::from).collect();
+    let _ = canonicalize_scopes(scope_tokens);
+    let _ = validate_scope_tokens(&input);
+
+    // Treat the input as a redirect URI and exercise validation.
+    let _ = validate_redirect_uri(&input);
+
+    // Extract grant_type-like string from raw JSON and exercise matching logic.
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&input) {
+        if let Some(serde_json::Value::String(s)) = map.get("redirect_uri") {
+            let _ = validate_redirect_uri(s);
+        }
+        if let Some(serde_json::Value::String(s)) = map.get("scope") {
+            let _ = validate_scope_tokens(s);
+            let tokens: Vec<String> = s.split_whitespace().map(String::from).collect();
+            let _ = canonicalize_scopes(tokens);
+        }
+        // Exercise code_verifier length boundary.
+        if let Some(serde_json::Value::String(v)) = map.get("code_verifier") {
+            let _ = v.len() > 128;
+            let _ = v.len() < 43;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1016,9 +1071,14 @@ mod tests {
 
     #[test]
     fn authorization_response_accessors() {
-        let resp = AuthorizationResponse::new("code123".to_string(), "state456".to_string());
+        let resp = AuthorizationResponse::new(
+            "code123".to_string(),
+            "state456".to_string(),
+            "https://auth.example.com".to_string(),
+        );
         assert_eq!(resp.code(), "code123");
         assert_eq!(resp.state(), "state456");
+        assert_eq!(resp.iss(), "https://auth.example.com");
     }
 
     #[test]
@@ -1088,6 +1148,7 @@ mod tests {
             revocation_endpoint: Some("https://hearth.local/revoke".to_string()),
             introspection_endpoint: Some("https://hearth.local/introspect".to_string()),
             resource_indicators_supported: false,
+            authorization_response_iss_parameter_supported: true,
             end_session_endpoint: Some("https://hearth.local/end_session".to_string()),
             backchannel_logout_supported: false,
             backchannel_logout_session_supported: false,

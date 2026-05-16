@@ -1,0 +1,71 @@
+{# Inline detail panel for a single audit event row.
+   Rendered inside a colspan=5 <td> controlled by Alpine x-show.
+   Variables available: `row` (AuditRow) with fields:
+     row.event.id, row.event.action, row.event.actor, row.event.resource_type,
+     row.event.resource_id, row.metadata_json, row.previous_hash,
+     row.hash, row.timestamp_display
+#}
+<div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+
+  {# Left: full event JSON #}
+  <div>
+    <div class="mb-1.5 flex items-center justify-between">
+      <span class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Event payload</span>
+      <button type="button"
+              title="Copy JSON"
+              @click="
+                navigator.clipboard.writeText($el.closest('.grid').querySelector('pre').textContent);
+                $el.textContent = 'Copied';
+                setTimeout(() => $el.textContent = 'Copy', 1500);"
+              class="rounded border border-strong bg-ht-surface-elevated px-2 py-0.5 font-mono text-xs text-ht-content-muted hover-bg-divider hover:text-ht-content-secondary transition-colors">
+        Copy
+      </button>
+    </div>
+    <pre class="overflow-x-auto rounded-sm bg-ht-surface-base p-3 font-mono text-xs leading-relaxed text-ht-content-secondary ring-1 ring-divider-subtle">{{ row.metadata_json }}</pre>
+  </div>
+
+  {# Right: hash chain proof #}
+  <div class="space-y-3">
+    <div>
+      <span class="font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Hash chain proof</span>
+    </div>
+
+    <div class="rounded-sm bg-ht-surface-base p-3 ring-1 ring-divider-subtle space-y-2">
+      <div class="flex flex-col gap-0.5">
+        <span class="text-xs text-ht-content-muted">Event ID</span>
+        <code class="break-all font-mono text-xs text-ht-content-secondary">{{ row.event.id }}</code>
+      </div>
+      <div class="flex flex-col gap-0.5">
+        <span class="text-xs text-ht-content-muted">Previous hash</span>
+        <code class="break-all font-mono text-xs text-ht-content-secondary">
+          {% if row.previous_hash.is_empty() %}
+            <span class="italic text-ht-content-muted">genesis (first event in realm)</span>
+          {% else %}
+            {{ row.previous_hash }}
+          {% endif %}
+        </code>
+      </div>
+      <div class="border-t border-divider-faint pt-2 flex flex-col gap-0.5">
+        <span class="text-xs text-ht-content-muted">This event hash</span>
+        <code class="break-all font-mono text-xs text-ht-content-primary font-medium">{{ row.hash }}</code>
+      </div>
+    </div>
+
+    {# Chain integrity badge — set by the handler as row.chain_valid: Option<bool> #}
+    {% match row.chain_valid %}
+      {% when Some with (true) %}
+        <div class="inline-flex items-center gap-1.5 rounded-full bg-success/[0.12] px-2.5 py-1 text-xs font-medium text-success-fg">
+          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Chain integrity verified
+        </div>
+      {% when Some with (false) %}
+        <div class="inline-flex items-center gap-1.5 rounded-full bg-danger/[0.12] px-2.5 py-1 text-xs font-medium text-danger-fg">
+          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Chain integrity broken
+        </div>
+      {% when None %}
+        {# Not yet verified — verify via the "Verify integrity" button in the filter bar #}
+    {% endmatch %}
+  </div>
+
+</div>

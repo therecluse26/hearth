@@ -1,0 +1,27 @@
+{# Empty state for the users list within a realm.
+   Rust handler vars: realm_name: String #}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-ht-surface-elevated ring-1 ring-divider-subtle">
+    <svg class="h-7 w-7 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+      <circle cx="9" cy="7" r="4"/>
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+    </svg>
+  </div>
+  <h3 class="font-display text-lg font-medium text-ht-content-primary">No users yet</h3>
+  <p class="mt-2 max-w-sm text-sm text-ht-content-muted">
+    Invite users to this realm to give them access to applications, assign roles, and track their activity in the audit log.
+  </p>
+  <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+    <a href="/ui/admin/realms/{{ realm_name }}/users/invite"
+       class="btn-ember rounded px-4 py-2 text-sm font-semibold">
+      <svg class="mr-1.5 inline-block h-4 w-4 align-[-2px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+      Invite your first user
+    </a>
+    <a href="/ui/admin/realms/{{ realm_name }}/users/new"
+       class="inline-flex items-center gap-1.5 rounded border border-divider bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+      Create manually
+    </a>
+  </div>
+</div>

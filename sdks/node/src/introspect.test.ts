@@ -110,7 +110,7 @@ describe("IntrospectionClient", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       json: async () => { throw new Error("bad json"); },
-    } as Response);
+    } as unknown as Response);
     await expect(makeClient().introspect("tok")).rejects.toBeInstanceOf(IntrospectionError);
   });
 

@@ -11,7 +11,9 @@ use base64::Engine as _;
 use ring::rand::SecureRandom;
 
 use crate::audit::{Actor, AuditAction, AuditContext, AuditEngine, CreateAuditEvent};
-use crate::core::{ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, Uri, UserId};
+use crate::core::{
+    ClientId, Clock, InvitationId, OrganizationId, RealmId, SessionId, Uri, UserId, WebhookId,
+};
 use crate::identity::claims_config::{
     resolve_claims_for_target, ClaimEvaluationContext, ClaimTarget,
 };
@@ -459,6 +461,8 @@ impl EmbeddedIdentityEngine {
         client: &OAuthClient,
         raw_scope: &str,
     ) -> Result<(), IdentityError> {
+        // RFC 6749 §3.3 character validation (must come first — gate all paths)
+        validation::validate_scope_tokens(raw_scope)?;
         let requested: Vec<&str> = raw_scope
             .split_whitespace()
             .filter(|scope| !scope.is_empty())
@@ -1011,10 +1015,10 @@ impl EmbeddedIdentityEngine {
 
     // ===== Password reset rate limiting helpers =====
 
-    /// Password reset rate limit: 3 requests per email per hour.
+    /// Password reset rate limit: 3 requests per email per 15 minutes.
     const PASSWORD_RESET_MAX_REQUESTS: u32 = 3;
-    /// Password reset rate limit window: 1 hour in microseconds.
-    const PASSWORD_RESET_RATE_WINDOW_MICROS: i64 = 60 * 60 * 1_000_000;
+    /// Password reset rate limit window: 15 minutes in microseconds.
+    const PASSWORD_RESET_RATE_WINDOW_MICROS: i64 = 15 * 60 * 1_000_000;
 
     /// Builds a password reset rate tracker key from realm and email.
     fn password_reset_tracker_key(realm_id: &RealmId, email: &str) -> String {
@@ -1949,6 +1953,7 @@ impl EmbeddedIdentityEngine {
             revocation_endpoint: Some(format!("{issuer}/revoke")),
             introspection_endpoint: Some(format!("{issuer}/introspect")),
             resource_indicators_supported: true,
+            authorization_response_iss_parameter_supported: true,
             end_session_endpoint: Some(format!("{issuer}/end_session")),
             backchannel_logout_supported: true,
             backchannel_logout_session_supported: true,
@@ -2040,6 +2045,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // record+key `put_batch` below is never interleaved with another
         // thread's update/delete. See `realm_ops_lock` docs.
         let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+
+        // Reject duplicate names — if the name index already points at a
+        // realm, refuse rather than silently overwriting the index and
+        // leaving an orphaned realm record that the UUID scan would surface.
+        if self.get_realm_by_name(&request.name)?.is_some() {
+            return Err(IdentityError::DuplicateRealmName);
+        }
+
         let now = self.clock.now();
         let realm_id = RealmId::generate();
         let config = request.config.clone().unwrap_or_default();
@@ -3070,6 +3083,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         password: &CleartextPassword,
     ) -> Result<bool, IdentityError> {
+        // Enforce realm policy: password must be in the allowed_auth_methods list.
+        self.check_allowed_auth_method(realm_id, "password")?;
+
         // Rate limit check: reject early if account is locked out
         self.check_rate_limit(realm_id, user_id)?;
 
@@ -3178,6 +3194,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         context: &SessionContext,
     ) -> Result<Session, IdentityError> {
+        // Enforce mfa_required policy unless the session originates from a
+        // passkey ceremony (passkeys are inherently multi-factor).
+        if !context.satisfies_mfa_via_passkey {
+            if let Ok(Some(realm)) = self.get_realm(realm_id) {
+                if realm.config().mfa_required.unwrap_or(false) {
+                    let has_mfa = self.mfa_enabled(realm_id, user_id).unwrap_or(false);
+                    if !has_mfa {
+                        return Err(IdentityError::MfaRequired);
+                    }
+                }
+            }
+        }
+
         // Ensure the user exists and is permitted to start a session.
         // Unverified users must complete the email-verification flow first;
         // disabled users are blocked entirely (distinguished from
@@ -3976,20 +4005,30 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             }
         }
 
-        // 5. Validate PKCE code_challenge_method if present
-        if let Some(ref method) = request.code_challenge_method {
-            if *method != CodeChallengeMethod::S256 {
-                return Err(IdentityError::InvalidInput {
-                    reason: "only S256 code challenge method is supported".to_string(),
-                });
-            }
-            // code_challenge must be present if method is specified
-            if request.code_challenge.is_none() {
-                return Err(IdentityError::InvalidInput {
-                    reason: "code_challenge is required when code_challenge_method is specified"
-                        .to_string(),
-                });
-            }
+        // 5. PKCE enforcement (RFC 9700 §2.1.1)
+        // Public clients (no client secret) MUST provide PKCE with S256.
+        if !client.is_confidential() && request.code_challenge.is_none() {
+            return Err(IdentityError::InvalidInput {
+                reason: "public clients must use PKCE (code_challenge with S256 required)"
+                    .to_string(),
+            });
+        }
+        // When a challenge is present, only S256 is permitted (plain is rejected per RFC 9700).
+        if request.code_challenge.is_some()
+            && !matches!(
+                request.code_challenge_method,
+                Some(CodeChallengeMethod::S256)
+            )
+        {
+            return Err(IdentityError::InvalidInput {
+                reason: "code_challenge requires code_challenge_method=S256".to_string(),
+            });
+        }
+        // code_challenge_method without a challenge is an error
+        if request.code_challenge.is_none() && request.code_challenge_method.is_some() {
+            return Err(IdentityError::InvalidInput {
+                reason: "code_challenge_method requires code_challenge to be present".to_string(),
+            });
         }
 
         // 6. Generate cryptographically random authorization code (32 bytes)
@@ -4034,7 +4073,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             .put(realm_id, &code_key, &code_bytes)
             .map_err(Self::storage_err)?;
 
-        Ok(AuthorizationResponse::new(raw_code, request.state.clone()))
+        Ok(AuthorizationResponse::new(
+            raw_code,
+            request.state.clone(),
+            self.config.oidc.issuer.clone(),
+        ))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5872,6 +5915,18 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             })?;
         let user_id = UserId::new(uuid);
         self.set_password(realm_id, &user_id, new_password)?;
+
+        // 7. Invalidate all existing sessions — credential change should force re-auth.
+        let page = self.list_sessions_by_user(realm_id, &user_id, None, 1000)?;
+        for session in page.items {
+            if let Err(e) = self.revoke_session(realm_id, session.id()) {
+                tracing::warn!(
+                    session_id = %session.id(),
+                    error = %e,
+                    "reset_password: failed to revoke session"
+                );
+            }
+        }
 
         self.record_audit(
             realm_id,
@@ -8804,6 +8859,102 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         self.get_organization(realm_id, &org_id)
     }
 
+    // ===== Webhooks =====
+
+    fn create_webhook(
+        &self,
+        realm_id: &RealmId,
+        req: &crate::identity::CreateWebhookRequest,
+    ) -> Result<crate::identity::Webhook, IdentityError> {
+        use crate::identity::types::Webhook;
+        let id = WebhookId::generate();
+        let now = self.clock.now();
+        let webhook = Webhook::new(
+            id.clone(),
+            realm_id.clone(),
+            req.url.clone(),
+            req.secret.clone(),
+            req.events.clone(),
+            req.enabled,
+            now,
+            now,
+        );
+        let value = serde_json::to_vec(&webhook).map_err(|e| IdentityError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage
+            .put(realm_id, &keys::encode_webhook_id(&id), &value)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+        Ok(webhook)
+    }
+
+    fn get_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<Option<crate::identity::Webhook>, IdentityError> {
+        use crate::identity::types::Webhook;
+        match self
+            .storage
+            .get(realm_id, &keys::encode_webhook_id(webhook_id))
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?
+        {
+            Some(bytes) => {
+                let wh: Webhook =
+                    serde_json::from_slice(&bytes).map_err(|e| IdentityError::Serialization {
+                        reason: e.to_string(),
+                    })?;
+                Ok(Some(wh))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_webhooks(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<Vec<crate::identity::Webhook>, IdentityError> {
+        use crate::identity::types::Webhook;
+        let prefix = keys::webhook_id_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let entries = self
+            .storage
+            .scan(realm_id, &prefix, &end)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match serde_json::from_slice::<Webhook>(&entry.value) {
+                Ok(wh) => out.push(wh),
+                Err(e) => {
+                    tracing::warn!(error = %e, "webhook deserialization failed, skipping");
+                }
+            }
+        }
+        out.sort_by_key(|w| w.created_at);
+        Ok(out)
+    }
+
+    fn delete_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<(), IdentityError> {
+        let key = keys::encode_webhook_id(webhook_id);
+        match self
+            .storage
+            .get(realm_id, &key)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?
+        {
+            None => Err(IdentityError::WebhookNotFound),
+            Some(_) => {
+                self.storage
+                    .delete(realm_id, &key)
+                    .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+                Ok(())
+            }
+        }
+    }
+
     // ===== Periodic cleanup =====
 
     fn sweep_expired(
@@ -10113,6 +10264,7 @@ mod tests {
             ip_address: Some("203.0.113.42".to_string()),
             user_agent_raw: Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()),
             device_label: Some("Chrome, Mac OSX".to_string()),
+            satisfies_mfa_via_passkey: false,
         };
 
         let session = engine
@@ -10564,6 +10716,12 @@ mod tests {
     //  OIDC / OAuth 2.0 Unit Tests (Step 15)
     // ===================================================================
 
+    fn pkce_challenge(verifier: &str) -> String {
+        let digest = ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes());
+        URL_SAFE_NO_PAD.encode(digest.as_ref())
+    }
+    const TEST_PKCE_VERIFIER: &str = "S4gKJfVNgWiFl2PQ8RxXS7E6Mhr9BqyTvUIe3WoA5Zc";
+
     fn register_test_client(engine: &EmbeddedIdentityEngine, realm: &RealmId) -> OAuthClient {
         engine
             .register_client(
@@ -10600,8 +10758,8 @@ mod tests {
                     state: "random-state-value".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -10633,8 +10791,8 @@ mod tests {
                     state: "state1".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -10648,7 +10806,7 @@ mod tests {
                     client_id: client.client_id().clone(),
                     code: auth_response.code().to_string(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 },
             )
             .expect("exchange code");
@@ -10691,8 +10849,8 @@ mod tests {
                     state: "state2".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -10706,7 +10864,7 @@ mod tests {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         );
         assert!(result1.is_ok(), "first exchange should succeed");
@@ -10718,7 +10876,7 @@ mod tests {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         );
         assert!(
@@ -10746,8 +10904,8 @@ mod tests {
                     state: "state3".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -10764,7 +10922,7 @@ mod tests {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         );
         assert!(
@@ -10819,8 +10977,8 @@ mod tests {
                     state: "adv-state".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -10835,7 +10993,7 @@ mod tests {
                     client_id: client.client_id().clone(),
                     code: auth_response.code().to_string(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 },
             )
             .expect("first exchange");
@@ -10847,7 +11005,7 @@ mod tests {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         );
         assert!(
@@ -10875,8 +11033,8 @@ mod tests {
                 state: "state-val".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -10906,8 +11064,8 @@ mod tests {
                 state: String::new(), // empty state
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -11109,8 +11267,8 @@ mod tests {
                 state: "state-1".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: Some("unique-nonce-abc".to_string()),
                 resource: None,
             },
@@ -11127,8 +11285,8 @@ mod tests {
                 state: "state-2".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: Some("unique-nonce-abc".to_string()),
                 resource: None,
             },
@@ -11148,8 +11306,8 @@ mod tests {
                 state: "state-3".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: Some("different-nonce-xyz".to_string()),
                 resource: None,
             },
@@ -11176,8 +11334,8 @@ mod tests {
                     state: format!("state-{state_suffix}"),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: Some("same-nonce".to_string()),
                     resource: None,
                 },
@@ -11205,8 +11363,8 @@ mod tests {
             state: state.to_string(),
             response_type: "code".to_string(),
             user_id: user.id().clone(),
-            code_challenge: None,
-            code_challenge_method: None,
+            code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+            code_challenge_method: Some(CodeChallengeMethod::S256),
             nonce: Some(nonce.to_string()),
             resource: None,
         };
@@ -11263,8 +11421,8 @@ mod tests {
                 state: format!("batch-a-state-{i}"),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: Some(format!("batch-a-nonce-{i}")),
                 resource: None,
             };
@@ -11289,8 +11447,8 @@ mod tests {
                 state: format!("batch-b-state-{i}"),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: Some(format!("batch-b-nonce-{i}")),
                 resource: None,
             };
@@ -11366,6 +11524,37 @@ mod tests {
 
         let result = engine.get_realm(&RealmId::generate()).expect("get realm");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn create_realm_rejects_duplicate_name() {
+        let (_dir, engine, _clock) = setup_engine();
+
+        engine
+            .create_realm(&CreateRealmRequest {
+                name: "duplicate-corp".to_string(),
+                config: None,
+            })
+            .expect("first create_realm should succeed");
+
+        let err = engine
+            .create_realm(&CreateRealmRequest {
+                name: "duplicate-corp".to_string(),
+                config: None,
+            })
+            .expect_err("second create_realm with same name should fail");
+
+        assert!(
+            matches!(err, IdentityError::DuplicateRealmName),
+            "expected DuplicateRealmName, got {err:?}"
+        );
+
+        // Confirm only one realm record exists for that name
+        let realm = engine
+            .get_realm_by_name("duplicate-corp")
+            .expect("get_realm_by_name")
+            .expect("realm should exist");
+        assert_eq!(realm.name(), "duplicate-corp");
     }
 
     // --- Unit Scenario 2: Realm-scoped user creation; cross-realm lookup returns not-found ---
@@ -11682,8 +11871,9 @@ mod tests {
             /// consistent realm count and clean storage.
             #[test]
             fn create_delete_maintains_consistent_count(
-                names in proptest::collection::vec(valid_realm_name(), 2..8),
+                names in proptest::collection::hash_set(valid_realm_name(), 2..8),
             ) {
+                let names: Vec<String> = names.into_iter().collect();
                 let (_dir, engine, _clock) = setup_engine();
                 let mut created_realms = Vec::new();
 
@@ -11993,8 +12183,8 @@ mod tests {
                     state: "test-state".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -12008,7 +12198,7 @@ mod tests {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 },
             )
             .expect("exchange code");
@@ -12107,8 +12297,8 @@ mod tests {
                     state: "forgery-state".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -12121,7 +12311,7 @@ mod tests {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 },
             )
             .expect("exchange code");
@@ -12220,8 +12410,8 @@ mod tests {
                     state: "state".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -12235,7 +12425,7 @@ mod tests {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
                     redirect_uri: "https://app.example.com/callback".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 },
             )
             .expect("exchange code");
@@ -12399,8 +12589,8 @@ mod tests {
                     state: "theft-state".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                     resource: None,
                 },
@@ -12414,7 +12604,7 @@ mod tests {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
                     redirect_uri: "https://app.example.com/cb".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 },
             )
             .expect("exchange");
@@ -12633,8 +12823,8 @@ mod tests {
                         state: format!("state-{i}"),
                         response_type: "code".to_string(),
                         user_id: user.id().clone(),
-                        code_challenge: None,
-                        code_challenge_method: None,
+                        code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                        code_challenge_method: Some(CodeChallengeMethod::S256),
                         nonce: None,
                                             resource: None,
                     }).expect("authorize");
@@ -12643,7 +12833,7 @@ mod tests {
                         client_id: client.client_id().clone(),
                         code: auth.code().to_string(),
                         redirect_uri: "https://app.example.com/cb".to_string(),
-                        code_verifier: None,
+                        code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                     }).expect("exchange");
 
                     access_tokens.push(tokens.access_token().to_string());
@@ -12743,8 +12933,8 @@ mod tests {
                     state: "rotate-state".to_string(),
                     response_type: "code".to_string(),
                     user_id: user.id().clone(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     nonce: None,
                                     resource: None,
                 }).expect("authorize");
@@ -12753,7 +12943,7 @@ mod tests {
                     client_id: client.client_id().clone(),
                     code: auth.code().to_string(),
                     redirect_uri: "https://app.example.com/cb".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 }).expect("exchange");
 
                 let mut current_refresh = tokens.refresh_token().to_string();
@@ -13304,8 +13494,8 @@ mod tests {
             requested_scopes: vec!["profile".to_string()],
             state: "xyz".to_string(),
             response_type: "code".to_string(),
-            code_challenge: None,
-            code_challenge_method: None,
+            code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+            code_challenge_method: Some("S256".to_string()),
             nonce: None,
             created_at: now,
             expires_at: now.add_micros(600_000_000),
@@ -13334,8 +13524,8 @@ mod tests {
             requested_scopes: vec!["profile".to_string()],
             state: "xyz".to_string(),
             response_type: "code".to_string(),
-            code_challenge: None,
-            code_challenge_method: None,
+            code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+            code_challenge_method: Some("S256".to_string()),
             nonce: None,
             created_at: now,
             expires_at: now.add_micros(600_000_000),
@@ -13666,8 +13856,8 @@ mod tests {
                     state: "csrf-state".to_string(),
                     response_type: "code".to_string(),
                     scope: "openid".to_string(),
-                    code_challenge: None,
-                    code_challenge_method: None,
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
                     user_id: user.id().clone(),
                     nonce: None,
                     resource: None,
@@ -13682,7 +13872,7 @@ mod tests {
                     code: auth.code().to_string(),
                     client_id: client.client_id().clone(),
                     redirect_uri: "https://app.example.com/cb".to_string(),
-                    code_verifier: None,
+                    code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
                 },
             )
             .expect("exchange");
@@ -13877,6 +14067,295 @@ mod tests {
         assert!(
             matches!(err, IdentityError::PasswordResetTokenInvalid),
             "expected PasswordResetTokenInvalid after TTL expiry, got: {err}"
+        );
+    }
+
+    // ==========================================================================
+    // HEA-501: Security Phase A — PKCE mandatory, redirect URI hardening, RFC 9207 iss
+    // ==========================================================================
+
+    // F-01: Public client must supply PKCE S256
+    #[test]
+    fn public_client_requires_pkce_s256() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm); // public client
+        let user = create_test_user(&engine, &realm);
+        assert!(
+            !client.is_confidential(),
+            "register_test_client must be public"
+        );
+
+        let err = engine
+            .authorize(
+                &realm,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "s".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                    resource: None,
+                },
+            )
+            .expect_err("must reject public client with no PKCE");
+        assert!(
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("public clients must use PKCE")),
+            "got: {err}"
+        );
+    }
+
+    // F-01: Plain PKCE method must be rejected even when challenge is present
+    #[test]
+    fn pkce_challenge_without_s256_method_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
+
+        // challenge present but no method supplied
+        let err = engine
+            .authorize(
+                &realm,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "s".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: None,
+                    nonce: None,
+                    resource: None,
+                },
+            )
+            .expect_err("must reject challenge without S256 method");
+        assert!(
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("S256")),
+            "got: {err}"
+        );
+    }
+
+    // F-01: Confidential client can omit PKCE (not required)
+    #[test]
+    fn confidential_client_can_omit_pkce() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+        // Confidential auth-code client: has secret + redirect_uri + authorization_code grant.
+        let client = engine
+            .register_client(
+                &realm,
+                &RegisterClientRequest {
+                    client_name: "Confidential Auth Code App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/callback".to_string()],
+                    client_secret: Some("s3cr3t".to_string()),
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                    ..Default::default()
+                },
+            )
+            .expect("register confidential client");
+        let user = create_test_user(&engine, &realm);
+        assert!(client.is_confidential());
+
+        engine
+            .authorize(
+                &realm,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "s".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: None,
+                    code_challenge_method: None,
+                    nonce: None,
+                    resource: None,
+                },
+            )
+            .expect("confidential client must succeed without PKCE");
+    }
+
+    // F-02: Redirect URI with fragment must be rejected at registration
+    #[test]
+    fn redirect_uri_fragment_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+
+        let err = engine
+            .register_client(
+                &realm,
+                &RegisterClientRequest {
+                    client_name: "Frag App".to_string(),
+                    redirect_uris: vec!["https://app.example.com/cb#fragment".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                    ..Default::default()
+                },
+            )
+            .expect_err("fragment URI must be rejected");
+        assert!(
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("fragment")),
+            "got: {err}"
+        );
+    }
+
+    // F-02: Redirect URI with wildcard must be rejected
+    #[test]
+    fn redirect_uri_wildcard_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+
+        let err = engine
+            .register_client(
+                &realm,
+                &RegisterClientRequest {
+                    client_name: "Wild App".to_string(),
+                    redirect_uris: vec!["https://*.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                    ..Default::default()
+                },
+            )
+            .expect_err("wildcard URI must be rejected");
+        assert!(
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("wildcard")),
+            "got: {err}"
+        );
+    }
+
+    // F-02: Non-localhost http URI must be rejected
+    #[test]
+    fn redirect_uri_http_non_localhost_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+
+        let err = engine
+            .register_client(
+                &realm,
+                &RegisterClientRequest {
+                    client_name: "Bad App".to_string(),
+                    redirect_uris: vec!["http://app.example.com/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                    ..Default::default()
+                },
+            )
+            .expect_err("http non-localhost URI must be rejected");
+        assert!(
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("loopback")),
+            "got: {err}"
+        );
+    }
+
+    // F-02: localhost http URI must be allowed (RFC 8252 §8.3)
+    #[test]
+    fn redirect_uri_http_localhost_allowed() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+
+        engine
+            .register_client(
+                &realm,
+                &RegisterClientRequest {
+                    client_name: "Native App".to_string(),
+                    redirect_uris: vec!["http://localhost:8080/cb".to_string()],
+                    client_secret: None,
+                    grant_types: vec!["authorization_code".to_string()],
+                    require_consent: true,
+                    client_logo_url: None,
+                    ..Default::default()
+                },
+            )
+            .expect("localhost http must be allowed");
+    }
+
+    // F-15: Scope with invalid characters must be rejected
+    #[test]
+    fn scope_with_invalid_characters_rejected() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
+
+        let err = engine
+            .authorize(
+                &realm,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid \"bad-scope\"".to_string(),
+                    state: "s".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
+                    nonce: None,
+                    resource: None,
+                },
+            )
+            .expect_err("invalid scope chars must be rejected");
+        assert!(
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("scope")),
+            "got: {err}"
+        );
+    }
+
+    // F-07: Authorization response includes iss
+    #[test]
+    fn authorization_response_includes_iss() {
+        let (_dir, engine, _clock) = setup_engine();
+        let realm = RealmId::generate();
+        let client = register_test_client(&engine, &realm);
+        let user = create_test_user(&engine, &realm);
+
+        let resp = engine
+            .authorize(
+                &realm,
+                &AuthorizationRequest {
+                    client_id: client.client_id().clone(),
+                    redirect_uri: "https://app.example.com/callback".to_string(),
+                    scope: "openid".to_string(),
+                    state: "s".to_string(),
+                    response_type: "code".to_string(),
+                    user_id: user.id().clone(),
+                    code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                    code_challenge_method: Some(CodeChallengeMethod::S256),
+                    nonce: None,
+                    resource: None,
+                },
+            )
+            .expect("authorize must succeed");
+
+        assert!(!resp.iss().is_empty(), "iss must be present in response");
+        assert!(
+            resp.iss().starts_with("http"),
+            "iss must be an absolute URL, got: {}",
+            resp.iss()
+        );
+    }
+
+    // F-07: Discovery document advertises authorization_response_iss_parameter_supported
+    #[test]
+    fn discovery_doc_includes_iss_parameter_supported() {
+        let (_dir, engine, _clock) = setup_engine();
+        let doc = engine.oidc_discovery();
+        assert!(
+            doc.authorization_response_iss_parameter_supported,
+            "discovery must advertise iss parameter support"
         );
     }
 }

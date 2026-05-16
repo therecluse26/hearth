@@ -234,6 +234,16 @@ async fn authorize_get_impl(
         }
     };
 
+    // 3b. Public clients MUST supply PKCE S256 (RFC 9700 / HEA-501 F-01).
+    if !client.is_confidential() && q.code_challenge.is_empty() {
+        return redirect_with_oauth_error(
+            &q.redirect_uri,
+            "invalid_request",
+            "public clients must use PKCE with code_challenge_method=S256",
+            &q.state,
+        );
+    }
+
     // 4. Canonicalize requested scopes once for consent matching.
     let requested_scopes = canonicalize_scopes(
         q.scope
@@ -709,9 +719,14 @@ fn issue_code_and_redirect(
         nonce,
     ) {
         Ok(resp) => {
+            // RFC 9207: include iss= in authorization response to prevent mix-up attacks
             let location = append_query(
                 redirect_uri,
-                &[("code", resp.code()), ("state", resp.state())],
+                &[
+                    ("code", resp.code()),
+                    ("state", resp.state()),
+                    ("iss", resp.iss()),
+                ],
             );
             Redirect::to(&location).into_response()
         }

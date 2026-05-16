@@ -12,7 +12,7 @@ use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::tokens::{decode_claims_unverified, verify_token_signature, Audience};
 use hearth::identity::{
-    AuthorizationRequest, CreateRealmRequest, CreateUserRequest, OAuthClient,
+    AuthorizationRequest, CodeChallengeMethod, CreateRealmRequest, CreateUserRequest, OAuthClient,
     RegisterClientRequest, TokenExchangeRequest,
 };
 
@@ -72,6 +72,13 @@ async fn setup_oidc_env() -> (
 }
 
 /// Runs a full authorization code flow and returns the token response.
+fn pkce_challenge(verifier: &str) -> String {
+    use data_encoding::BASE64URL_NOPAD;
+    BASE64URL_NOPAD
+        .encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()).as_ref())
+}
+const TEST_PKCE_VERIFIER: &str = "S4gKJfVNgWiFl2PQ8RxXS7E6Mhr9BqyTvUIe3WoA5Zc";
+
 fn authorize_and_exchange(
     harness: &common::TestHarness,
     realm_id: &RealmId,
@@ -90,8 +97,8 @@ fn authorize_and_exchange(
                 state: "csrf-state-123".to_string(),
                 response_type: "code".to_string(),
                 user_id: user_id.clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce,
                 resource: None,
             },
@@ -106,7 +113,7 @@ fn authorize_and_exchange(
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         )
         .expect("exchange code")

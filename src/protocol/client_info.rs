@@ -103,6 +103,7 @@ pub fn build_session_context(
         ip_address,
         user_agent_raw: ua_raw,
         device_label,
+        satisfies_mfa_via_passkey: false,
     }
 }
 

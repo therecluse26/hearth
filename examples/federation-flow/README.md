@@ -4,6 +4,12 @@ A browser-visible demo of Hearth as an **OIDC relying party** — the
 counterpart to [`../oauth-consent-flow/`](../oauth-consent-flow/),
 which demonstrates Hearth as an OIDC *provider*.
 
+> **Fully offline.** No Google console, no Okta tenant, no external
+> credentials of any kind. The upstream IdP in step 1 is a local
+> `node-oidc-provider` process with two hardcoded demo accounts
+> (`alice-ext-id` / `bob-ext-id`, password `demo`). To wire in a real
+> IdP (Google, Dex, etc.) instead, see the [appendix](#using-a-real-upstream-instead-appendix).
+
 You'll run three processes:
 
 1. **A local OIDC upstream** at `http://localhost:9090`, built on
@@ -44,6 +50,11 @@ You'll run three processes:
 - Node.js 18 or later (for both Node sub-projects).
 - Three free local ports: **8420** (Hearth), **9090** (upstream IdP),
   **3000** (client).
+
+> **Build time.** The first `cargo run --release` in step 2 compiles
+> the full Hearth binary — expect **5–15 minutes** on a typical laptop.
+> To overlap the wait: start the upstream IdP (step 1) and run
+> `npm install` in the client directory while Cargo compiles.
 
 ---
 

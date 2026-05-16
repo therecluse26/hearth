@@ -281,6 +281,74 @@ pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), IdentityError> {
             ),
         });
     }
+    // RFC 6749 §3.1.2 — fragment components are prohibited
+    if uri.contains('#') {
+        return Err(IdentityError::InvalidInput {
+            reason: "redirect URI must not contain a fragment component".to_string(),
+        });
+    }
+    // Wildcards are not valid in OAuth redirect URIs
+    if uri.contains('*') {
+        return Err(IdentityError::InvalidInput {
+            reason: "redirect URI must not contain wildcards".to_string(),
+        });
+    }
+    // Extract and validate the scheme
+    let scheme_end = uri.find("://").ok_or_else(|| IdentityError::InvalidInput {
+        reason: "redirect URI must contain a scheme (e.g. https://)".to_string(),
+    })?;
+    let scheme = uri[..scheme_end].to_ascii_lowercase();
+    match scheme.as_str() {
+        "https" => {}
+        "http" => {
+            // RFC 8252 §8.3 — http only permitted for loopback addresses
+            let host_start = scheme_end + 3;
+            let host_end = uri[host_start..]
+                .find(['/', ':', '?', '#'])
+                .map(|i| host_start + i)
+                .unwrap_or(uri.len());
+            let host = &uri[host_start..host_end];
+            if host != "localhost" && host != "127.0.0.1" && host != "[::1]" {
+                return Err(IdentityError::InvalidInput {
+                    reason: "http redirect URIs are only permitted for loopback addresses \
+                             (localhost, 127.0.0.1, [::1])"
+                        .to_string(),
+                });
+            }
+        }
+        // Reject dangerous schemes
+        "javascript" | "data" | "vbscript" => {
+            return Err(IdentityError::InvalidInput {
+                reason: format!("redirect URI scheme '{scheme}' is not permitted"),
+            });
+        }
+        // Custom/private schemes allowed for native app deep links (RFC 8252)
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Validates OAuth scope tokens per RFC 6749 §3.3.
+///
+/// Each whitespace-separated token must consist of printable ASCII
+/// characters (U+0021–U+007E) excluding the double-quote (`"`) and
+/// backslash (`\`) characters.
+pub(crate) fn validate_scope_tokens(scope: &str) -> Result<(), IdentityError> {
+    for token in scope.split_whitespace() {
+        if token.is_empty() {
+            continue;
+        }
+        for ch in token.chars() {
+            if !ch.is_ascii_graphic() || ch == '"' || ch == '\\' {
+                return Err(IdentityError::InvalidInput {
+                    reason: format!(
+                        "invalid scope token '{token}': scope tokens must be printable ASCII \
+                         excluding '\"' and '\\'"
+                    ),
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -411,6 +479,17 @@ pub(crate) fn validate_realm_name(name: &str) -> Result<String, IdentityError> {
 fn contains_null_or_control(s: &str) -> bool {
     s.chars()
         .any(|c| c == '\0' || (c.is_control() && c != '\t'))
+}
+
+/// Exercises the redirect URI validation pipeline on arbitrary bytes.
+///
+/// Intended for fuzz testing: converts bytes to a lossy UTF-8 string and
+/// feeds it through `validate_redirect_uri`. Must never panic — always
+/// returns `Ok` or `Err`.
+pub fn fuzz_validate_redirect_uri(data: &[u8]) {
+    let input = String::from_utf8_lossy(data);
+    let _ = validate_redirect_uri(&input);
+    let _ = validate_scope_tokens(&input);
 }
 
 #[cfg(test)]

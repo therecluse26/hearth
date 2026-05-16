@@ -1,0 +1,57 @@
+# Hearth configuration for the federation (social login) demo.
+#
+# Declares a realm `demo` federated against a local OIDC upstream
+# provided by `upstream-idp/` (built on `node-oidc-provider`). The
+# walkthrough in README.md exercises all three LinkMode variants
+# (confirm / auto / disabled) against this same config.
+#
+# See ../../hearth.example.yaml at the repo root for the full, annotated
+# config reference.
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8420
+  # Multi-realm routing: bare /ui/* URLs resolve to this realm so the
+  # /ui/federation/begin link from the login page works without the
+  # /ui/realms/demo/... prefix.
+  default_realm: demo
+
+storage:
+  data_dir: "./data/federation-flow"
+  fsync: false
+
+observability:
+  log_level: info
+  log_format: text
+
+onboarding:
+  enabled: true
+  # Public URL used in federation redirect URIs. The upstream IdP
+  # (upstream-idp/) expects Hearth to redirect back here; change
+  # both in sync if you move ports.
+  base_url: "http://localhost:8420"
+
+realms:
+  demo:
+    federation:
+      # The safest default — on email match, force local re-auth
+      # before linking. Flip to `auto` to demo silent linking, or
+      # `disabled` to demo JIT-only behavior.
+      link_existing_accounts: confirm
+      providers:
+        # A generic OIDC connector pointing at the local upstream.
+        # The upstream-idp/ process registers itself at port 9090
+        # with client_id/secret matching the values below.
+        upstream:
+          type: oidc
+          issuer: "http://localhost:9090"
+          authorization_endpoint: "http://localhost:9090/auth"
+          token_endpoint: "http://localhost:9090/token"
+          userinfo_endpoint: "http://localhost:9090/me"
+          jwks_uri: "http://localhost:9090/jwks"
+          client_id: "hearth-demo"
+          client_secret: "demo-secret-do-not-use-in-production"
+          scopes:
+            - openid
+            - email
+            - profile

@@ -35,11 +35,12 @@ pub use engine::{
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
 pub use oidc::{
-    AuthorizationRequest, AuthorizationResponse, ClientCredentialsRequest,
-    ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod, DeviceAuthorizationRequest,
-    DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
-    OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
-    TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest, UserInfoResponse,
+    fuzz_parse_token_exchange, AuthorizationRequest, AuthorizationResponse,
+    ClientCredentialsRequest, ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod,
+    DeviceAuthorizationRequest, DeviceAuthorizationResponse, DeviceCodeStatus,
+    IntrospectionResponse, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
+    RegisterClientRequest, TokenExchangeRequest, TokenIntrospectionRequest, TokenRevocationRequest,
+    UpdateClientRequest, UserInfoResponse,
 };
 pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
@@ -49,19 +50,20 @@ pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
     canonicalize_scopes, BulkResult, ConsentDecision, ConsentListEntry, ConsentRecord,
     CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest,
-    DcrPolicy, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
-    Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
-    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, PendingAuthorizationRequest,
-    RawCredential, Realm, RealmConfig, RealmStatus, RegisterUserRequest, RegisterUserResponse,
-    RegistrationPolicy, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
-    UpdateUserRequest, User, UserStatus,
+    CreateWebhookRequest, DcrPolicy, ImportClientRequest, ImportUserRequest, InvitationStatus,
+    MigrationReport, Organization, OrganizationConfig, OrganizationInvitation,
+    OrganizationMembership, OrganizationRole, OrganizationStatus, Page, PasswordPolicy,
+    PendingAuthorizationRequest, RawCredential, Realm, RealmConfig, RealmStatus,
+    RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session, SessionContext,
+    UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User, UserStatus, Webhook,
 };
+pub use validation::fuzz_validate_redirect_uri;
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
     WebAuthnAuthResult, WebAuthnCredentialInfo,
 };
 
-use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId, WebhookId};
 
 /// Trait defining the identity engine interface.
 ///
@@ -1398,6 +1400,34 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         external_id: &str,
     ) -> Result<Option<Organization>, IdentityError>;
+
+    // =========================================================================
+    // Webhooks
+    // =========================================================================
+
+    /// Registers a new webhook endpoint for the given realm.
+    fn create_webhook(
+        &self,
+        realm_id: &RealmId,
+        req: &CreateWebhookRequest,
+    ) -> Result<Webhook, IdentityError>;
+
+    /// Returns a single webhook by ID, or `None` if not found.
+    fn get_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<Option<Webhook>, IdentityError>;
+
+    /// Lists all webhooks registered in a realm, in insertion order.
+    fn list_webhooks(&self, realm_id: &RealmId) -> Result<Vec<Webhook>, IdentityError>;
+
+    /// Deletes a webhook from the realm.
+    fn delete_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<(), IdentityError>;
 
     /// Sweeps expired entities (authorization codes, device codes,
     /// pending authorization tickets, grant families) from storage.

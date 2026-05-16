@@ -259,6 +259,17 @@ pub struct AuditRow {
     /// short id (first 8 hex chars) when the resource cannot be resolved
     /// (deleted, cross-realm, unknown type).
     pub resource_display: String,
+    /// Pretty-printed JSON representation of `event.metadata` for display.
+    /// Empty string when there is no metadata.
+    pub metadata_json: String,
+    /// The `integrity_hash` of the preceding event in the chain, or empty
+    /// string for the genesis event. Derived from the ordered query result.
+    pub previous_hash: String,
+    /// Alias for `event.integrity_hash` — the current event's chain hash.
+    pub hash: String,
+    /// Whether the hash chain was verified for this event.
+    /// `None` means verification was not requested for this query.
+    pub chain_valid: Option<bool>,
 }
 
 /// Resolves an audit-event actor string (typically a user UUID) to a
@@ -382,6 +393,10 @@ pub struct AuditFilterParams {
         deserialize_with = "super::handlers_common::empty_string_as_none"
     )]
     pub limit: Option<usize>,
+    /// Export format — `"csv"` or `"json"` (default). Only used by the
+    /// export endpoint; ignored by the list handler.
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// Parses a `YYYY-MM-DD` date string into a `Timestamp` (start of that day, UTC).
@@ -492,6 +507,7 @@ pub async fn admin_audit_list(
                 std::collections::HashMap::new();
             let mut resource_cache: std::collections::HashMap<(String, String), String> =
                 std::collections::HashMap::new();
+            let mut prev_hash = String::new();
             let rows: Vec<AuditRow> = events
                 .into_iter()
                 .map(|e| {
@@ -504,10 +520,21 @@ pub async fn admin_audit_list(
                         &e.resource_id,
                         &mut resource_cache,
                     );
+                    let metadata_json = e
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| serde_json::to_string_pretty(m).ok())
+                        .unwrap_or_default();
+                    let hash = e.integrity_hash.clone();
+                    let previous_hash = std::mem::replace(&mut prev_hash, hash.clone());
                     AuditRow {
                         timestamp_display: format_ts(e.timestamp),
                         actor_display,
                         resource_display,
+                        metadata_json,
+                        previous_hash,
+                        hash,
+                        chain_valid: None,
                         event: e,
                     }
                 })
@@ -715,50 +742,99 @@ pub async fn admin_audit_export(
         limit: Some(limit),
     };
 
+    let use_csv = params.format.as_deref() == Some("csv");
     match state.audit.query(&query) {
         Ok(events) => {
-            let body = match serde_json::to_vec_pretty(&events) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(error = %e, "audit export serialize failed");
-                    return super::handlers_common::server_error();
-                }
-            };
             let realm_slug = target.0.name().to_string();
-            // ISO date for the filename (YYYY-MM-DD).
-            let today = {
-                let now = crate::core::Timestamp::now().as_micros();
-                let secs = now / 1_000_000;
-                let days = secs / 86_400;
-                // Simplified calendar calculation (accurate 2000–2099).
-                let z = days + 719_468;
-                let era = z / 146_097;
-                let day_of_era = z - era * 146_097;
-                let yoe = (day_of_era - day_of_era / 1460 + day_of_era / 36524
-                    - day_of_era / 146_096)
-                    / 365;
-                let y = yoe + era * 400;
-                let day_of_year = day_of_era - (365 * yoe + yoe / 4 - yoe / 100);
-                let mp = (5 * day_of_year + 2) / 153;
-                let d = day_of_year - (153 * mp + 2) / 5 + 1;
-                let m = if mp < 10 { mp + 3 } else { mp - 9 };
-                let y = if m <= 2 { y + 1 } else { y };
-                format!("{y:04}-{m:02}-{d:02}")
-            };
-            let filename = format!("audit-{realm_slug}-{today}.json");
-            let disposition = format!("attachment; filename=\"{filename}\"");
-            axum::response::Response::builder()
-                .status(200)
-                .header("Content-Type", "application/json")
-                .header("Content-Disposition", disposition)
-                .body(axum::body::Body::from(body))
-                .unwrap_or_else(|_| super::handlers_common::server_error())
+            let today = format_today_date();
+            if use_csv {
+                let mut csv = String::with_capacity(events.len() * 128);
+                csv.push_str("id,timestamp,action,actor,resource_type,resource_id,metadata\n");
+                for e in &events {
+                    csv_append_field(&mut csv, e.id.as_uuid().to_string().as_str());
+                    csv.push(',');
+                    csv_append_field(&mut csv, &format!("{}", e.timestamp.as_micros()));
+                    csv.push(',');
+                    csv_append_field(&mut csv, e.action.as_str());
+                    csv.push(',');
+                    csv_append_field(&mut csv, &e.actor);
+                    csv.push(',');
+                    csv_append_field(&mut csv, &e.resource_type);
+                    csv.push(',');
+                    csv_append_field(&mut csv, &e.resource_id);
+                    csv.push(',');
+                    let meta = e
+                        .metadata
+                        .as_ref()
+                        .map_or_else(String::new, |m| m.to_string());
+                    csv_append_field(&mut csv, &meta);
+                    csv.push('\n');
+                }
+                let filename = format!("audit-{realm_slug}-{today}.csv");
+                let disposition = format!("attachment; filename=\"{filename}\"");
+                axum::response::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "text/csv; charset=utf-8")
+                    .header("Content-Disposition", disposition)
+                    .body(axum::body::Body::from(csv))
+                    .unwrap_or_else(|_| super::handlers_common::server_error())
+            } else {
+                let body = match serde_json::to_vec_pretty(&events) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "audit export serialize failed");
+                        return super::handlers_common::server_error();
+                    }
+                };
+                let filename = format!("audit-{realm_slug}-{today}.json");
+                let disposition = format!("attachment; filename=\"{filename}\"");
+                axum::response::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "application/json")
+                    .header("Content-Disposition", disposition)
+                    .body(axum::body::Body::from(body))
+                    .unwrap_or_else(|_| super::handlers_common::server_error())
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "audit export query failed");
             super::handlers_common::server_error()
         }
     }
+}
+
+/// Appends a single CSV field, quoting it when it contains commas, quotes, or newlines.
+fn csv_append_field(out: &mut String, value: &str) {
+    if value.contains([',', '"', '\n', '\r']) {
+        out.push('"');
+        for ch in value.chars() {
+            if ch == '"' {
+                out.push('"');
+            }
+            out.push(ch);
+        }
+        out.push('"');
+    } else {
+        out.push_str(value);
+    }
+}
+
+/// Returns today's date as `YYYY-MM-DD` (UTC).
+fn format_today_date() -> String {
+    let now = crate::core::Timestamp::now().as_micros();
+    let secs = now / 1_000_000;
+    let days = secs / 86_400;
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let day_of_era = z - era * 146_097;
+    let yoe = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146_096) / 365;
+    let y = yoe + era * 400;
+    let day_of_year = day_of_era - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let d = day_of_year - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 // ---------------------------------------------------------------------------

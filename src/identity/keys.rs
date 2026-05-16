@@ -15,7 +15,9 @@
 //!
 //! Scan prefix `usr:id:` enables listing all users in a realm.
 
-use crate::core::{ClientId, IdpId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::core::{
+    ClientId, IdpId, InvitationId, OrganizationId, RealmId, SessionId, UserId, WebhookId,
+};
 
 /// Prefix for user primary keys.
 const USER_ID_PREFIX: &str = "usr:id:";
@@ -1089,6 +1091,27 @@ pub(crate) fn encode_session_grant_family(session_id: &SessionId, family_id: &st
 /// Format: `oauth:session_fam:{session_uuid}:`.
 pub(crate) fn encode_session_grant_family_prefix(session_id: &SessionId) -> Vec<u8> {
     format!("{SESSION_GRANT_FAMILY_PREFIX}{}:", session_id.as_uuid()).into_bytes()
+}
+
+// ---------------------------------------------------------------------------
+// Webhook keys
+// ---------------------------------------------------------------------------
+
+/// Prefix for webhook primary keys.
+const WEBHOOK_ID_PREFIX: &str = "wh:id:";
+
+/// Encodes the primary key for a webhook record.
+///
+/// Format: `wh:id:{uuid}`
+pub(crate) fn encode_webhook_id(webhook_id: &WebhookId) -> Vec<u8> {
+    format!("{WEBHOOK_ID_PREFIX}{}", webhook_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for listing all webhooks in a realm.
+///
+/// Format: `wh:id:`
+pub(crate) fn webhook_id_scan_prefix() -> Vec<u8> {
+    WEBHOOK_ID_PREFIX.as_bytes().to_vec()
 }
 
 #[cfg(test)]

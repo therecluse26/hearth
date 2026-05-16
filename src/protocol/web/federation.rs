@@ -115,6 +115,7 @@ async fn begin_impl(state: Arc<WebState>, realm_id: RealmId, q: BeginQuery) -> R
 /// `GET /ui/realms/{realm}/federation/callback?state=&code=`
 pub async fn callback_scoped(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Path(realm_name): Path<String>,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
@@ -124,12 +125,13 @@ pub async fn callback_scoped(
         Resolved::MustChoose(_) => return handlers_common::bad_request("Realm not specified"),
         Resolved::Storage => return handlers_common::server_error(),
     };
-    callback_impl(state, realm_id, q).await
+    callback_impl(state, headers, realm_id, q).await
 }
 
 /// `GET /ui/federation/callback`
 pub async fn callback(
     State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
     let realm_id = match realm_resolver::resolve(state.as_ref(), None) {
@@ -138,10 +140,15 @@ pub async fn callback(
         Resolved::MustChoose(_) => return handlers_common::bad_request("Realm not specified"),
         Resolved::Storage => return handlers_common::server_error(),
     };
-    callback_impl(state, realm_id, q).await
+    callback_impl(state, headers, realm_id, q).await
 }
 
-async fn callback_impl(state: Arc<WebState>, realm_id: RealmId, q: CallbackQuery) -> Response {
+async fn callback_impl(
+    state: Arc<WebState>,
+    headers: HeaderMap,
+    realm_id: RealmId,
+    q: CallbackQuery,
+) -> Response {
     if q.error.is_some() {
         // User denied consent at the upstream — quietly land on login.
         return Redirect::to("/ui/login?error=federation_denied").into_response();
@@ -174,12 +181,12 @@ async fn callback_impl(state: Arc<WebState>, realm_id: RealmId, q: CallbackQuery
     match outcome {
         FederationOutcome::ExistingUser(user_id) => {
             audit_federation_completed(&state, &realm_id, &bag.idp_id, &user_id, false);
-            complete_login(&state, &realm_id, &user_id, &bag.return_to)
+            complete_login(&state, &headers, &realm_id, &user_id, &bag.return_to)
         }
         FederationOutcome::AutoLinked(user_id) => {
             audit_federation_linked(&state, &realm_id, &bag.idp_id, &user_id, "auto");
             audit_federation_completed(&state, &realm_id, &bag.idp_id, &user_id, true);
-            complete_login(&state, &realm_id, &user_id, &bag.return_to)
+            complete_login(&state, &headers, &realm_id, &user_id, &bag.return_to)
         }
         FederationOutcome::JitProvision(identity) => {
             // Create a fresh user for this external identity.
@@ -255,7 +262,7 @@ async fn callback_impl(state: Arc<WebState>, realm_id: RealmId, q: CallbackQuery
                 "initial",
             );
             audit_federation_completed(&state, &realm_id, &identity.idp_id, new_user.id(), true);
-            complete_login(&state, &realm_id, new_user.id(), &bag.return_to)
+            complete_login(&state, &headers, &realm_id, new_user.id(), &bag.return_to)
         }
         FederationOutcome::ConfirmLinkRequired(ticket) => {
             // Persist the HMAC-bound cookie and redirect.
@@ -465,7 +472,13 @@ pub async fn confirm_link_submit(
         &ticket_rec.user_id,
         true,
     );
-    complete_login(&state, &realm_id, &ticket_rec.user_id, "/ui/account")
+    complete_login(
+        &state,
+        &headers,
+        &realm_id,
+        &ticket_rec.user_id,
+        "/ui/account",
+    )
 }
 
 // ------ helpers ------
@@ -499,6 +512,7 @@ fn build_service(state: &WebState) -> Option<FederationService> {
 
 fn complete_login(
     state: &Arc<WebState>,
+    headers: &HeaderMap,
     realm_id: &RealmId,
     user_id: &UserId,
     return_to: &str,
@@ -514,10 +528,11 @@ fn complete_login(
             return handlers_common::server_error();
         }
     };
+    let secure = state.is_secure_request(headers);
     let auth::IssuedCookies {
         session_cookie,
         csrf_cookie,
-    } = auth::issue_auth_cookies(&state.cookie_secret, realm_id, session.id());
+    } = auth::issue_auth_cookies(&state.cookie_secret, realm_id, session.id(), secure);
     state.set_current_realm(realm_id.clone());
     let mut response = Redirect::to(return_to).into_response();
     super::handlers::append_cookie(&mut response, &session_cookie);

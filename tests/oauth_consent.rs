@@ -272,18 +272,29 @@ fn location_header(resp: &axum::response::Response) -> Option<String> {
         .map(str::to_string)
 }
 
+/// PKCE S256 challenge for the test verifier below.
+fn pkce_challenge(verifier: &str) -> String {
+    use data_encoding::BASE64URL_NOPAD;
+    BASE64URL_NOPAD
+        .encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()).as_ref())
+}
+const TEST_PKCE_VERIFIER: &str = "S4gKJfVNgWiFl2PQ8RxXS7E6Mhr9BqyTvUIe3WoA5Zc";
+
 /// Builds an authorize URL with the standard params against a given client.
+/// PKCE S256 is always included — required for public clients (RFC 9700).
 fn authorize_url(
     client_id: &hearth::identity::OAuthClient,
     scope: &str,
     extra: &[(&str, &str)],
 ) -> String {
     let redir = &client_id.redirect_uris()[0];
+    let challenge = pkce_challenge(TEST_PKCE_VERIFIER);
     let base = format!(
-        "/ui/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state=xyz",
+        "/ui/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state=xyz&code_challenge={}&code_challenge_method=S256",
         client_id.client_id().as_uuid(),
         urlencode(redir),
         urlencode(scope),
+        urlencode(&challenge),
     );
     extra
         .iter()

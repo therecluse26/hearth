@@ -159,6 +159,7 @@ impl Config {
                 grpc_port: None,
                 grpc_bind_address: None,
                 assets_dir: None,
+                trust_forwarded_proto: false,
             },
             storage: StorageSection {
                 data_dir: String::new(),
@@ -186,6 +187,20 @@ impl Config {
             dev_mode: true,
             config_warnings: Vec::new(),
         }
+    }
+
+    /// Loads configuration from a YAML file *without* running structural validation.
+    ///
+    /// Follows the same file-resolution logic as [`from_file`] — loads a sibling
+    /// `.env`, substitutes `${VAR}` references — but skips the short-circuit
+    /// validator. Use this when you want to collect all issues at once via
+    /// [`validate_all`] rather than stopping on the first error.
+    pub fn from_file_unchecked(path: &Path) -> Result<Self, ConfigError> {
+        if let Some(dir) = path.parent() {
+            env::load_dotenv(&dir.join(".env"))?;
+        }
+        let content = std::fs::read_to_string(path)?;
+        Self::from_yaml_str_unchecked(&content)
     }
 
     /// Parses a YAML string into a [`Config`] *without* running validation.

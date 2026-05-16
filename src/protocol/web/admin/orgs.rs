@@ -1686,6 +1686,7 @@ pub async fn admin_api_nav_realms(
     RequireAdmin(_session): RequireAdmin,
 ) -> Response {
     let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let system_id = crate::identity::keys::system_realm_id();
     let mut cursor: Option<String> = None;
     loop {
@@ -1698,6 +1699,13 @@ pub async fn admin_api_nav_realms(
         };
         for realm in &page.items {
             if realm.id() == &system_id {
+                continue;
+            }
+            if !seen_names.insert(realm.name().to_string()) {
+                tracing::warn!(
+                    name = realm.name(),
+                    "duplicate realm name in nav listing — skipping extra entry"
+                );
                 continue;
             }
             items.push(serde_json::json!({

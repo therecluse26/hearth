@@ -80,6 +80,14 @@ pub struct ServerConfig {
     /// truly immutable for a binary's lifetime and stay embedded.
     #[serde(default)]
     pub assets_dir: Option<PathBuf>,
+    /// Trust `X-Forwarded-Proto: https` from reverse proxies listed in
+    /// `trusted_proxies`.
+    ///
+    /// When `true`, session cookies gain the `Secure` attribute when the
+    /// forwarded proto header indicates HTTPS.  Only enable when
+    /// `trusted_proxies` is properly configured.
+    #[serde(default)]
+    pub trust_forwarded_proto: bool,
 }
 
 impl ServerConfig {
@@ -106,6 +114,7 @@ impl Default for ServerConfig {
             grpc_port: None,
             grpc_bind_address: None,
             assets_dir: None,
+            trust_forwarded_proto: false,
         }
     }
 }

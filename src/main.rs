@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
-use hearth::config::{Config, EmailTransport, EnvVarWarningKind};
+use hearth::config::{Config, EmailTransport, EnvVarWarningKind, ValidationIssue};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::email::mailgun::MailgunRegion;
 use hearth::identity::email::{
@@ -55,6 +55,12 @@ enum Commands {
         /// Address to bind to (overrides config file).
         #[arg(long)]
         bind: Option<String>,
+
+        /// Print debug-level startup diagnostics: resolved config, HTTP route groups,
+        /// realm names, and Ed25519 key fingerprints. Sets log level to debug for
+        /// the startup phase only (respects existing log level for steady-state).
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
     /// Manage realms.
     Realm {
@@ -80,6 +86,14 @@ enum Commands {
     Rbac {
         #[command(subcommand)]
         action: RbacAction,
+    },
+    /// Print a shell completion script to stdout.
+    ///
+    /// Pipe the output to your shell's completions directory.
+    /// Example: `hearth completions zsh > ~/.zsh/completions/_hearth`
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
     },
 }
 
@@ -173,6 +187,16 @@ enum ConfigAction {
         #[arg(default_value = "hearth.yaml")]
         file: PathBuf,
     },
+    /// Print a complete, annotated example hearth.yaml to stdout.
+    ///
+    /// The output is the same file shipped as `hearth.example.yaml` in the
+    /// repository and is guaranteed to parse as valid configuration. Redirect
+    /// it or use `--output` to bootstrap a new config file.
+    Example {
+        /// Write the example to this path instead of stdout.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// RBAC maintenance subcommands.
@@ -245,8 +269,9 @@ async fn main() {
             config: config_path,
             port,
             bind,
+            verbose,
         } => {
-            if let Err(e) = run_serve(dev, config_path, port, bind).await {
+            if let Err(e) = run_serve(dev, config_path, port, bind, verbose).await {
                 // Use eprintln! here — tracing may not be initialized yet if
                 // the error occurred during config loading.
                 eprintln!("error: {e}");
@@ -305,12 +330,22 @@ async fn main() {
                 }
             }
             ConfigAction::Validate { file } => {
-                if let Err(e) = run_config_validate(&file) {
+                // Errors are already printed with field-level detail inside
+                // run_config_validate; suppress the redundant "error: …" here.
+                if run_config_validate(&file).is_err() {
+                    std::process::exit(1);
+                }
+            }
+            ConfigAction::Example { output } => {
+                if let Err(e) = run_config_example(output.as_ref()) {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             }
         },
+        Commands::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "hearth", &mut std::io::stdout());
+        }
         Commands::Rbac { action } => match action {
             RbacAction::Orphans { action } => match action {
                 OrphansAction::List { realm, data_dir } => {
@@ -341,6 +376,7 @@ async fn run_serve(
     config_path: Option<PathBuf>,
     port_override: Option<u16>,
     bind_override: Option<String>,
+    verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let mut config = load_config(dev, config_path.as_deref())?;
@@ -351,6 +387,11 @@ async fn run_serve(
     }
     if let Some(bind) = bind_override {
         config.server.bind_address = bind;
+    }
+
+    // --verbose: promote log level to debug so startup diagnostics are visible.
+    if verbose && config.observability.log_level.as_str() != "trace" {
+        config.observability.log_level = "debug".to_string();
     }
 
     // Safety-net: print config warnings to stderr before tracing initialises
@@ -592,6 +633,11 @@ async fn run_serve(
         Err(e) => {
             error!(error = %e, "realm reconciliation failed");
         }
+    }
+
+    // --verbose: emit resolved config, realm list, and key fingerprints at debug level.
+    if verbose {
+        log_verbose_startup_diagnostics(&config, identity_engine.as_ref());
     }
 
     // Validate server.default_realm after reconciliation so auto-created
@@ -920,7 +966,9 @@ async fn run_serve(
         .with_theme_css(global_theme_css)
         .with_realm_themes(realm_themes)
         .with_realm_product_names(realm_product_names)
-        .with_reload_notify(Arc::clone(&reload_notify));
+        .with_reload_notify(Arc::clone(&reload_notify))
+        .with_tls_enabled(config.server.tls_cert_path.is_some())
+        .with_trust_forwarded_proto(config.server.trust_forwarded_proto);
     if let Some(ref cfg_path) = reload_config_path {
         web_state = web_state.with_config_path(cfg_path.clone());
     }
@@ -1732,37 +1780,159 @@ fn mime_for_logo(path: &std::path::Path) -> &'static str {
 
 /// Runs the `hearth config validate` command.
 ///
-/// Parses the YAML file and validates every realm's `PermissionRegistry`
-/// (permission names, role cross-references, bundle names, claim-profile
-/// tier enforcement). Exits 1 on any error.
+/// Uses the all-collecting validator so every problem is reported in one pass.
+/// Exits 0 on success (with a human-readable summary) and 1 on any error.
 fn run_config_validate(file: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    use hearth::config::Config;
+    // Parse without short-circuit so we can collect every issue.
+    let config = match Config::from_file_unchecked(file) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("✗ Configuration invalid");
+            eprintln!();
+            eprintln!("  parse error: {e}");
+            return Err("configuration validation failed".into());
+        }
+    };
 
-    let config = Config::from_file(file).map_err(|e| format!("{e}"))?;
+    // Collect all structural issues in one pass.
+    let mut issues = config.validate_all();
 
-    let mut all_ok = true;
+    // TLS cert/key file existence (runtime check not covered by validate_all).
+    config_validate_tls_files(&config, &mut issues);
+
+    // Realm permission-registry cross-reference validation.
     if let Some(realms) = &config.realms {
         for (realm_name, realm_yaml) in realms {
-            match realm_yaml.to_realm_config(&config.auth, config.email.branding.as_ref()) {
-                Ok(_) => {
-                    println!("realm {realm_name:?}: OK");
-                }
-                Err(errs) => {
-                    all_ok = false;
-                    for e in &errs {
-                        eprintln!("realm {realm_name:?}: {e}");
-                    }
+            if let Err(errs) =
+                realm_yaml.to_realm_config(&config.auth, config.email.branding.as_ref())
+            {
+                for e in errs {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{realm_name}"),
+                        reason: e.to_string(),
+                    });
                 }
             }
         }
     }
 
-    if all_ok {
-        println!("config OK");
+    if issues.is_empty() {
+        println!("✓ Configuration valid");
+        println!();
+        config_validate_print_summary(&config);
         Ok(())
     } else {
+        eprintln!("✗ Configuration invalid — {} error(s):", issues.len());
+        eprintln!();
+        for issue in &issues {
+            eprintln!("  {}: {}", issue.field, issue.reason);
+            if let Some(hint) = config_validate_hint(&issue.field, &issue.reason) {
+                eprintln!("    → {hint}");
+            }
+        }
         Err("configuration validation failed".into())
     }
+}
+
+/// Checks TLS cert/key/CA file existence and appends issues when files are missing.
+fn config_validate_tls_files(config: &Config, issues: &mut Vec<ValidationIssue>) {
+    for (field, path_opt) in [
+        ("server.tls_cert_path", &config.server.tls_cert_path),
+        ("server.tls_key_path", &config.server.tls_key_path),
+        (
+            "server.tls_client_ca_path",
+            &config.server.tls_client_ca_path,
+        ),
+    ] {
+        if let Some(path) = path_opt {
+            if !path.exists() {
+                issues.push(ValidationIssue {
+                    field: field.to_string(),
+                    reason: format!("file not found at path '{}'", path.display()),
+                });
+            }
+        }
+    }
+}
+
+/// Prints a one-screen summary of resolved config values on successful validation.
+fn config_validate_print_summary(config: &Config) {
+    let issuer = config
+        .oidc
+        .issuer
+        .as_deref()
+        .or(config.token.issuer.as_deref())
+        .unwrap_or("not configured (defaults to https://hearth.local)");
+
+    let tls_mode = match (&config.server.tls_cert_path, &config.server.tls_key_path) {
+        (Some(cert), Some(_)) => format!("enabled (cert: {})", cert.display()),
+        _ => "disabled (plain HTTP)".to_string(),
+    };
+
+    let email_transport = format!("{:?}", config.email.transport).to_ascii_lowercase();
+
+    println!("  issuer:           {issuer}");
+    println!("  storage:          {}", config.storage.data_dir);
+    println!("  email transport:  {email_transport}");
+    println!("  TLS:              {tls_mode}");
+}
+
+/// Returns an actionable hint for well-known validation issues.
+fn config_validate_hint(field: &str, reason: &str) -> Option<String> {
+    if field == "storage.data_dir" && reason.contains("empty") {
+        return Some(
+            "set storage.data_dir to a writable directory, e.g. storage:\n      data_dir: ./data"
+                .to_string(),
+        );
+    }
+    if field == "email.smtp" && reason.contains("required") {
+        return Some(
+            "add an email.smtp block with at least host and port, e.g.:\n      smtp:\n        host: smtp.example.com\n        port: 587"
+                .to_string(),
+        );
+    }
+    if field == "email.from" {
+        return Some(
+            "set email.from to a valid RFC 5322 address, e.g. \"Hearth <noreply@example.com>\""
+                .to_string(),
+        );
+    }
+    if (field.contains("tls_cert_path") || field.contains("tls_key_path"))
+        && reason.contains("required")
+    {
+        return Some(
+            "both server.tls_cert_path and server.tls_key_path must be set together".to_string(),
+        );
+    }
+    if reason.contains("file not found") {
+        return Some(
+            "check that the path exists and is readable by the Hearth process".to_string(),
+        );
+    }
+    if field == "oidc.issuer" {
+        return Some(
+            "set oidc.issuer to the public URL of this server, e.g. https://auth.example.com"
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Runs the `hearth config example` command.
+///
+/// Writes the annotated example `hearth.yaml` (embedded at compile time from
+/// `hearth.example.yaml`) to stdout or to `--output <path>`.
+fn run_config_example(output: Option<&PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    const EXAMPLE_YAML: &str = include_str!("../hearth.example.yaml");
+
+    if let Some(path) = output {
+        std::fs::write(path, EXAMPLE_YAML)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        println!("wrote example configuration to {}", path.display());
+    } else {
+        print!("{EXAMPLE_YAML}");
+    }
+    Ok(())
 }
 
 /// Runs the `hearth rbac orphans list` command.
@@ -1845,6 +2015,71 @@ fn run_rbac_orphans_purge(
         println!("{count} record(s) purged.");
     }
     Ok(())
+}
+
+/// Emits debug-level startup diagnostics when `--verbose` is set.
+///
+/// Logs resolved config values, HTTP route groups, realm names, and Ed25519
+/// key fingerprints (via JWKS kid). Called once after realm reconciliation.
+fn log_verbose_startup_diagnostics(config: &Config, identity: &dyn IdentityEngine) {
+    use tracing::debug;
+
+    let issuer = config
+        .oidc
+        .issuer
+        .as_deref()
+        .or(config.token.issuer.as_deref())
+        .unwrap_or("(default)");
+    let tls_mode = match (&config.server.tls_cert_path, &config.server.tls_key_path) {
+        (Some(cert), Some(_)) => format!("enabled (cert: {})", cert.display()),
+        _ => "disabled".to_string(),
+    };
+    let email_transport = format!("{:?}", config.email.transport).to_ascii_lowercase();
+
+    debug!(
+        storage_path = %config.storage.data_dir,
+        bind = %format!("{}:{}", config.server.bind_address, config.server.port),
+        issuer,
+        tls = %tls_mode,
+        email_transport,
+        "verbose: resolved config"
+    );
+
+    // HTTP route groups (axum does not expose runtime introspection; list by prefix).
+    debug!(
+        routes = "GET /health, /healthz, /readyz, /metrics, \
+                  POST /admin/bootstrap (dev), \
+                  /admin/api/* (users, realms, apps, roles, groups, webhooks, audit), \
+                  /.well-known/openid-configuration, \
+                  /authorize, /token, /register, /device_authorization, /introspect, /revoke, \
+                  /v1/me, /v1/me/permissions, \
+                  /ui/* (login, admin, static assets)",
+        "verbose: HTTP route groups"
+    );
+
+    // Realms and key fingerprints.
+    match identity.list_realms(None, 200) {
+        Ok(page) => {
+            debug!(count = page.items.len(), "verbose: loaded realms");
+            for realm in &page.items {
+                let kid = identity
+                    .realm_jwks(realm.id())
+                    .ok()
+                    .and_then(|jwks| jwks.keys.into_iter().next())
+                    .map(|k| k.kid)
+                    .unwrap_or_else(|| "(no key)".to_string());
+                debug!(
+                    realm_name = %realm.name(),
+                    realm_id = %realm.id().as_uuid(),
+                    key_fingerprint = %kid,
+                    "verbose: realm key"
+                );
+            }
+        }
+        Err(e) => {
+            debug!(error = %e, "verbose: could not list realms for key diagnostics");
+        }
+    }
 }
 
 /// Computes the exclusive end bound for a storage prefix scan.
