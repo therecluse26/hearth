@@ -591,7 +591,7 @@ impl EmbeddedIdentityEngine {
         audit: Arc<dyn AuditEngine>,
     ) -> Result<Self, IdentityError> {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
-        let signing_key = Arc::new(SigningKey::generate()?);
+        let signing_key = Arc::new(Self::load_or_persist_global_signing_key(&storage)?);
         let engine = Self {
             storage,
             clock,
@@ -711,6 +711,35 @@ impl EmbeddedIdentityEngine {
         }
 
         Ok(())
+    }
+
+    /// Loads the server-wide global signing key from storage, or generates and
+    /// persists a new one on first startup.
+    ///
+    /// Stored under the system realm namespace as `sys:global:key` — survives
+    /// `kill -9` via WAL fsync before returning. Called before `Self` is
+    /// constructed so it accepts `&Arc<dyn StorageEngine>` directly.
+    fn load_or_persist_global_signing_key(
+        storage: &Arc<dyn StorageEngine>,
+    ) -> Result<SigningKey, IdentityError> {
+        let sys_realm = keys::system_realm_id();
+        let storage_key = keys::encode_global_signing_key();
+
+        if let Some(key_bytes) = storage
+            .get(&sys_realm, &storage_key)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?
+        {
+            return SigningKey::from_pkcs8(&key_bytes);
+        }
+
+        // First startup: generate, persist (WAL-synced), then return.
+        let signing_key = SigningKey::generate()?;
+        let key_bytes = signing_key.pkcs8_bytes().to_vec();
+        storage
+            .put(&sys_realm, &storage_key, &key_bytes)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+
+        Ok(signing_key)
     }
 
     /// Returns a reference to the signing key.

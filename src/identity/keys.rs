@@ -427,6 +427,14 @@ pub(crate) fn encode_realm_signing_key(realm_id: &RealmId) -> Vec<u8> {
     format!("{REALM_KEY_PREFIX}{}", realm_id.as_uuid()).into_bytes()
 }
 
+/// Storage key for the server-wide global (Phase 0) fallback signing key.
+///
+/// Distinct from per-realm keys (`realm:key:{uuid}`). Stored under the system
+/// realm namespace so it is co-located with other system-scoped data.
+pub(crate) fn encode_global_signing_key() -> Vec<u8> {
+    b"sys:global:key".to_vec()
+}
+
 /// Encodes the storage key for a retiring realm signing key.
 ///
 /// Format: `realm:retiring:{realm_uuid}:{deadline_secs:020}:{key_id}`

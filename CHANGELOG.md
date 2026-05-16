@@ -9,6 +9,10 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Fixed
 
+- **Global signing key now persists across restarts** — the server-wide fallback signing key was
+  previously regenerated on every startup, silently invalidating all tokens that relied on it.
+  The key is now stored in the WAL-backed system realm namespace on first startup and reloaded on
+  subsequent startups, surviving `kill -9` and WAL replay (HEA-546).
 - **`seed_realm` failures are now hard errors** — realm creation via gRPC, HTTP admin bootstrap,
   and web onboarding previously logged a warning and continued when RBAC seeding failed, leaving
   the realm permanently broken with no admin roles. All three paths now return an error to the
