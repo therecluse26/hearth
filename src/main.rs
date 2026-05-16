@@ -546,7 +546,8 @@ async fn run_serve(
         oc
     };
 
-    // Build TokenConfig from YAML. token.issuer defaults to oidc.issuer when omitted.
+    // Build TokenConfig from YAML. Both token.issuer and token.audience default to
+    // oidc.issuer when omitted, so operators only need one config key for the common case.
     let token_config = {
         let mut tc = TokenConfig::default();
         if let Some(issuer) = &config.token.issuer {
@@ -556,6 +557,11 @@ async fn run_serve(
         }
         if let Some(audience) = &config.token.audience {
             tc.audience.clone_from(audience);
+        } else if let Some(issuer) = &config.oidc.issuer {
+            // RFC 7519 §4.1.3: aud identifies the intended recipient.  When the
+            // operator has not set an explicit audience, default to the issuer URL
+            // so standard OIDC clients can validate aud without extra config.
+            tc.audience.clone_from(issuer);
         }
         if let Some(ttl) = &config.token.access_token_ttl {
             if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
@@ -570,6 +576,24 @@ async fn run_serve(
         if let Some(ttl) = &config.token.signing_key_rotation_grace_period {
             if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
                 tc.signing_key_rotation_grace_period_secs = (micros / 1_000_000) as u64;
+            }
+        }
+        // Warn when the audience is still the placeholder value but oidc.issuer is a
+        // real URL.  This only triggers when token.audience is explicitly set to "hearth"
+        // in the config file while oidc.issuer is configured — the implicit default case
+        // is already resolved to oidc.issuer above.
+        if tc.audience == "hearth" {
+            if let Some(oidc_issuer) = &config.oidc.issuer {
+                if oidc_issuer != "hearth" {
+                    tracing::warn!(
+                        audience = %tc.audience,
+                        oidc_issuer = %oidc_issuer,
+                        "token.audience is the placeholder \"hearth\" but oidc.issuer is \
+                         configured. OIDC clients that validate aud against their client_id \
+                         or resource server URL will reject all tokens. Set token.audience \
+                         to a meaningful value (e.g. your issuer URL or service name)."
+                    );
+                }
             }
         }
         tc
@@ -629,6 +653,14 @@ async fn run_serve(
             config.server.bind_address, config.server.port
         )
     });
+    if config.onboarding.base_url.is_none() {
+        warn!(
+            fallback_url = %base_url,
+            "onboarding.base_url is not configured; setup URL will use the bind address \
+             as a fallback — set onboarding.base_url to the public-facing URL for correct \
+             external links"
+        );
+    }
 
     // Email sender + service (default: log transport — stderr at WARN level).
     let email_sender: SharedEmailSender = build_email_sender(&config)?;

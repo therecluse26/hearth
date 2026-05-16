@@ -9,6 +9,11 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Fixed
 
+- **`token.audience` now defaults to `oidc.issuer`** — the previous default `"hearth"` placeholder
+  caused OIDC clients that validate `aud` against their `client_id` or resource server URL to
+  silently reject all tokens. When `token.audience` is not explicitly set, the server now inherits
+  `oidc.issuer` as the audience value. A startup warning is emitted if the audience is still
+  `"hearth"` while `oidc.issuer` is configured to a real URL (HEA-551).
 - **Global signing key now persists across restarts** — the server-wide fallback signing key was
   previously regenerated on every startup, silently invalidating all tokens that relied on it.
   The key is now stored in the WAL-backed system realm namespace on first startup and reloaded on
