@@ -192,7 +192,7 @@ email:
 # Controls the OIDC Discovery document and authorization code behaviour.
 
 # oidc:
-#   issuer: "https://auth.example.com"   # default: "https://hearth.local"
+#   issuer: "https://auth.example.com"   # REQUIRED for production (no safe default)
 #   authorization_code_ttl: "10m"        # default: 10 minutes
 #   enforce_nonces: true                 # default: true (recommended)
 #                                        # Set to false ONLY for legacy clients that cannot
