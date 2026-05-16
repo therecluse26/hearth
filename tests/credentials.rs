@@ -47,7 +47,7 @@ async fn credential_lifecycle_set_verify_change() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // 1. No credential initially — returns generic error (enumeration resistance)
@@ -115,7 +115,7 @@ async fn change_password_flow() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Set initial password
@@ -177,8 +177,8 @@ async fn credentials_are_realm_isolated() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user_a = create_user(&harness, &realm_a);
 
@@ -723,7 +723,7 @@ async fn delete_user_removes_credential() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Set password

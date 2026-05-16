@@ -34,6 +34,17 @@ use hearth::identity::{
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+fn make_realm(engine: &impl hearth::identity::IdentityEngine) -> RealmId {
+    engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("adv-tok-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone()
+}
+
 fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
         .identity()
@@ -131,7 +142,7 @@ async fn engine_with_fake_clock() -> (
 #[tokio::test]
 async fn alg_none_rejected_by_validate_token() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -158,7 +169,7 @@ async fn alg_none_rejected_by_validate_token() {
 #[tokio::test]
 async fn alg_none_rejected_by_userinfo() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -183,7 +194,7 @@ async fn alg_none_rejected_by_userinfo() {
 #[tokio::test]
 async fn alg_none_rejected_by_refresh_tokens() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -209,7 +220,7 @@ async fn alg_none_rejected_by_refresh_tokens() {
 #[tokio::test]
 async fn alg_none_on_introspect_returns_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -244,7 +255,7 @@ async fn alg_none_on_introspect_returns_inactive() {
 #[tokio::test]
 async fn alg_none_on_revoke_is_silent_noop() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -288,7 +299,7 @@ async fn alg_none_on_revoke_is_silent_noop() {
 #[tokio::test]
 async fn hs256_forgery_rejected_by_validate_token() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -314,7 +325,7 @@ async fn hs256_forgery_rejected_by_validate_token() {
 #[tokio::test]
 async fn hs256_forgery_on_introspect_returns_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -347,7 +358,7 @@ async fn hs256_forgery_on_introspect_returns_inactive() {
 #[tokio::test]
 async fn hs256_forgery_rejected_by_refresh_tokens() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -375,7 +386,7 @@ async fn expired_refresh_token_rejected() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     let user = engine
         .create_user(
@@ -414,7 +425,7 @@ async fn expired_token_introspects_inactive() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     let user = engine
         .create_user(
@@ -461,8 +472,8 @@ async fn expired_token_introspects_inactive() {
 #[tokio::test]
 async fn cross_realm_replay_rejected_by_validate_token() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -493,8 +504,8 @@ async fn cross_realm_replay_rejected_by_validate_token() {
 #[tokio::test]
 async fn cross_realm_replay_on_refresh_tokens() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -522,8 +533,8 @@ async fn cross_realm_replay_on_refresh_tokens() {
 #[tokio::test]
 async fn cross_realm_replay_on_introspect_returns_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -559,8 +570,8 @@ async fn cross_realm_replay_on_introspect_returns_inactive() {
 #[tokio::test]
 async fn cross_realm_revoke_is_silent_noop() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -603,7 +614,7 @@ async fn cross_realm_revoke_is_silent_noop() {
 #[tokio::test]
 async fn revoked_session_token_introspects_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -658,7 +669,7 @@ async fn future_iat_rejected_by_validate_token() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     // Advance clock 1 hour into the future, then issue a token.
     clock.advance(3600 * 1_000_000);
@@ -699,7 +710,7 @@ async fn future_iat_rejected_by_refresh_tokens() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     clock.advance(3600 * 1_000_000);
     let user = engine
@@ -738,7 +749,7 @@ async fn future_iat_introspects_inactive() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     clock.advance(3600 * 1_000_000);
     let user = engine
@@ -786,7 +797,7 @@ async fn token_within_clock_skew_accepted() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     // Issue token 30 seconds in the future (within the 60 s skew window).
     clock.advance(30 * 1_000_000);
@@ -889,7 +900,7 @@ async fn wrong_aud_rejected_by_validate_token() {
         "other-service",
     );
 
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine_a);
     let user = engine_a
         .create_user(
             &realm,
@@ -946,7 +957,7 @@ async fn wrong_aud_rejected_by_refresh_tokens() {
         "other-service",
     );
 
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine_a);
     let user = engine_a
         .create_user(
             &realm,
@@ -999,7 +1010,7 @@ async fn wrong_aud_introspects_inactive() {
         "other-service",
     );
 
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine_a);
     let user = engine_a
         .create_user(
             &realm,

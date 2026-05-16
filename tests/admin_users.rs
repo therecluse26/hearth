@@ -91,7 +91,7 @@ async fn resp_text(resp: axum::response::Response) -> String {
 #[tokio::test]
 async fn search_users_returns_matching_results() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -138,7 +138,7 @@ async fn search_users_returns_matching_results() {
 #[tokio::test]
 async fn search_users_short_query_returns_empty() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -165,7 +165,7 @@ async fn search_users_short_query_returns_empty() {
 #[tokio::test]
 async fn list_users_without_search_returns_paginated_results() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -210,7 +210,7 @@ async fn list_users_without_search_returns_paginated_results() {
 #[tokio::test]
 async fn import_users_creates_all_valid_entries() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -272,7 +272,7 @@ async fn import_users_creates_all_valid_entries() {
 #[tokio::test]
 async fn import_users_reports_per_item_errors() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -328,7 +328,7 @@ async fn import_users_reports_per_item_errors() {
 #[tokio::test]
 async fn import_users_invalid_status_returns_per_item_error() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -363,7 +363,7 @@ async fn import_users_invalid_status_returns_per_item_error() {
 #[tokio::test]
 async fn import_users_empty_array_returns_400() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -390,7 +390,7 @@ async fn import_users_empty_array_returns_400() {
 #[tokio::test]
 async fn export_users_returns_all_users_as_json() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -442,7 +442,7 @@ async fn export_users_returns_all_users_as_json() {
 #[tokio::test]
 async fn export_users_includes_attributes() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -494,7 +494,7 @@ async fn export_users_includes_attributes() {
 #[tokio::test]
 async fn export_users_ndjson_format() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -550,7 +550,7 @@ async fn export_users_ndjson_format() {
 #[tokio::test]
 async fn export_requires_admin_token() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     let app = build_app(&h).await;
@@ -572,7 +572,7 @@ async fn export_requires_admin_token() {
 #[tokio::test]
 async fn import_requires_admin_token() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     let app = build_app(&h).await;
@@ -599,7 +599,7 @@ async fn import_requires_admin_token() {
 #[tokio::test]
 async fn create_user_returns_201_with_user_body() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
     let app = build_app(&h).await;
@@ -629,7 +629,7 @@ async fn create_user_returns_201_with_user_body() {
 #[tokio::test]
 async fn get_user_by_id_returns_correct_user() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
     let app = build_app(&h).await;
@@ -671,7 +671,7 @@ async fn get_user_by_id_returns_correct_user() {
 #[tokio::test]
 async fn get_user_unknown_id_returns_404() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
     let app = build_app(&h).await;
@@ -695,7 +695,7 @@ async fn get_user_unknown_id_returns_404() {
 #[tokio::test]
 async fn get_user_invalid_id_returns_400() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
     let app = build_app(&h).await;
@@ -719,7 +719,7 @@ async fn get_user_invalid_id_returns_400() {
 #[tokio::test]
 async fn update_user_returns_updated_display_name() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -760,7 +760,7 @@ async fn update_user_returns_updated_display_name() {
 #[tokio::test]
 async fn delete_user_returns_204_and_user_gone() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -817,8 +817,8 @@ async fn cross_realm_token_denied_on_list() {
     let h = common::TestHarness::embedded().await.expect("harness");
 
     // realm_a has an admin token; realm_b is a different tenant.
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = h.create_realm();
+    let realm_b = h.create_realm();
     h.rbac().seed_realm(&realm_a).expect("seed a");
     h.rbac().seed_realm(&realm_b).expect("seed b");
 
@@ -849,7 +849,7 @@ async fn cross_realm_token_denied_on_list() {
 #[tokio::test]
 async fn import_duplicate_email_reported_as_per_item_error() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -906,7 +906,7 @@ async fn import_duplicate_email_reported_as_per_item_error() {
 #[tokio::test]
 async fn update_user_put_returns_405() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -947,7 +947,7 @@ async fn update_user_put_returns_405() {
 #[tokio::test]
 async fn filter_users_by_email_returns_exact_match() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -993,7 +993,7 @@ async fn filter_users_by_email_returns_exact_match() {
 #[tokio::test]
 async fn filter_users_by_username_returns_substring_matches() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -1045,7 +1045,7 @@ async fn filter_users_by_username_returns_substring_matches() {
 #[tokio::test]
 async fn filter_users_by_status_returns_only_matching_status() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 
@@ -1116,7 +1116,7 @@ async fn filter_users_by_status_returns_only_matching_status() {
 #[tokio::test]
 async fn filter_users_invalid_status_returns_400() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = admin_token(&h, &realm).await;
 

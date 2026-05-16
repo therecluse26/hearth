@@ -32,7 +32,7 @@ struct GrpcCtx {
 
 async fn grpc_ctx_with_admin(with_admin: bool) -> GrpcCtx {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let user = h
         .identity()

@@ -343,7 +343,7 @@ async fn grpc_create_realm_fails_when_seed_fails() {
 
     // Set up an admin user in a fresh realm using the real RBAC engine so
     // we get a valid JWT with hearth.admin embedded in its claims.
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed admin realm");
     let user = h
         .identity()

@@ -9626,7 +9626,7 @@ mod tests {
     #[test]
     fn create_user_with_required_fields_succeeds() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let request = CreateUserRequest {
             email: "Alice@Example.COM".to_string(),
@@ -9646,7 +9646,7 @@ mod tests {
     #[test]
     fn create_user_generates_unique_id() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let user1 = engine
             .create_user(
@@ -9678,7 +9678,7 @@ mod tests {
     #[test]
     fn read_user_by_id_returns_correct_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9702,7 +9702,7 @@ mod tests {
     #[test]
     fn read_user_by_email_returns_correct_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9726,7 +9726,7 @@ mod tests {
     #[test]
     fn read_nonexistent_user_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let result = engine.get_user(&realm, &UserId::generate()).expect("get");
         assert!(result.is_none());
@@ -9735,7 +9735,7 @@ mod tests {
     #[test]
     fn read_nonexistent_email_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let result = engine
             .get_user_by_email(&realm, "nobody@example.com")
@@ -9748,7 +9748,7 @@ mod tests {
     #[test]
     fn update_user_persists_changes() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9790,7 +9790,7 @@ mod tests {
     #[test]
     fn update_user_email_swaps_index() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9833,7 +9833,7 @@ mod tests {
     #[test]
     fn update_user_status() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9863,7 +9863,7 @@ mod tests {
     #[test]
     fn update_nonexistent_user_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .update_user(&realm, &UserId::generate(), &UpdateUserRequest::default())
@@ -9876,7 +9876,7 @@ mod tests {
     #[test]
     fn delete_user_removes_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9905,7 +9905,7 @@ mod tests {
     #[test]
     fn delete_nonexistent_user_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .delete_user(&realm, &UserId::generate())
@@ -9916,7 +9916,7 @@ mod tests {
     #[test]
     fn delete_user_frees_email() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9951,7 +9951,7 @@ mod tests {
     #[test]
     fn duplicate_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .create_user(
@@ -9980,7 +9980,7 @@ mod tests {
     #[test]
     fn duplicate_email_case_insensitive() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .create_user(
@@ -10009,7 +10009,7 @@ mod tests {
     #[test]
     fn duplicate_email_on_update_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .create_user(
@@ -10051,7 +10051,7 @@ mod tests {
     #[test]
     fn null_bytes_in_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_user(
@@ -10069,7 +10069,7 @@ mod tests {
     #[test]
     fn null_bytes_in_display_name_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_user(
@@ -10087,7 +10087,7 @@ mod tests {
     #[test]
     fn unicode_normalization_deduplicates_emails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         // Create with decomposed é
         engine
@@ -10120,7 +10120,7 @@ mod tests {
     #[test]
     fn oversized_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let long_email = format!("{}@example.com", "a".repeat(250));
         let err = engine
@@ -10139,7 +10139,7 @@ mod tests {
     #[test]
     fn oversized_display_name_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_user(
@@ -10159,8 +10159,8 @@ mod tests {
     #[test]
     fn cross_realm_isolation() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm_a = RealmId::generate();
-        let realm_b = RealmId::generate();
+        let realm_a = create_test_realm(&engine);
+        let realm_b = create_test_realm(&engine);
 
         let alice = engine
             .create_user(
@@ -10218,7 +10218,7 @@ mod tests {
     #[test]
     fn set_and_verify_password_correct() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-secure-password".to_string());
@@ -10236,7 +10236,7 @@ mod tests {
     #[test]
     fn set_and_verify_password_wrong() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("correct-password".to_string());
@@ -10254,7 +10254,7 @@ mod tests {
     #[test]
     fn set_password_nonexistent_user_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let pw = CleartextPassword::from_string("password".to_string());
 
         let err = engine
@@ -10266,7 +10266,7 @@ mod tests {
     #[test]
     fn verify_password_nonexistent_user_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let pw = CleartextPassword::from_string("password".to_string());
 
         let err = engine
@@ -10279,7 +10279,7 @@ mod tests {
     #[test]
     fn verify_password_no_credential_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
         let pw = CleartextPassword::from_string("password".to_string());
 
@@ -10295,7 +10295,7 @@ mod tests {
     #[test]
     fn change_password_succeeds() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let old_pw = CleartextPassword::from_string("old-password".to_string());
@@ -10327,7 +10327,7 @@ mod tests {
     #[test]
     fn change_password_wrong_old_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("real-password".to_string());
@@ -10355,7 +10355,7 @@ mod tests {
     #[test]
     fn delete_user_cascades_credential() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("password".to_string());
@@ -10379,7 +10379,7 @@ mod tests {
     #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for timing ratio
     fn verify_nonexistent_user_takes_comparable_time() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("password".to_string());
@@ -10420,7 +10420,7 @@ mod tests {
     #[test]
     fn create_session_returns_valid_session() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10438,7 +10438,7 @@ mod tests {
     #[test]
     fn create_session_nonexistent_user_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_session(&realm, &UserId::generate(), &SessionContext::default())
@@ -10451,7 +10451,7 @@ mod tests {
     #[test]
     fn session_with_full_context_persists_metadata() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let ctx = SessionContext {
@@ -10483,7 +10483,7 @@ mod tests {
     #[test]
     fn session_with_default_context_has_none_metadata() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10528,7 +10528,7 @@ mod tests {
     #[test]
     fn lookup_session_by_id_returns_correct_data() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10549,7 +10549,7 @@ mod tests {
     #[test]
     fn lookup_nonexistent_session_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let result = engine
             .get_session(&realm, &SessionId::generate())
@@ -10562,7 +10562,7 @@ mod tests {
     #[test]
     fn revoke_session_immediate_invalidation() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10580,7 +10580,7 @@ mod tests {
     #[test]
     fn revoke_nonexistent_session_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .revoke_session(&realm, &SessionId::generate())
@@ -10593,7 +10593,7 @@ mod tests {
     #[test]
     fn session_expires_after_ttl() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10616,7 +10616,7 @@ mod tests {
     #[test]
     fn session_valid_just_before_expiry() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10639,7 +10639,7 @@ mod tests {
     #[test]
     fn refresh_session_extends_ttl() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10677,7 +10677,7 @@ mod tests {
     #[test]
     fn refresh_expired_session_fails() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10697,7 +10697,7 @@ mod tests {
     #[test]
     fn refresh_revoked_session_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10717,7 +10717,7 @@ mod tests {
     #[test]
     fn delete_user_cascades_sessions() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         // Create multiple sessions
@@ -10761,7 +10761,7 @@ mod tests {
                 emails in proptest::collection::hash_set(valid_email(), 1..10),
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
                 let mut created_ids = Vec::new();
 
                 // Create all users
@@ -10806,7 +10806,7 @@ mod tests {
                 n in 2..5u32,
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
 
                 // First creation should succeed
                 let result = engine.create_user(&realm, &CreateUserRequest {
@@ -10840,7 +10840,7 @@ mod tests {
                 n_revoke_ratio in 0.0..1.0_f64,
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
                 let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("session-prop-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Prop User".to_string(),
@@ -10886,7 +10886,7 @@ mod tests {
             #[test]
             fn no_session_id_collisions(n in 10..100usize) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
                 let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("collision-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Collision User".to_string(),
@@ -10938,7 +10938,7 @@ mod tests {
     #[test]
     fn generate_authorization_code_with_correct_params() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -10971,7 +10971,7 @@ mod tests {
     #[test]
     fn exchange_authorization_code_returns_tokens() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11029,7 +11029,7 @@ mod tests {
     #[test]
     fn authorization_code_single_use() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11084,7 +11084,7 @@ mod tests {
     #[test]
     fn authorization_code_expiration() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11157,7 +11157,7 @@ mod tests {
     #[test]
     fn adversarial_authorization_code_reuse_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11213,7 +11213,7 @@ mod tests {
     #[test]
     fn adversarial_open_redirect_non_registered_uri_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11244,7 +11244,7 @@ mod tests {
     #[test]
     fn adversarial_csrf_missing_state_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11308,7 +11308,7 @@ mod tests {
         // Configure: lockout after 3 failed attempts, 10-second lockout
         let lockout_micros = 10_000_000; // 10 seconds
         let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("correct-pw".to_string());
@@ -11340,7 +11340,7 @@ mod tests {
     fn rate_limiting_resets_on_successful_verification() {
         let lockout_micros = 10_000_000;
         let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-password".to_string());
@@ -11378,7 +11378,7 @@ mod tests {
     fn rate_limiting_expires_after_lockout_window() {
         let lockout_micros = 10_000_000; // 10 seconds
         let (_dir, engine, clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-password".to_string());
@@ -11447,7 +11447,7 @@ mod tests {
     #[test]
     fn nonce_reuse_in_authorization_request_rejected() {
         let (_dir, engine, _clock) = setup_engine_with_nonce_enforcement();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11542,7 +11542,7 @@ mod tests {
     fn nonce_not_enforced_when_disabled() {
         // Explicitly opt out of nonce enforcement to verify the bypass path.
         let (_dir, engine, _clock) = setup_engine_with_nonce_disabled();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11575,7 +11575,7 @@ mod tests {
         // After the authorization_code_ttl_secs window has passed, a previously
         // used nonce must be accepted again (the old entry should have been swept).
         let (_dir, engine, clock) = setup_engine_with_nonce_enforcement();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11629,7 +11629,7 @@ mod tests {
         // between batches.  The set must stay bounded to one TTL window rather
         // than accumulating every nonce ever used.
         let (_dir, engine, clock) = setup_engine_with_nonce_enforcement();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -13214,7 +13214,7 @@ mod tests {
     #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
     fn mfa_brute_force_lockout() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         // Enroll TOTP
@@ -13267,7 +13267,7 @@ mod tests {
     #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
     fn mfa_replay_protection() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         // Enroll + activate TOTP
@@ -14301,7 +14301,7 @@ mod tests {
     #[test]
     fn public_client_requires_pkce_s256() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm); // public client
         let user = create_test_user(&engine, &realm);
         assert!(
@@ -14327,7 +14327,7 @@ mod tests {
             )
             .expect_err("must reject public client with no PKCE");
         assert!(
-            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("public clients must use PKCE")),
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("PKCE is required")),
             "got: {err}"
         );
     }
@@ -14336,7 +14336,7 @@ mod tests {
     #[test]
     fn pkce_challenge_without_s256_method_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -14364,11 +14364,36 @@ mod tests {
         );
     }
 
-    // F-01: Confidential client can omit PKCE (not required)
+    // F-01: Confidential client can omit PKCE when the legacy exemption flag is set
     #[test]
     fn confidential_client_can_omit_pkce() {
-        let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        // Use an engine with require_pkce_for_confidential_clients disabled to
+        // verify the legacy exemption path works for confidential clients.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            oidc: OidcConfig {
+                require_pkce_for_confidential_clients: false,
+                ..OidcConfig::default()
+            },
+            ..IdentityConfig::default()
+        };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            identity_config,
+            audit as Arc<dyn AuditEngine>,
+        )
+        .expect("engine creation");
+        let realm = create_test_realm(&engine);
         // Confidential auth-code client: has secret + redirect_uri + authorization_code grant.
         let client = engine
             .register_client(
@@ -14410,7 +14435,7 @@ mod tests {
     #[test]
     fn redirect_uri_fragment_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .register_client(
@@ -14436,7 +14461,7 @@ mod tests {
     #[test]
     fn redirect_uri_wildcard_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .register_client(
@@ -14462,7 +14487,7 @@ mod tests {
     #[test]
     fn redirect_uri_http_non_localhost_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .register_client(
@@ -14488,7 +14513,7 @@ mod tests {
     #[test]
     fn redirect_uri_http_localhost_allowed() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .register_client(
@@ -14510,7 +14535,7 @@ mod tests {
     #[test]
     fn scope_with_invalid_characters_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -14541,7 +14566,7 @@ mod tests {
     #[test]
     fn authorization_response_includes_iss() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 

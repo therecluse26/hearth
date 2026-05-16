@@ -45,7 +45,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // 1. Register an OAuth client
@@ -126,8 +126,11 @@ async fn oidc_authorization_code_flow_roundtrip() {
     assert_eq!(id_claims.sub, user.id().to_string());
     assert_eq!(id_claims.token_type, "id_token");
 
-    // 7. Access token should be verifiable via the EdDSA entry in JWKS
-    let jwks = harness.identity().jwks();
+    // 7. Access token should be verifiable via the EdDSA entry in realm JWKS
+    let jwks = harness
+        .identity()
+        .realm_jwks(&realm)
+        .expect("realm JWKS");
     let jwk = jwks
         .keys
         .iter()
@@ -197,7 +200,21 @@ async fn oidc_authorization_code_flow_via_http() {
 
     let base = format!("http://127.0.0.1:{port}");
     let http_client = reqwest::Client::new();
-    let realm_id = uuid::Uuid::new_v4().to_string();
+
+    // Bootstrap a realm so we have a valid realm ID to use throughout the test.
+    let bootstrap_resp: serde_json::Value = http_client
+        .post(format!("{base}/admin/bootstrap"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("bootstrap request")
+        .json()
+        .await
+        .expect("parse bootstrap json");
+    let realm_id = bootstrap_resp["realm_id"]
+        .as_str()
+        .expect("realm_id in bootstrap response")
+        .to_string();
 
     // 1. Create a user via HTTP
     let user_resp = http_client
@@ -349,7 +366,7 @@ async fn oidc_pkce_s256_flow() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let client = harness
@@ -660,7 +677,7 @@ async fn conformance_token_endpoint_rfc6749() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let client = harness

@@ -1611,12 +1611,25 @@ fn load_config(
 ) -> Result<Config, Box<dyn std::error::Error>> {
     // Load the user's file if given (takes precedence over the default
     // location). `--dev` without `-c` falls back to the pure dev preset.
+    //
+    // When `dev=true`, use `from_file_as_dev` which applies dev settings
+    // (dev_mode, no fsync, empty data_dir) before validation. This lets
+    // `hearth serve --dev` work even when an auto-detected hearth.yaml omits
+    // production-only fields like oidc.issuer.
     let mut config = if let Some(path) = config_path {
-        Config::from_file(path)?
+        if dev {
+            Config::from_file_as_dev(path)?
+        } else {
+            Config::from_file(path)?
+        }
     } else {
         let default_path = std::path::Path::new("hearth.yaml");
         if default_path.exists() {
-            Config::from_file(default_path)?
+            if dev {
+                Config::from_file_as_dev(default_path)?
+            } else {
+                Config::from_file(default_path)?
+            }
         } else if dev {
             return Ok(Config::dev());
         } else {
@@ -1631,9 +1644,8 @@ fn load_config(
     // `hearth serve --dev -c examples/.../hearth.yaml` work the way
     // most readers expect.
     if dev {
-        config.dev_mode = true;
-        config.storage.fsync = false;
-        config.storage.data_dir = String::new();
+        // dev_mode, fsync, data_dir already applied by from_file_as_dev above;
+        // adjust log level here (not part of the pure file-loading concern).
         if config.observability.log_level.as_str() == "info" {
             config.observability.log_level = "debug".to_string();
         }

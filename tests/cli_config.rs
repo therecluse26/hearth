@@ -26,6 +26,8 @@ fn hearth_bin() -> std::path::PathBuf {
 const VALID_CONFIG: &str = r#"
 storage:
   data_dir: "/tmp/hearth-test"
+oidc:
+  issuer: "https://auth.example.com"
 "#;
 
 /// Config with an invalid field (empty data_dir triggers a validation error).
@@ -38,6 +40,8 @@ storage:
 const INVALID_CONFIG_SMTP_MISSING_BLOCK: &str = r#"
 storage:
   data_dir: "/tmp/hearth-test"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"

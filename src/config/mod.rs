@@ -206,6 +206,20 @@ impl Config {
         Self::from_yaml_str_unchecked(&content)
     }
 
+    /// Loads a file in dev mode: parses without validation, applies dev
+    /// settings (`dev_mode = true`, `fsync = false`, empty `data_dir`), then
+    /// validates with the relaxed dev-mode rules. This lets `hearth serve --dev`
+    /// overlay an auto-detected config that omits production-only fields such as
+    /// `oidc.issuer`.
+    pub fn from_file_as_dev(path: &Path) -> Result<Self, ConfigError> {
+        let mut config = Self::from_file_unchecked(path)?;
+        config.dev_mode = true;
+        config.storage.fsync = false;
+        config.storage.data_dir = String::new();
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Parses a YAML string into a [`Config`] *without* running validation.
     ///
     /// Use this when you want to run [`validate_all`] yourself to collect

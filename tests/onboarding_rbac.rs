@@ -14,7 +14,7 @@ use hearth::rbac::{AssignRoleRequest, Permission, Scope, Subject};
 #[tokio::test]
 async fn first_user_gets_realm_admin_and_hearth_admin_permission() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     // Simulate onboarding: create a user and assign `realm.admin`.
