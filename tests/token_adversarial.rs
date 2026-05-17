@@ -27,7 +27,8 @@ mod common;
 use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{
-    CreateUserRequest, SessionContext, TokenIntrospectionRequest, TokenRevocationRequest, User,
+    CreateUserRequest, IdentityError, SessionContext, TokenIntrospectionRequest,
+    TokenRevocationRequest, User,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -143,8 +144,8 @@ async fn alg_none_rejected_by_validate_token() {
     let forged = forge_alg_none(pair.access_token());
     let result = harness.identity().validate_token(&realm, &forged);
     assert!(
-        result.is_err(),
-        "alg:none access token must be rejected by validate_token, got: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "alg:none access token must be rejected with InvalidToken, got: {result:?}"
     );
 }
 
@@ -170,8 +171,8 @@ async fn alg_none_rejected_by_userinfo() {
     let forged = forge_alg_none(pair.access_token());
     let result = harness.identity().userinfo(&realm, &forged);
     assert!(
-        result.is_err(),
-        "alg:none token must be rejected by userinfo, got: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "alg:none token must be rejected by userinfo with InvalidToken, got: {result:?}"
     );
 }
 
@@ -195,8 +196,8 @@ async fn alg_none_rejected_by_refresh_tokens() {
     let forged = forge_alg_none(pair.refresh_token());
     let result = harness.identity().refresh_tokens(&realm, &forged);
     assert!(
-        result.is_err(),
-        "alg:none refresh token must be rejected by refresh_tokens, got: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "alg:none refresh token must be rejected by refresh_tokens with InvalidToken, got: {result:?}"
     );
 }
 
@@ -266,14 +267,22 @@ async fn alg_none_on_revoke_is_silent_noop() {
         )
         .expect("revoke of alg:none token must silently succeed (RFC 7009)");
 
-    // The real session must be untouched.
-    assert!(
-        harness
-            .identity()
-            .validate_token(&realm, pair.access_token())
-            .is_ok(),
-        "real access token must still be valid after forged-token revoke attempt"
+    // The real session must be untouched — assert on claims, not just Ok.
+    let claims = harness
+        .identity()
+        .validate_token(&realm, pair.access_token())
+        .expect("real access token must still be valid after forged-token revoke attempt");
+    assert_eq!(
+        claims.sub,
+        user.id().to_string(),
+        "claims.sub must match the issued user — forged revoke must not corrupt state"
     );
+    assert_eq!(
+        claims.tid,
+        realm.to_string(),
+        "claims.tid must match the issued realm"
+    );
+    assert_eq!(claims.token_type, "access", "token_type must be 'access'");
 }
 
 // ── HS256 key confusion — validate_token ─────────────────────────────────────
@@ -300,8 +309,8 @@ async fn hs256_forgery_rejected_by_validate_token() {
     let forged = forge_hs256(pair.access_token());
     let result = harness.identity().validate_token(&realm, &forged);
     assert!(
-        result.is_err(),
-        "HS256-claimed token must be rejected by validate_token, got: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "HS256-claimed token must be rejected by validate_token with InvalidToken, got: {result:?}"
     );
 }
 
@@ -359,8 +368,8 @@ async fn hs256_forgery_rejected_by_refresh_tokens() {
     let forged = forge_hs256(pair.refresh_token());
     let result = harness.identity().refresh_tokens(&realm, &forged);
     assert!(
-        result.is_err(),
-        "HS256-claimed refresh token must be rejected, got: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "HS256-claimed refresh token must be rejected with InvalidToken, got: {result:?}"
     );
 }
 
@@ -399,8 +408,8 @@ async fn expired_refresh_token_rejected() {
 
     let result = engine.refresh_tokens(&realm, pair.refresh_token());
     assert!(
-        result.is_err(),
-        "expired refresh token must be rejected: {result:?}"
+        matches!(result, Err(IdentityError::TokenExpired)),
+        "expired refresh token must be rejected with TokenExpired, got: {result:?}"
     );
 }
 
@@ -476,8 +485,8 @@ async fn cross_realm_replay_rejected_by_validate_token() {
         .identity()
         .validate_token(&realm_b, pair.access_token());
     assert!(
-        result.is_err(),
-        "access token from realm A must be rejected by realm B validate_token: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "access token from realm A must be rejected by realm B validate_token with InvalidToken: {result:?}"
     );
 }
 
@@ -509,8 +518,8 @@ async fn cross_realm_replay_on_refresh_tokens() {
         .identity()
         .refresh_tokens(&realm_b, pair.refresh_token());
     assert!(
-        result.is_err(),
-        "refresh token from realm A must be rejected by realm B: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "refresh token from realm A must be rejected by realm B with InvalidToken: {result:?}"
     );
 }
 
@@ -582,14 +591,22 @@ async fn cross_realm_revoke_is_silent_noop() {
         )
         .expect("cross-realm revoke must silently succeed (RFC 7009)");
 
-    // The session in realm A must be unaffected.
-    assert!(
-        harness
-            .identity()
-            .validate_token(&realm_a, pair.access_token())
-            .is_ok(),
-        "session in realm A must not be revoked by a cross-realm revoke attempt"
+    // The session in realm A must be unaffected — assert on claims, not just Ok.
+    let claims = harness
+        .identity()
+        .validate_token(&realm_a, pair.access_token())
+        .expect("session in realm A must not be revoked by a cross-realm revoke attempt");
+    assert_eq!(
+        claims.sub,
+        user.id().to_string(),
+        "claims.sub must match the issued user — cross-realm revoke must not corrupt realm_a state"
     );
+    assert_eq!(
+        claims.tid,
+        realm_a.to_string(),
+        "claims.tid must match realm_a, not realm_b"
+    );
+    assert_eq!(claims.token_type, "access", "token_type must be 'access'");
 }
 
 // ── Revoked JTI replay — introspect_token ────────────────────────────────────
@@ -684,8 +701,8 @@ async fn future_iat_rejected_by_validate_token() {
 
     let result = engine.validate_token(&realm, pair.access_token());
     assert!(
-        result.is_err(),
-        "token with future iat must be rejected by validate_token: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "token with future iat must be rejected by validate_token with InvalidToken: {result:?}"
     );
 }
 
@@ -723,8 +740,8 @@ async fn future_iat_rejected_by_refresh_tokens() {
 
     let result = engine.refresh_tokens(&realm, pair.refresh_token());
     assert!(
-        result.is_err(),
-        "refresh token with future iat must be rejected: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "refresh token with future iat must be rejected with InvalidToken: {result:?}"
     );
 }
 
@@ -810,10 +827,20 @@ async fn token_within_clock_skew_accepted() {
     // Roll back 30 s so iat is exactly 30 s ahead of validator — within tolerance.
     clock.advance(-30 * 1_000_000);
 
-    assert!(
-        engine.validate_token(&realm, pair.access_token()).is_ok(),
-        "token with iat within clock-skew tolerance must be accepted"
+    let claims = engine
+        .validate_token(&realm, pair.access_token())
+        .expect("token with iat within clock-skew tolerance must be accepted");
+    assert_eq!(
+        claims.sub,
+        user.id().to_string(),
+        "claims.sub must match the issued user"
     );
+    assert_eq!(
+        claims.tid,
+        realm.to_string(),
+        "claims.tid must match the issued realm"
+    );
+    assert_eq!(claims.token_type, "access", "token_type must be 'access'");
 }
 
 // ── aud claim enforcement (HEA-239) ──────────────────────────────────────────
@@ -907,14 +934,24 @@ async fn wrong_aud_rejected_by_validate_token() {
         .issue_tokens(&realm, user.id(), session.id())
         .expect("tokens");
 
-    assert!(
-        engine_a.validate_token(&realm, pair.access_token()).is_ok(),
-        "token must be valid for its own engine (aud=hearth)"
+    let claims = engine_a
+        .validate_token(&realm, pair.access_token())
+        .expect("token must be valid for its own engine (aud=hearth)");
+    assert_eq!(
+        claims.sub,
+        user.id().to_string(),
+        "claims.sub must match the issued user"
     );
+    assert_eq!(
+        claims.tid,
+        realm.to_string(),
+        "claims.tid must match the issued realm"
+    );
+    assert_eq!(claims.token_type, "access", "token_type must be 'access'");
     let result = engine_b.validate_token(&realm, pair.access_token());
     assert!(
-        result.is_err(),
-        "aud=hearth must be rejected by engine expecting aud=other-service: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "aud=hearth must be rejected by engine expecting aud=other-service with InvalidToken: {result:?}"
     );
 }
 
@@ -966,8 +1003,8 @@ async fn wrong_aud_rejected_by_refresh_tokens() {
 
     let result = engine_b.refresh_tokens(&realm, pair.refresh_token());
     assert!(
-        result.is_err(),
-        "aud=hearth refresh token must be rejected by engine expecting aud=other-service: {result:?}"
+        matches!(result, Err(IdentityError::InvalidToken)),
+        "aud=hearth refresh token must be rejected by engine expecting aud=other-service with InvalidToken: {result:?}"
     );
 }
 
