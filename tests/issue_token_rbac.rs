@@ -6,7 +6,6 @@
 
 mod common;
 
-use hearth::core::RealmId;
 use hearth::identity::{
     AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, IdentityError,
     RegisterClientRequest, SessionContext, TokenExchangeRequest,

@@ -159,7 +159,6 @@ async fn jwks_aliases_return_same_document() {
 
 #[tokio::test]
 async fn jwt_kid_header_matches_a_jwks_entry() {
-    use hearth::core::RealmId;
     use hearth::identity::{verify_token_signature, CreateUserRequest, SessionContext};
 
     let h = common::TestHarness::embedded().await.expect("harness");

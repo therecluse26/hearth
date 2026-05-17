@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use hearth::core::RealmId;
 use hearth::identity::{CreateUserRequest, SessionContext};
 use hearth::protocol::http::{router, AppState};
 use hearth::rbac::{AssignRoleRequest, CreateRoleRequest, Permission, Scope, Subject};

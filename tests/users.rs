@@ -5,7 +5,6 @@
 
 mod common;
 
-use hearth::core::RealmId;
 use hearth::identity::{CreateUserRequest, UpdateUserRequest, UserStatus};
 
 // ===== P0 fast: Full CRUD lifecycle =====
