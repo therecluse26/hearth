@@ -64,6 +64,7 @@ fn wait_for_server(port: u16, timeout: Duration) -> bool {
         // server readiness here is to probe the socket; tokio::time::advance
         // would not help because server startup is real OS-process I/O, not
         // timer-gated. This sleep is conditional on the poll loop continuing.
+        // AUDIT: justified-sleep: bounded by outer TCP-probe poll loop (HEA-571).
         std::thread::sleep(Duration::from_millis(50));
     }
     false

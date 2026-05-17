@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test ci-fast bench-gate ci-standard docker-up docker-reload
+.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test test-quality ci-fast bench-gate ci-standard docker-up docker-reload
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -72,8 +72,14 @@ clippy:
 fmt:
 	cargo fmt --check
 
-## Run all Rust checks (build + clippy + fmt + tests).
-check: clippy fmt test
+## Run all Rust checks (build + clippy + fmt + tests + test-quality guardrail).
+check: clippy fmt test-quality test
+
+## Grep-based guardrail against false-confidence test patterns
+## (weak is_ok/is_err asserts, unconditional sleeps, untracked #[ignore]).
+## See docs/specs/TESTING.md § "Test Quality Anti-Patterns" and HEA-571.
+test-quality:
+	@bash scripts/check-test-quality.sh
 
 # ── Proto ─────────────────────────────────────────────
 
@@ -110,8 +116,8 @@ sdk-test:
 
 # ── CI Tiers ──────────────────────────────────────────
 
-## CI fast tier: lint + fmt + proto lint + css freshness (every commit).
-ci-fast: fmt clippy proto-lint css-check
+## CI fast tier: lint + fmt + proto lint + css freshness + test-quality (every commit).
+ci-fast: fmt clippy proto-lint css-check test-quality
 
 ## CI benchmark gate: compile and run hot-path perf threshold gates.
 ##

@@ -407,7 +407,7 @@ Coverage reports are generated on every merge to main and published as CI artifa
 
 The following anti-patterns produce tests that compile and pass without actually verifying the behavior they claim to test — a phenomenon called *false confidence*. Each entry states a MUST NOT rule, shows a concrete counter-example, and gives the recommended alternative. The taxonomy was defined in the [HEA-565 audit plan](/HEA/issues/HEA-565#document-plan) and applied across the codebase in the [2026-05-16 audit report](../audit/test-suite-audit-2026-05-16.md), which found 27 improvable findings across 193 total hits.
 
-> **CI enforcement**: a lint pass detecting the most mechanical of these patterns (categories A, E, I) is tracked in [HEA-571](/HEA/issues/HEA-571) (pending).
+> **CI enforcement**: `scripts/check-test-quality.sh` (wired into `make check`, `make ci-fast`, and the GitHub Actions `check` job) fails the build on new occurrences of the most mechanical anti-patterns. See the [CI enforcement](#ci-enforcement-scriptscheck-test-qualitysh) subsection at the bottom of this section for the exact rules and the per-line escape hatch.
 
 ---
 
@@ -556,6 +556,44 @@ async fn server_mode_crud() { ... }
 ```
 
 `#[ignore]` markers MUST be reviewed at each phase boundary. When the blocking condition resolves, the annotation MUST be removed or updated.
+
+---
+
+### CI enforcement (`scripts/check-test-quality.sh`)
+
+A grep-based linter prevents re-introduction of the mechanical anti-patterns the [2026-05-16 audit](../audit/test-suite-audit-2026-05-16.md) cleaned up. It runs as part of `make check`, `make ci-fast`, and the `check` job in `.github/workflows/ci.yml`, so a PR that introduces a banned pattern fails CI with a clear error message.
+
+**Rules (fail the build):**
+
+| ID | Pattern | Scope | Audit cleanup |
+|----|---------|-------|---------------|
+| A | `assert!(<expr>.is_ok())` or `assert!(<expr>.is_err())` | `tests/`, `simulation/` | HEA-567 |
+| E | `std::thread::sleep(…)` or `tokio::time::sleep(…)`       | `tests/`, `simulation/` | HEA-569 |
+| I | `#[ignore = "…"]` whose message lacks an `HEA-####` tracking issue | `tests/`, `simulation/`, `src/`, `benches/` | HEA-568 |
+
+**Warn-only (does not fail):**
+
+- `#[ignore]` whose message contains `not yet implemented` — these tend to rot. Update the message with the current blocker or remove the marker.
+
+**Escape hatch** — when a pattern is genuinely justified (e.g. a TCP-probe poll loop that legitimately needs `thread::sleep`), suppress the finding with a magic comment on the same line or the immediately preceding line. The reason after the colon MUST be non-empty:
+
+```rust
+// AUDIT: justified-sleep: bounded by outer TCP-probe poll loop (HEA-571).
+std::thread::sleep(Duration::from_millis(50));
+```
+
+| Marker | Suppresses |
+|--------|-----------|
+| `// AUDIT: justified-weak-assert: <reason>` | A — weak `is_ok()` / `is_err()` |
+| `// AUDIT: justified-sleep: <reason>`        | E — wall-clock sleep            |
+
+**Scope note** — `src/` `#[cfg(test)]` inline modules are intentionally NOT scanned for A/E. They were outside the [HEA-565](/HEA/issues/HEA-565) audit scope; broaden the lint after a follow-up audit, otherwise CI would fail on unaudited pre-existing patterns. Category I is scanned everywhere because the codebase has zero `#[ignore]` markers today, so no allow-list management is needed.
+
+Run locally with:
+
+```bash
+make test-quality          # or: bash scripts/check-test-quality.sh
+```
 
 ---
 

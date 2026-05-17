@@ -201,6 +201,7 @@ fn sleep_with_jitter(base_us: u64, jitter_us: u64, seed: &AtomicU64) {
     // be replaced with tokio::time::advance because the delay must affect real
     // synchronous storage calls on blocking threads, not the async scheduler.
     // Returns immediately when base_us == 0 && jitter_us == 0 (the default).
+    // AUDIT: justified-sleep: simulation primitive for I/O jitter injection (HEA-571).
     std::thread::sleep(Duration::from_micros(base_us.saturating_add(extra)));
 }
 
