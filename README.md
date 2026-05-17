@@ -329,20 +329,31 @@ For the full token list and design rationale see [`docs/specs/THEME.md`](docs/sp
 
 ---
 
-## Running with Docker Compose
+## Local Development
 
-A two-service compose stack (Hearth + [Mailpit](https://mailpit.axllent.org/) as a dev SMTP sink) lives at the repo root:
+Run directly with Cargo — no Docker required:
 
 ```bash
-docker compose up --build -d
-docker compose logs hearth | grep "setup_url"   # grab the first-run setup URL
-open http://localhost:8420                      # Hearth
-open http://localhost:8025                      # Mailpit UI
-docker compose down                             # stop (keeps data volume)
-docker compose down -v                          # stop + wipe data volume
+make dev          # cargo run -- serve --dev
+# or
+cargo run -- serve --dev
 ```
 
-Container config lives in [`deploy/hearth.docker.yaml`](deploy/hearth.docker.yaml); tune knobs there, not in `compose.yaml`. The compose stack ships with `email.transport: smtp` pointed at Mailpit over compose DNS as `mailpit:1025`, so verification emails sent from the first-run `/ui/setup` flow land in the Mailpit inbox at http://localhost:8025 — click the link inside Mailpit to complete setup.
+`--dev` binds to `http://127.0.0.1:8420`, uses in-memory storage, and auto-enables the built-in **mailcatcher** email transport. Every outbound email (verification links, password resets, setup notifications) is captured in-process and visible in a browser UI at **http://127.0.0.1:8420/dev/mail** — no external mail server or Docker needed.
+
+The inbox password is printed to the terminal at startup:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  MailcatcherSender active
+  Inbox:    http://127.0.0.1:8420/dev/mail
+  Password: <random 16-char password>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+> **Migrating from Docker Compose?** If your `hearth.yaml` has `email.transport: smtp`, `--dev` automatically overrides it to mailcatcher and logs a warning. You can silence it by removing the smtp block or setting `transport: mailcatcher` explicitly.
+
+Production deployment (containerised, persistent storage, real email) lives in [`deploy/`](deploy/).
 
 ---
 
@@ -364,21 +375,17 @@ hearth migrate keycloak --file <export.json> [--data-dir <path>] [--realm <uuid>
 
 ## End-to-End curl Walkthrough
 
-**Prerequisites:** `docker` + `curl` + `jq` + `openssl`. No Rust toolchain needed.
+**Prerequisites:** `curl` + `jq` + `openssl` + a Rust toolchain.
 Time to first token: under 30 minutes from a clean clone.
 
 ### 0. Start Hearth
 
 ```bash
-# Docker Compose (recommended for quick start — no compilation required)
-docker compose up --build -d
-
-# Alternative: build from source and run in dev mode
-cargo build --release
-./target/release/hearth serve --dev
+make dev
+# or: cargo run -- serve --dev
 ```
 
-Both paths bind to `http://127.0.0.1:8420`. Subsequent steps are identical.
+Binds to `http://127.0.0.1:8420` with in-memory storage.
 
 ### 1. Bootstrap realm + admin user (dev only)
 

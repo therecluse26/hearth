@@ -2,22 +2,18 @@
 
 **Goal:** First authenticated request in your app. **Time:** ~5 minutes.
 
-**Prerequisites:** `docker` and `curl` (and `jq` for JSON parsing). Or a Rust toolchain if you prefer building from source.
+**Prerequisites:** A Rust toolchain plus `curl` (and `jq` for JSON parsing).
 
 ---
 
 ## 1. Start Hearth in dev mode
 
 ```bash
-# Docker — no compilation required
-docker run --rm -p 8420:8420 ghcr.io/hearth-id/hearth:latest serve --dev
-
-# Build from source
-cargo build --release
-./target/release/hearth serve --dev
+make dev
+# or: cargo run -- serve --dev
 ```
 
-Dev mode binds to `http://127.0.0.1:8420`, uses in-memory storage, and enables the bootstrap endpoint. **Data does not persist across restarts.** For a persistent dev environment, omit `--dev` and point to a config file.
+`--dev` binds to `http://127.0.0.1:8420`, uses in-memory storage, enables the bootstrap endpoint, and auto-starts the built-in **mailcatcher** (email inbox at `http://127.0.0.1:8420/dev/mail`). **Data does not persist across restarts.** For a persistent environment, omit `--dev` and point to a config file.
 
 Verify it is running:
 ```bash
@@ -193,6 +189,7 @@ def require_permission(token: str, permission: str) -> dict:
 
 | Topic | Guide |
 |---|---|
+| Local dev, mailcatcher email inbox | [Local dev guide](local-dev.md) |
 | Realms, RBAC, and token lifecycle explained | [Conceptual model](concepts.md) |
 | Create roles, assign permissions, manage groups | [RBAC guide](rbac.md) |
 | B2B multi-tenancy within a realm | [Organizations guide](organizations.md) |
