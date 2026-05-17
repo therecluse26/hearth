@@ -193,6 +193,8 @@ The only places where trait-based dependency injection is used are true environm
 
 Everything else uses real implementations, including the storage engine, the permission graph, and the crypto stack.
 
+The 2026-05-16 audit confirmed this approach at scale: all 98 `#[cfg(test)]` blocks in `src/` are standard unit-test modules — no production code paths are gated by a test flag (category D clean). The improvable findings that *were* uncovered (assertion quality, setup discards, stale ignores) belong to different anti-pattern categories; mocking over-reach was not a problem because this policy is enforced from day one. See the [audit report](../audit/test-suite-audit-2026-05-16.md) and the [Test Quality Anti-Patterns](#test-quality-anti-patterns) section below.
+
 ---
 
 ## Black Box Test Infrastructure
@@ -398,6 +400,162 @@ Coverage is measured with `cargo-llvm-cov` and tracked in CI.
 Coverage is a useful signal, not a goal in itself. 100% coverage of trivial code is less valuable than 70% coverage of carefully-chosen properties. The property tests and simulation tests provide confidence that raw coverage numbers cannot.
 
 Coverage reports are generated on every merge to main and published as CI artifacts.
+
+---
+
+## Test Quality Anti-Patterns
+
+The following anti-patterns produce tests that compile and pass without actually verifying the behavior they claim to test — a phenomenon called *false confidence*. Each entry states a MUST NOT rule, shows a concrete counter-example, and gives the recommended alternative. The taxonomy was defined in the [HEA-565 audit plan](/HEA/issues/HEA-565#document-plan) and applied across the codebase in the [2026-05-16 audit report](../audit/test-suite-audit-2026-05-16.md), which found 27 improvable findings across 193 total hits.
+
+> **CI enforcement**: a lint pass detecting the most mechanical of these patterns (categories A, E, I) is tracked in [HEA-571](/HEA/issues/HEA-571) (pending).
+
+---
+
+### A — Assertions That Don't Actually Assert Behavior
+
+**MUST NOT** use `assert!(x.is_ok())` or `assert!(x.is_err())` without checking the value or error variant. A call returning `Ok(wrong_value)` or the wrong `Err` variant still passes.
+
+```rust
+// Wrong: passes even if the error is a configuration error, not a validation error
+assert!(engine.create_user(req).await.is_err());
+
+// Right: pin the specific failure mode
+assert!(matches!(
+    engine.create_user(req).await,
+    Err(IdentityError::DuplicateEmail)
+));
+```
+
+**MUST NOT** use `.unwrap()` or `.expect()` as the sole verification in a test body. The returned value MUST be inspected with a follow-up `assert*!` macro.
+
+**MUST NOT** write `#[test]` functions with zero `assert*!` macro calls. A test body that never asserts anything is not a test.
+
+---
+
+### B — Test Scaffolding That Hides Real Failures
+
+**MUST NOT** silently discard errors during the test arrange phase with `.ok()` or `let _ = …` unless the discard is documented as intentional teardown.
+
+```rust
+// Wrong: silently continues if user creation failed; all subsequent assertions are vacuous
+let _ = harness.identity().create_user(req).await;
+
+// Right: fail loudly if setup fails
+let user = harness.identity().create_user(req).await
+    .expect("test setup: user must exist before testing session flow");
+```
+
+**MUST NOT** use `unwrap_or_default()` or `or_default()` in test assertions. A missing value silently becomes the type default, and the assertion passes vacuously even when the real call failed.
+
+---
+
+### C — Behavior Drift from the Test's Claimed Purpose
+
+**MUST NOT** name or document a test as verifying behavior X when its assertions verify behavior Y.
+
+```rust
+// Wrong: name says "rejects" but the body asserts Ok
+#[tokio::test]
+async fn create_user_rejects_duplicate_email() {
+    assert!(engine.create_user(dup_req).await.is_ok()); // contradicts the name
+}
+```
+
+**MUST NOT** re-implement the function under test inside the arrange phase and compare outputs against the result — this is circular validation and can never fail in a meaningful way.
+
+---
+
+### D — Mocking and Dependency Replacement
+
+**MUST NOT** write hand-rolled in-test trait implementations for storage, permission, or identity engines that diverge from production behavior. See [Why Minimal Mocking](#why-minimal-mocking).
+
+**MUST NOT** gate production code paths behind `#[cfg(test)]`. Production behavior MUST be identical regardless of the test compilation flag.
+
+```rust
+// Wrong: security check is silenced when compiling tests
+fn validate_token(&self, t: &str) -> Result<Claims> {
+    #[cfg(test)]
+    return Ok(Claims::default()); // bypasses signature verification
+    // ...real validation...
+}
+```
+
+**MUST NOT** add `pub(crate)` accessors solely to expose invariant-protected internal state to tests.
+
+---
+
+### E — Time, Ordering, and Determinism
+
+**MUST NOT** use `std::thread::sleep` or `tokio::time::sleep` with a fixed duration to wait for asynchronous state changes. Use `tokio::time::pause()` + `advance()`, or the injected `MockClock`, for deterministic time control.
+
+```rust
+// Wrong: flaky under load; the sleep may not be long enough
+tokio::time::sleep(Duration::from_millis(100)).await;
+assert!(session.is_expired());
+
+// Right: advance the injected clock exactly as far as needed
+clock.advance(Duration::from_secs(3601));
+assert!(session.is_expired(&clock));
+```
+
+**MUST NOT** assert on the iteration order of `HashMap` or `HashSet` without sorting the output first — iteration order is not guaranteed.
+
+**MUST NOT** call `SystemTime::now()` or `Utc::now()` directly in test assertions; use the injected clock instead.
+
+---
+
+### F — Coverage of Negative Paths
+
+**MUST NOT** assert only that a security-relevant call returned an error without specifying which error variant was returned. Every adversarial test MUST pin the rejection reason.
+
+```rust
+// Wrong: passes even if rejection is a server error rather than an auth check
+assert!(result.is_err(), "tampered token must be rejected");
+
+// Right
+assert!(
+    matches!(result, Err(IdentityError::InvalidToken)),
+    "tampered token must be rejected with InvalidToken"
+);
+```
+
+---
+
+### G — Property Tests That Don't Exercise the Interesting Region
+
+**MUST NOT** write `proptest` strategies that exclude the values most likely to trigger failures (e.g., empty strings, `0`, boundary integers). Overly narrow strategies produce high pass rates with low confidence.
+
+**MUST NOT** write tautological property assertions. `assert_eq!(round_trip(x), x)` only has value if the strategy generates inputs that exercise real serialization edge cases (negatives, empty, max-length, non-ASCII).
+
+**SHOULD** run at least 256 cases in development and 10,000+ cases in the CI extended tier.
+
+---
+
+### H — Simulation, Fuzz, Conformance, and Benchmarks
+
+**MUST NOT** write simulation tests that inject faults *after* the write-under-test completes — fault injection MUST happen mid-operation to exercise crash-recovery semantics.
+
+**MUST NOT** write fuzz targets that consume bytes without ever triggering a failure on malformed input. Confirm the harness rejects known-bad inputs before merging.
+
+**MUST NOT** mark benchmarks `#[ignore]` without a tracking issue ID in the annotation. Benchmarks with no CI execution path are dead code and MUST be either scheduled or deleted.
+
+---
+
+### I — Stale `#[ignore]` Markers
+
+**MUST NOT** leave `#[ignore = "…"]` with a reason that is no longer accurate. Stale ignore annotations hide real coverage gaps.
+
+```rust
+// Wrong: HTTP layer has existed since Phase 1; reason is stale
+#[ignore = "HTTP layer not yet implemented"]
+async fn server_mode_crud() { ... }
+
+// Right: state the actual blocker with a tracking reference
+#[ignore = "TestHarness::server() not yet wired — tracked in HEA-XXX"]
+async fn server_mode_crud() { ... }
+```
+
+`#[ignore]` markers MUST be reviewed at each phase boundary. When the blocking condition resolves, the annotation MUST be removed or updated.
 
 ---
 
