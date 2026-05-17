@@ -15,6 +15,7 @@
 //! | Future-dated iat        | tested (risk)  | —              | —                | —            |
 //! | Tampered payload        | tokens.rs      | tokens.rs      | tokens.rs        | tokens.rs    |
 //! | Revoked JTI (cc)        | oauth.rs       | —              | tested           | —            |
+//! | Suspended/archived realm| tested (HEA-544)| —             | —                | —            |
 //!
 //! ## aud claim validation (HEA-239 — resolved)
 //!
@@ -27,10 +28,22 @@ mod common;
 use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{
-    CreateUserRequest, SessionContext, TokenIntrospectionRequest, TokenRevocationRequest, User,
+    CreateRealmRequest, CreateUserRequest, IdentityError, RealmStatus, SessionContext,
+    TokenIntrospectionRequest, TokenRevocationRequest, UpdateRealmRequest, User,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn make_realm(engine: &impl hearth::identity::IdentityEngine) -> RealmId {
+    engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("adv-tok-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone()
+}
 
 fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
@@ -129,7 +142,7 @@ async fn engine_with_fake_clock() -> (
 #[tokio::test]
 async fn alg_none_rejected_by_validate_token() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -156,7 +169,7 @@ async fn alg_none_rejected_by_validate_token() {
 #[tokio::test]
 async fn alg_none_rejected_by_userinfo() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -181,7 +194,7 @@ async fn alg_none_rejected_by_userinfo() {
 #[tokio::test]
 async fn alg_none_rejected_by_refresh_tokens() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -207,7 +220,7 @@ async fn alg_none_rejected_by_refresh_tokens() {
 #[tokio::test]
 async fn alg_none_on_introspect_returns_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -242,7 +255,7 @@ async fn alg_none_on_introspect_returns_inactive() {
 #[tokio::test]
 async fn alg_none_on_revoke_is_silent_noop() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -286,7 +299,7 @@ async fn alg_none_on_revoke_is_silent_noop() {
 #[tokio::test]
 async fn hs256_forgery_rejected_by_validate_token() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -312,7 +325,7 @@ async fn hs256_forgery_rejected_by_validate_token() {
 #[tokio::test]
 async fn hs256_forgery_on_introspect_returns_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -345,7 +358,7 @@ async fn hs256_forgery_on_introspect_returns_inactive() {
 #[tokio::test]
 async fn hs256_forgery_rejected_by_refresh_tokens() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -373,7 +386,7 @@ async fn expired_refresh_token_rejected() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     let user = engine
         .create_user(
@@ -412,7 +425,7 @@ async fn expired_token_introspects_inactive() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     let user = engine
         .create_user(
@@ -459,8 +472,8 @@ async fn expired_token_introspects_inactive() {
 #[tokio::test]
 async fn cross_realm_replay_rejected_by_validate_token() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -491,8 +504,8 @@ async fn cross_realm_replay_rejected_by_validate_token() {
 #[tokio::test]
 async fn cross_realm_replay_on_refresh_tokens() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -520,8 +533,8 @@ async fn cross_realm_replay_on_refresh_tokens() {
 #[tokio::test]
 async fn cross_realm_replay_on_introspect_returns_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -557,8 +570,8 @@ async fn cross_realm_replay_on_introspect_returns_inactive() {
 #[tokio::test]
 async fn cross_realm_revoke_is_silent_noop() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
     let session = harness
@@ -601,7 +614,7 @@ async fn cross_realm_revoke_is_silent_noop() {
 #[tokio::test]
 async fn revoked_session_token_introspects_inactive() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let session = harness
         .identity()
@@ -656,7 +669,7 @@ async fn future_iat_rejected_by_validate_token() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     // Advance clock 1 hour into the future, then issue a token.
     clock.advance(3600 * 1_000_000);
@@ -697,7 +710,7 @@ async fn future_iat_rejected_by_refresh_tokens() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     clock.advance(3600 * 1_000_000);
     let user = engine
@@ -736,7 +749,7 @@ async fn future_iat_introspects_inactive() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     clock.advance(3600 * 1_000_000);
     let user = engine
@@ -784,7 +797,7 @@ async fn token_within_clock_skew_accepted() {
     use hearth::identity::IdentityEngine;
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     // Issue token 30 seconds in the future (within the 60 s skew window).
     clock.advance(30 * 1_000_000);
@@ -887,7 +900,7 @@ async fn wrong_aud_rejected_by_validate_token() {
         "other-service",
     );
 
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine_a);
     let user = engine_a
         .create_user(
             &realm,
@@ -944,7 +957,7 @@ async fn wrong_aud_rejected_by_refresh_tokens() {
         "other-service",
     );
 
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine_a);
     let user = engine_a
         .create_user(
             &realm,
@@ -997,7 +1010,7 @@ async fn wrong_aud_introspects_inactive() {
         "other-service",
     );
 
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine_a);
     let user = engine_a
         .create_user(
             &realm,
@@ -1029,5 +1042,143 @@ async fn wrong_aud_introspects_inactive() {
     assert!(
         !response.active,
         "aud=hearth token must introspect as inactive when engine expects aud=other-service"
+    );
+}
+
+// ── Realm status — validate_token (HEA-544) ──────────────────────────────────
+
+fn setup_registered_realm(id: &dyn hearth::identity::IdentityEngine) -> hearth::core::RealmId {
+    let realm = id
+        .create_realm(&CreateRealmRequest {
+            name: format!("hea544-test-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm");
+    realm.id().clone()
+}
+
+fn create_user_in_realm(
+    id: &dyn hearth::identity::IdentityEngine,
+    realm: &RealmId,
+) -> User {
+    id.create_user(
+        realm,
+        &CreateUserRequest {
+            email: format!("hea544-{}@test.example", uuid::Uuid::new_v4()),
+            display_name: "HEA-544 User".to_string(),
+            first_name: String::new(),
+            last_name: String::new(),
+            attributes: Default::default(),
+        },
+    )
+    .expect("create user")
+}
+
+/// Vulnerability class: Missing authorization check (OWASP API6 — Broken
+/// Function-Level Authorization). A suspended realm must not accept tokens.
+///
+/// Defense: `validate_token` fetches the realm after signature verification
+/// and returns `RealmSuspended` if status is not `Active`.
+#[tokio::test]
+async fn validate_token_rejected_for_suspended_realm() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let id = harness.identity();
+    let realm = setup_registered_realm(id);
+    let user = create_user_in_realm(id, &realm);
+    let session = id
+        .create_session(&realm, user.id(), &SessionContext::default())
+        .expect("session");
+    let pair = id
+        .issue_tokens(&realm, user.id(), session.id())
+        .expect("tokens");
+
+    // Token validates before suspension.
+    id.validate_token(&realm, pair.access_token())
+        .expect("token must be valid before suspension");
+
+    id.update_realm(
+        &realm,
+        &UpdateRealmRequest {
+            status: Some(RealmStatus::Suspended),
+            ..UpdateRealmRequest::default()
+        },
+    )
+    .expect("suspend realm");
+
+    let err = id
+        .validate_token(&realm, pair.access_token())
+        .expect_err("token from suspended realm must be rejected");
+    assert!(
+        matches!(err, IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+/// Archived realms must also reject tokens — archiving is a stronger form
+/// of decommission and must not leave any authentication surface active.
+#[tokio::test]
+async fn validate_token_rejected_for_archived_realm() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let id = harness.identity();
+    let realm = setup_registered_realm(id);
+    let user = create_user_in_realm(id, &realm);
+    let session = id
+        .create_session(&realm, user.id(), &SessionContext::default())
+        .expect("session");
+    let pair = id
+        .issue_tokens(&realm, user.id(), session.id())
+        .expect("tokens");
+
+    id.update_realm(
+        &realm,
+        &UpdateRealmRequest {
+            status: Some(RealmStatus::Archived),
+            ..UpdateRealmRequest::default()
+        },
+    )
+    .expect("archive realm");
+
+    let err = id
+        .validate_token(&realm, pair.access_token())
+        .expect_err("token from archived realm must be rejected");
+    assert!(
+        matches!(err, IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+/// Suspending a realm must also revoke all active sessions so that the
+/// session-validity check inside validate_token provides defense-in-depth.
+#[tokio::test]
+async fn suspend_realm_revokes_sessions() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let id = harness.identity();
+    let realm = setup_registered_realm(id);
+    let user = create_user_in_realm(id, &realm);
+    let session = id
+        .create_session(&realm, user.id(), &SessionContext::default())
+        .expect("session");
+
+    // Confirm session is live before suspension.
+    id.get_session(&realm, session.id())
+        .expect("get_session must not error before suspend")
+        .expect("session must exist before suspension");
+
+    id.update_realm(
+        &realm,
+        &UpdateRealmRequest {
+            status: Some(RealmStatus::Suspended),
+            ..UpdateRealmRequest::default()
+        },
+    )
+    .expect("suspend realm");
+
+    // get_session returns None for revoked sessions (enumeration resistance).
+    let after = id
+        .get_session(&realm, session.id())
+        .expect("get_session must not error after suspend");
+    assert!(
+        after.is_none(),
+        "session must not be returned by get_session after realm suspension"
     );
 }

@@ -17,7 +17,7 @@ use crate::storage::StorageEngine;
 
 use super::error::RbacError;
 use super::keys;
-use super::types::{Permission, Role, RoleId, RoleScopeKind};
+use super::types::{Permission, PermissionRecord, PermissionStatus, Role, RoleId, RoleScopeKind};
 
 /// Seed permission identifiers and human-readable descriptions (§ 9.1).
 ///
@@ -209,7 +209,11 @@ fn seed_permissions(storage: &Arc<dyn StorageEngine>, realm_id: &RealmId) -> Res
         if storage.get(realm_id, &key)?.is_some() {
             continue;
         }
-        let value = serde_json::to_vec(&perm).map_err(|e| RbacError::Serialization {
+        let record = PermissionRecord {
+            name: perm,
+            status: PermissionStatus::Active,
+        };
+        let value = serde_json::to_vec(&record).map_err(|e| RbacError::Serialization {
             reason: e.to_string(),
         })?;
         storage.put(realm_id, &key, &value)?;
@@ -293,6 +297,8 @@ fn seed_roles(
             permissions,
             parent_roles,
             scope_kind: spec.scope_kind,
+            status: super::types::RoleStatus::Active,
+            yaml_managed: false,
             created_at: now,
             updated_at: now,
         };

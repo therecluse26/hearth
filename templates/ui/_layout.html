@@ -82,6 +82,12 @@
               </a>
             </li>
             <li>
+              <a href="/ui/admin/migrations" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "migrations" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "migrations" %} aria-current="page"{% endif %}>
+                <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                Migrations
+              </a>
+            </li>
+            <li>
               <a href="/ui/admin/settings" class="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium {% if active == "settings" %}bg-divider text-ht-content-primary{% else %}text-ht-content-secondary hover-bg-divider hover:text-ht-content-primary{% endif %}"{% if active == "settings" %} aria-current="page"{% endif %}>
                 <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="3"/>

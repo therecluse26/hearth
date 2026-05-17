@@ -167,7 +167,7 @@ async fn jwt_kid_header_matches_a_jwks_entry() {
     // A realm scope is required so the identity engine has a JWKS to
     // hand out. Using a fresh RealmId mirrors the other token tests
     // and avoids the create_realm setup overhead.
-    let realm_id = RealmId::generate();
+    let realm_id = h.create_realm();
 
     let user = h
         .identity()

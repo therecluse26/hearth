@@ -152,6 +152,13 @@ const FED_EXT_PREFIX: &str = "fed:ext:";
 /// `external_sub` string.
 const FED_EXT_FWD_PREFIX: &str = "fed:ext_fwd:";
 
+/// Prefix for retiring Ed25519 signing keys during a rotation grace period.
+///
+/// Format: `realm:retiring:{realm_uuid}:{deadline_secs:020}:{key_id}` — PKCS#8 DER bytes.
+/// Stored under the system realm. The 20-digit zero-padded deadline allows
+/// lexicographic ordering and prefix-scanning by realm.
+const REALM_RETIRING_KEY_PREFIX: &str = "realm:retiring:";
+
 /// Prefix for per-realm RSA signing key for SAML (stored under system realm).
 ///
 /// Format: `realm:saml_key:{uuid}` — PKCS#8 DER bytes.
@@ -218,6 +225,14 @@ const SCIM_EXT_GROUP_FWD_PREFIX: &str = "scim:ext_group_fwd:";
 
 /// Prefix for session primary keys.
 const SESSION_ID_PREFIX: &str = "ses:id:";
+
+/// Key for the persisted configuration snapshot (stored under the system realm).
+///
+/// Written atomically on each successful startup after reconciliation.
+/// Read on the next startup to compute a `ConfigDiff` and drive migration
+/// handlers. The `v1` suffix is part of the key so a future format change
+/// can write a `config:snapshot:v2` in parallel without invalidating old nodes.
+const CONFIG_SNAPSHOT_KEY: &str = "config:snapshot:v1";
 
 /// Prefix for user-to-sessions index keys.
 const SESSION_USER_PREFIX: &str = "ses:user:";
@@ -410,6 +425,58 @@ pub(crate) fn encode_realm_name(name: &str) -> Vec<u8> {
 /// Stored under the system realm namespace.
 pub(crate) fn encode_realm_signing_key(realm_id: &RealmId) -> Vec<u8> {
     format!("{REALM_KEY_PREFIX}{}", realm_id.as_uuid()).into_bytes()
+}
+
+/// Storage key for the server-wide global (Phase 0) fallback signing key.
+///
+/// Distinct from per-realm keys (`realm:key:{uuid}`). Stored under the system
+/// realm namespace so it is co-located with other system-scoped data.
+pub(crate) fn encode_global_signing_key() -> Vec<u8> {
+    b"sys:global:key".to_vec()
+}
+
+/// Encodes the storage key for a retiring realm signing key.
+///
+/// Format: `realm:retiring:{realm_uuid}:{deadline_secs:020}:{key_id}`
+///
+/// `deadline_secs` is zero-padded to 20 digits so lexicographic order
+/// matches time order, enabling efficient range-delete when purging.
+/// Stored under the system realm.
+pub(crate) fn encode_realm_retiring_key(
+    realm_id: &RealmId,
+    deadline_secs: u64,
+    key_id: &str,
+) -> Vec<u8> {
+    format!(
+        "{REALM_RETIRING_KEY_PREFIX}{}:{:020}:{key_id}",
+        realm_id.as_uuid(),
+        deadline_secs
+    )
+    .into_bytes()
+}
+
+/// Returns the inclusive scan-start prefix for all retiring keys of a realm.
+///
+/// Format: `realm:retiring:{realm_uuid}:`
+pub(crate) fn realm_retiring_key_scan_prefix(realm_id: &RealmId) -> Vec<u8> {
+    format!("{REALM_RETIRING_KEY_PREFIX}{}:", realm_id.as_uuid()).into_bytes()
+}
+
+/// Parses the deadline (Unix seconds) encoded in a retiring-key storage key.
+///
+/// The key is expected to follow the format produced by
+/// [`encode_realm_retiring_key`]. Returns `None` when the key does not match
+/// the expected format.
+pub(crate) fn parse_retiring_key_deadline(key_bytes: &[u8]) -> Option<u64> {
+    let key_str = std::str::from_utf8(key_bytes).ok()?;
+    // key format: "realm:retiring:{uuid}:{deadline:020}:{kid}"
+    // After the prefix comes "{uuid}:", then the deadline field, then ":{kid}"
+    let after_prefix = key_str.strip_prefix(REALM_RETIRING_KEY_PREFIX)?;
+    // Skip the UUID segment (36 chars) + ":"
+    let after_uuid = after_prefix.get(37..)?;
+    // Deadline is the next 20 chars
+    let deadline_str = after_uuid.get(..20)?;
+    deadline_str.parse::<u64>().ok()
 }
 
 /// Encodes the storage key for a grant family (refresh token rotation).
@@ -1112,6 +1179,93 @@ pub(crate) fn encode_webhook_id(webhook_id: &WebhookId) -> Vec<u8> {
 /// Format: `wh:id:`
 pub(crate) fn webhook_id_scan_prefix() -> Vec<u8> {
     WEBHOOK_ID_PREFIX.as_bytes().to_vec()
+}
+
+/// Returns the storage key for the persisted configuration snapshot.
+///
+/// Stored under the system realm. Carry the `v1` suffix so a future
+/// format change can write a `config:snapshot:v2` key without
+/// invalidating nodes that haven't upgraded yet.
+pub(crate) fn config_snapshot_key() -> Vec<u8> {
+    CONFIG_SNAPSHOT_KEY.as_bytes().to_vec()
+}
+
+/// Prefix for orphaned-realm records under the system realm.
+const CONFIG_ORPHAN_PREFIX: &str = "config:orphan:";
+
+/// Returns the storage key for an orphaned-realm record.
+///
+/// Written when a realm is archived while it still contains users and no
+/// `migrate_from` claim or `archive_drop` flag exists for its slug.
+/// Deleted when the orphan condition is resolved.
+pub(crate) fn config_orphan_key(slug: &str) -> Vec<u8> {
+    format!("{CONFIG_ORPHAN_PREFIX}{slug}").into_bytes()
+}
+
+/// Returns the byte prefix used to scan all orphaned-realm keys in storage.
+pub(crate) fn config_orphan_scan_prefix() -> Vec<u8> {
+    CONFIG_ORPHAN_PREFIX.as_bytes().to_vec()
+}
+
+// ---------------------------------------------------------------------------
+// Cross-realm migration progress keys (system realm)
+// ---------------------------------------------------------------------------
+
+/// Prefix for per-user migration progress records.
+///
+/// Written under the system realm as `config:migration:progress:{src_slug}:{user_uuid}` = `b"done"`.
+/// Allows crash-safe idempotent resume: skip users whose marker already exists.
+const CONFIG_MIGRATION_PROGRESS_PREFIX: &str = "config:migration:progress:";
+
+/// Returns the progress key for a single migrated user.
+///
+/// Format: `config:migration:progress:{source_slug}:{user_uuid}`
+pub(crate) fn config_migration_progress_key(source_slug: &str, user_id: &UserId) -> Vec<u8> {
+    format!(
+        "{CONFIG_MIGRATION_PROGRESS_PREFIX}{source_slug}:{}",
+        user_id.as_uuid()
+    )
+    .into_bytes()
+}
+
+/// Returns the scan prefix for all progress keys belonging to a single migration.
+///
+/// Format: `config:migration:progress:{source_slug}:`
+#[allow(dead_code)]
+pub(crate) fn config_migration_progress_prefix(source_slug: &str) -> Vec<u8> {
+    format!("{CONFIG_MIGRATION_PROGRESS_PREFIX}{source_slug}:").into_bytes()
+}
+
+/// Returns the storage key that marks an entire realm migration as complete.
+///
+/// Written after ALL users have been moved. Checked at startup to skip
+/// re-running an already-finished migration.
+///
+/// Format: `config:migration:completed:{source_slug}`
+pub(crate) fn config_migration_completed_key(source_slug: &str) -> Vec<u8> {
+    format!("config:migration:completed:{source_slug}").into_bytes()
+}
+
+// ---------------------------------------------------------------------------
+// Migration history keys (system realm)
+// ---------------------------------------------------------------------------
+
+/// Prefix for migration history records under the system realm.
+const CONFIG_MIGRATION_HISTORY_PREFIX: &str = "config:migration:hist:";
+
+/// Returns the storage key for a migration history record.
+///
+/// Written at the end of each cross-realm migration run (success or conflict
+/// failure). A new run overwrites the previous record for the same source slug.
+///
+/// Format: `config:migration:hist:{source_slug}`
+pub(crate) fn config_migration_history_key(source_slug: &str) -> Vec<u8> {
+    format!("{CONFIG_MIGRATION_HISTORY_PREFIX}{source_slug}").into_bytes()
+}
+
+/// Returns the byte prefix used to scan all migration history records.
+pub(crate) fn config_migration_history_scan_prefix() -> Vec<u8> {
+    CONFIG_MIGRATION_HISTORY_PREFIX.as_bytes().to_vec()
 }
 
 #[cfg(test)]

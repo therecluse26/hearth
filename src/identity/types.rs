@@ -681,11 +681,18 @@ pub struct UpdateRealmRequest {
 
 /// The lifecycle status of an organization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum OrganizationStatus {
     /// Organization is active; members can operate normally.
     Active,
     /// Organization is suspended by an administrator.
     Suspended,
+    /// Organization was removed from YAML config and soft-deleted.
+    ///
+    /// Behaves like `Suspended` (new membership operations denied) but
+    /// additionally signals that the org can be permanently deleted from
+    /// the admin UI. Restored to `Active` if the org slug reappears in YAML.
+    Archived,
 }
 
 /// Per-organization configuration.

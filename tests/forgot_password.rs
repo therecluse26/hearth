@@ -19,8 +19,8 @@ use std::sync::Arc;
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::core::{Clock, FakeClock, RealmId, Timestamp};
 use hearth::identity::{
-    CleartextPassword, CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
-    IdentityEngine, IdentityError, SessionContext,
+    CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
+    EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, IdentityError, SessionContext,
 };
 use hearth::rbac::EmbeddedRbacEngine;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
@@ -55,6 +55,17 @@ fn build_engine() -> (EmbeddedIdentityEngine, Arc<FakeClock>, tempfile::TempDir)
     (engine, clock, tmp)
 }
 
+fn make_realm(engine: &impl IdentityEngine) -> RealmId {
+    engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("fp-test-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone()
+}
+
 fn create_user_with_password(
     engine: &impl IdentityEngine,
     realm: &RealmId,
@@ -86,7 +97,7 @@ fn create_user_with_password(
 #[tokio::test]
 async fn forgot_password_full_flow() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let identity = harness.identity();
 
     let user = identity
@@ -151,7 +162,7 @@ async fn forgot_password_full_flow() {
 #[tokio::test]
 async fn forgot_password_invalidates_sessions() {
     let harness = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let identity = harness.identity();
 
     let user = identity
@@ -225,7 +236,7 @@ async fn forgot_password_invalidates_sessions() {
 #[test]
 fn forgot_password_token_single_use() {
     let (engine, _clock, _tmp) = build_engine();
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
     let user = create_user_with_password(&engine, &realm, "single-use");
 
     let token = engine
@@ -264,7 +275,7 @@ fn forgot_password_token_single_use() {
 #[test]
 fn forgot_password_enumeration_resistance() {
     let (engine, _clock, _tmp) = build_engine();
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     // Unknown address.
     let result = engine
@@ -284,7 +295,7 @@ fn forgot_password_enumeration_resistance() {
 #[test]
 fn forgot_password_token_expires() {
     let (engine, clock, _tmp) = build_engine();
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
     let user = create_user_with_password(&engine, &realm, "expiry");
 
     let token = engine
@@ -317,7 +328,7 @@ fn forgot_password_token_expires() {
 #[test]
 fn forgot_password_rate_limit() {
     let (engine, _clock, _tmp) = build_engine();
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
     let user = create_user_with_password(&engine, &realm, "rate-limit");
 
     // Three requests must succeed (returning Some token).
@@ -346,7 +357,7 @@ fn forgot_password_rate_limit() {
 #[test]
 fn forgot_password_rate_limit_resets_after_window() {
     let (engine, clock, _tmp) = build_engine();
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
     let user = create_user_with_password(&engine, &realm, "rl-reset");
 
     // Exhaust the limit.

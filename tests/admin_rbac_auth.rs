@@ -105,7 +105,7 @@ fn forge_admin_permission_claim(token: &str) -> String {
 #[tokio::test]
 async fn permission_gated_allows_hearth_admin() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = issue_token_for(&h, &realm, "admin@example.com", true).await;
     let app = build_app(&h).await;
@@ -128,7 +128,7 @@ async fn permission_gated_allows_hearth_admin() {
 #[tokio::test]
 async fn permission_gated_denies_non_admin() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let token = issue_token_for(&h, &realm, "user@example.com", false).await;
     let app = build_app(&h).await;
@@ -151,7 +151,7 @@ async fn permission_gated_denies_non_admin() {
 #[tokio::test]
 async fn permission_gated_rejects_tampered_unsigned_admin_claim() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
     let non_admin = issue_token_for(&h, &realm, "user@example.com", false).await;
     let tampered = forge_admin_permission_claim(&non_admin);
@@ -175,7 +175,7 @@ async fn permission_gated_rejects_tampered_unsigned_admin_claim() {
 #[tokio::test]
 async fn unauthenticated_returns_401() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let app = build_app(&h).await;
 
     let resp = app

@@ -134,10 +134,10 @@ struct StoredEmailVerification {
     used: bool,
 }
 use crate::identity::oidc::{
-    AuthorizationRequest, AuthorizationResponse, BackchannelTarget, CodeChallengeMethod,
-    FrontchannelTarget, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
-    RegisterClientRequest, RpLogoutRequest, RpLogoutResult, StoredAuthorizationCode,
-    StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
+    ApplicationStatus, AuthorizationRequest, AuthorizationResponse, BackchannelTarget,
+    CodeChallengeMethod, FrontchannelTarget, OAuthClient, OidcConfig, OidcDiscoveryDocument,
+    OidcTokenResponse, RegisterClientRequest, RpLogoutRequest, RpLogoutResult,
+    StoredAuthorizationCode, StoredDeviceCode, StoredGrantFamily, TokenExchangeRequest,
 };
 use crate::identity::tokens::{
     self, Audience, IssueTokenRequest, JwksDocument, LogoutTokenClaims, SigningKey, TokenClaims,
@@ -591,7 +591,7 @@ impl EmbeddedIdentityEngine {
         audit: Arc<dyn AuditEngine>,
     ) -> Result<Self, IdentityError> {
         let dummy_hash = credentials::compute_dummy_hash(&config.credential);
-        let signing_key = Arc::new(SigningKey::generate()?);
+        let signing_key = Arc::new(Self::load_or_persist_global_signing_key(&storage)?);
         let engine = Self {
             storage,
             clock,
@@ -711,6 +711,35 @@ impl EmbeddedIdentityEngine {
         }
 
         Ok(())
+    }
+
+    /// Loads the server-wide global signing key from storage, or generates and
+    /// persists a new one on first startup.
+    ///
+    /// Stored under the system realm namespace as `sys:global:key` — survives
+    /// `kill -9` via WAL fsync before returning. Called before `Self` is
+    /// constructed so it accepts `&Arc<dyn StorageEngine>` directly.
+    fn load_or_persist_global_signing_key(
+        storage: &Arc<dyn StorageEngine>,
+    ) -> Result<SigningKey, IdentityError> {
+        let sys_realm = keys::system_realm_id();
+        let storage_key = keys::encode_global_signing_key();
+
+        if let Some(key_bytes) = storage
+            .get(&sys_realm, &storage_key)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?
+        {
+            return SigningKey::from_pkcs8(&key_bytes);
+        }
+
+        // First startup: generate, persist (WAL-synced), then return.
+        let signing_key = SigningKey::generate()?;
+        let key_bytes = signing_key.pkcs8_bytes().to_vec();
+        storage
+            .put(&sys_realm, &storage_key, &key_bytes)
+            .map_err(|e| IdentityError::Storage(Box::new(e)))?;
+
+        Ok(signing_key)
     }
 
     /// Returns a reference to the signing key.
@@ -1900,6 +1929,28 @@ impl EmbeddedIdentityEngine {
 }
 
 impl EmbeddedIdentityEngine {
+    /// Marks every non-revoked session in a realm as revoked.
+    ///
+    /// Called on suspend/archive transitions. Skips per-session audit events;
+    /// the caller's `RealmUpdated` event covers the lifecycle change.
+    fn bulk_revoke_sessions(storage: &dyn StorageEngine, realm_id: &RealmId) {
+        let prefix = keys::session_id_scan_prefix();
+        let end = keys::prefix_end(&prefix);
+        let Ok(entries) = storage.scan(realm_id, &prefix, &end) else {
+            return;
+        };
+        for entry in &entries {
+            if let Ok(mut session) = serde_json::from_slice::<Session>(&entry.value) {
+                if !session.is_revoked() {
+                    session.revoke();
+                    if let Ok(bytes) = serde_json::to_vec(&session) {
+                        let _ = storage.put(realm_id, &entry.key, &bytes);
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns `{base_issuer}/realms/{name}` for per-realm OIDC scoping.
     /// Falls back to `base_issuer` when the realm cannot be loaded.
     fn realm_issuer_url(&self, realm_id: &RealmId) -> String {
@@ -1908,6 +1959,19 @@ impl EmbeddedIdentityEngine {
             Ok(Some(realm)) => format!("{base}/realms/{}", realm.name()),
             _ => base.clone(),
         }
+    }
+
+    /// Enforce that a realm exists and is `Active`.
+    ///
+    /// Call this at the top of every mutating operation. Both `Suspended` and
+    /// `Archived` realms return `RealmSuspended`; a missing realm returns
+    /// `RealmNotFound`.
+    fn require_active_realm(&self, realm_id: &RealmId) -> Result<(), IdentityError> {
+        let realm = self.get_realm(realm_id)?.ok_or(IdentityError::RealmNotFound)?;
+        if realm.status() != RealmStatus::Active {
+            return Err(IdentityError::RealmSuspended);
+        }
+        Ok(())
     }
 
     fn build_discovery_document(&self, issuer: &str) -> OidcDiscoveryDocument {
@@ -2226,6 +2290,17 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             "realm",
             &realm_id.as_uuid().to_string(),
         )?;
+
+        // When suspending or archiving a realm, revoke all active sessions so
+        // existing tokens backed by those sessions fail immediately on the
+        // session-validity check inside validate_token (defense-in-depth on
+        // top of the realm-status check added to validate_token).
+        if matches!(
+            request.status,
+            Some(RealmStatus::Suspended) | Some(RealmStatus::Archived)
+        ) {
+            Self::bulk_revoke_sessions(self.storage.as_ref(), realm_id);
+        }
 
         Ok(realm)
     }
@@ -2598,8 +2673,78 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     fn realm_jwks(&self, realm_id: &RealmId) -> Result<JwksDocument, IdentityError> {
-        let key = self.get_or_load_realm_signing_key(realm_id)?;
-        Ok(key.to_jwks())
+        let active_key = self.get_or_load_realm_signing_key(realm_id)?;
+        let mut jwks = active_key.to_jwks();
+
+        // Include retiring keys that have not yet passed their grace-period deadline.
+        let sys_realm = keys::system_realm_id();
+        let scan_prefix = keys::realm_retiring_key_scan_prefix(realm_id);
+        let scan_end = keys::prefix_end(&scan_prefix);
+        let now_secs = self.clock.now().as_micros() / 1_000_000;
+        if let Ok(entries) = self.storage.scan(&sys_realm, &scan_prefix, &scan_end) {
+            for entry in entries {
+                let Some(deadline) = keys::parse_retiring_key_deadline(&entry.key) else {
+                    continue;
+                };
+                if deadline <= now_secs as u64 {
+                    continue; // Grace period expired — omit from JWKS.
+                }
+                if let Ok(retiring_key) = SigningKey::from_pkcs8(&entry.value) {
+                    let retiring_jwk = retiring_key.to_jwks();
+                    jwks.keys.extend(retiring_jwk.keys);
+                }
+            }
+        }
+
+        Ok(jwks)
+    }
+
+    fn rotate_realm_signing_key(
+        &self,
+        realm_id: &RealmId,
+        grace_period_secs: u64,
+    ) -> Result<(), IdentityError> {
+        let _ops_guard = self.realm_ops_lock.lock().expect("realm ops lock");
+
+        // Ensure the realm exists before rotating.
+        let sys_realm = keys::system_realm_id();
+        let old_key = self.get_or_load_realm_signing_key(realm_id)?;
+        let old_key_id = old_key.key_id().to_string();
+        let old_pkcs8 = old_key.pkcs8_bytes().to_vec();
+
+        // Generate and store the new active signing key.
+        let new_key = SigningKey::generate()?;
+        let new_pkcs8 = new_key.pkcs8_bytes().to_vec();
+        let key_storage_key = keys::encode_realm_signing_key(realm_id);
+        self.storage
+            .put(&sys_realm, &key_storage_key, &new_pkcs8)
+            .map_err(Self::storage_err)?;
+
+        // Store the old key as a retiring key with its expiry deadline.
+        let now_secs = (self.clock.now().as_micros() / 1_000_000) as u64;
+        let deadline_secs = now_secs.saturating_add(grace_period_secs);
+        let retiring_key_storage =
+            keys::encode_realm_retiring_key(realm_id, deadline_secs, &old_key_id);
+        self.storage
+            .put(&sys_realm, &retiring_key_storage, &old_pkcs8)
+            .map_err(Self::storage_err)?;
+
+        // Invalidate the active key cache so realm_jwks / token issuance pick up the new key.
+        {
+            let mut cache = self.realm_signing_keys.lock().expect("key cache lock");
+            cache.remove(&realm_id.as_uuid().to_string());
+        }
+
+        tracing::info!(
+            realm = %realm_id.as_uuid(),
+            old_kid = %old_key_id,
+            new_kid = %new_key.key_id(),
+            grace_period_secs,
+            deadline_secs,
+            "signing key rotated; old key enters grace period"
+        );
+
+        Ok(())
     }
 
     // ===== User CRUD =====
@@ -2621,6 +2766,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 operation: "create_user",
             });
         }
+        self.require_active_realm(realm_id)?;
         self.create_user_with_status(realm_id, request, self.config.default_status)
     }
 
@@ -2698,6 +2844,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         request: &UpdateUserRequest,
     ) -> Result<User, IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // 1. Load existing user
         let mut user = self
             .get_user(realm_id, user_id)?
@@ -3153,6 +3301,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 self.storage
                     .put(realm_id, &cred_key, &upgraded_bytes)
                     .map_err(Self::storage_err)?;
+            } else {
+                // Lazy Argon2 rehash: transparently upgrade when config params change.
+                let credential_cfg = self.credential_config_for_realm(realm_id)?;
+                if credentials::argon2_params_need_rehash(&cred.hash, &credential_cfg) {
+                    let now = self.clock.now().as_micros();
+                    let mut upgraded = credentials::hash_password(password, &credential_cfg, now)?;
+                    // Preserve original age for expiry policy continuity.
+                    upgraded.created_at = cred.created_at;
+                    let upgraded_bytes = Self::serialize_credential(&upgraded)?;
+                    self.storage
+                        .put(realm_id, &cred_key, &upgraded_bytes)
+                        .map_err(Self::storage_err)?;
+                }
             }
         } else {
             let count = self.record_failed_attempt(realm_id, user_id);
@@ -3194,6 +3355,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         user_id: &UserId,
         context: &SessionContext,
     ) -> Result<Session, IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // Enforce mfa_required policy unless the session originates from a
         // passkey ceremony (passkeys are inherently multi-factor).
         if !context.satisfies_mfa_via_passkey {
@@ -3647,6 +3810,19 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return Err(IdentityError::InvalidToken);
         }
 
+        // Fail-closed on realm lifecycle: suspended or archived realms must not
+        // accept tokens. Checked after signature verification so forged tokens
+        // never trigger a storage read.
+        //
+        // Unregistered realm IDs are allowed through — in production they
+        // cannot produce cryptographically-valid tokens (no signing key to
+        // issue with), so there is no realistic bypass path.
+        if let Ok(Some(realm)) = self.get_realm(realm_id) {
+            if realm.status() != RealmStatus::Active {
+                return Err(IdentityError::RealmSuspended);
+            }
+        }
+
         // RFC 7519 §4.1.3 — audience must include the configured value.
         if !claims.aud.contains(&self.config.token.audience) {
             return Err(IdentityError::InvalidToken);
@@ -3931,6 +4107,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             });
         }
 
+        // 2a. Realm lifecycle guard — suspended/archived realms must not issue codes.
+        self.require_active_realm(realm_id)?;
+
         // 2b. Nonce replay protection (when enforcement is enabled)
         if self.config.oidc.enforce_nonces {
             if let Some(ref nonce) = request.nonce {
@@ -3960,6 +4139,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             serde_json::from_slice(&client_bytes).map_err(|e| IdentityError::Serialization {
                 reason: e.to_string(),
             })?;
+        if client.status() != ApplicationStatus::Active {
+            return Err(IdentityError::InvalidClient);
+        }
 
         // 4. Validate redirect_uri matches a registered URI
         if !client.redirect_uris().contains(&request.redirect_uri) {
@@ -4006,10 +4188,14 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // 5. PKCE enforcement (RFC 9700 §2.1.1)
-        // Public clients (no client secret) MUST provide PKCE with S256.
-        if !client.is_confidential() && request.code_challenge.is_none() {
+        // All clients must provide PKCE by default. Confidential clients may be
+        // exempted via `require_pkce_for_confidential_clients: false` for legacy
+        // compatibility only.
+        let pkce_required = !client.is_confidential()
+            || self.config.oidc.require_pkce_for_confidential_clients;
+        if pkce_required && request.code_challenge.is_none() {
             return Err(IdentityError::InvalidInput {
-                reason: "public clients must use PKCE (code_challenge with S256 required)"
+                reason: "PKCE is required (code_challenge with S256 must be supplied)"
                     .to_string(),
             });
         }
@@ -6479,6 +6665,9 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         if let Some(uris) = &request.post_logout_redirect_uris {
             client.set_post_logout_redirect_uris(uris.clone());
         }
+        if let Some(status) = request.status {
+            client.set_status(status);
+        }
 
         let updated_bytes =
             serde_json::to_vec(&client).map_err(|e| IdentityError::Serialization {
@@ -7338,6 +7527,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
                 operation: "create_organization",
             });
         }
+        self.require_active_realm(realm_id)?;
         let slug = validation::validate_slug(&request.slug)?;
         let name = validation::validate_display_name(&request.name)?;
 
@@ -7673,7 +7863,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         let org = self
             .get_organization(realm_id, org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
-        if org.status() == OrganizationStatus::Suspended {
+        if org.status() != OrganizationStatus::Active {
             return Err(IdentityError::OrganizationSuspended);
         }
 
@@ -7994,11 +8184,13 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         request: &CreateInvitationRequest,
     ) -> Result<(OrganizationInvitation, String), IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // Verify org exists and is active
         let org = self
             .get_organization(realm_id, &request.org_id)?
             .ok_or(IdentityError::OrganizationNotFound)?;
-        if org.status() == OrganizationStatus::Suspended {
+        if org.status() != OrganizationStatus::Active {
             return Err(IdentityError::OrganizationSuspended);
         }
 
@@ -8094,6 +8286,8 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         realm_id: &RealmId,
         token: &str,
     ) -> Result<OrganizationMembership, IdentityError> {
+        self.require_active_realm(realm_id)?;
+
         // Hash the token
         let token_hash = {
             use ring::digest;
@@ -9432,7 +9626,7 @@ mod tests {
     #[test]
     fn create_user_with_required_fields_succeeds() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let request = CreateUserRequest {
             email: "Alice@Example.COM".to_string(),
@@ -9452,7 +9646,7 @@ mod tests {
     #[test]
     fn create_user_generates_unique_id() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let user1 = engine
             .create_user(
@@ -9484,7 +9678,7 @@ mod tests {
     #[test]
     fn read_user_by_id_returns_correct_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9508,7 +9702,7 @@ mod tests {
     #[test]
     fn read_user_by_email_returns_correct_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9532,7 +9726,7 @@ mod tests {
     #[test]
     fn read_nonexistent_user_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let result = engine.get_user(&realm, &UserId::generate()).expect("get");
         assert!(result.is_none());
@@ -9541,7 +9735,7 @@ mod tests {
     #[test]
     fn read_nonexistent_email_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let result = engine
             .get_user_by_email(&realm, "nobody@example.com")
@@ -9554,7 +9748,7 @@ mod tests {
     #[test]
     fn update_user_persists_changes() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9596,7 +9790,7 @@ mod tests {
     #[test]
     fn update_user_email_swaps_index() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9639,7 +9833,7 @@ mod tests {
     #[test]
     fn update_user_status() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9669,7 +9863,7 @@ mod tests {
     #[test]
     fn update_nonexistent_user_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .update_user(&realm, &UserId::generate(), &UpdateUserRequest::default())
@@ -9682,7 +9876,7 @@ mod tests {
     #[test]
     fn delete_user_removes_record() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9711,7 +9905,7 @@ mod tests {
     #[test]
     fn delete_nonexistent_user_returns_not_found() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .delete_user(&realm, &UserId::generate())
@@ -9722,7 +9916,7 @@ mod tests {
     #[test]
     fn delete_user_frees_email() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let created = engine
             .create_user(
@@ -9757,7 +9951,7 @@ mod tests {
     #[test]
     fn duplicate_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .create_user(
@@ -9786,7 +9980,7 @@ mod tests {
     #[test]
     fn duplicate_email_case_insensitive() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .create_user(
@@ -9815,7 +10009,7 @@ mod tests {
     #[test]
     fn duplicate_email_on_update_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .create_user(
@@ -9857,7 +10051,7 @@ mod tests {
     #[test]
     fn null_bytes_in_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_user(
@@ -9875,7 +10069,7 @@ mod tests {
     #[test]
     fn null_bytes_in_display_name_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_user(
@@ -9893,7 +10087,7 @@ mod tests {
     #[test]
     fn unicode_normalization_deduplicates_emails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         // Create with decomposed é
         engine
@@ -9926,7 +10120,7 @@ mod tests {
     #[test]
     fn oversized_email_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let long_email = format!("{}@example.com", "a".repeat(250));
         let err = engine
@@ -9945,7 +10139,7 @@ mod tests {
     #[test]
     fn oversized_display_name_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_user(
@@ -9965,8 +10159,8 @@ mod tests {
     #[test]
     fn cross_realm_isolation() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm_a = RealmId::generate();
-        let realm_b = RealmId::generate();
+        let realm_a = create_test_realm(&engine);
+        let realm_b = create_test_realm(&engine);
 
         let alice = engine
             .create_user(
@@ -10024,7 +10218,7 @@ mod tests {
     #[test]
     fn set_and_verify_password_correct() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-secure-password".to_string());
@@ -10042,7 +10236,7 @@ mod tests {
     #[test]
     fn set_and_verify_password_wrong() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("correct-password".to_string());
@@ -10060,7 +10254,7 @@ mod tests {
     #[test]
     fn set_password_nonexistent_user_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let pw = CleartextPassword::from_string("password".to_string());
 
         let err = engine
@@ -10072,7 +10266,7 @@ mod tests {
     #[test]
     fn verify_password_nonexistent_user_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let pw = CleartextPassword::from_string("password".to_string());
 
         let err = engine
@@ -10085,7 +10279,7 @@ mod tests {
     #[test]
     fn verify_password_no_credential_returns_generic_error() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
         let pw = CleartextPassword::from_string("password".to_string());
 
@@ -10101,7 +10295,7 @@ mod tests {
     #[test]
     fn change_password_succeeds() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let old_pw = CleartextPassword::from_string("old-password".to_string());
@@ -10133,7 +10327,7 @@ mod tests {
     #[test]
     fn change_password_wrong_old_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("real-password".to_string());
@@ -10161,7 +10355,7 @@ mod tests {
     #[test]
     fn delete_user_cascades_credential() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("password".to_string());
@@ -10185,7 +10379,7 @@ mod tests {
     #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for timing ratio
     fn verify_nonexistent_user_takes_comparable_time() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("password".to_string());
@@ -10226,7 +10420,7 @@ mod tests {
     #[test]
     fn create_session_returns_valid_session() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10244,7 +10438,7 @@ mod tests {
     #[test]
     fn create_session_nonexistent_user_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .create_session(&realm, &UserId::generate(), &SessionContext::default())
@@ -10257,7 +10451,7 @@ mod tests {
     #[test]
     fn session_with_full_context_persists_metadata() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let ctx = SessionContext {
@@ -10289,7 +10483,7 @@ mod tests {
     #[test]
     fn session_with_default_context_has_none_metadata() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10334,7 +10528,7 @@ mod tests {
     #[test]
     fn lookup_session_by_id_returns_correct_data() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10355,7 +10549,7 @@ mod tests {
     #[test]
     fn lookup_nonexistent_session_returns_none() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let result = engine
             .get_session(&realm, &SessionId::generate())
@@ -10368,7 +10562,7 @@ mod tests {
     #[test]
     fn revoke_session_immediate_invalidation() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10386,7 +10580,7 @@ mod tests {
     #[test]
     fn revoke_nonexistent_session_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .revoke_session(&realm, &SessionId::generate())
@@ -10399,7 +10593,7 @@ mod tests {
     #[test]
     fn session_expires_after_ttl() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10422,7 +10616,7 @@ mod tests {
     #[test]
     fn session_valid_just_before_expiry() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10445,7 +10639,7 @@ mod tests {
     #[test]
     fn refresh_session_extends_ttl() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10483,7 +10677,7 @@ mod tests {
     #[test]
     fn refresh_expired_session_fails() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10503,7 +10697,7 @@ mod tests {
     #[test]
     fn refresh_revoked_session_fails() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let session = engine
@@ -10523,7 +10717,7 @@ mod tests {
     #[test]
     fn delete_user_cascades_sessions() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         // Create multiple sessions
@@ -10567,7 +10761,7 @@ mod tests {
                 emails in proptest::collection::hash_set(valid_email(), 1..10),
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
                 let mut created_ids = Vec::new();
 
                 // Create all users
@@ -10612,7 +10806,7 @@ mod tests {
                 n in 2..5u32,
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
 
                 // First creation should succeed
                 let result = engine.create_user(&realm, &CreateUserRequest {
@@ -10646,7 +10840,7 @@ mod tests {
                 n_revoke_ratio in 0.0..1.0_f64,
             ) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
                 let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("session-prop-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Prop User".to_string(),
@@ -10692,7 +10886,7 @@ mod tests {
             #[test]
             fn no_session_id_collisions(n in 10..100usize) {
                 let (_dir, engine, _clock) = setup_engine();
-                let realm = RealmId::generate();
+                let realm = create_test_realm(&engine);
                 let user = engine.create_user(&realm, &CreateUserRequest {
                     email: format!("collision-{}@example.com", uuid::Uuid::new_v4()),
                     display_name: "Collision User".to_string(),
@@ -10744,7 +10938,7 @@ mod tests {
     #[test]
     fn generate_authorization_code_with_correct_params() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -10777,7 +10971,7 @@ mod tests {
     #[test]
     fn exchange_authorization_code_returns_tokens() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -10835,7 +11029,7 @@ mod tests {
     #[test]
     fn authorization_code_single_use() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -10890,7 +11084,7 @@ mod tests {
     #[test]
     fn authorization_code_expiration() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -10963,7 +11157,7 @@ mod tests {
     #[test]
     fn adversarial_authorization_code_reuse_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11019,7 +11213,7 @@ mod tests {
     #[test]
     fn adversarial_open_redirect_non_registered_uri_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11050,7 +11244,7 @@ mod tests {
     #[test]
     fn adversarial_csrf_missing_state_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11114,7 +11308,7 @@ mod tests {
         // Configure: lockout after 3 failed attempts, 10-second lockout
         let lockout_micros = 10_000_000; // 10 seconds
         let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("correct-pw".to_string());
@@ -11146,7 +11340,7 @@ mod tests {
     fn rate_limiting_resets_on_successful_verification() {
         let lockout_micros = 10_000_000;
         let (_dir, engine, _clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-password".to_string());
@@ -11184,7 +11378,7 @@ mod tests {
     fn rate_limiting_expires_after_lockout_window() {
         let lockout_micros = 10_000_000; // 10 seconds
         let (_dir, engine, clock) = setup_engine_with_rate_limit(3, lockout_micros);
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         let pw = CleartextPassword::from_string("my-password".to_string());
@@ -11253,7 +11447,7 @@ mod tests {
     #[test]
     fn nonce_reuse_in_authorization_request_rejected() {
         let (_dir, engine, _clock) = setup_engine_with_nonce_enforcement();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11315,11 +11509,40 @@ mod tests {
         assert!(result.is_ok(), "different nonce should succeed");
     }
 
+    fn setup_engine_with_nonce_disabled(
+    ) -> (tempfile::TempDir, EmbeddedIdentityEngine, Arc<FakeClock>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            oidc: OidcConfig {
+                enforce_nonces: false,
+                ..OidcConfig::default()
+            },
+            ..IdentityConfig::default()
+        };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            identity_config,
+            audit as Arc<dyn AuditEngine>,
+        )
+        .expect("engine creation");
+        (dir, engine, clock)
+    }
+
     #[test]
     fn nonce_not_enforced_when_disabled() {
-        // Default config has enforce_nonces: false
-        let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        // Explicitly opt out of nonce enforcement to verify the bypass path.
+        let (_dir, engine, _clock) = setup_engine_with_nonce_disabled();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11352,7 +11575,7 @@ mod tests {
         // After the authorization_code_ttl_secs window has passed, a previously
         // used nonce must be accepted again (the old entry should have been swept).
         let (_dir, engine, clock) = setup_engine_with_nonce_enforcement();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -11406,7 +11629,7 @@ mod tests {
         // between batches.  The set must stay bounded to one TTL window rather
         // than accumulating every nonce ever used.
         let (_dir, engine, clock) = setup_engine_with_nonce_enforcement();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -12991,7 +13214,7 @@ mod tests {
     #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
     fn mfa_brute_force_lockout() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         // Enroll TOTP
@@ -13044,7 +13267,7 @@ mod tests {
     #[allow(clippy::cast_sign_loss)] // Test timestamps are always positive
     fn mfa_replay_protection() {
         let (_dir, engine, clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let user = create_test_user(&engine, &realm);
 
         // Enroll + activate TOTP
@@ -14078,7 +14301,7 @@ mod tests {
     #[test]
     fn public_client_requires_pkce_s256() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm); // public client
         let user = create_test_user(&engine, &realm);
         assert!(
@@ -14104,7 +14327,7 @@ mod tests {
             )
             .expect_err("must reject public client with no PKCE");
         assert!(
-            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("public clients must use PKCE")),
+            matches!(&err, IdentityError::InvalidInput { reason } if reason.contains("PKCE is required")),
             "got: {err}"
         );
     }
@@ -14113,7 +14336,7 @@ mod tests {
     #[test]
     fn pkce_challenge_without_s256_method_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -14141,11 +14364,36 @@ mod tests {
         );
     }
 
-    // F-01: Confidential client can omit PKCE (not required)
+    // F-01: Confidential client can omit PKCE when the legacy exemption flag is set
     #[test]
     fn confidential_client_can_omit_pkce() {
-        let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        // Use an engine with require_pkce_for_confidential_clients disabled to
+        // verify the legacy exemption path works for confidential clients.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StorageConfig::dev(dir.path().to_path_buf());
+        let storage =
+            Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+        let identity_config = IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            oidc: OidcConfig {
+                require_pkce_for_confidential_clients: false,
+                ..OidcConfig::default()
+            },
+            ..IdentityConfig::default()
+        };
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
+        let engine = EmbeddedIdentityEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            identity_config,
+            audit as Arc<dyn AuditEngine>,
+        )
+        .expect("engine creation");
+        let realm = create_test_realm(&engine);
         // Confidential auth-code client: has secret + redirect_uri + authorization_code grant.
         let client = engine
             .register_client(
@@ -14187,7 +14435,7 @@ mod tests {
     #[test]
     fn redirect_uri_fragment_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .register_client(
@@ -14213,7 +14461,7 @@ mod tests {
     #[test]
     fn redirect_uri_wildcard_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .register_client(
@@ -14239,7 +14487,7 @@ mod tests {
     #[test]
     fn redirect_uri_http_non_localhost_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         let err = engine
             .register_client(
@@ -14265,7 +14513,7 @@ mod tests {
     #[test]
     fn redirect_uri_http_localhost_allowed() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
 
         engine
             .register_client(
@@ -14287,7 +14535,7 @@ mod tests {
     #[test]
     fn scope_with_invalid_characters_rejected() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 
@@ -14318,7 +14566,7 @@ mod tests {
     #[test]
     fn authorization_response_includes_iss() {
         let (_dir, engine, _clock) = setup_engine();
-        let realm = RealmId::generate();
+        let realm = create_test_realm(&engine);
         let client = register_test_client(&engine, &realm);
         let user = create_test_user(&engine, &realm);
 

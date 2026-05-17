@@ -47,7 +47,7 @@ async fn credential_lifecycle_set_verify_change() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // 1. No credential initially — returns generic error (enumeration resistance)
@@ -115,7 +115,7 @@ async fn change_password_flow() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Set initial password
@@ -177,8 +177,8 @@ async fn credentials_are_realm_isolated() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user_a = create_user(&harness, &realm_a);
 
@@ -723,7 +723,7 @@ async fn delete_user_removes_credential() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Set password
@@ -749,4 +749,92 @@ async fn delete_user_removes_credential() {
         format!("{err}").contains("credential"),
         "should indicate credential failure after deletion: {err}"
     );
+}
+
+#[tokio::test]
+async fn argon2_param_change_triggers_lazy_rehash_on_login() {
+    use hearth::identity::{CreateRealmRequest, RealmConfig, UpdateRealmRequest};
+
+    let harness = common::TestHarness::embedded()
+        .await
+        .expect("harness setup");
+
+    // Create realm with low memory cost so hashing is fast in tests.
+    let realm = harness
+        .identity()
+        .create_realm(&CreateRealmRequest {
+            name: format!("argon2-rehash-{}", uuid::Uuid::new_v4()),
+            config: Some(RealmConfig {
+                password_memory_cost: Some(512),
+                password_time_cost: Some(1),
+                ..RealmConfig::default()
+            }),
+        })
+        .expect("create realm");
+
+    let user = create_user(&harness, realm.id());
+    let password = CleartextPassword::from_string("Rehash!Password1".to_string());
+    harness
+        .identity()
+        .set_password(realm.id(), user.id(), &password)
+        .expect("set password");
+
+    // Verify the stored hash reflects the original params.
+    let stored = load_stored_credential(&harness, realm.id(), user.id());
+    let original_hash = stored["hash"].as_str().expect("hash").to_string();
+    let original_created_at = stored["created_at"].as_i64().expect("created_at");
+    assert!(
+        original_hash.contains("m=512"),
+        "expected m=512 in hash, got: {original_hash}"
+    );
+
+    // Update realm config to higher memory cost — simulates operator tuning.
+    harness
+        .identity()
+        .update_realm(
+            realm.id(),
+            &UpdateRealmRequest {
+                name: None,
+                config: Some(RealmConfig {
+                    password_memory_cost: Some(1024),
+                    password_time_cost: Some(2),
+                    ..RealmConfig::default()
+                }),
+                ..UpdateRealmRequest::default()
+            },
+        )
+        .expect("update realm config");
+
+    // Login with the same password — should succeed and trigger lazy rehash.
+    let password2 = CleartextPassword::from_string("Rehash!Password1".to_string());
+    let ok = harness
+        .identity()
+        .verify_password(realm.id(), user.id(), &password2)
+        .expect("verify after config change");
+    assert!(ok, "login should succeed with unchanged password");
+
+    // Stored hash should now use the new params.
+    let stored_after = load_stored_credential(&harness, realm.id(), user.id());
+    let new_hash = stored_after["hash"].as_str().expect("hash after rehash");
+    assert!(
+        new_hash.contains("m=1024"),
+        "expected m=1024 after lazy rehash, got: {new_hash}"
+    );
+    assert!(
+        new_hash.contains("t=2"),
+        "expected t=2 after lazy rehash, got: {new_hash}"
+    );
+    assert_eq!(
+        stored_after["created_at"].as_i64(),
+        Some(original_created_at),
+        "lazy rehash must preserve original credential age"
+    );
+
+    // Subsequent login should still work using the new hash.
+    let password3 = CleartextPassword::from_string("Rehash!Password1".to_string());
+    let ok2 = harness
+        .identity()
+        .verify_password(realm.id(), user.id(), &password3)
+        .expect("verify after rehash");
+    assert!(ok2, "login should succeed after lazy rehash");
 }

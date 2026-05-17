@@ -17,8 +17,8 @@ use std::sync::Arc;
 use hearth::audit::EmbeddedAuditEngine;
 use hearth::core::{Clock, RealmId, SystemClock, UserId};
 use hearth::identity::{
-    CleartextPassword, CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig,
-    IdentityEngine, IdentityError, RateLimitConfig,
+    CleartextPassword, CreateRealmRequest, CreateUserRequest, CredentialConfig,
+    EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, IdentityError, RateLimitConfig,
 };
 use hearth::rbac::EmbeddedRbacEngine;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
@@ -57,6 +57,17 @@ fn build_engine(max_attempts: u32) -> (impl IdentityEngine, tempfile::TempDir) {
     (engine, temp)
 }
 
+fn make_realm(engine: &impl IdentityEngine) -> RealmId {
+    engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("adv-test-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone()
+}
+
 fn new_user_req(prefix: &str) -> CreateUserRequest {
     CreateUserRequest {
         email: format!("{prefix}-{}@test.example", uuid::Uuid::new_v4()),
@@ -80,7 +91,7 @@ fn new_user_req(prefix: &str) -> CreateUserRequest {
 #[test]
 fn timing_attack_password_verify_nonexistent_user_identical_error() {
     let (engine, _tmp) = build_engine(5);
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
     let nonexistent = UserId::generate();
     let pw = CleartextPassword::from_string("any-password".to_string());
 
@@ -103,7 +114,7 @@ fn timing_attack_password_verify_nonexistent_user_identical_error() {
 #[test]
 fn timing_attack_password_verify_no_credential_identical_error() {
     let (engine, _tmp) = build_engine(5);
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
     let user = engine
         .create_user(&realm, &new_user_req("timing-nocred"))
         .expect("create user");
@@ -124,7 +135,7 @@ fn timing_attack_password_verify_no_credential_identical_error() {
 #[test]
 fn timing_attack_both_failure_paths_return_same_error_variant() {
     let (engine, _tmp) = build_engine(5);
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
     let pw = CleartextPassword::from_string("pw".to_string());
 
     // Path A: user does not exist at all.
@@ -162,7 +173,7 @@ fn timing_attack_both_failure_paths_return_same_error_variant() {
 fn account_lockout_blocks_after_n_failures() {
     const MAX: u32 = 3;
     let (engine, _tmp) = build_engine(MAX);
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     let user = engine
         .create_user(&realm, &new_user_req("lockout"))
@@ -201,7 +212,7 @@ fn account_lockout_blocks_after_n_failures() {
 fn account_lockout_blocks_correct_password_during_window() {
     const MAX: u32 = 3;
     let (engine, _tmp) = build_engine(MAX);
-    let realm = RealmId::generate();
+    let realm = make_realm(&engine);
 
     let user = engine
         .create_user(&realm, &new_user_req("lockout-correct"))

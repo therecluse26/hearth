@@ -1439,6 +1439,7 @@ pub async fn admin_org_status_toggle(
             let label = match new_status {
                 OrganizationStatus::Active => "Organization resumed",
                 OrganizationStatus::Suspended => "Organization suspended",
+                OrganizationStatus::Archived => "Organization archived",
             };
             org_redirect_flash(&org_id, target.0.name(), label, "success")
         }

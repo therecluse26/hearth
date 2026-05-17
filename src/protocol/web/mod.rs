@@ -101,6 +101,12 @@ pub struct WebState {
     /// Configuration warnings (missing/empty env vars) surfaced on the
     /// admin dashboard.
     pub config_warnings: Vec<EnvVarWarning>,
+    /// Orphaned-realm records detected at startup. Surfaced on the admin
+    /// dashboard as a warning banner. Empty when all realms are resolved.
+    pub orphaned_realms: Vec<crate::identity::reconcile::OrphanRecord>,
+    /// Migration history records loaded at startup. Surfaced on the
+    /// `/admin/migrations` page. Empty when no migrations have run.
+    pub migration_records: Vec<crate::identity::reconcile::MigrationHistoryRecord>,
     /// `true` when the email transport is `Log` (no real delivery).
     /// Used by the setup-sent page to show a "check your server logs"
     /// callout only when emails are not actually being sent.
@@ -212,6 +218,8 @@ impl WebState {
             cookie_secret,
             current_realm: Arc::new(RwLock::new(None)),
             config_warnings: Vec::new(),
+            orphaned_realms: Vec::new(),
+            migration_records: Vec::new(),
             email_is_log_transport: false,
             product_name: "Hearth".to_string(),
             logo_url: DEFAULT_LOGO_URL.to_string(),
@@ -264,6 +272,26 @@ impl WebState {
     #[must_use]
     pub fn with_config_warnings(mut self, warnings: Vec<EnvVarWarning>) -> Self {
         self.config_warnings = warnings;
+        self
+    }
+
+    /// Attaches orphaned-realm records detected at startup.
+    #[must_use]
+    pub fn with_orphaned_realms(
+        mut self,
+        records: Vec<crate::identity::reconcile::OrphanRecord>,
+    ) -> Self {
+        self.orphaned_realms = records;
+        self
+    }
+
+    /// Attaches migration history records loaded at startup.
+    #[must_use]
+    pub fn with_migration_records(
+        mut self,
+        records: Vec<crate::identity::reconcile::MigrationHistoryRecord>,
+    ) -> Self {
+        self.migration_records = records;
         self
     }
 
@@ -816,6 +844,15 @@ pub fn router(state: WebState) -> Router {
             // `?admin_target=system`, so submission lands on the same handler chain.
             "/admin/admin-users/new",
             axum::routing::get(admin::admin_admin_user_create_alias),
+        )
+        // --- Migration history + orphan recovery ---
+        .route(
+            "/admin/migrations",
+            axum::routing::get(admin::admin_migrations_list),
+        )
+        .route(
+            "/admin/migrations/orphans/resolve",
+            axum::routing::post(admin::admin_migrations_orphan_resolve),
         )
         // --- Realms list (system-scoped) ---
         .route(

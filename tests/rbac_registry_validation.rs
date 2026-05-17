@@ -7,7 +7,8 @@ use hearth::core::{RealmId, Timestamp};
 use hearth::identity::claims_config::{ClaimMapping, ClaimProfile, ClaimSource};
 use hearth::rbac::registry::{RealmPermissionRegistry, RegistryError};
 use hearth::rbac::{
-    Permission, PermissionDefinition, ProtectedResource, Role, RoleId, RoleScopeKind, ScopeBundle,
+    Permission, PermissionDefinition, ProtectedResource, Role, RoleId, RoleScopeKind, RoleStatus,
+    ScopeBundle,
 };
 use uuid::Uuid;
 
@@ -36,6 +37,8 @@ fn make_role(id: RoleId, name: &str, perms: &[&str], parents: Vec<RoleId>) -> Ro
             .collect(),
         parent_roles: parents,
         scope_kind: RoleScopeKind::Realm,
+        status: RoleStatus::Active,
+        yaml_managed: false,
         created_at: Timestamp::from_micros(0),
         updated_at: Timestamp::from_micros(0),
     }

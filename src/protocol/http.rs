@@ -92,6 +92,9 @@ pub struct AppState {
     /// device-authorization endpoints. Returns 429 with `Retry-After` when
     /// exceeded.
     pub token_rate_limiter: Arc<TokenRateLimiter>,
+    /// Grace period (seconds) during which a retiring signing key remains in
+    /// JWKS after rotation. Sourced from `token.signing_key_rotation_grace_period`.
+    pub signing_key_rotation_grace_period_secs: u64,
 }
 
 impl AppState {
@@ -110,6 +113,7 @@ impl AppState {
             metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
             token_rate_limiter: Arc::new(TokenRateLimiter::new()),
+            signing_key_rotation_grace_period_secs: 86_400,
         }
     }
 
@@ -130,6 +134,7 @@ impl AppState {
             metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
             token_rate_limiter: Arc::new(TokenRateLimiter::new()),
+            signing_key_rotation_grace_period_secs: 86_400,
         }
     }
 
@@ -152,6 +157,7 @@ impl AppState {
             metrics_enabled: true,
             admin_rate_limiter,
             token_rate_limiter: Arc::new(TokenRateLimiter::new()),
+            signing_key_rotation_grace_period_secs: 86_400,
         }
     }
 
@@ -164,6 +170,12 @@ impl AppState {
     /// Sets whether the `/metrics` Prometheus scrape endpoint is exposed.
     pub fn with_metrics_enabled(mut self, enabled: bool) -> Self {
         self.metrics_enabled = enabled;
+        self
+    }
+
+    /// Sets the signing key rotation grace period.
+    pub fn with_signing_key_rotation_grace_period_secs(mut self, secs: u64) -> Self {
+        self.signing_key_rotation_grace_period_secs = secs;
         self
     }
 }
@@ -339,6 +351,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(admin_get_realm)
                 .put(admin_update_realm)
                 .delete(admin_delete_realm),
+        )
+        .route(
+            "/realms/{id}/rotate-signing-key",
+            axum::routing::post(admin_rotate_realm_signing_key),
         )
         .route(
             "/realms/{id}/branding",
@@ -2136,6 +2152,7 @@ fn rbac_error_to_response(err: &RbacError) -> (StatusCode, Json<serde_json::Valu
         | RbacError::TokenSizeExceeded { .. } => {
             (StatusCode::PAYLOAD_TOO_LARGE, "resource_exhausted")
         }
+        RbacError::RoleArchived => (StatusCode::CONFLICT, "role_archived"),
         RbacError::ReservedNamespace { .. } => (StatusCode::FORBIDDEN, "reserved_namespace"),
         RbacError::InvalidScope { .. } => (StatusCode::BAD_REQUEST, "invalid_scope"),
         RbacError::Storage(_) | RbacError::Serialization { .. } => {
@@ -2893,6 +2910,59 @@ async fn admin_delete_realm(
             Json(serde_json::json!({"error": "not found"})),
         )
             .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: rotate the Ed25519 signing key for a realm.
+///
+/// Generates a new key, promotes it to the active key, and keeps the old key
+/// in the JWKS response for the configured grace period (default 24 h) so
+/// tokens signed with the old key remain valid during that window.
+async fn admin_rotate_realm_signing_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    let _ = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    let grace_period_secs = state.signing_key_rotation_grace_period_secs;
+
+    match state
+        .identity
+        .rotate_realm_signing_key(&realm_id, grace_period_secs)
+    {
+        Ok(()) => {
+            let _ = state.audit.append(&crate::audit::CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"action": "rotate_signing_key", "grace_period_secs": grace_period_secs})),
+            });
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "message": "signing key rotated",
+                    "grace_period_secs": grace_period_secs
+                })),
+            )
+                .into_response()
+        }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -3854,11 +3924,15 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     let realm_id = realm.id().clone();
 
-    // Seed RBAC defaults on the new realm. Logged-only on failure so the
-    // dev bootstrap doesn't brick on a storage blip — the realm record
-    // already exists and seeding is idempotent.
+    // Seed RBAC defaults on the new realm. Hard error: a dev bootstrap
+    // with a broken seed produces a realm where the admin user cannot be
+    // granted realm.admin, making the bootstrap useless.
     if let Err(e) = state.rbac.seed_realm(&realm_id) {
-        tracing::warn!(error = %e, "dev bootstrap: RBAC seed failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("RBAC seed failed: {e}")})),
+        )
+            .into_response();
     }
 
     // Create admin user
@@ -4194,6 +4268,7 @@ async fn admin_update_role(
             permissions,
             parent_roles,
             scope_kind: None,
+            status: None,
         },
     ) {
         Ok(role) => (StatusCode::OK, Json(role)).into_response(),
