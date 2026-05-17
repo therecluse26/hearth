@@ -9,6 +9,8 @@
 #   E) std::thread::sleep / tokio::time::sleep in tests/ and simulation/
 #   I) #[ignore = "..."] without an HEA-####   anywhere in tests/, simulation/,
 #                                              src/, or benches/
+#   J) Runnable rustdoc fences in src/         (```rust / ```no_run / ```ignore
+#                                              / ```should_panic / ```compile_fail)
 #
 # WARNS (does not fail) on:
 #   I) #[ignore] whose message contains "not yet implemented" — these tend to rot.
@@ -180,6 +182,37 @@ if [ -s "$ignore_warn_out" ]; then
   sed 's/^/  /' "$ignore_warn_out"
   printf "  %sfix:%s update the message with the current blocker, or enable the test.\n" "$YEL" "$RST"
   WARNINGS=$((WARNINGS + count))
+fi
+
+# ---------------------------------------------------------------------------
+# Check J — Runnable rustdoc fences in src/ (project rule: no doctests, ever).
+#
+# CLAUDE.md: "No doctests — ever. No /// ```rust fenced blocks in doc comments."
+# This guards against the metrics.rs-style regression where a doctest is added
+# inside //! / /// and silently runs in `cargo test --doc`. Allowed language
+# tags for documentation blocks: text, json, toml, yaml, bash, sh, ignore-text.
+# Audit cleanup: HEA-565 follow-up.
+# ---------------------------------------------------------------------------
+doctest_out="$TMP/doctest.violations"
+: > "$doctest_out"
+if [ -d src ]; then
+  while IFS= read -r f; do
+    awk -v file="$f" '
+      /^[[:space:]]*\/\/[!\/].*```(rust|no_run|ignore|should_panic|compile_fail|edition[0-9]+)\b/ {
+        line = $0; sub(/^[ \t]+/, "", line)
+        printf("%s:%d: %s\n", file, NR, line)
+      }
+    ' "$f"
+  done < <(find src -type f -name '*.rs' 2>/dev/null | sort) >> "$doctest_out"
+fi
+if [ -s "$doctest_out" ]; then
+  count=$(wc -l < "$doctest_out" | tr -d ' ')
+  echo
+  printf "%s%s✗ Runnable rustdoc fence — doctests are banned by CLAUDE.md (%d):%s\n" \
+    "$RED" "$BLD" "$count" "$RST"
+  sed 's/^/  /' "$doctest_out"
+  printf "  %sfix:%s use a non-runnable language tag (e.g. \`\`\`text) or move the example to a #[cfg(test)] mod or examples/.\n" "$YEL" "$RST"
+  VIOLATIONS=$((VIOLATIONS + count))
 fi
 
 # ---------------------------------------------------------------------------
