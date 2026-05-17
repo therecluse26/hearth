@@ -199,7 +199,7 @@ Outbound email delivery for verification emails, password resets, magic links, a
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `host` | string | *required* | SMTP server hostname. |
-| `port` | integer | *required* | SMTP port (25, 465, 587, or 1025 for Mailpit). |
+| `port` | integer | *required* | SMTP port (25, 465, 587, or 1025 for a local relay). |
 | `encryption` | string | `"starttls"` | Transport encryption: `none`, `starttls`, `tls`. |
 | `username` | string | — | SMTP AUTH username. Must be paired with `password`. |
 | `password` | string | — | SMTP AUTH password. Must be paired with `username`. |

@@ -1,5 +1,29 @@
 # Contributing to Hearth
 
+## Local development without Docker
+
+Hearth runs fully in-process — no external services required.
+
+**Cargo-only path (recommended for day-to-day development):**
+
+```sh
+make dev   # cargo run -- serve --dev
+```
+
+`--dev` mode:
+- Binds to `127.0.0.1:8420` with in-memory storage (no `data/` directory needed).
+- Auto-enables the **mailcatcher** transport, which captures all outgoing email
+  in-process. Inspect captured mail at <http://127.0.0.1:8420/dev/mail>.
+- No `hearth.yaml` required — all defaults are development-safe.
+
+Bootstrap a realm and admin token after the server starts:
+
+```sh
+curl -X POST http://127.0.0.1:8420/admin/bootstrap
+```
+
+---
+
 ## Contributor Setup
 
 Run once after cloning the repo:

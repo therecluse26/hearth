@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test test-quality ci-fast bench-gate ci-standard docker-up docker-reload
+.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test test-quality ci-fast bench-gate ci-standard dev
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -146,15 +146,8 @@ bench-gate:
 ## CI standard tier: fast + tests + SDK tests + proto breaking + perf gate (merge).
 ci-standard: ci-fast test proto-breaking sdk-test proto-check bench-gate
 
-# ── Docker ──────────────────────────────────────────
-
-## First-time image build + start (bakes binary into image).
-docker-up:
-	docker compose up --build -d
-
-## Fast iterate: incremental Docker build via BuildKit cache + restart (~15–25 s).
-## BuildKit cache mounts persist cargo registry + target dir across builds, so
-## only the hearth crate recompiles. Works on Linux, macOS, and Windows.
-docker-reload:
-	docker compose down
-	DOCKER_BUILDKIT=1 docker compose up --build -d hearth
+## Run Hearth in local dev mode.
+## Emails are captured in-process — mailcatcher inbox at http://127.0.0.1:8420/dev/mail
+## No Docker required.
+dev:
+	cargo run -- serve --dev

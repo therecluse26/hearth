@@ -209,6 +209,7 @@ fn email_transport_label(t: EmailTransport) -> &'static str {
         EmailTransport::Postmark => "postmark",
         EmailTransport::Mailgun => "mailgun",
         EmailTransport::Mailtrap => "mailtrap",
+        EmailTransport::Mailcatcher => "mailcatcher",
     }
 }
 
