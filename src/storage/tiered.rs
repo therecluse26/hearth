@@ -624,24 +624,5 @@ mod tests {
     }
 
     // ===== Phase C: Simulation tests — see simulation/ crate =====
-
-    // ===== Phase D: Benchmark stubs =====
-
-    #[test]
-    #[ignore = "benchmark: requires criterion harness"]
-    fn bench_hot_tier_lookup() {
-        // TODO: p50 < 10μs, p99 < 100μs
-    }
-
-    #[test]
-    #[ignore = "benchmark: P1"]
-    fn bench_cold_to_hot_promotion() {
-        // TODO: cold-to-hot promotion latency
-    }
-
-    #[test]
-    #[ignore = "benchmark: P1"]
-    fn bench_memory_footprint() {
-        // TODO: < 500 MB for 1M hot users
-    }
+    // ===== Phase D: Benchmarks — see benches/tiered_storage.rs =====
 }

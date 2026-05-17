@@ -76,15 +76,6 @@ async fn session_full_lifecycle() {
     assert!(gone.is_none(), "revoked session should not be found");
 }
 
-// ===== Scenario: Full lifecycle via server HTTP API =====
-
-#[tokio::test]
-#[ignore = "HTTP layer not implemented"]
-async fn session_full_lifecycle_server() {
-    // Placeholder — will be enabled when the HTTP protocol layer is built
-    let _harness = common::TestHarness::server().await;
-}
-
 // ===== Scenario: Session data persists across server restart =====
 // For embedded mode we test that session data survives engine re-creation
 // by re-opening the same storage directory.
