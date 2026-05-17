@@ -32,7 +32,7 @@ fn perms(list: &[&str]) -> Vec<Permission> {
 #[tokio::test]
 async fn populates_roles_groups_permissions() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -114,7 +114,7 @@ async fn populates_roles_groups_permissions() {
 #[tokio::test]
 async fn claims_empty_for_user_with_no_assignments() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user = h
         .identity()
         .create_user(
@@ -149,7 +149,7 @@ async fn claims_empty_for_user_with_no_assignments() {
 #[tokio::test]
 async fn permissions_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -219,7 +219,7 @@ async fn permissions_cap_refuses_issuance() {
 #[tokio::test]
 async fn roles_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -288,7 +288,7 @@ async fn roles_cap_refuses_issuance() {
 #[tokio::test]
 async fn groups_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -347,7 +347,7 @@ async fn groups_cap_refuses_issuance() {
 #[tokio::test]
 async fn exact_limit_succeeds() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -461,7 +461,7 @@ async fn exact_limit_succeeds() {
 #[tokio::test]
 async fn byte_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -539,7 +539,7 @@ async fn byte_cap_refuses_issuance() {
 #[tokio::test]
 async fn oauth_path_permissions_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()

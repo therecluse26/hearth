@@ -190,7 +190,7 @@ fn log_and_notify_setup_url(
 ) {
     let url = match base_url {
         Some(base) => format!("{}/ui/setup?token={}", base.trim_end_matches('/'), token),
-        None => format!("/ui/setup?token={token}"),
+        None => format!("http://127.0.0.1:8420/ui/setup?token={token}"),
     };
     tracing::warn!(
         setup_url = %url,

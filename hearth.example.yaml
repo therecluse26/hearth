@@ -7,8 +7,70 @@
 #   ./target/release/hearth serve -c /path/to/config.yaml
 #
 # Every section is optional. Any field you omit falls back to the default
-# shown in the comment. An empty file (`{}`) is a valid, production-safe
-# configuration.
+# shown in the comment. An empty file (`{}`) starts Hearth, but several
+# defaults are NOT safe for production — see the checklist below.
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │               PRODUCTION READINESS CHECKLIST                        │
+# │                                                                     │
+# │ These settings have development defaults. Set them before           │
+# │ exposing Hearth to real users or external traffic.                  │
+# │                                                                     │
+# │ [ ] oidc.issuer          — default "https://hearth.local" is       │
+# │                            unresolvable; breaks all OIDC clients.   │
+# │                            Set to your public HTTPS URL.            │
+# │                                                                     │
+# │ [ ] server.bind_address  — default "127.0.0.1" is localhost-only.  │
+# │                            Set to "0.0.0.0" or your specific IP.   │
+# │                                                                     │
+# │ [ ] server.tls_cert_path — TLS is required in production.          │
+# │     server.tls_key_path    Configure a certificate or terminate     │
+# │                            TLS at your load balancer.               │
+# │                                                                     │
+# │ [ ] email.transport      — default "log" silently discards all     │
+# │                            verification and transactional mail.     │
+# │                            Configure smtp, sendgrid, postmark, etc. │
+# │                                                                     │
+# │ [ ] email.from           — required for every real mail transport. │
+# │                                                                     │
+# │ [ ] token.audience       — defaults to oidc.issuer when omitted.   │
+# │                            Override only if your resource server     │
+# │                            expects a different audience value.       │
+# │                                                                     │
+# │ [ ] onboarding.base_url  — required for the setup URL logged at    │
+# │                            startup to be an absolute HTTPS URL.     │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# ── Minimum production config (copy, fill in, then delete this block) ─
+#
+# server:
+#   bind_address: "0.0.0.0"
+#   port: 443
+#   tls_cert_path: "/etc/hearth/tls/server.crt"
+#   tls_key_path:  "/etc/hearth/tls/server.key"
+#
+# oidc:
+#   issuer: "https://auth.example.com"
+#
+# token:
+#   # audience defaults to oidc.issuer — omit unless your resource server
+#   # expects a different value (e.g. a separate API gateway URL).
+#   # audience: "https://api.example.com"
+#
+# email:
+#   transport: smtp                      # or sendgrid | postmark | mailgun
+#   from: "Hearth <noreply@example.com>"
+#   smtp:
+#     host: "smtp.example.com"
+#     port: 587
+#     encryption: starttls
+#     username: "${SMTP_USERNAME}"
+#     password: "${SMTP_PASSWORD}"
+#
+# onboarding:
+#   base_url: "https://auth.example.com"
+#
+# ──────────────────────────────────────────────────────────────────────
 #
 # Environment variable substitution is supported anywhere a string value
 # appears: use dollar-sign + braces around the variable name (see the README
@@ -132,18 +194,24 @@ email:
 # --- OIDC / OAuth 2.0 -------------------------------------------------------
 # Controls the OIDC Discovery document and authorization code behaviour.
 
-# oidc:
-#   issuer: "https://auth.example.com"   # default: "https://hearth.local"
+oidc:
+  issuer: "https://auth.example.com"   # REQUIRED — set to your public HTTPS URL
 #   authorization_code_ttl: "10m"        # default: 10 minutes
-#   enforce_nonces: false                # default: false
+#   enforce_nonces: true                 # default: true (recommended)
+#                                        # Set to false ONLY for legacy clients that cannot
+#                                        # supply nonces. Disabling this removes replay
+#                                        # protection for confidential (server-side) clients
+#                                        # and emits a startup warning.
 
 # --- Token issuance ---------------------------------------------------------
 # Controls JWT claims and expiration. `token.issuer` defaults to `oidc.issuer`
 # when omitted, so you only need to set it here if they differ.
 
 # token:
-#   issuer: "https://auth.example.com"   # default: oidc.issuer or "hearth"
-#   audience: "hearth"                   # default: "hearth"
+#   issuer: "https://auth.example.com"   # default: oidc.issuer (or "hearth" if unset)
+#   # audience defaults to oidc.issuer when omitted. Set only when your resource
+#   # server expects a different audience value than the issuer URL.
+#   # audience: "https://api.example.com"
 #   access_token_ttl: "15m"             # default: 15 minutes
 #   refresh_token_ttl: "7d"             # default: 7 days
 

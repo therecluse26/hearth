@@ -66,20 +66,51 @@ impl KeyRegistry {
     pub(crate) fn load_with_fs(data_dir: &Path, fs: Arc<dyn Fs>) -> Result<Self, StorageError> {
         fs.create_dir_all(data_dir)?;
         let host_key = load_or_create_host_key(data_dir, &*fs)?;
+        let prev_host_key = load_previous_host_key()?;
+        Self::load_with_keys(data_dir, fs, host_key, prev_host_key)
+    }
+
+    /// Loads the key registry with explicit host keys (used directly in tests).
+    pub(crate) fn load_with_keys(
+        data_dir: &Path,
+        fs: Arc<dyn Fs>,
+        host_key: HostKey,
+        prev_host_key: Option<HostKey>,
+    ) -> Result<Self, StorageError> {
         let key_file_path = data_dir.join("hearth.keys");
 
-        let keks = if key_file_path.exists() {
-            load_keks_from_file(&key_file_path, &host_key, &*fs)?
+        let load_result = if key_file_path.exists() {
+            load_keks_from_file(&key_file_path, &host_key, prev_host_key.as_ref(), &*fs)?
         } else {
-            HashMap::new()
+            LoadKeksResult::empty()
         };
 
-        // Open the key file for appending (will be created on first write)
-        let key_file: Option<Box<dyn crate::storage::fs::FsFile>> = if key_file_path.exists() {
-            Some(fs.open_append(&key_file_path)?)
-        } else {
-            None
-        };
+        // Block startup when any KEK cannot be decrypted with either key.
+        if !load_result.failed.is_empty() {
+            let affected_realms = load_result
+                .failed
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>();
+            return Err(StorageError::HostKeyMismatch { affected_realms });
+        }
+
+        let keks = load_result.keks;
+
+        // Re-encrypt KEKs that were decrypted with the previous host key, then
+        // rewrite hearth.keys atomically so the old key is no longer needed.
+        let key_file: Option<Box<dyn crate::storage::fs::FsFile>> =
+            if !load_result.needs_reencrypt.is_empty() {
+                tracing::info!(
+                    count = load_result.needs_reencrypt.len(),
+                    "HEARTH_PREVIOUS_MASTER_KEY: re-encrypting realm KEKs under new master key"
+                );
+                Some(rewrite_keys_file(&key_file_path, &keks, &host_key, &*fs)?)
+            } else if key_file_path.exists() {
+                Some(fs.open_append(&key_file_path)?)
+            } else {
+                None
+            };
 
         Ok(Self {
             host_key,
@@ -242,6 +273,25 @@ impl std::fmt::Debug for KeyRegistry {
     }
 }
 
+/// Result of loading KEKs from `hearth.keys`.
+struct LoadKeksResult {
+    keks: KekMap,
+    /// Realms whose KEK was decrypted with the *previous* host key; need re-encryption.
+    needs_reencrypt: Vec<RealmId>,
+    /// Realms whose KEK passed CRC but could not be decrypted with either key.
+    failed: Vec<RealmId>,
+}
+
+impl LoadKeksResult {
+    fn empty() -> Self {
+        Self {
+            keks: KekMap::new(),
+            needs_reencrypt: Vec::new(),
+            failed: Vec::new(),
+        }
+    }
+}
+
 /// Loads or creates the host key.
 ///
 /// Priority:
@@ -287,17 +337,84 @@ fn load_or_create_host_key(data_dir: &Path, fs: &dyn Fs) -> Result<HostKey, Stor
     Ok(host_key)
 }
 
+/// Loads the previous host key from `HEARTH_PREVIOUS_MASTER_KEY`, if set.
+fn load_previous_host_key() -> Result<Option<HostKey>, StorageError> {
+    let Ok(env_val) = std::env::var("HEARTH_PREVIOUS_MASTER_KEY") else {
+        return Ok(None);
+    };
+    let env_val = env_val.trim().to_owned();
+    if env_val.len() == 64 {
+        let bytes = decode_hex(&env_val).map_err(|_| StorageError::Crypto {
+            reason: "HEARTH_PREVIOUS_MASTER_KEY is not valid hex".to_string(),
+        })?;
+        return Ok(Some(HostKey::from_bytes(bytes)));
+    }
+    Err(StorageError::Crypto {
+        reason: "HEARTH_PREVIOUS_MASTER_KEY must be 64 hex chars".to_string(),
+    })
+}
+
+/// Rewrites `hearth.keys` atomically with all KEKs encrypted under `host_key`.
+///
+/// Uses write-to-tmp → fsync → rename to guarantee crash safety.
+/// Returns an open append handle to the rewritten file.
+fn rewrite_keys_file(
+    path: &Path,
+    keks: &KekMap,
+    host_key: &HostKey,
+    fs: &dyn Fs,
+) -> Result<Box<dyn crate::storage::fs::FsFile>, StorageError> {
+    let mut content = Vec::new();
+    content.extend_from_slice(&KEY_FILE_VERSION.to_le_bytes());
+
+    for (realm_id, kek) in keks {
+        let kek_id: KekId = {
+            let mut id = [0u8; KEK_ID_SIZE];
+            id.copy_from_slice(realm_id.as_uuid().as_bytes());
+            id
+        };
+        let encrypted = encrypt_kek(kek, host_key, kek_id)?;
+        #[allow(clippy::cast_possible_truncation)]
+        let entry_len = encrypted.len() as u32;
+
+        let mut entry = Vec::with_capacity(16 + 4 + encrypted.len() + 4);
+        entry.extend_from_slice(realm_id.as_uuid().as_bytes());
+        entry.extend_from_slice(&entry_len.to_le_bytes());
+        entry.extend_from_slice(&encrypted);
+        let crc = crc32fast::hash(&entry);
+        entry.extend_from_slice(&crc.to_le_bytes());
+        content.extend_from_slice(&entry);
+    }
+
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let tmp_path = parent.join("hearth.keys.tmp");
+
+    {
+        let mut tmp_file = fs.create(&tmp_path)?;
+        tmp_file.write_all(&content)?;
+        tmp_file.sync_all()?;
+    }
+
+    fs.rename(&tmp_path, path)?;
+    Ok(fs.open_append(path)?)
+}
+
 /// Loads realm KEKs from `hearth.keys` with CRC32 integrity verification.
+///
+/// If decryption fails with `host_key` and `prev_host_key` is provided,
+/// falls back to the previous key. Realms decrypted via the fallback are
+/// recorded in `needs_reencrypt`; realms that fail both keys go to `failed`.
 fn load_keks_from_file(
     path: &Path,
     host_key: &HostKey,
+    prev_host_key: Option<&HostKey>,
     fs: &dyn Fs,
-) -> Result<KekMap, StorageError> {
+) -> Result<LoadKeksResult, StorageError> {
     let data = fs.read(path)?;
 
     // File must have at least version header + one entry
     if data.len() < KEY_FILE_VERSION_SIZE {
-        return Ok(KekMap::new());
+        return Ok(LoadKeksResult::empty());
     }
 
     let version = u16::from_le_bytes(data[..KEY_FILE_VERSION_SIZE].try_into().map_err(|_| {
@@ -311,7 +428,7 @@ fn load_keks_from_file(
         });
     }
 
-    let mut keks = KekMap::new();
+    let mut result = LoadKeksResult::empty();
     let mut pos = KEY_FILE_VERSION_SIZE;
 
     while pos + 20 + 4 <= data.len() {
@@ -369,7 +486,7 @@ fn load_keks_from_file(
             continue;
         }
 
-        // Decrypt KEK with host key
+        // Try current host key first; fall back to previous host key on failure.
         let encrypted_kek = &data[entry_start + 16 + 4..entry_start + 16 + 4 + entry_len];
         let kek_id: KekId = {
             let mut id = [0u8; KEK_ID_SIZE];
@@ -378,19 +495,42 @@ fn load_keks_from_file(
         };
         match decrypt_kek(encrypted_kek, host_key, kek_id) {
             Ok(kek) => {
-                // Duplicate entries for same realm → last one wins (supports rotation)
-                keks.insert(realm_id, kek);
+                // Last entry for a realm wins (supports rotation).
+                result.keks.insert(realm_id, kek);
             }
             Err(_) => {
-                tracing::warn!(
-                    realm_id = %realm_id,
-                    "hearth.keys: failed to decrypt KEK; skipping"
-                );
+                // Current key failed — try previous key if provided.
+                if let Some(prev_key) = prev_host_key {
+                    match decrypt_kek(encrypted_kek, prev_key, kek_id) {
+                        Ok(kek) => {
+                            tracing::info!(
+                                realm_id = %realm_id,
+                                "decrypted KEK with previous host key; will re-encrypt"
+                            );
+                            result.needs_reencrypt.push(realm_id.clone());
+                            result.keks.insert(realm_id, kek);
+                        }
+                        Err(_) => {
+                            tracing::error!(
+                                realm_id = %realm_id,
+                                "hearth.keys: KEK cannot be decrypted with current or previous key"
+                            );
+                            result.failed.push(realm_id);
+                        }
+                    }
+                } else {
+                    tracing::error!(
+                        realm_id = %realm_id,
+                        "hearth.keys: KEK cannot be decrypted with current key; \
+                         set HEARTH_PREVIOUS_MASTER_KEY if you rotated the master key"
+                    );
+                    result.failed.push(realm_id);
+                }
             }
         }
     }
 
-    Ok(keks)
+    Ok(result)
 }
 
 /// Decodes a hex string into a 32-byte array.
@@ -564,6 +704,198 @@ mod tests {
                 registry.get_kek_for_realm(&realm).is_none(),
                 "truncated entry should be skipped"
             );
+        }
+    }
+
+    // ── Host key rotation tests ───────────────────────────────────────────────
+
+    fn make_test_key_bytes() -> [u8; 32] {
+        use crate::storage::encryption::generate_host_key;
+        *generate_host_key().expect("generate host key").as_bytes()
+    }
+
+    fn mk(bytes: [u8; 32]) -> HostKey {
+        HostKey::from_bytes(bytes)
+    }
+
+    fn load_with_two_keys(
+        dir: &std::path::Path,
+        current: [u8; 32],
+        previous: Option<[u8; 32]>,
+    ) -> Result<KeyRegistry, StorageError> {
+        KeyRegistry::load_with_keys(
+            dir,
+            Arc::new(crate::storage::fs::RealFs),
+            mk(current),
+            previous.map(mk),
+        )
+    }
+
+    #[test]
+    fn host_key_rotation_re_encrypts_keks_and_new_key_works_standalone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+        let key1 = make_test_key_bytes();
+        let key2 = make_test_key_bytes();
+
+        // Record the KEK value under key1 so we can compare after rotation.
+        let original_kek_bytes = {
+            let registry = load_with_two_keys(dir.path(), key1, None).expect("load1");
+            let kek = registry.ensure_kek_for_realm(&realm).expect("ensure");
+            kek.as_bytes().to_vec()
+        };
+
+        // Load with key2 (current) + key1 (previous) → auto re-encrypts.
+        {
+            let registry =
+                load_with_two_keys(dir.path(), key2, Some(key1)).expect("load with rotation");
+            let kek = registry
+                .get_kek_for_realm(&realm)
+                .expect("kek accessible during rotation");
+            assert_eq!(
+                kek.as_bytes(),
+                original_kek_bytes.as_slice(),
+                "KEK value unchanged after re-encryption"
+            );
+        }
+
+        // Load with key2 alone (no previous) → succeeds because file was rewritten.
+        {
+            let registry = load_with_two_keys(dir.path(), key2, None).expect("load after rewrite");
+            let kek = registry
+                .get_kek_for_realm(&realm)
+                .expect("kek accessible after re-encryption");
+            assert_eq!(
+                kek.as_bytes(),
+                original_kek_bytes.as_slice(),
+                "KEK value unchanged after standalone reload"
+            );
+        }
+    }
+
+    #[test]
+    fn host_key_rotation_missing_previous_key_blocks_startup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+        let key1 = make_test_key_bytes();
+        let key2 = make_test_key_bytes();
+
+        // Create realm KEK under key1.
+        {
+            let registry = load_with_two_keys(dir.path(), key1, None).expect("load1");
+            registry.ensure_kek_for_realm(&realm).expect("ensure");
+        }
+
+        // Load with key2 but no previous key → must fail with HostKeyMismatch.
+        let err = load_with_two_keys(dir.path(), key2, None)
+            .expect_err("should block startup when previous key is missing");
+        match err {
+            StorageError::HostKeyMismatch { affected_realms } => {
+                assert!(
+                    !affected_realms.is_empty(),
+                    "affected_realms must name at least one realm"
+                );
+            }
+            other => panic!("expected HostKeyMismatch, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn host_key_rotation_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+        let key1 = make_test_key_bytes();
+        let key2 = make_test_key_bytes();
+
+        // Create KEK under key1.
+        {
+            let registry = load_with_two_keys(dir.path(), key1, None).expect("load1");
+            registry.ensure_kek_for_realm(&realm).expect("ensure");
+        }
+
+        // First rotation: key2 + key1 as previous.
+        let kek_after_first = {
+            let registry = load_with_two_keys(dir.path(), key2, Some(key1)).expect("rotation 1");
+            registry
+                .get_kek_for_realm(&realm)
+                .expect("kek after rotation 1")
+                .as_bytes()
+                .to_vec()
+        };
+
+        // Second load with same key2, no previous → idempotent (file already rewritten).
+        {
+            let registry = load_with_two_keys(dir.path(), key2, None).expect("idempotent reload");
+            let kek = registry
+                .get_kek_for_realm(&realm)
+                .expect("kek on second load");
+            assert_eq!(
+                kek.as_bytes(),
+                kek_after_first.as_slice(),
+                "KEK unchanged on second load"
+            );
+        }
+    }
+
+    #[test]
+    fn host_key_rotation_crc_corrupt_entries_still_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm = RealmId::generate();
+        let key1 = make_test_key_bytes();
+        let key2 = make_test_key_bytes();
+
+        // Create KEK under key1.
+        {
+            let registry = load_with_two_keys(dir.path(), key1, None).expect("load");
+            registry.ensure_kek_for_realm(&realm).expect("ensure");
+        }
+
+        // Corrupt the CRC of the entry.
+        {
+            let key_file = dir.path().join("hearth.keys");
+            let mut data = std::fs::read(&key_file).expect("read");
+            let len = data.len();
+            data[len - 1] ^= 0xFF;
+            std::fs::write(&key_file, &data).expect("write corrupt");
+        }
+
+        // CRC-corrupt entry should be skipped — not treated as a decryption
+        // failure — so HostKeyMismatch must NOT be returned even with a wrong key.
+        let registry = load_with_two_keys(dir.path(), key2, None)
+            .expect("CRC-corrupt entries must not trigger HostKeyMismatch");
+        assert!(
+            registry.get_kek_for_realm(&realm).is_none(),
+            "CRC-corrupt entry is skipped; realm has no KEK"
+        );
+    }
+
+    #[test]
+    fn host_key_rotation_multi_realm_partial_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let realm_a = RealmId::generate();
+        let realm_b = RealmId::generate();
+        let key1 = make_test_key_bytes();
+        let key2 = make_test_key_bytes();
+        let key3 = make_test_key_bytes();
+
+        // realm_a under key1.
+        {
+            let registry = load_with_two_keys(dir.path(), key1, None).expect("a");
+            registry.ensure_kek_for_realm(&realm_a).expect("ensure a");
+        }
+        // Rotate key1→key2; add realm_b under key2.
+        {
+            let registry = load_with_two_keys(dir.path(), key2, Some(key1)).expect("b");
+            registry.ensure_kek_for_realm(&realm_b).expect("ensure b");
+        }
+
+        // Now load with key3 + no previous: both realms fail → HostKeyMismatch.
+        let err = load_with_two_keys(dir.path(), key3, None).expect_err("both realms should fail");
+        match err {
+            StorageError::HostKeyMismatch { affected_realms } => {
+                assert_eq!(affected_realms.len(), 2, "both realms should be reported");
+            }
+            other => panic!("expected HostKeyMismatch, got: {other:?}"),
         }
     }
 }

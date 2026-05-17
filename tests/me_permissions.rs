@@ -26,7 +26,7 @@ fn build_router(h: &common::TestHarness) -> axum::Router {
 #[tokio::test]
 async fn returns_live_set_reflecting_post_issuance_changes() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     let user = h
@@ -110,7 +110,7 @@ async fn returns_live_set_reflecting_post_issuance_changes() {
 #[tokio::test]
 async fn unauthenticated_returns_401() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let app = build_router(&h);
     let resp = app
         .oneshot(

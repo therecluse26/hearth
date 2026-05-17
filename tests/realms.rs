@@ -415,3 +415,271 @@ async fn adversarial_realm_enumeration_resistance() {
         "deleting fake realm returns RealmNotFound"
     );
 }
+
+// ===== Realm lifecycle guard tests (HEA-552) =====
+//
+// Mutating operations on Suspended or Archived realms must return
+// `RealmSuspended`; read operations are still permitted.
+
+/// Helper: sets a realm's status and verifies the update succeeded.
+async fn set_realm_status(
+    identity: &dyn hearth::identity::IdentityEngine,
+    realm_id: &hearth::core::RealmId,
+    status: RealmStatus,
+) {
+    identity
+        .update_realm(
+            realm_id,
+            &UpdateRealmRequest {
+                status: Some(status),
+                ..UpdateRealmRequest::default()
+            },
+        )
+        .expect("update realm status");
+}
+
+#[tokio::test]
+async fn suspended_realm_blocks_create_user() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "suspended-create-user".to_string(),
+            config: None,
+        })
+        .expect("create realm");
+
+    // Succeeds while active
+    identity
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: "a@example.com".to_string(),
+                display_name: "Alice".to_string(),
+                ..CreateUserRequest::default()
+            },
+        )
+        .expect("create user while active");
+
+    set_realm_status(identity, realm.id(), RealmStatus::Suspended).await;
+
+    let err = identity
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: "b@example.com".to_string(),
+                display_name: "Bob".to_string(),
+                ..CreateUserRequest::default()
+            },
+        )
+        .expect_err("create user on suspended realm");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn archived_realm_blocks_create_user() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "archived-create-user".to_string(),
+            config: None,
+        })
+        .expect("create realm");
+
+    set_realm_status(identity, realm.id(), RealmStatus::Archived).await;
+
+    let err = identity
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: "c@example.com".to_string(),
+                display_name: "Carol".to_string(),
+                ..CreateUserRequest::default()
+            },
+        )
+        .expect_err("create user on archived realm");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn suspended_realm_blocks_update_user() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "suspended-update-user".to_string(),
+            config: None,
+        })
+        .expect("create realm");
+
+    let user = identity
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: "d@example.com".to_string(),
+                display_name: "Dave".to_string(),
+                ..CreateUserRequest::default()
+            },
+        )
+        .expect("create user");
+
+    set_realm_status(identity, realm.id(), RealmStatus::Suspended).await;
+
+    let err = identity
+        .update_user(
+            realm.id(),
+            user.id(),
+            &hearth::identity::UpdateUserRequest {
+                display_name: Some("Changed".to_string()),
+                ..hearth::identity::UpdateUserRequest::default()
+            },
+        )
+        .expect_err("update user on suspended realm");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn suspended_realm_blocks_create_session() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "suspended-create-session".to_string(),
+            config: None,
+        })
+        .expect("create realm");
+
+    let user = identity
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: "e@example.com".to_string(),
+                display_name: "Eve".to_string(),
+                ..CreateUserRequest::default()
+            },
+        )
+        .expect("create user");
+
+    set_realm_status(identity, realm.id(), RealmStatus::Suspended).await;
+
+    let err = identity
+        .create_session(
+            realm.id(),
+            user.id(),
+            &hearth::identity::SessionContext::default(),
+        )
+        .expect_err("create session on suspended realm");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn suspended_realm_blocks_create_organization() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "suspended-create-org".to_string(),
+            config: None,
+        })
+        .expect("create realm");
+
+    set_realm_status(identity, realm.id(), RealmStatus::Suspended).await;
+
+    let err = identity
+        .create_organization(
+            realm.id(),
+            &hearth::identity::CreateOrganizationRequest {
+                name: "Test Org".to_string(),
+                slug: "test-org".to_string(),
+                description: None,
+                config: None,
+            },
+        )
+        .expect_err("create org on suspended realm");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn archived_realm_blocks_create_organization() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "archived-create-org".to_string(),
+            config: None,
+        })
+        .expect("create realm");
+
+    set_realm_status(identity, realm.id(), RealmStatus::Archived).await;
+
+    let err = identity
+        .create_organization(
+            realm.id(),
+            &hearth::identity::CreateOrganizationRequest {
+                name: "Test Org".to_string(),
+                slug: "test-org-archived".to_string(),
+                description: None,
+                config: None,
+            },
+        )
+        .expect_err("create org on archived realm");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::RealmSuspended),
+        "expected RealmSuspended, got {err:?}"
+    );
+}
+
+/// Reads (non-mutating) on suspended realms remain permitted.
+#[tokio::test]
+async fn suspended_realm_allows_reads() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let identity = harness.identity();
+
+    let realm = identity
+        .create_realm(&CreateRealmRequest {
+            name: "suspended-reads".to_string(),
+            config: None,
+        })
+        .expect("create realm");
+
+    let user = identity
+        .create_user(
+            realm.id(),
+            &CreateUserRequest {
+                email: "f@example.com".to_string(),
+                display_name: "Frank".to_string(),
+                ..CreateUserRequest::default()
+            },
+        )
+        .expect("create user");
+
+    set_realm_status(identity, realm.id(), RealmStatus::Suspended).await;
+
+    // Reads must still work so operators can inspect data during decommission.
+    let fetched = identity
+        .get_user(realm.id(), user.id())
+        .expect("get_user on suspended realm");
+    assert!(fetched.is_some(), "user readable from suspended realm");
+}

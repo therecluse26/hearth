@@ -26,7 +26,9 @@ fn p(s: &str) -> Permission {
 #[test]
 fn permission_grammar_basic_dotted_accepted() {
     assert_eq!(
-        Permission::new("docs.read").expect("docs.read is valid").as_str(),
+        Permission::new("docs.read")
+            .expect("docs.read is valid")
+            .as_str(),
         "docs.read"
     );
     assert_eq!(
@@ -36,7 +38,9 @@ fn permission_grammar_basic_dotted_accepted() {
         "org.billing.view"
     );
     assert_eq!(
-        Permission::new("a.b.c.d").expect("a.b.c.d is valid").as_str(),
+        Permission::new("a.b.c.d")
+            .expect("a.b.c.d is valid")
+            .as_str(),
         "a.b.c.d"
     );
 }

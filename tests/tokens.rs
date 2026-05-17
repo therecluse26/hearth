@@ -8,9 +8,20 @@ mod common;
 use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{
-    verify_token_signature, CreateUserRequest, IdentityError, TokenIntrospectionRequest,
-    TokenRevocationRequest, User,
+    verify_token_signature, CreateRealmRequest, CreateUserRequest, IdentityError,
+    TokenIntrospectionRequest, TokenRevocationRequest, User,
 };
+
+fn make_realm(engine: &impl hearth::identity::IdentityEngine) -> RealmId {
+    engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("tok-test-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone()
+}
 
 /// Helper: creates a user with a unique email in the given realm.
 fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
@@ -59,7 +70,7 @@ async fn token_issuance_and_validation_roundtrip() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Create a session
@@ -122,7 +133,7 @@ async fn token_refresh_flow_end_to_end() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Create session and initial tokens
@@ -185,7 +196,7 @@ async fn token_invalid_after_session_revoked() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let session = harness
@@ -235,8 +246,8 @@ async fn token_invalid_for_different_realm() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
     let user = create_user(&harness, &realm_a);
 
     let session = harness
@@ -269,7 +280,7 @@ async fn issue_tokens_fails_nonexistent_user() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let session = harness
@@ -302,7 +313,7 @@ async fn validate_token_rejects_tampered_payload() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let other_user = create_user(&harness, &realm);
 
@@ -335,7 +346,7 @@ async fn refresh_token_rejects_tampered_user_binding() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let other_user = create_user(&harness, &realm);
 
@@ -368,7 +379,7 @@ async fn revoke_token_ignores_tampered_payload() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let victim = create_user(&harness, &realm);
     let attacker = create_user(&harness, &realm);
 
@@ -429,7 +440,7 @@ async fn introspection_returns_inactive_for_tampered_payload() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
     let other_user = create_user(&harness, &realm);
 
@@ -519,7 +530,7 @@ async fn validate_token_rejects_expired_access_token() {
     use hearth::identity::{IdentityEngine, SessionContext};
 
     let (engine, clock, _tmp) = engine_with_fake_clock().await;
-    let realm = hearth::core::RealmId::generate();
+    let realm = make_realm(&engine);
 
     let user = engine
         .create_user(
@@ -566,7 +577,7 @@ async fn validate_token_rejects_refresh_token_as_access_token() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let session = harness
@@ -598,7 +609,7 @@ async fn validate_token_rejects_forged_admin_permission() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let session = harness
@@ -636,7 +647,7 @@ async fn refresh_token_rejects_forged_exp_extension() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let session = harness
@@ -679,7 +690,7 @@ async fn refresh_token_rejects_forged_session_impersonation() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let attacker = create_user(&harness, &realm);
     let victim = create_user(&harness, &realm);
 
@@ -793,7 +804,7 @@ mod http_client_auth {
     #[tokio::test]
     async fn introspect_without_client_auth_returns_401() {
         let h = common::TestHarness::embedded().await.expect("harness");
-        let realm = RealmId::generate();
+        let realm = h.create_realm();
         let app = build_app(&h).await;
 
         let resp = app
@@ -818,7 +829,7 @@ mod http_client_auth {
     #[tokio::test]
     async fn revoke_without_client_auth_returns_401() {
         let h = common::TestHarness::embedded().await.expect("harness");
-        let realm = RealmId::generate();
+        let realm = h.create_realm();
         let app = build_app(&h).await;
 
         let resp = app
@@ -843,7 +854,7 @@ mod http_client_auth {
     #[tokio::test]
     async fn introspect_with_wrong_secret_returns_401() {
         let h = common::TestHarness::embedded().await.expect("harness");
-        let realm = RealmId::generate();
+        let realm = h.create_realm();
         let (client_id, _) = register_confidential_client(&h, &realm);
         let app = build_app(&h).await;
 
@@ -873,7 +884,7 @@ mod http_client_auth {
     #[tokio::test]
     async fn revoke_with_wrong_secret_returns_401() {
         let h = common::TestHarness::embedded().await.expect("harness");
-        let realm = RealmId::generate();
+        let realm = h.create_realm();
         let (client_id, _) = register_confidential_client(&h, &realm);
         let app = build_app(&h).await;
 
@@ -903,7 +914,7 @@ mod http_client_auth {
     #[tokio::test]
     async fn introspect_forged_token_with_valid_client_auth_returns_inactive() {
         let h = common::TestHarness::embedded().await.expect("harness");
-        let realm = RealmId::generate();
+        let realm = h.create_realm();
         let (client_id, secret) = register_confidential_client(&h, &realm);
         let app = build_app(&h).await;
 
@@ -939,7 +950,7 @@ mod http_client_auth {
     #[tokio::test]
     async fn revoke_with_valid_client_auth_succeeds() {
         let h = common::TestHarness::embedded().await.expect("harness");
-        let realm = RealmId::generate();
+        let realm = h.create_realm();
         let (client_id, secret) = register_confidential_client(&h, &realm);
         let app = build_app(&h).await;
 
@@ -968,7 +979,7 @@ mod http_client_auth {
     #[tokio::test]
     async fn introspect_with_body_client_credentials_returns_inactive_for_forged_token() {
         let h = common::TestHarness::embedded().await.expect("harness");
-        let realm = RealmId::generate();
+        let realm = h.create_realm();
         let (client_id, secret) = register_confidential_client(&h, &realm);
         let app = build_app(&h).await;
 

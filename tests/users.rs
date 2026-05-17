@@ -15,7 +15,7 @@ async fn create_and_read_user_by_id() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     let created = harness
         .identity()
@@ -47,7 +47,7 @@ async fn create_and_read_user_by_email() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     let created = harness
         .identity()
@@ -79,7 +79,7 @@ async fn update_user_fields() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     let created = harness
         .identity()
@@ -119,7 +119,7 @@ async fn delete_user_removes_from_both_indexes() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     let created = harness
         .identity()
@@ -157,7 +157,7 @@ async fn duplicate_email_rejected() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     harness
         .identity()
@@ -200,7 +200,7 @@ async fn delete_frees_email_for_reuse() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     let first = harness
         .identity()
@@ -246,8 +246,8 @@ async fn cross_realm_isolation() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let alice_a = harness
         .identity()
@@ -287,4 +287,3 @@ async fn cross_realm_isolation() {
         .expect("get")
         .is_none());
 }
-

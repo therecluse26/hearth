@@ -1,0 +1,134 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Migration History{% endblock %}
+{% block body %}
+<div class="mb-6 flex items-center justify-between gap-4">
+  <div>
+    <h1 class="text-xl font-semibold text-ht-content-primary">Migration History</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">Cross-realm user migrations run at startup.</p>
+  </div>
+</div>
+
+{# ── Orphaned realms panel ── #}
+{% if !orphans.is_empty() %}
+<div class="mb-8 rounded-lg border border-error/30 bg-error/[0.12] px-4 py-4">
+  <div class="flex items-start gap-3">
+    <svg class="mt-0.5 h-5 w-5 flex-none text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <div class="min-w-0 flex-1">
+      <p class="font-semibold text-error-fg">Orphaned Realms</p>
+      <p class="mt-1 text-sm text-error-fg opacity-80">These realms were archived while still containing users. Add <code class="rounded-sm bg-error/20 px-1 py-0.5">migrate_from</code> to a destination realm in <code class="rounded-sm bg-error/20 px-1 py-0.5">hearth.yaml</code> and restart to migrate the users, or use the resolve form below.</p>
+      <div class="mt-4 space-y-4">
+        {% for o in orphans %}
+        <div class="rounded-md border border-error/20 bg-error/[0.08] p-4" x-data="{ open: false }">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <code class="font-mono text-sm font-semibold text-error-fg">{{ o.realm_slug }}</code>
+              <span class="ml-3 text-xs text-error-fg opacity-70">detected {{ o.detected_at }}</span>
+            </div>
+            <div class="flex items-center gap-4 text-xs text-error-fg opacity-80">
+              <span>{{ o.user_count }} user{% if o.user_count != 1 %}s{% endif %}</span>
+              {% if o.org_count > 0 %}<span>{{ o.org_count }} org{% if o.org_count != 1 %}s{% endif %}</span>{% endif %}
+            </div>
+          </div>
+
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" @click="open = !open"
+                    class="inline-flex items-center gap-1.5 rounded-md bg-error/20 px-3 py-1.5 text-xs font-medium text-error-fg transition hover:bg-error/30">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
+              Generate YAML
+            </button>
+          </div>
+
+          <div x-show="open" x-cloak class="mt-4">
+            <form method="POST" action="/ui/admin/migrations/orphans/resolve"
+                  hx-post="/ui/admin/migrations/orphans/resolve"
+                  hx-target="#yaml-result-{{ loop.index }}"
+                  hx-swap="outerHTML">
+              {% if let Some(token) = csrf %}
+              <input type="hidden" name="csrf" value="{{ token }}">
+              {% endif %}
+              <input type="hidden" name="slug" value="{{ o.realm_slug }}">
+              <div class="mb-3">
+                <label for="dest-{{ loop.index }}" class="mb-1.5 block text-xs font-medium text-error-fg">
+                  Destination realm slug
+                  <span class="ml-1 font-normal opacity-70">(leave blank to generate discard YAML)</span>
+                </label>
+                <input type="text" id="dest-{{ loop.index }}" name="destination"
+                       placeholder="e.g. production"
+                       class="w-full max-w-xs rounded-md border border-white/10 bg-ht-surface-elevated px-3 py-1.5 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:outline-none focus:ring-1 focus:ring-white/20">
+              </div>
+              <button type="submit"
+                      class="inline-flex items-center gap-1.5 rounded-md bg-ht-surface-elevated px-3 py-1.5 text-xs font-medium text-ht-content-primary ring-1 ring-white/10 transition hover:ring-white/20">
+                Generate snippet
+              </button>
+            </form>
+            <div id="yaml-result-{{ loop.index }}" class="mt-3"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Migration history table ── #}
+<div class="rounded-lg border border-white/6 bg-ht-surface-elevated">
+  <div class="border-b border-white/6 px-4 py-3">
+    <h2 class="text-sm font-semibold text-ht-content-primary">Completed Migrations</h2>
+  </div>
+  {% if migrations.is_empty() %}
+  <div class="px-4 py-12 text-center">
+    <svg class="mx-auto mb-3 h-8 w-8 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>
+    <p class="text-sm text-ht-content-muted">No migrations recorded yet.</p>
+    <p class="mt-1 text-xs text-ht-content-muted opacity-70">Add <code class="font-mono">migrate_from</code> or <code class="font-mono">copy_from</code> to a realm in <code class="font-mono">hearth.yaml</code> to trigger a migration.</p>
+  </div>
+  {% else %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-white/6">
+          <th class="px-4 py-2.5 text-left font-mono text-xs font-medium uppercase tracking-[0.10em] text-ht-content-muted">Source</th>
+          <th class="px-4 py-2.5 text-left font-mono text-xs font-medium uppercase tracking-[0.10em] text-ht-content-muted">Destination</th>
+          <th class="px-4 py-2.5 text-left font-mono text-xs font-medium uppercase tracking-[0.10em] text-ht-content-muted">Kind</th>
+          <th class="px-4 py-2.5 text-right font-mono text-xs font-medium uppercase tracking-[0.10em] text-ht-content-muted">Moved</th>
+          <th class="px-4 py-2.5 text-right font-mono text-xs font-medium uppercase tracking-[0.10em] text-ht-content-muted">Skipped</th>
+          <th class="px-4 py-2.5 text-left font-mono text-xs font-medium uppercase tracking-[0.10em] text-ht-content-muted">Status</th>
+          <th class="px-4 py-2.5 text-left font-mono text-xs font-medium uppercase tracking-[0.10em] text-ht-content-muted">Completed</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-white/[0.04]">
+        {% for m in migrations %}
+        <tr class="hover:bg-white/[0.02]">
+          <td class="px-4 py-3">
+            <code class="font-mono text-xs text-ht-content-primary">{{ m.source_slug }}</code>
+          </td>
+          <td class="px-4 py-3">
+            <code class="font-mono text-xs text-ht-content-primary">{{ m.destination_slug }}</code>
+          </td>
+          <td class="px-4 py-3">
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {% if m.kind == "move" %}text-steel-fg bg-steel-bg{% else %}text-ht-content-muted bg-ht-surface-base{% endif %} ring-1 ring-inset ring-white/6">
+              {{ m.kind }}
+            </span>
+          </td>
+          <td class="px-4 py-3 text-right font-mono text-sm text-ht-content-primary">
+            {{ m.users_migrated }}
+          </td>
+          <td class="px-4 py-3 text-right font-mono text-sm {% if m.users_skipped > 0 %}text-warning-fg{% else %}text-ht-content-muted{% endif %}">
+            {{ m.users_skipped }}
+          </td>
+          <td class="px-4 py-3">
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ m.badge_class }} ring-1 ring-inset ring-white/6">
+              {{ m.status_label }}
+            </span>
+          </td>
+          <td class="px-4 py-3 text-xs text-ht-content-muted">
+            {{ m.completed_at }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

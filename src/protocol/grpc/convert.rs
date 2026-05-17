@@ -138,6 +138,7 @@ pub fn rbac_to_status(err: RbacError) -> Status {
         | RbacError::TokenSizeExceeded { .. } => {
             Status::new(Code::ResourceExhausted, err.to_string())
         }
+        RbacError::RoleArchived => Status::new(Code::FailedPrecondition, err.to_string()),
         RbacError::ReservedNamespace { .. } => Status::new(Code::PermissionDenied, err.to_string()),
         RbacError::InvalidScope { .. } => Status::new(Code::InvalidArgument, err.to_string()),
         RbacError::Storage(e) => {

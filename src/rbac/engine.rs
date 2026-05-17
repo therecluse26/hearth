@@ -22,9 +22,10 @@ use super::resolve::{self, Resolver};
 use super::seed::{self, StoredScope};
 use super::types::{
     AssignRoleRequest, AssignmentId, CreateGroupRequest, CreateRoleRequest, CycleKind, Group,
-    GroupId, GroupMember, GroupMembership, Page, Permission, ProtectedResource,
-    ResolvedPermissions, Role, RoleAssignment, RoleId, RoleSpec, RoleSubject, Scope, ScopeSpec,
-    Subject, TraversalKind, UpdateGroupRequest, UpdateRoleRequest, UserPermissionGrant,
+    GroupId, GroupMember, GroupMembership, Page, Permission, PermissionRecord, PermissionStatus,
+    ProtectedResource, ResolvedPermissions, Role, RoleAssignment, RoleId, RoleSpec, RoleStatus,
+    RoleSubject, Scope, ScopeSpec, Subject, TraversalKind, UpdateGroupRequest, UpdateRoleRequest,
+    UserPermissionGrant,
 };
 use super::RbacEngine;
 
@@ -664,6 +665,8 @@ impl RbacEngine for EmbeddedRbacEngine {
             permissions: req.permissions.clone(),
             parent_roles: req.parent_roles.clone(),
             scope_kind: req.scope_kind,
+            status: RoleStatus::Active,
+            yaml_managed: false,
             created_at: now,
             updated_at: now,
         };
@@ -743,6 +746,10 @@ impl RbacEngine for EmbeddedRbacEngine {
 
         if let Some(scope_kind) = req.scope_kind {
             role.scope_kind = scope_kind;
+        }
+
+        if let Some(status) = req.status {
+            role.status = status;
         }
 
         role.updated_at = self.clock.now();
@@ -1082,8 +1089,12 @@ impl RbacEngine for EmbeddedRbacEngine {
         realm_id: &RealmId,
         req: &AssignRoleRequest,
     ) -> Result<RoleAssignment, RbacError> {
-        if self.load_role(realm_id, &req.role_id)?.is_none() {
-            return Err(RbacError::RoleNotFound);
+        match self.load_role(realm_id, &req.role_id)? {
+            None => return Err(RbacError::RoleNotFound),
+            Some(role) if role.status != RoleStatus::Active => {
+                return Err(RbacError::RoleArchived);
+            }
+            Some(_) => {}
         }
         // Subject existence: user existence is the identity layer's concern;
         // here we just verify group subject exists if that's what was named.
@@ -1221,10 +1232,80 @@ impl RbacEngine for EmbeddedRbacEngine {
             let perm = Permission::new(name.clone())
                 .map_err(|reason| RbacError::InvalidPermission { reason })?;
             let key = keys::encode_permission(realm_id, perm.as_str());
-            if self.storage.get(realm_id, &key)?.is_some() {
+            if let Some(raw) = self.storage.get(realm_id, &key)? {
+                // If previously archived, restore to Active.
+                if let Ok(mut record) = Self::de::<PermissionRecord>(&raw) {
+                    if record.status == PermissionStatus::Archived {
+                        record.status = PermissionStatus::Active;
+                        self.storage.put(realm_id, &key, &Self::ser(&record)?)?;
+                    }
+                }
                 continue;
             }
-            self.storage.put(realm_id, &key, &Self::ser(&perm)?)?;
+            let record = PermissionRecord {
+                name: perm,
+                status: PermissionStatus::Active,
+            };
+            self.storage.put(realm_id, &key, &Self::ser(&record)?)?;
+        }
+        Ok(())
+    }
+
+    fn archive_removed_permissions(
+        &self,
+        realm_id: &RealmId,
+        yaml_names: &std::collections::HashSet<String>,
+    ) -> Result<(), RbacError> {
+        let prefix = keys::permission_scan_prefix(realm_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self.storage.scan(realm_id, &prefix, &end)?;
+        for entry in entries {
+            let Ok(mut record) = Self::de::<PermissionRecord>(&entry.value) else {
+                continue;
+            };
+            if record.status != PermissionStatus::Active {
+                continue;
+            }
+            let perm_name = record.name.as_str();
+            // Never archive seed permissions (hearth.* namespace).
+            if perm_name.starts_with("hearth.") {
+                continue;
+            }
+            if !yaml_names.contains(perm_name) {
+                record.status = PermissionStatus::Archived;
+                let key = keys::encode_permission(realm_id, perm_name);
+                self.storage.put(realm_id, &key, &Self::ser(&record)?)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn archive_removed_roles(
+        &self,
+        realm_id: &RealmId,
+        yaml_names: &std::collections::HashSet<String>,
+    ) -> Result<(), RbacError> {
+        let now = self.clock.now();
+        let prefix = keys::role_name_scan_prefix(realm_id);
+        let end = keys::prefix_end(&prefix);
+        let entries = self.storage.scan(realm_id, &prefix, &end)?;
+        for entry in entries {
+            let Ok(id) = Self::de::<RoleId>(&entry.value) else {
+                continue;
+            };
+            let Some(mut role) = self.load_role(realm_id, &id)? else {
+                continue;
+            };
+            // Only archive roles that were YAML-managed and are now missing.
+            if !role.yaml_managed || role.status == RoleStatus::Archived {
+                continue;
+            }
+            if !yaml_names.contains(&role.name) {
+                role.status = RoleStatus::Archived;
+                role.updated_at = now;
+                let role_key = keys::encode_role(&role.id);
+                self.storage.put(realm_id, &role_key, &Self::ser(&role)?)?;
+            }
         }
         Ok(())
     }
@@ -1267,15 +1348,21 @@ impl RbacEngine for EmbeddedRbacEngine {
                 let Some(mut role) = self.load_role(realm_id, &existing_id)? else {
                     continue;
                 };
+                // Re-activate if previously archived, and always mark yaml_managed.
+                let was_archived = role.status == RoleStatus::Archived;
                 let drift = role.description != spec.description
                     || role.permissions != permissions
                     || role.parent_roles != parent_roles
-                    || role.scope_kind != spec.scope_kind;
+                    || role.scope_kind != spec.scope_kind
+                    || was_archived
+                    || !role.yaml_managed;
                 if drift {
                     role.description.clone_from(&spec.description);
                     role.permissions = permissions;
                     role.parent_roles = parent_roles;
                     role.scope_kind = spec.scope_kind;
+                    role.status = RoleStatus::Active;
+                    role.yaml_managed = true;
                     role.updated_at = now;
                     self.check_role_parents_no_cycle(realm_id, &role.id, &role.parent_roles)?;
                     let role_key = keys::encode_role(&role.id);
@@ -1293,6 +1380,8 @@ impl RbacEngine for EmbeddedRbacEngine {
                 permissions,
                 parent_roles,
                 scope_kind: spec.scope_kind,
+                status: RoleStatus::Active,
+                yaml_managed: true,
                 created_at: now,
                 updated_at: now,
             };

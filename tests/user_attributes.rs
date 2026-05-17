@@ -46,7 +46,7 @@ fn attrs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 #[tokio::test]
 async fn update_user_valid_attributes_accepted() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     let result = h.identity().update_user(
@@ -78,7 +78,7 @@ async fn update_user_valid_attributes_accepted() {
 #[tokio::test]
 async fn update_user_empty_key_rejected() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     let result = h.identity().update_user(
@@ -99,7 +99,7 @@ async fn update_user_empty_key_rejected() {
 #[tokio::test]
 async fn update_user_key_too_long_rejected() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     // Exactly 65 characters (limit is 64).
@@ -122,7 +122,7 @@ async fn update_user_key_too_long_rejected() {
 #[tokio::test]
 async fn update_user_value_too_large_rejected() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     // Value of 1025 bytes (limit is 1024).
@@ -145,7 +145,7 @@ async fn update_user_value_too_large_rejected() {
 #[tokio::test]
 async fn update_user_total_size_exceeded_rejected() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     // Build a map whose total key+value size exceeds 16 KiB (16 384 bytes).
@@ -175,7 +175,7 @@ async fn update_user_total_size_exceeded_rejected() {
 #[tokio::test]
 async fn update_user_invalid_chars_in_key_space_rejected() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     let result = h.identity().update_user(
@@ -196,7 +196,7 @@ async fn update_user_invalid_chars_in_key_space_rejected() {
 #[tokio::test]
 async fn update_user_invalid_chars_in_key_at_rejected() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     let result = h.identity().update_user(
@@ -217,7 +217,7 @@ async fn update_user_invalid_chars_in_key_at_rejected() {
 #[tokio::test]
 async fn update_user_key_exactly_64_chars_accepted() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     // Exactly at the 64-char limit — should pass.
@@ -240,7 +240,7 @@ async fn update_user_key_exactly_64_chars_accepted() {
 #[tokio::test]
 async fn update_user_value_exactly_1024_bytes_accepted() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user_id = create_user(&h, &realm).await;
 
     let exactly_1024: String = "x".repeat(1024);

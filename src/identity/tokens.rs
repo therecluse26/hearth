@@ -86,6 +86,10 @@ pub struct TokenConfig {
     ///
     /// Default: 7 days (604,800 seconds).
     pub refresh_token_ttl_secs: i64,
+    /// How long (seconds) a retiring key remains in JWKS after rotation.
+    ///
+    /// Default: 86,400 seconds (24 hours).
+    pub signing_key_rotation_grace_period_secs: u64,
 }
 
 impl Default for TokenConfig {
@@ -93,8 +97,9 @@ impl Default for TokenConfig {
         Self {
             issuer: "hearth".to_string(),
             audience: "hearth".to_string(),
-            access_token_ttl_secs: 900,      // 15 minutes
-            refresh_token_ttl_secs: 604_800, // 7 days
+            access_token_ttl_secs: 900,                     // 15 minutes
+            refresh_token_ttl_secs: 604_800,                // 7 days
+            signing_key_rotation_grace_period_secs: 86_400, // 24 hours
         }
     }
 }
@@ -1135,6 +1140,7 @@ mod tests {
             audience: "hearth".to_string(),
             access_token_ttl_secs: 900,
             refresh_token_ttl_secs: 604_800,
+            signing_key_rotation_grace_period_secs: 86_400,
         };
 
         let pair = key
@@ -1354,6 +1360,10 @@ mod tests {
 
     #[test]
     fn token_config_default_values() {
+        // TokenConfig::default() is a bare fallback used as a starting point before
+        // YAML overrides are applied in main.rs.  In a real deployment, both issuer
+        // and audience are overridden to oidc.issuer (or an explicit config value).
+        // The "hearth" placeholder here is the last-resort sentinel, not a production value.
         let config = TokenConfig::default();
         assert_eq!(config.issuer, "hearth");
         assert_eq!(config.audience, "hearth");

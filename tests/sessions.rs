@@ -6,7 +6,7 @@
 mod common;
 
 use hearth::core::{RealmId, SessionId};
-use hearth::identity::{CreateUserRequest, IdentityEngine, User};
+use hearth::identity::{CreateRealmRequest, CreateUserRequest, IdentityEngine, User};
 
 /// Helper: creates a user with a unique email in the given realm.
 fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
@@ -32,7 +32,7 @@ async fn session_full_lifecycle() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // 1. Create session
@@ -90,10 +90,10 @@ async fn session_persists_across_restart() {
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
 
-    let realm = RealmId::generate();
+    let realm;
     let session_id;
 
-    // Phase 1: Create engine, create user + session
+    // Phase 1: Create engine, create realm + user + session
     {
         let config = StorageConfig::dev(temp_dir.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(config).expect("open"));
@@ -113,6 +113,15 @@ async fn session_persists_across_restart() {
             Arc::clone(&audit),
         )
         .expect("engine creation");
+
+        realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "session-persist-test".to_string(),
+                config: None,
+            })
+            .expect("create realm")
+            .id()
+            .clone();
 
         let user = engine
             .create_user(
@@ -184,7 +193,7 @@ async fn delete_user_invalidates_sessions() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Create sessions
@@ -231,8 +240,8 @@ async fn sessions_are_realm_isolated() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm_a = RealmId::generate();
-    let realm_b = RealmId::generate();
+    let realm_a = harness.create_realm();
+    let realm_b = harness.create_realm();
 
     let user = create_user(&harness, &realm_a);
 
@@ -263,7 +272,7 @@ async fn create_session_for_nonexistent_user_fails() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let fake_user = hearth::core::UserId::generate();
 
     let err = harness
@@ -287,7 +296,7 @@ async fn revoke_nonexistent_session_returns_error() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     let err = harness
         .identity()
@@ -310,7 +319,7 @@ async fn replayed_session_token_rejected_after_revocation() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let session = harness
@@ -372,7 +381,7 @@ async fn session_fixation_prevention() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // Create multiple sessions — each must get a unique ID
@@ -425,7 +434,7 @@ async fn enumeration_resistance() {
     use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
     use hearth::core::FakeClock;
     use hearth::identity::{
-        CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, SessionConfig,
+        CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, SessionConfig,
     };
     use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
     use std::sync::Arc;
@@ -456,7 +465,14 @@ async fn enumeration_resistance() {
     )
     .expect("engine creation");
 
-    let realm = RealmId::generate();
+    let realm = engine
+        .create_realm(&CreateRealmRequest {
+            name: "enumeration-resistance-test".to_string(),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone();
     let user = engine
         .create_user(
             &realm,

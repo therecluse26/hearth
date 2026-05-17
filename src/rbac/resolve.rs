@@ -886,6 +886,8 @@ mod tests {
                 .collect(),
             parent_roles: parents,
             scope_kind: crate::rbac::RoleScopeKind::Realm,
+            status: crate::rbac::RoleStatus::Active,
+            yaml_managed: false,
             created_at: Timestamp::from_micros(1),
             updated_at: Timestamp::from_micros(1),
         }
@@ -1021,6 +1023,8 @@ mod tests {
             permissions: vec![],
             parent_roles: vec![id.clone()],
             scope_kind: crate::rbac::RoleScopeKind::Realm,
+            status: crate::rbac::RoleStatus::Active,
+            yaml_managed: false,
             created_at: Timestamp::from_micros(1),
             updated_at: Timestamp::from_micros(1),
         };
@@ -1063,6 +1067,8 @@ mod tests {
             permissions: vec![],
             parent_roles: vec![parent.clone()],
             scope_kind: crate::rbac::RoleScopeKind::Realm,
+            status: crate::rbac::RoleStatus::Active,
+            yaml_managed: false,
             created_at: Timestamp::from_micros(1),
             updated_at: Timestamp::from_micros(1),
         };
@@ -1144,6 +1150,8 @@ mod tests {
                 permissions: vec![],
                 parent_roles: vec![parent.clone()],
                 scope_kind: crate::rbac::RoleScopeKind::Realm,
+                status: crate::rbac::RoleStatus::Active,
+                yaml_managed: false,
                 created_at: Timestamp::from_micros(1),
                 updated_at: Timestamp::from_micros(1),
             });
@@ -1158,6 +1166,8 @@ mod tests {
             permissions: vec![],
             parent_roles: vec![],
             scope_kind: crate::rbac::RoleScopeKind::Realm,
+            status: crate::rbac::RoleStatus::Active,
+            yaml_managed: false,
             created_at: Timestamp::from_micros(1),
             updated_at: Timestamp::from_micros(1),
         });

@@ -656,6 +656,8 @@ mod tests {
             permissions: vec![],
             parent_roles: vec![],
             scope_kind: RoleScopeKind::Realm,
+            status: crate::rbac::RoleStatus::Active,
+            yaml_managed: false,
             created_at: Timestamp::from_micros(0),
             updated_at: Timestamp::from_micros(0),
         }
@@ -720,8 +722,7 @@ mod tests {
 
     #[test]
     fn tier3_short_form_valid() {
-        validate_tier3_claim_name("department")
-            .expect("'department' is a valid tier-3 claim name");
+        validate_tier3_claim_name("department").expect("'department' is a valid tier-3 claim name");
         validate_tier3_claim_name("employee_id")
             .expect("'employee_id' is a valid tier-3 claim name");
         validate_tier3_claim_name("cost_center2")
@@ -770,8 +771,7 @@ mod tests {
 
     #[test]
     fn tier3_empty_rejected() {
-        let err =
-            validate_tier3_claim_name("").expect_err("empty claim name must be rejected");
+        let err = validate_tier3_claim_name("").expect_err("empty claim name must be rejected");
         assert!(err.contains("empty"), "got: {err}");
     }
 

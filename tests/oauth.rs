@@ -8,8 +8,9 @@ mod common;
 
 use hearth::core::RealmId;
 use hearth::identity::{
-    ClientCredentialsRequest, CreateRealmRequest, CreateUserRequest, DeviceAuthorizationRequest,
-    RegisterClientRequest, TokenRevocationRequest, User,
+    ApplicationStatus, AuthorizationRequest, ClientCredentialsRequest, CreateRealmRequest,
+    CreateUserRequest, DeviceAuthorizationRequest, RegisterClientRequest, TokenRevocationRequest,
+    UpdateClientRequest, User,
 };
 
 /// Helper: creates a real realm with a signing key.
@@ -634,4 +635,102 @@ async fn conformance_rfc8628_device_authorization() {
         token_resp.expires_in() > 0,
         "RFC 6749 §5.1: expires_in RECOMMENDED, positive"
     );
+}
+
+// ===== HEA-537: Application soft-delete + restore =====
+
+/// Archiving a client blocks new OAuth flows; restoring it allows them again.
+#[tokio::test]
+async fn archived_client_blocks_and_restore_allows_authorize() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+
+    let client = harness
+        .identity()
+        .register_client(
+            &realm,
+            &RegisterClientRequest {
+                client_name: "Archive Test App".to_string(),
+                redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                client_secret: None,
+                grant_types: vec!["authorization_code".to_string()],
+                require_consent: false,
+                client_logo_url: None,
+                ..Default::default()
+            },
+        )
+        .expect("register client");
+
+    // Archive the client.
+    harness
+        .identity()
+        .update_client(
+            &realm,
+            client.client_id(),
+            &UpdateClientRequest {
+                status: Some(ApplicationStatus::Archived),
+                ..Default::default()
+            },
+        )
+        .expect("archive client");
+
+    let challenge = pkce_challenge(TEST_PKCE_VERIFIER);
+
+    // OAuth authorize must be rejected while archived.
+    let err = harness
+        .identity()
+        .authorize(
+            &realm,
+            &AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/cb".to_string(),
+                scope: "openid".to_string(),
+                state: "test-state".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: Some(challenge.clone()),
+                code_challenge_method: Some(hearth::identity::CodeChallengeMethod::S256),
+                nonce: None,
+                resource: None,
+            },
+        )
+        .expect_err("authorize on archived client must fail");
+    assert!(
+        matches!(err, hearth::identity::IdentityError::InvalidClient),
+        "expected InvalidClient for archived client, got {err}"
+    );
+
+    // Restore to Active.
+    harness
+        .identity()
+        .update_client(
+            &realm,
+            client.client_id(),
+            &UpdateClientRequest {
+                status: Some(ApplicationStatus::Active),
+                ..Default::default()
+            },
+        )
+        .expect("restore client");
+
+    // After restore, authorize must succeed.
+    harness
+        .identity()
+        .authorize(
+            &realm,
+            &AuthorizationRequest {
+                client_id: client.client_id().clone(),
+                redirect_uri: "https://app.example.com/cb".to_string(),
+                scope: "openid".to_string(),
+                state: "test-state".to_string(),
+                response_type: "code".to_string(),
+                user_id: user.id().clone(),
+                code_challenge: Some(challenge),
+                code_challenge_method: Some(hearth::identity::CodeChallengeMethod::S256),
+                nonce: None,
+                resource: None,
+            },
+        )
+        .expect("authorize on restored client must succeed");
 }

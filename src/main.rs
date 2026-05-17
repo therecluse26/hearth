@@ -274,7 +274,31 @@ async fn main() {
             if let Err(e) = run_serve(dev, config_path, port, bind, verbose).await {
                 // Use eprintln! here — tracing may not be initialized yet if
                 // the error occurred during config loading.
-                eprintln!("error: {e}");
+                //
+                // HostKeyMismatch requires exit code 2 and an actionable message
+                // so operators know exactly how to recover.
+                match e.downcast::<hearth::storage::StorageError>() {
+                    Ok(storage_err) => {
+                        if let hearth::storage::StorageError::HostKeyMismatch {
+                            ref affected_realms,
+                        } = *storage_err
+                        {
+                            let realms = affected_realms.join(", ");
+                            eprintln!(
+                                "FATAL: Realm KEKs could not be decrypted with the current \
+                                 HEARTH_MASTER_KEY.\nIf you recently rotated the master key, \
+                                 set HEARTH_PREVIOUS_MASTER_KEY to the previous value. If the \
+                                 previous key is unavailable, restore from backup.\n\
+                                 Affected realms: {realms}"
+                            );
+                            std::process::exit(2);
+                        }
+                        eprintln!("error: {storage_err}");
+                    }
+                    Err(other) => {
+                        eprintln!("error: {other}");
+                    }
+                }
                 std::process::exit(1);
             }
         }
@@ -498,12 +522,32 @@ async fn run_serve(
             }
         }
         if let Some(enforce) = config.oidc.enforce_nonces {
+            if !enforce {
+                tracing::warn!(
+                    "oidc.enforce_nonces is disabled — nonce replay protection is off. \
+                     Confidential clients are vulnerable to authorization-response replay \
+                     attacks. Set enforce_nonces: true (the default) unless you require \
+                     legacy client compatibility."
+                );
+            }
             oc.enforce_nonces = enforce;
+        }
+        if let Some(require) = config.oidc.require_pkce_for_confidential_clients {
+            if !require {
+                tracing::warn!(
+                    "oidc.require_pkce_for_confidential_clients is disabled — confidential \
+                     clients are exempt from PKCE (RFC 9700 §2.1.1). Authorization code \
+                     interception attacks are possible. Enable this setting for all new \
+                     deployments."
+                );
+            }
+            oc.require_pkce_for_confidential_clients = require;
         }
         oc
     };
 
-    // Build TokenConfig from YAML. token.issuer defaults to oidc.issuer when omitted.
+    // Build TokenConfig from YAML. Both token.issuer and token.audience default to
+    // oidc.issuer when omitted, so operators only need one config key for the common case.
     let token_config = {
         let mut tc = TokenConfig::default();
         if let Some(issuer) = &config.token.issuer {
@@ -513,6 +557,11 @@ async fn run_serve(
         }
         if let Some(audience) = &config.token.audience {
             tc.audience.clone_from(audience);
+        } else if let Some(issuer) = &config.oidc.issuer {
+            // RFC 7519 §4.1.3: aud identifies the intended recipient.  When the
+            // operator has not set an explicit audience, default to the issuer URL
+            // so standard OIDC clients can validate aud without extra config.
+            tc.audience.clone_from(issuer);
         }
         if let Some(ttl) = &config.token.access_token_ttl {
             if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
@@ -522,6 +571,29 @@ async fn run_serve(
         if let Some(ttl) = &config.token.refresh_token_ttl {
             if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
                 tc.refresh_token_ttl_secs = micros / 1_000_000;
+            }
+        }
+        if let Some(ttl) = &config.token.signing_key_rotation_grace_period {
+            if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
+                tc.signing_key_rotation_grace_period_secs = (micros / 1_000_000) as u64;
+            }
+        }
+        // Warn when the audience is still the placeholder value but oidc.issuer is a
+        // real URL.  This only triggers when token.audience is explicitly set to "hearth"
+        // in the config file while oidc.issuer is configured — the implicit default case
+        // is already resolved to oidc.issuer above.
+        if tc.audience == "hearth" {
+            if let Some(oidc_issuer) = &config.oidc.issuer {
+                if oidc_issuer != "hearth" {
+                    tracing::warn!(
+                        audience = %tc.audience,
+                        oidc_issuer = %oidc_issuer,
+                        "token.audience is the placeholder \"hearth\" but oidc.issuer is \
+                         configured. OIDC clients that validate aud against their client_id \
+                         or resource server URL will reject all tokens. Set token.audience \
+                         to a meaningful value (e.g. your issuer URL or service name)."
+                    );
+                }
             }
         }
         tc
@@ -581,6 +653,14 @@ async fn run_serve(
             config.server.bind_address, config.server.port
         )
     });
+    if config.onboarding.base_url.is_none() {
+        warn!(
+            fallback_url = %base_url,
+            "onboarding.base_url is not configured; setup URL will use the bind address \
+             as a fallback — set onboarding.base_url to the public-facing URL for correct \
+             external links"
+        );
+    }
 
     // Email sender + service (default: log transport — stderr at WARN level).
     let email_sender: SharedEmailSender = build_email_sender(&config)?;
@@ -606,6 +686,42 @@ async fn run_serve(
             error!(error = %e, "failed to ensure setup token; onboarding will be unavailable");
         }
     }
+
+    // Load the previous config snapshot (absent on first startup) so we can
+    // compute a typed diff against the current config before reconciliation.
+    let prev_snapshot = match hearth::identity::reconcile::load_snapshot(storage.as_ref()) {
+        Ok(snap) => snap,
+        Err(e) => {
+            error!(error = %e, "failed to load config snapshot; treating as first startup");
+            None
+        }
+    };
+
+    // Compute diff: absent snapshot → empty baseline (all realms "added").
+    let baseline = prev_snapshot.clone().unwrap_or_else(|| {
+        hearth::config::ConfigSnapshot::from_config(&hearth::config::Config::default())
+    });
+    let config_diffs = hearth::config::compute_diff(&baseline, &config);
+    if !config_diffs.is_empty() {
+        info!(
+            count = config_diffs.len(),
+            "config diff detected on startup"
+        );
+    }
+
+    // Apply diff handlers (Phase C: config-only items logged; data items reconciled).
+    let _consumed_rotations = match hearth::identity::reconcile::apply_diff(
+        &config_diffs,
+        &config,
+        identity_engine.as_ref(),
+        rbac_engine.as_ref(),
+    ) {
+        Ok(rotated) => rotated,
+        Err(e) => {
+            error!(error = %e, "config diff application failed");
+            Vec::new()
+        }
+    };
 
     // Reconcile YAML-declared realms with storage. Runs after setup-token
     // generation so reconciliation-created realms don't suppress the
@@ -634,6 +750,151 @@ async fn run_serve(
             error!(error = %e, "realm reconciliation failed");
         }
     }
+
+    // Re-seed RBAC defaults on every realm that exists in storage, not just
+    // YAML-declared ones. Repairs realms whose original seed failed silently.
+    hearth::identity::reconcile::reconcile_rbac_seeds(
+        identity_engine.as_ref(),
+        rbac_engine.as_ref(),
+    );
+
+    // Persist the current config snapshot after a successful reconciliation so
+    // the next startup can compute an accurate diff.
+    // NOTE: We do NOT clear rotate_signing_key in consumed realms. Leaving it as
+    // true (matching the YAML) means the next startup sees true→true, which is
+    // not a transition and does not re-trigger rotation. Clearing to false would
+    // cause an immediate re-trigger on the next restart while the flag is still
+    // in YAML.
+    let current_snapshot = hearth::config::ConfigSnapshot::from_config(&config);
+    match hearth::identity::reconcile::save_snapshot(storage.as_ref(), &current_snapshot) {
+        Ok(()) => {}
+        Err(e) => {
+            error!(error = %e, "failed to persist config snapshot; next startup will treat config as unchanged");
+        }
+    }
+
+    // Phase E: cross-realm user migration (migrate_from / copy_from).
+    // Runs after realm reconciliation so destination realms exist.
+    // `on_conflict: error` causes a hard exit; all other errors are warnings.
+    if let Some(realms_cfg) = config.realms.as_ref() {
+        for (dst_slug, realm_cfg) in realms_cfg {
+            let (src_slug, move_semantics) = match (&realm_cfg.migrate_from, &realm_cfg.copy_from) {
+                (Some(src), _) => (src.as_str(), true),
+                (None, Some(src)) => (src.as_str(), false),
+                (None, None) => continue,
+            };
+
+            let dst_realm = match identity_engine.get_realm_by_name(dst_slug) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    error!(realm_name = %dst_slug, "cross-realm migration: destination realm not found after reconciliation");
+                    continue;
+                }
+                Err(e) => {
+                    error!(error = %e, "cross-realm migration: destination realm lookup failed");
+                    continue;
+                }
+            };
+            let src_realm = match identity_engine.get_realm_by_name(src_slug) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    warn!(
+                        src_slug,
+                        "cross-realm migration: source realm not found; skipping"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    error!(error = %e, "cross-realm migration: source realm lookup failed");
+                    continue;
+                }
+            };
+
+            let migrate_cfg = realm_cfg.migrate.clone().unwrap_or_default();
+            let opts = hearth::identity::migration::cross_realm::CrossRealmMigrateOptions {
+                move_semantics,
+                users: migrate_cfg.users,
+                orgs: migrate_cfg.orgs,
+                on_conflict: migrate_cfg.on_conflict,
+            };
+
+            let now = {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                hearth::identity::reconcile::format_unix_secs_rfc3339(secs)
+            };
+            match hearth::identity::migration::cross_realm::execute_cross_realm_migration(
+                identity_engine.as_ref(),
+                rbac_engine.as_ref(),
+                storage.as_ref(),
+                src_realm.id(),
+                dst_realm.id(),
+                src_slug,
+                &opts,
+            ) {
+                Ok(report) => {
+                    info!(
+                        src_slug,
+                        dst_realm = %dst_slug,
+                        migrated = report.migrated,
+                        skipped = report.skipped,
+                        role_assignments_translated = report.role_assignments_translated,
+                        "cross-realm migration complete"
+                    );
+                    let status = if report.skipped > 0 {
+                        hearth::identity::reconcile::MigrationHistoryStatus::CompletedWithSkips
+                    } else {
+                        hearth::identity::reconcile::MigrationHistoryStatus::Completed
+                    };
+                    hearth::identity::reconcile::write_migration_history(
+                        storage.as_ref(),
+                        &hearth::identity::reconcile::MigrationHistoryRecord {
+                            source_slug: src_slug.to_string(),
+                            destination_slug: dst_slug.clone(),
+                            move_semantics,
+                            users_migrated: report.migrated,
+                            users_skipped: report.skipped,
+                            role_assignments_translated: report.role_assignments_translated,
+                            completed_at: now,
+                            status,
+                            conflict_emails: Vec::new(),
+                        },
+                    );
+                }
+                Err(conflict_err) => {
+                    error!(error = %conflict_err, "cross-realm migration conflict; refusing to start");
+                    hearth::identity::reconcile::write_migration_history(
+                        storage.as_ref(),
+                        &hearth::identity::reconcile::MigrationHistoryRecord {
+                            source_slug: src_slug.to_string(),
+                            destination_slug: dst_slug.clone(),
+                            move_semantics,
+                            users_migrated: 0,
+                            users_skipped: 0,
+                            role_assignments_translated: 0,
+                            completed_at: now,
+                            status: hearth::identity::reconcile::MigrationHistoryStatus::Failed,
+                            conflict_emails: conflict_err.emails.clone(),
+                        },
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    // Phase D: detect archived realms with live users but no declared
+    // migration destination.  Non-blocking — startup continues regardless.
+    let orphaned_realms = hearth::identity::reconcile::detect_orphaned_realms(
+        identity_engine.as_ref(),
+        &config,
+        storage.as_ref(),
+    );
+
+    // Load migration history for the admin UI.
+    let migration_records = hearth::identity::reconcile::load_migration_records(storage.as_ref());
 
     // --verbose: emit resolved config, realm list, and key fingerprints at debug level.
     if verbose {
@@ -764,6 +1025,14 @@ async fn run_serve(
         data_dir.clone(),
     ));
 
+    let rotation_grace_period_secs = config
+        .token
+        .signing_key_rotation_grace_period
+        .as_deref()
+        .and_then(|s| hearth::config::parse_duration_to_micros(s).ok())
+        .map(|micros| (micros / 1_000_000) as u64)
+        .unwrap_or(86_400);
+
     let app_state = if config.dev_mode {
         Arc::new(
             AppState::new_dev(
@@ -772,7 +1041,8 @@ async fn run_serve(
                 Arc::clone(&audit_engine),
             )
             .with_webhook(Arc::clone(&webhook_engine))
-            .with_metrics_enabled(config.metrics.enabled),
+            .with_metrics_enabled(config.metrics.enabled)
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs),
         )
     } else {
         Arc::new(
@@ -782,7 +1052,8 @@ async fn run_serve(
                 Arc::clone(&audit_engine),
             )
             .with_webhook(Arc::clone(&webhook_engine))
-            .with_metrics_enabled(config.metrics.enabled),
+            .with_metrics_enabled(config.metrics.enabled)
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs),
         )
     };
 
@@ -808,6 +1079,8 @@ async fn run_serve(
         Some(Arc::clone(&email_service)),
     )
     .with_config_warnings(config.config_warnings.clone())
+    .with_orphaned_realms(orphaned_realms)
+    .with_migration_records(migration_records)
     .with_email_log_transport(config.email.transport == EmailTransport::Log)
     .with_product_name(config.branding.product_name_or_default().to_string())
     .with_logo_url(web_logo_url)
@@ -1342,12 +1615,25 @@ fn load_config(
 ) -> Result<Config, Box<dyn std::error::Error>> {
     // Load the user's file if given (takes precedence over the default
     // location). `--dev` without `-c` falls back to the pure dev preset.
+    //
+    // When `dev=true`, use `from_file_as_dev` which applies dev settings
+    // (dev_mode, no fsync, empty data_dir) before validation. This lets
+    // `hearth serve --dev` work even when an auto-detected hearth.yaml omits
+    // production-only fields like oidc.issuer.
     let mut config = if let Some(path) = config_path {
-        Config::from_file(path)?
+        if dev {
+            Config::from_file_as_dev(path)?
+        } else {
+            Config::from_file(path)?
+        }
     } else {
         let default_path = std::path::Path::new("hearth.yaml");
         if default_path.exists() {
-            Config::from_file(default_path)?
+            if dev {
+                Config::from_file_as_dev(default_path)?
+            } else {
+                Config::from_file(default_path)?
+            }
         } else if dev {
             return Ok(Config::dev());
         } else {
@@ -1362,9 +1648,8 @@ fn load_config(
     // `hearth serve --dev -c examples/.../hearth.yaml` work the way
     // most readers expect.
     if dev {
-        config.dev_mode = true;
-        config.storage.fsync = false;
-        config.storage.data_dir = String::new();
+        // dev_mode, fsync, data_dir already applied by from_file_as_dev above;
+        // adjust log level here (not part of the pure file-loading concern).
         if config.observability.log_level.as_str() == "info" {
             config.observability.log_level = "debug".to_string();
         }
@@ -1410,7 +1695,7 @@ fn run_config_reconciliation(
             let app_archived = report
                 .applications
                 .iter()
-                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Deleted)
+                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Archived)
                 .count();
             info!(
                 realms_created = report.created.len(),
