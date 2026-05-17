@@ -20,9 +20,8 @@ pub use types::{
     OperationalConfig, OrgConfigYaml, OrganizationYamlConfig, OtlpConfig, OtlpProtocol,
     PasswordPolicyYaml, PermissionYamlConfig, PostmarkConfig, ProtectedResourceYamlConfig,
     RateLimitYaml, RealmAuthYaml, RealmEmailYaml, RealmMigrateYaml, RealmScimYaml, RealmTokenYaml,
-    RealmWebYaml, RealmYamlConfig, RoleYamlConfig, SamlServiceProviderYaml,
-    ScopeBundleYamlConfig, SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption,
-    StorageSection, TokenYamlConfig,
+    RealmWebYaml, RealmYamlConfig, RoleYamlConfig, SamlServiceProviderYaml, ScopeBundleYamlConfig,
+    SendgridConfig, ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -1586,7 +1585,10 @@ oidc:
     #[test]
     fn missing_oidc_issuer_fails_in_production_mode() {
         let result = Config::from_yaml_str("{}");
-        assert!(result.is_err(), "missing oidc.issuer should fail in production mode");
+        assert!(
+            result.is_err(),
+            "missing oidc.issuer should fail in production mode"
+        );
         let display = format!("{}", result.expect_err("should fail"));
         assert!(display.contains("oidc.issuer"), "got: {display}");
         assert!(display.contains("required"), "got: {display}");
@@ -2036,8 +2038,8 @@ oidc:
 onboarding:
   notification_email: "ops@example.com"
 "#;
-        let err = Config::from_yaml_str(yaml)
-            .expect_err("notification_email without base_url must fail");
+        let err =
+            Config::from_yaml_str(yaml).expect_err("notification_email without base_url must fail");
         let display = format!("{err}");
         assert!(
             display.contains("onboarding.base_url"),

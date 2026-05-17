@@ -8,7 +8,7 @@ mod common;
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     AuthorizationRequest, CreateRealmRequest, CreateUserRequest, CredentialConfig,
-    EmbeddedIdentityEngine, IdentityConfig, OidcConfig, RegisterClientRequest,
+    EmbeddedIdentityEngine, IdentityConfig, IdentityError, OidcConfig, RegisterClientRequest,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 use std::sync::Arc;
@@ -20,8 +20,7 @@ fn build_engine(oidc: OidcConfig) -> (tempfile::TempDir, EmbeddedIdentityEngine)
 
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = Arc::new(
-        EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf()))
-            .expect("storage"),
+        EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf())).expect("storage"),
     ) as Arc<dyn StorageEngine>;
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
     let rbac = Arc::new(EmbeddedRbacEngine::new(
@@ -37,8 +36,9 @@ fn build_engine(oidc: OidcConfig) -> (tempfile::TempDir, EmbeddedIdentityEngine)
         oidc,
         ..IdentityConfig::default()
     };
-    let engine = EmbeddedIdentityEngine::with_rbac(Arc::clone(&storage), clock, config, rbac, audit)
-        .expect("engine");
+    let engine =
+        EmbeddedIdentityEngine::with_rbac(Arc::clone(&storage), clock, config, rbac, audit)
+            .expect("engine");
     (dir, engine)
 }
 
@@ -90,7 +90,10 @@ fn register_confidential(
             },
         )
         .expect("register client");
-    assert!(client.is_confidential(), "must be confidential for this test");
+    assert!(
+        client.is_confidential(),
+        "must be confidential for this test"
+    );
     client
 }
 
@@ -127,11 +130,9 @@ fn confidential_client_without_pkce_rejected_by_default() {
         },
     );
 
-    assert!(
-        result.is_err(),
-        "confidential client without PKCE must be rejected (RFC 9700 §2.1.1)"
-    );
-    let err = result.unwrap_err().to_string();
+    let err = result
+        .expect_err("confidential client without PKCE must be rejected (RFC 9700 §2.1.1)")
+        .to_string();
     assert!(err.contains("PKCE"), "error must mention PKCE, got: {err}");
 }
 
@@ -214,5 +215,8 @@ fn public_client_without_pkce_always_rejected() {
         },
     );
 
-    assert!(result.is_err(), "public client without PKCE must always be rejected");
+    assert!(
+        matches!(&result, Err(IdentityError::InvalidInput { reason }) if reason.contains("PKCE")),
+        "public client without PKCE must be rejected with InvalidInput(PKCE required); got: {result:?}"
+    );
 }

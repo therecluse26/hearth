@@ -24,7 +24,9 @@ use std::sync::Arc;
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::config::MigrateConflictPolicy;
 use hearth::core::{Clock, RealmId, SystemClock};
-use hearth::identity::migration::cross_realm::{CrossRealmMigrateOptions, execute_cross_realm_migration};
+use hearth::identity::migration::cross_realm::{
+    execute_cross_realm_migration, CrossRealmMigrateOptions,
+};
 use hearth::identity::{
     CreateRealmRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
 };
@@ -95,10 +97,7 @@ fn count_users_in_realm(storage: &dyn StorageEngine, realm: &RealmId) -> usize {
     let start = b"usr:id:".to_vec();
     let mut end = start.clone();
     *end.last_mut().expect("non-empty") += 1;
-    storage
-        .scan(realm, &start, &end)
-        .expect("scan users")
-        .len()
+    storage.scan(realm, &start, &end).expect("scan users").len()
 }
 
 // ---------------------------------------------------------------------------
@@ -190,12 +189,10 @@ fn simulation_crash_mid_migration_resumes_correctly() {
     assert_eq!(count_users_in_realm(&*storage, &src), N_USERS - CRASH_AFTER);
     assert_eq!(count_users_in_realm(&*storage, &dst), CRASH_AFTER);
     // No completed marker yet.
-    assert!(
-        storage
-            .get(&sys, &completed_key(SRC_SLUG))
-            .expect("check completed")
-            .is_none()
-    );
+    assert!(storage
+        .get(&sys, &completed_key(SRC_SLUG))
+        .expect("check completed")
+        .is_none());
 
     // Drop engines → simulate crash and WAL flush.
     drop(identity);

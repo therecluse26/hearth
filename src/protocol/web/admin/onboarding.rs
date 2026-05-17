@@ -571,7 +571,9 @@ pub async fn admin_onboarding_invite_post(
             Ok(Some(r)) => r,
             Ok(None) => {
                 tracing::error!(realm = %realm_name, "onboarding: realm.admin role not found after seed");
-                rbac_err!("Role 'realm.admin' missing after seed — please contact support".to_string());
+                rbac_err!(
+                    "Role 'realm.admin' missing after seed — please contact support".to_string()
+                );
             }
             Err(e) => {
                 tracing::error!(error = %e, "onboarding: get_role_by_name failed");

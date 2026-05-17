@@ -9,8 +9,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{
-    AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, RegisterClientRequest,
-    TokenExchangeRequest, User,
+    AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, IdentityError,
+    RegisterClientRequest, TokenExchangeRequest, User,
 };
 use ring::rand::SecureRandom;
 
@@ -127,10 +127,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
     assert_eq!(id_claims.token_type, "id_token");
 
     // 7. Access token should be verifiable via the EdDSA entry in realm JWKS
-    let jwks = harness
-        .identity()
-        .realm_jwks(&realm)
-        .expect("realm JWKS");
+    let jwks = harness.identity().realm_jwks(&realm).expect("realm JWKS");
     let jwk = jwks
         .keys
         .iter()
@@ -195,6 +192,11 @@ async fn oidc_authorization_code_flow_via_http() {
         if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
             break;
         }
+        // Short backoff between TCP probe attempts. The only way to detect
+        // server readiness is to probe the socket; tokio::time::advance
+        // would not help because server startup is real OS-process I/O, not
+        // timer-gated. This sleep is conditional on the poll loop continuing.
+        // AUDIT: justified-sleep: bounded by outer TCP-probe poll loop (HEA-571).
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
@@ -426,8 +428,8 @@ async fn oidc_pkce_s256_flow() {
         },
     );
     assert!(
-        no_verifier_result.is_err(),
-        "exchange without verifier must fail when PKCE was used"
+        matches!(&no_verifier_result, Err(IdentityError::InvalidGrant { .. })),
+        "exchange with wrong verifier must return InvalidGrant"
     );
 
     // The code is now used, so we need a new one
@@ -461,8 +463,11 @@ async fn oidc_pkce_s256_flow() {
         },
     );
     assert!(
-        wrong_verifier_result.is_err(),
-        "exchange with wrong verifier must fail"
+        matches!(
+            &wrong_verifier_result,
+            Err(IdentityError::InvalidGrant { .. })
+        ),
+        "exchange with mismatched PKCE verifier must return InvalidGrant"
     );
 
     // New code needed since previous was consumed by failed PKCE
@@ -787,8 +792,8 @@ async fn conformance_token_endpoint_rfc6749() {
         },
     );
     assert!(
-        reuse_result.is_err(),
-        "RFC 6749 §4.1.2: reusing authorization code MUST be denied"
+        matches!(&reuse_result, Err(IdentityError::InvalidAuthorizationCode)),
+        "RFC 6749 §4.1.2: reusing authorization code must return InvalidAuthorizationCode"
     );
 
     // --- Section 5.2: Error Response ---
@@ -803,8 +808,11 @@ async fn conformance_token_endpoint_rfc6749() {
         },
     );
     assert!(
-        invalid_result.is_err(),
-        "RFC 6749 §5.2: invalid code MUST produce an error"
+        matches!(
+            &invalid_result,
+            Err(IdentityError::InvalidAuthorizationCode)
+        ),
+        "RFC 6749 §5.2: invalid code must return InvalidAuthorizationCode"
     );
 
     // Wrong redirect_uri MUST produce an error
@@ -837,8 +845,11 @@ async fn conformance_token_endpoint_rfc6749() {
         },
     );
     assert!(
-        wrong_redirect.is_err(),
-        "RFC 6749 §4.1.3: mismatched redirect_uri MUST produce an error"
+        matches!(
+            &wrong_redirect,
+            Err(IdentityError::InvalidAuthorizationCode)
+        ),
+        "RFC 6749 §4.1.3: mismatched redirect_uri must return InvalidAuthorizationCode"
     );
 
     // --- OIDC-specific: ID token MUST be present ---

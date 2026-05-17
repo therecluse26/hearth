@@ -132,6 +132,8 @@ Everything else (user creation, hashing, token issuance, WAL writes, admin ops) 
 
 **A PR without a test written *before* the implementation is incomplete.**
 
+Avoid false-confidence anti-patterns (vacuous `is_ok()`/`is_err()` asserts, zero-assert test bodies, stale ignores, etc.) — see `docs/specs/TESTING.md` § "Test Quality Anti-Patterns" for the full A–I taxonomy.
+
 ### Testing Tooling
 
 - **Test runner**: `cargo nextest` only — never `cargo test`.

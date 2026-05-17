@@ -13,10 +13,7 @@ use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig}
 use hearth::rbac::EmbeddedRbacEngine;
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
-fn open_engine(
-    storage: Arc<dyn StorageEngine>,
-    clock: Arc<dyn Clock>,
-) -> EmbeddedIdentityEngine {
+fn open_engine(storage: Arc<dyn StorageEngine>, clock: Arc<dyn Clock>) -> EmbeddedIdentityEngine {
     let config = IdentityConfig {
         credential: CredentialConfig::fast_for_testing(),
         ..IdentityConfig::default()

@@ -7,7 +7,7 @@ mod common;
 
 use hearth::config::MigrateConflictPolicy;
 use hearth::identity::migration::cross_realm::{
-    CrossRealmMigrateOptions, execute_cross_realm_migration,
+    execute_cross_realm_migration, CrossRealmMigrateOptions,
 };
 use hearth::identity::{CleartextPassword, CreateRealmRequest, CreateUserRequest, IdentityEngine};
 use hearth::rbac::{AssignRoleRequest, CreateRoleRequest, RoleScopeKind, Scope, Subject};
@@ -27,7 +27,11 @@ fn make_realm(identity: &dyn IdentityEngine, name: &str) -> hearth::core::RealmI
         .clone()
 }
 
-fn make_user(identity: &dyn IdentityEngine, realm: &hearth::core::RealmId, email: &str) -> hearth::identity::User {
+fn make_user(
+    identity: &dyn IdentityEngine,
+    realm: &hearth::core::RealmId,
+    email: &str,
+) -> hearth::identity::User {
     identity
         .create_user(
             realm,
@@ -42,9 +46,18 @@ fn make_user(identity: &dyn IdentityEngine, realm: &hearth::core::RealmId, email
         .unwrap_or_else(|_| panic!("create user {email}"))
 }
 
-fn set_password(identity: &dyn IdentityEngine, realm: &hearth::core::RealmId, user_id: &hearth::core::UserId, password: &str) {
+fn set_password(
+    identity: &dyn IdentityEngine,
+    realm: &hearth::core::RealmId,
+    user_id: &hearth::core::UserId,
+    password: &str,
+) {
     identity
-        .set_password(realm, user_id, &CleartextPassword::from_string(password.to_string()))
+        .set_password(
+            realm,
+            user_id,
+            &CleartextPassword::from_string(password.to_string()),
+        )
         .expect("set password");
 }
 
@@ -75,7 +88,13 @@ async fn move_copies_users_and_deletes_source() {
     set_password(identity, &src, user.id(), "hunter2");
 
     let report = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "migration-move-src", &default_opts(true),
+        identity,
+        rbac,
+        storage,
+        &src,
+        &dst,
+        "migration-move-src",
+        &default_opts(true),
     )
     .expect("migration should succeed");
 
@@ -91,20 +110,30 @@ async fn move_copies_users_and_deletes_source() {
 
     // Password must verify in destination.
     let ok = identity
-        .verify_password(&dst, user.id(), &CleartextPassword::from_string("hunter2".to_string()))
+        .verify_password(
+            &dst,
+            user.id(),
+            &CleartextPassword::from_string("hunter2".to_string()),
+        )
         .expect("verify dst password");
     assert!(ok, "password should verify in destination realm");
 
     // Source user record must be gone (move semantics).
-    let src_user = identity
-        .get_user(&src, user.id())
-        .expect("get src user");
-    assert!(src_user.is_none(), "user should be removed from source after move");
+    let src_user = identity.get_user(&src, user.id()).expect("get src user");
+    assert!(
+        src_user.is_none(),
+        "user should be removed from source after move"
+    );
 
     // Email index must be gone from source.
     let email_key = format!("usr:email:alice@example.com");
-    let src_email = storage.get(&src, email_key.as_bytes()).expect("storage get");
-    assert!(src_email.is_none(), "email index must be removed from source");
+    let src_email = storage
+        .get(&src, email_key.as_bytes())
+        .expect("storage get");
+    assert!(
+        src_email.is_none(),
+        "email index must be removed from source"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -125,18 +154,30 @@ async fn copy_leaves_source_intact() {
     set_password(identity, &src, user.id(), "password123");
 
     let report = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "migration-copy-src", &default_opts(false),
+        identity,
+        rbac,
+        storage,
+        &src,
+        &dst,
+        "migration-copy-src",
+        &default_opts(false),
     )
     .expect("copy should succeed");
 
     assert_eq!(report.migrated, 1);
 
     // User in destination.
-    assert!(identity.get_user(&dst, user.id()).expect("dst get").is_some());
+    assert!(identity
+        .get_user(&dst, user.id())
+        .expect("dst get")
+        .is_some());
 
     // User still in source (copy semantics).
     assert!(
-        identity.get_user(&src, user.id()).expect("src get").is_some(),
+        identity
+            .get_user(&src, user.id())
+            .expect("src get")
+            .is_some(),
         "user must remain in source after copy"
     );
 }
@@ -196,7 +237,13 @@ async fn rbac_assignments_translated_by_role_name() {
     .expect("assign src role");
 
     let report = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "rbac-src", &default_opts(true),
+        identity,
+        rbac,
+        storage,
+        &src,
+        &dst,
+        "rbac-src",
+        &default_opts(true),
     )
     .expect("migration should succeed");
 
@@ -275,13 +322,15 @@ async fn org_scoped_assignments_stripped_when_orgs_false() {
         on_conflict: MigrateConflictPolicy::Error,
     };
 
-    let report = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "orgstrip-src", &opts,
-    )
-    .expect("migration should succeed");
+    let report =
+        execute_cross_realm_migration(identity, rbac, storage, &src, &dst, "orgstrip-src", &opts)
+            .expect("migration should succeed");
 
     // Org-scoped assignment should have been skipped.
-    assert_eq!(report.role_assignments_skipped, 1, "org-scoped assignment should be skipped");
+    assert_eq!(
+        report.role_assignments_skipped, 1,
+        "org-scoped assignment should be skipped"
+    );
     assert_eq!(report.role_assignments_translated, 0);
 }
 
@@ -306,7 +355,12 @@ async fn on_conflict_error_fails_with_conflict_list() {
     make_user(identity, &dst, "eve@example.com");
 
     let result = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "conflict-src",
+        identity,
+        rbac,
+        storage,
+        &src,
+        &dst,
+        "conflict-src",
         &CrossRealmMigrateOptions {
             move_semantics: true,
             users: true,
@@ -315,8 +369,7 @@ async fn on_conflict_error_fails_with_conflict_list() {
         },
     );
 
-    assert!(result.is_err(), "should fail when conflict exists");
-    let conflict = result.unwrap_err();
+    let conflict = result.expect_err("should fail when conflict exists");
     assert!(conflict.emails.contains(&"eve@example.com".to_string()));
     // frank has no conflict — only eve should be listed.
     assert!(!conflict.emails.contains(&"frank@example.com".to_string()));
@@ -343,7 +396,12 @@ async fn on_conflict_skip_migrates_non_conflicting() {
     make_user(identity, &dst, "grace@example.com");
 
     let report = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "skip-src",
+        identity,
+        rbac,
+        storage,
+        &src,
+        &dst,
+        "skip-src",
         &CrossRealmMigrateOptions {
             move_semantics: true,
             users: true,
@@ -354,11 +412,17 @@ async fn on_conflict_skip_migrates_non_conflicting() {
     .expect("skip policy should not return Err");
 
     assert_eq!(report.skipped, 1, "conflicting user should be skipped");
-    assert_eq!(report.migrated, 1, "non-conflicting user should be migrated");
+    assert_eq!(
+        report.migrated, 1,
+        "non-conflicting user should be migrated"
+    );
 
     // Heidi must be in destination.
     assert!(
-        identity.get_user(&dst, non_conflicting.id()).expect("get heidi dst").is_some(),
+        identity
+            .get_user(&dst, non_conflicting.id())
+            .expect("get heidi dst")
+            .is_some(),
         "heidi should be in destination"
     );
 
@@ -388,15 +452,30 @@ async fn completed_migration_is_idempotent() {
     make_user(identity, &src, "ivan@example.com");
 
     let r1 = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "idempotent-src", &default_opts(true),
+        identity,
+        rbac,
+        storage,
+        &src,
+        &dst,
+        "idempotent-src",
+        &default_opts(true),
     )
     .expect("first run");
     assert_eq!(r1.migrated, 1);
 
     // Second run: completed marker present → returns immediately with zero counts.
     let r2 = execute_cross_realm_migration(
-        identity, rbac, storage, &src, &dst, "idempotent-src", &default_opts(true),
+        identity,
+        rbac,
+        storage,
+        &src,
+        &dst,
+        "idempotent-src",
+        &default_opts(true),
     )
     .expect("second run");
-    assert_eq!(r2.migrated, 0, "second run should be a no-op due to completed marker");
+    assert_eq!(
+        r2.migrated, 0,
+        "second run should be a no-op due to completed marker"
+    );
 }

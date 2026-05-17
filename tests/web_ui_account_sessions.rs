@@ -422,8 +422,9 @@ async fn revoke_current_session_clears_cookie_and_redirects_to_login() {
     let location = response
         .headers()
         .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
+        .expect("logout redirect must include Location header")
+        .to_str()
+        .expect("Location header must be valid UTF-8")
         .to_string();
     assert!(
         location.ends_with("/ui/login") || location == "/ui/login",

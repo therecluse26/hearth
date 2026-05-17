@@ -36,9 +36,7 @@ struct FailSeedRbac {
 
 impl RbacEngine for FailSeedRbac {
     fn seed_realm(&self, _realm_id: &RealmId) -> Result<(), RbacError> {
-        Err(RbacError::Storage(
-            "injected seed failure for test".into(),
-        ))
+        Err(RbacError::Storage("injected seed failure for test".into()))
     }
 
     fn resolve_permissions(
@@ -132,11 +130,7 @@ impl RbacEngine for FailSeedRbac {
         self.inner.list_additional_roles(realm_id, org_id, user_id)
     }
 
-    fn create_role(
-        &self,
-        realm_id: &RealmId,
-        req: &CreateRoleRequest,
-    ) -> Result<Role, RbacError> {
+    fn create_role(&self, realm_id: &RealmId, req: &CreateRoleRequest) -> Result<Role, RbacError> {
         self.inner.create_role(realm_id, req)
     }
 
@@ -144,11 +138,7 @@ impl RbacEngine for FailSeedRbac {
         self.inner.get_role(realm_id, role_id)
     }
 
-    fn get_role_by_name(
-        &self,
-        realm_id: &RealmId,
-        name: &str,
-    ) -> Result<Option<Role>, RbacError> {
+    fn get_role_by_name(&self, realm_id: &RealmId, name: &str) -> Result<Option<Role>, RbacError> {
         self.inner.get_role_by_name(realm_id, name)
     }
 
@@ -296,11 +286,7 @@ impl RbacEngine for FailSeedRbac {
         self.inner.reconcile_roles(realm_id, specs)
     }
 
-    fn reconcile_scopes(
-        &self,
-        realm_id: &RealmId,
-        specs: &[ScopeSpec],
-    ) -> Result<(), RbacError> {
+    fn reconcile_scopes(&self, realm_id: &RealmId, specs: &[ScopeSpec]) -> Result<(), RbacError> {
         self.inner.reconcile_scopes(realm_id, specs)
     }
 
@@ -322,8 +308,7 @@ impl RbacEngine for FailSeedRbac {
         realm_id: &RealmId,
         yaml_names: &HashSet<String>,
     ) -> Result<(), RbacError> {
-        self.inner
-            .archive_removed_permissions(realm_id, yaml_names)
+        self.inner.archive_removed_permissions(realm_id, yaml_names)
     }
 
     fn archive_removed_roles(
@@ -411,11 +396,7 @@ async fn grpc_create_realm_fails_when_seed_fails() {
     );
 
     let result = svc.create_realm(req).await;
-    assert!(
-        result.is_err(),
-        "create_realm must return an error when seed_realm fails, got: {result:?}"
-    );
-    let status = result.unwrap_err();
+    let status = result.expect_err("create_realm must return an error when seed_realm fails");
     assert_eq!(
         status.code(),
         tonic::Code::Internal,

@@ -778,12 +778,11 @@ async fn run_serve(
     // `on_conflict: error` causes a hard exit; all other errors are warnings.
     if let Some(realms_cfg) = config.realms.as_ref() {
         for (dst_slug, realm_cfg) in realms_cfg {
-            let (src_slug, move_semantics) =
-                match (&realm_cfg.migrate_from, &realm_cfg.copy_from) {
-                    (Some(src), _) => (src.as_str(), true),
-                    (None, Some(src)) => (src.as_str(), false),
-                    (None, None) => continue,
-                };
+            let (src_slug, move_semantics) = match (&realm_cfg.migrate_from, &realm_cfg.copy_from) {
+                (Some(src), _) => (src.as_str(), true),
+                (None, Some(src)) => (src.as_str(), false),
+                (None, None) => continue,
+            };
 
             let dst_realm = match identity_engine.get_realm_by_name(dst_slug) {
                 Ok(Some(r)) => r,
@@ -799,7 +798,10 @@ async fn run_serve(
             let src_realm = match identity_engine.get_realm_by_name(src_slug) {
                 Ok(Some(r)) => r,
                 Ok(None) => {
-                    warn!(src_slug, "cross-realm migration: source realm not found; skipping");
+                    warn!(
+                        src_slug,
+                        "cross-realm migration: source realm not found; skipping"
+                    );
                     continue;
                 }
                 Err(e) => {
@@ -892,8 +894,7 @@ async fn run_serve(
     );
 
     // Load migration history for the admin UI.
-    let migration_records =
-        hearth::identity::reconcile::load_migration_records(storage.as_ref());
+    let migration_records = hearth::identity::reconcile::load_migration_records(storage.as_ref());
 
     // --verbose: emit resolved config, realm list, and key fingerprints at debug level.
     if verbose {
@@ -1540,11 +1541,14 @@ async fn run_serve_tls(
         .map_err(|e| format!("invalid redirect bind address: {e}"))?;
     let https_port = config.server.port;
     let mut redirect_shutdown_rx = shutdown_rx.clone();
+    let redirect_listener = tokio::net::TcpListener::bind(redirect_addr)
+        .await
+        .map_err(|e| format!("failed to bind HTTP redirect listener on {redirect_addr}: {e}"))?;
     let redirect_handle = tokio::spawn(async move {
         let shutdown = async move {
             let _ = redirect_shutdown_rx.changed().await;
         };
-        if let Err(e) = http::serve_redirect(redirect_addr, https_port, shutdown).await {
+        if let Err(e) = http::serve_redirect(redirect_listener, https_port, shutdown).await {
             warn!(error = %e, "HTTP redirect server failed");
         }
     });

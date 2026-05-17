@@ -1404,7 +1404,8 @@ async fn admin_logout_redirects_to_admin_login_and_sets_last_realm() {
         loc.starts_with("/ui/admin/login"),
         "admin logout must return to admin login, got {loc}"
     );
-    let last_realm = set_cookie_with(&response, "hearth_ui_last_realm=").unwrap_or_default();
+    let last_realm = set_cookie_with(&response, "hearth_ui_last_realm=")
+        .expect("admin logout must set a hearth_ui_last_realm Set-Cookie header");
     assert!(
         last_realm.contains("hearth_ui_last_realm=__system__"),
         "admin logout must set last-realm sentinel, got {last_realm}"
@@ -1443,7 +1444,8 @@ async fn tenant_logout_redirects_to_realm_login() {
         format!("/ui/realms/{realm_name}/login"),
         "tenant logout must target the realm's login page"
     );
-    let last_realm = set_cookie_with(&response, "hearth_ui_last_realm=").unwrap_or_default();
+    let last_realm = set_cookie_with(&response, "hearth_ui_last_realm=")
+        .expect("tenant logout must set a hearth_ui_last_realm Set-Cookie header");
     assert!(
         last_realm.contains(&format!("hearth_ui_last_realm={realm_name}")),
         "tenant logout must set last-realm to realm name, got {last_realm}"

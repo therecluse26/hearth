@@ -1967,7 +1967,9 @@ impl EmbeddedIdentityEngine {
     /// `Archived` realms return `RealmSuspended`; a missing realm returns
     /// `RealmNotFound`.
     fn require_active_realm(&self, realm_id: &RealmId) -> Result<(), IdentityError> {
-        let realm = self.get_realm(realm_id)?.ok_or(IdentityError::RealmNotFound)?;
+        let realm = self
+            .get_realm(realm_id)?
+            .ok_or(IdentityError::RealmNotFound)?;
         if realm.status() != RealmStatus::Active {
             return Err(IdentityError::RealmSuspended);
         }
@@ -2297,7 +2299,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // top of the realm-status check added to validate_token).
         if matches!(
             request.status,
-            Some(RealmStatus::Suspended) | Some(RealmStatus::Archived)
+            Some(RealmStatus::Suspended | RealmStatus::Archived)
         ) {
             Self::bulk_revoke_sessions(self.storage.as_ref(), realm_id);
         }
@@ -4191,12 +4193,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // All clients must provide PKCE by default. Confidential clients may be
         // exempted via `require_pkce_for_confidential_clients: false` for legacy
         // compatibility only.
-        let pkce_required = !client.is_confidential()
-            || self.config.oidc.require_pkce_for_confidential_clients;
+        let pkce_required =
+            !client.is_confidential() || self.config.oidc.require_pkce_for_confidential_clients;
         if pkce_required && request.code_challenge.is_none() {
             return Err(IdentityError::InvalidInput {
-                reason: "PKCE is required (code_challenge with S256 must be supplied)"
-                    .to_string(),
+                reason: "PKCE is required (code_challenge with S256 must be supplied)".to_string(),
             });
         }
         // When a challenge is present, only S256 is permitted (plain is rejected per RFC 9700).

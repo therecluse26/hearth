@@ -5,7 +5,6 @@
 
 mod common;
 
-use hearth::core::RealmId;
 use hearth::identity::{CreateUserRequest, UpdateUserRequest, UserStatus};
 
 // ===== P0 fast: Full CRUD lifecycle =====
@@ -286,15 +285,4 @@ async fn cross_realm_isolation() {
         .get_user(&realm_b, alice_a.id())
         .expect("get")
         .is_none());
-}
-
-// ===== P1: Server HTTP mode (ignored until protocol layer) =====
-
-#[tokio::test]
-#[ignore = "HTTP protocol layer not yet implemented"]
-async fn server_mode_crud() {
-    let _harness = common::TestHarness::server()
-        .await
-        .expect("server harness setup");
-    // Will test the same CRUD operations through HTTP when available
 }

@@ -69,6 +69,9 @@ jobs:
       - name: Install Tailwind standalone CLI
         run: make tailwind-install
 
+      - name: make test-quality (block false-confidence test patterns — HEA-571)
+        run: make test-quality
+
       - name: make check (clippy -D warnings + fmt --check + nextest --workspace)
         run: make check
 

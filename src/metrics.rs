@@ -6,11 +6,12 @@
 //!
 //! # Usage
 //!
-//! Increment counters and observe histograms directly on [`METRICS`]:
+//! Increment counters and observe histograms directly on the [`Metrics`]
+//! instance returned by [`metrics()`]:
 //!
-//! ```no_run
-//! # use hearth::metrics::METRICS;
-//! METRICS.tokens_issued_total
+//! ```text
+//! metrics()
+//!     .tokens_issued_total
 //!     .with_label_values(&["my-realm", "authorization_code"])
 //!     .inc();
 //! ```
@@ -39,7 +40,7 @@ const STORAGE_BUCKETS: &[f64] = &[
 
 /// All Prometheus metrics collected by the Hearth server.
 ///
-/// Obtain the process-global singleton via [`METRICS`].
+/// Obtain the process-global singleton via [`metrics()`].
 pub struct Metrics {
     /// Prometheus registry backing all metrics in this struct.
     ///

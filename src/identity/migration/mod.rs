@@ -26,9 +26,9 @@
 mod auth0;
 mod auth0_credentials;
 mod credentials;
+pub mod cross_realm;
 mod error;
 mod keycloak;
-pub mod cross_realm;
 
 pub use auth0::{
     Auth0Bundle, Auth0Client, Auth0ImportOptions, Auth0Importer, Auth0Organization,

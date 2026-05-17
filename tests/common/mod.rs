@@ -14,7 +14,7 @@ use std::sync::Arc;
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, SystemClock};
 use hearth::identity::{
-    CredentialConfig, CreateRealmRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
+    CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
 };
 use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};

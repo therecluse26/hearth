@@ -147,7 +147,10 @@ pub fn execute_cross_realm_migration(
     // 1. Check for "completed" marker — entire migration already finished.
     let completed_key = keys::config_migration_completed_key(src_slug);
     if storage.get(&sys, &completed_key).unwrap_or(None).is_some() {
-        info!(src_slug, "cross-realm migration already completed; skipping");
+        info!(
+            src_slug,
+            "cross-realm migration already completed; skipping"
+        );
         return Ok(report);
     }
 
@@ -245,8 +248,7 @@ pub fn execute_cross_realm_migration(
             {
                 warn!(
                     email = user.email(),
-                    src_slug,
-                    "skipping user: already exists in destination realm"
+                    src_slug, "skipping user: already exists in destination realm"
                 );
                 report.skipped += 1;
                 continue;
@@ -320,6 +322,9 @@ pub fn execute_cross_realm_migration(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Raw key/value pair, as serialized for storage `put_batch`.
+type KvPair = (Vec<u8>, Vec<u8>);
+
 /// Collects all per-user key-value pairs from the source realm for a single
 /// user, ready to be written to the destination realm via `put_batch`.
 ///
@@ -333,8 +338,8 @@ fn build_user_batch(
     email: &str,
     src_realm_id: &RealmId,
     storage: &dyn StorageEngine,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+) -> Result<Vec<KvPair>, String> {
+    let mut batch: Vec<KvPair> = Vec::new();
 
     let scalar_keys: Vec<Vec<u8>> = vec![
         keys::encode_user_id(user_id),
@@ -345,10 +350,7 @@ fn build_user_batch(
     ];
 
     for key in scalar_keys {
-        if let Some(bytes) = storage
-            .get(src_realm_id, &key)
-            .map_err(|e| e.to_string())?
-        {
+        if let Some(bytes) = storage.get(src_realm_id, &key).map_err(|e| e.to_string())? {
             batch.push((key, bytes));
         }
     }
@@ -375,9 +377,7 @@ fn build_user_batch(
                     .and_then(serde_json::Value::as_str)
                 {
                     let disc_key = keys::encode_webauthn_discoverable(cred_id_b64);
-                    if let Some(disc_bytes) =
-                        storage.get(src_realm_id, &disc_key).unwrap_or(None)
-                    {
+                    if let Some(disc_bytes) = storage.get(src_realm_id, &disc_key).unwrap_or(None) {
                         batch.push((disc_key, disc_bytes));
                     }
                 }
@@ -440,7 +440,10 @@ fn migrate_rbac_assignments(
         let dst_role = match rbac.get_role_by_name(dst_realm_id, &src_role.name) {
             Ok(Some(r)) => r,
             Ok(None) => {
-                warn!(role_name = src_role.name, "no matching role in destination; skipping assignment");
+                warn!(
+                    role_name = src_role.name,
+                    "no matching role in destination; skipping assignment"
+                );
                 skipped += 1;
                 continue;
             }
@@ -481,7 +484,12 @@ fn migrate_org_memberships(
 ) {
     let mut cursor: Option<String> = None;
     loop {
-        let page = match engine.list_user_organizations(src_realm_id, user_id, cursor.as_deref(), 100) {
+        let page = match engine.list_user_organizations(
+            src_realm_id,
+            user_id,
+            cursor.as_deref(),
+            100,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 warn!(error = %e, user_uuid = %user_id.as_uuid(), "failed to list user org memberships");

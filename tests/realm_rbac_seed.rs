@@ -75,7 +75,10 @@ async fn reconcile_rbac_seeds_repairs_unseeded_realm() {
         .rbac()
         .get_role_by_name(&realm_id, "realm.admin")
         .expect("lookup");
-    assert!(before.is_none(), "realm.admin should not exist before reconcile");
+    assert!(
+        before.is_none(),
+        "realm.admin should not exist before reconcile"
+    );
 
     // Run startup reconciliation.
     hearth::identity::reconcile::reconcile_rbac_seeds(h.identity(), h.rbac());
