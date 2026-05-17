@@ -881,6 +881,7 @@ fn validate_email(email: &EmailConfig) -> Result<(), ConfigError> {
         EmailTransport::Postmark => validate_email_postmark(email)?,
         EmailTransport::Mailgun => validate_email_mailgun(email)?,
         EmailTransport::Mailtrap => validate_email_mailtrap(email)?,
+        EmailTransport::Mailcatcher => return Ok(()),
     }
     Ok(())
 }
@@ -1197,7 +1198,7 @@ fn validate_email_all(email: &EmailConfig, issues: &mut Vec<ValidationIssue>) {
                 });
             }
         }
-        EmailTransport::Log => unreachable!(),
+        EmailTransport::Log | EmailTransport::Mailcatcher => unreachable!(),
     }
 }
 

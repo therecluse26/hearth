@@ -10,6 +10,9 @@ use tracing::{error, info, warn};
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::config::{Config, EmailTransport, EnvVarWarningKind, ValidationIssue};
 use hearth::core::{Clock, SystemClock};
+use hearth::identity::email::mailcatcher::{
+    generate_password, MailcatcherSender, MailcatcherState,
+};
 use hearth::identity::email::mailgun::MailgunRegion;
 use hearth::identity::email::{
     smtp_sender_from_config, ApiKey, EmailService, LoggingEmailSender, MailgunEmailSender,
@@ -662,8 +665,46 @@ async fn run_serve(
         );
     }
 
+    // Fatal guard: mailcatcher transport is dev-only.
+    if config.email.transport == EmailTransport::Mailcatcher && !config.dev_mode {
+        return Err(
+            "email.transport = mailcatcher is only allowed in dev mode (start with --dev)".into(),
+        );
+    }
+
+    // In dev mode, upgrade Log and Smtp to mailcatcher so `make dev` works without
+    // Docker or a real mail server. Production cloud transports (sendgrid, postmark,
+    // mailgun, mailtrap) are intentionally kept so engineers can test against real
+    // providers even in dev mode.
+    if maybe_upgrade_email_transport(&mut config) {
+        warn!(
+            "dev mode: overriding smtp transport → mailcatcher (no Docker required); \
+             set email.transport = mailcatcher explicitly to silence this warning"
+        );
+    }
+
+    // Build MailcatcherState now (before build_email_sender) when transport is Mailcatcher
+    // so the same Arc is shared between the sender and the HTTP routes.
+    let mailcatcher_state: Option<Arc<MailcatcherState>> =
+        if config.email.transport == EmailTransport::Mailcatcher {
+            let password = generate_password();
+            let state = Arc::new(MailcatcherState::new(password));
+            // Print prominent startup banner.
+            println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  MailcatcherSender active");
+            println!(
+                "  Inbox:    http://{}:{}/dev/mail",
+                config.server.bind_address, config.server.port
+            );
+            println!("  Password: {}", state.password);
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+            Some(state)
+        } else {
+            None
+        };
+
     // Email sender + service (default: log transport — stderr at WARN level).
-    let email_sender: SharedEmailSender = build_email_sender(&config)?;
+    let email_sender: SharedEmailSender = build_email_sender(&config, mailcatcher_state.as_ref())?;
     let email_service = Arc::new(build_email_service(email_sender, &config)?);
 
     // Ensure a first-run setup token exists BEFORE realm reconciliation.
@@ -1246,7 +1287,10 @@ async fn run_serve(
         web_state = web_state.with_config_path(cfg_path.clone());
     }
 
-    let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
+    let mut app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
+    if let Some(mc_state) = &mailcatcher_state {
+        app_router = app_router.merge(web::mailcatcher_router(Arc::clone(mc_state)));
+    }
 
     // Spawn the webhook dispatcher. Uses a watch channel so we can signal
     // clean shutdown after the HTTP server exits.
@@ -1383,10 +1427,19 @@ async fn run_serve(
 /// Returns the appropriate transport adapter based on the configured
 /// `email.transport`. Fails if the transport rejects the configuration
 /// at startup — better to fail early than on the first send attempt.
-fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std::error::Error>> {
+fn build_email_sender(
+    config: &Config,
+    mailcatcher: Option<&Arc<MailcatcherState>>,
+) -> Result<SharedEmailSender, Box<dyn std::error::Error>> {
     use hearth::identity::email::http::UreqTransport;
 
     Ok(match config.email.transport {
+        EmailTransport::Mailcatcher => {
+            let state = mailcatcher
+                .cloned()
+                .ok_or("MailcatcherState must be pre-built before build_email_sender")?;
+            Arc::new(MailcatcherSender::new(state))
+        }
         EmailTransport::Log => Arc::new(LoggingEmailSender::new()),
         EmailTransport::Smtp => Arc::new(smtp_sender_from_config(&config.email)?),
         EmailTransport::Sendgrid => {
@@ -1496,6 +1549,28 @@ fn build_email_service(
         default_logo_svg,
         templates_dir,
     )?)
+}
+
+/// In dev mode, upgrades `Log` and `Smtp` transports to `Mailcatcher` so
+/// `--dev` works without Docker or a real mail server. Production cloud
+/// transports are kept so engineers can test against real providers.
+///
+/// Returns `true` when SMTP was promoted (callers log a helpful warning).
+fn maybe_upgrade_email_transport(config: &mut Config) -> bool {
+    if !config.dev_mode {
+        return false;
+    }
+    match config.email.transport {
+        EmailTransport::Log => {
+            config.email.transport = EmailTransport::Mailcatcher;
+            false
+        }
+        EmailTransport::Smtp => {
+            config.email.transport = EmailTransport::Mailcatcher;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert + config reload.
@@ -2405,5 +2480,72 @@ fn print_migration_report(report: &hearth::identity::MigrationReport) {
         for w in &report.warnings {
             println!("  - {w}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hearth::config::{Config, EmailTransport};
+
+    // ── maybe_upgrade_email_transport ─────────────────────────────────────
+
+    #[test]
+    fn dev_mode_log_transport_upgraded_to_mailcatcher() {
+        let mut cfg = Config::dev();
+        cfg.email.transport = EmailTransport::Log;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(cfg.email.transport, EmailTransport::Mailcatcher);
+        assert!(!warned, "Log→Mailcatcher should not produce a warning");
+    }
+
+    #[test]
+    fn dev_mode_smtp_transport_upgraded_to_mailcatcher_with_warning() {
+        let mut cfg = Config::dev();
+        cfg.email.transport = EmailTransport::Smtp;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(cfg.email.transport, EmailTransport::Mailcatcher);
+        assert!(warned, "Smtp→Mailcatcher should return true so caller can warn");
+    }
+
+    #[test]
+    fn dev_mode_mailcatcher_unchanged() {
+        let mut cfg = Config::dev();
+        cfg.email.transport = EmailTransport::Mailcatcher;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(cfg.email.transport, EmailTransport::Mailcatcher);
+        assert!(!warned);
+    }
+
+    #[test]
+    fn dev_mode_production_transports_unchanged() {
+        for transport in [
+            EmailTransport::Sendgrid,
+            EmailTransport::Postmark,
+            EmailTransport::Mailgun,
+            EmailTransport::Mailtrap,
+        ] {
+            let mut cfg = Config::dev();
+            cfg.email.transport = transport;
+            let warned = maybe_upgrade_email_transport(&mut cfg);
+            assert_eq!(
+                cfg.email.transport, transport,
+                "production transport {transport:?} must not be overridden in dev mode"
+            );
+            assert!(!warned);
+        }
+    }
+
+    #[test]
+    fn non_dev_mode_does_not_upgrade_smtp() {
+        let mut cfg = Config::default();
+        cfg.email.transport = EmailTransport::Smtp;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(
+            cfg.email.transport,
+            EmailTransport::Smtp,
+            "non-dev mode must not override smtp"
+        );
+        assert!(!warned);
     }
 }

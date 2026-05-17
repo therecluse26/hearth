@@ -15,6 +15,7 @@
 mod branding;
 pub mod http;
 mod log;
+pub mod mailcatcher;
 pub mod mailgun;
 mod mailtrap;
 pub(crate) mod placeholder;
@@ -32,6 +33,7 @@ use zeroize::Zeroize;
 
 pub use self::http::StubHttpTransport;
 pub use self::log::LoggingEmailSender;
+pub use self::mailcatcher::{MailcatcherSender, MailcatcherState};
 pub use self::mailgun::MailgunEmailSender;
 pub use self::mailtrap::MailtrapEmailSender;
 pub use self::postmark::PostmarkEmailSender;

@@ -405,6 +405,10 @@ pub enum EmailTransport {
     Mailgun,
     /// Deliver via the `Mailtrap` Sending API. Requires a [`MailtrapConfig`].
     Mailtrap,
+    /// Capture emails in-process and serve them via a browser UI at
+    /// `/dev/mail`. Dev-only — fatal startup error when used outside
+    /// `--dev` mode.
+    Mailcatcher,
 }
 
 /// SMTP transport-level encryption mode.

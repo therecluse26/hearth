@@ -878,6 +878,7 @@ fn email_transport_name(state: &WebState) -> String {
             crate::config::EmailTransport::Postmark => "postmark",
             crate::config::EmailTransport::Mailgun => "mailgun",
             crate::config::EmailTransport::Mailtrap => "mailtrap",
+            crate::config::EmailTransport::Mailcatcher => "mailcatcher",
         })
         .unwrap_or("log")
         .to_string()

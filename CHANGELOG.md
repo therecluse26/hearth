@@ -7,6 +7,20 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in `mailcatcher` email transport** — captures outbound emails in an in-process ring
+  buffer (cap 50) and serves them via a password-protected browser UI at `/dev/mail`. Auto-enabled
+  when `--dev` is passed and no explicit transport is configured. Startup banner prints the inbox
+  URL and a randomly generated 16-character access password. Fatal startup error if
+  `email.transport = mailcatcher` is used outside dev mode (HEA-574).
+- **`--dev` now overrides SMTP transport → mailcatcher** — previously `--dev` only auto-enabled
+  mailcatcher when the transport was the default `log`. Users migrating from Docker-based Mailpit
+  setups who had `transport: smtp` in their `hearth.yaml` would still attempt a network SMTP
+  connection and see a DNS resolution error. `--dev` now upgrades both `log` and `smtp` to
+  mailcatcher; a startup warning advises updating the config explicitly. Production cloud transports
+  (`sendgrid`, `postmark`, `mailgun`, `mailtrap`) are kept unchanged (HEA-573).
+
 ### Security
 
 - **Mutating operations on Suspended/Archived realms are now rejected** — `create_user`,
