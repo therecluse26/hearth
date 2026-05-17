@@ -1268,11 +1268,14 @@ async fn run_serve_tls(
         .map_err(|e| format!("invalid redirect bind address: {e}"))?;
     let https_port = config.server.port;
     let mut redirect_shutdown_rx = shutdown_rx.clone();
+    let redirect_listener = tokio::net::TcpListener::bind(redirect_addr)
+        .await
+        .map_err(|e| format!("failed to bind HTTP redirect listener on {redirect_addr}: {e}"))?;
     let redirect_handle = tokio::spawn(async move {
         let shutdown = async move {
             let _ = redirect_shutdown_rx.changed().await;
         };
-        if let Err(e) = http::serve_redirect(redirect_addr, https_port, shutdown).await {
+        if let Err(e) = http::serve_redirect(redirect_listener, https_port, shutdown).await {
             warn!(error = %e, "HTTP redirect server failed");
         }
     });

@@ -192,6 +192,10 @@ async fn oidc_authorization_code_flow_via_http() {
         if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
             break;
         }
+        // Short backoff between TCP probe attempts. The only way to detect
+        // server readiness is to probe the socket; tokio::time::advance
+        // would not help because server startup is real OS-process I/O, not
+        // timer-gated. This sleep is conditional on the poll loop continuing.
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 

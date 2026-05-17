@@ -60,6 +60,10 @@ fn wait_for_server(port: u16, timeout: Duration) -> bool {
         if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
             return true;
         }
+        // Short backoff between TCP probe attempts. The only way to detect
+        // server readiness here is to probe the socket; tokio::time::advance
+        // would not help because server startup is real OS-process I/O, not
+        // timer-gated. This sleep is conditional on the poll loop continuing.
         std::thread::sleep(Duration::from_millis(50));
     }
     false

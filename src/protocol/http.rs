@@ -682,11 +682,15 @@ pub async fn serve_tls_router(
 
 /// Starts an HTTP server that redirects all requests to HTTPS via 301.
 ///
-/// Binds to the specified address and responds to every request with a
-/// `301 Moved Permanently` redirect to the HTTPS equivalent URL on the
-/// given `https_port`.
+/// Accepts connections on the given pre-bound `listener` and responds to every
+/// request with a `301 Moved Permanently` redirect to the HTTPS equivalent URL
+/// on the given `https_port`.
+///
+/// The caller is responsible for binding the listener; this function does not
+/// call `bind()` internally so callers can detect the assigned port before
+/// invoking this function.
 pub async fn serve_redirect(
-    addr: SocketAddr,
+    listener: TcpListener,
     https_port: u16,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), std::io::Error> {
@@ -718,9 +722,7 @@ pub async fn serve_redirect(
         )
     });
 
-    let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
-
     info!(%local_addr, "HTTP→HTTPS redirect server listening");
 
     axum::serve(listener, app)
