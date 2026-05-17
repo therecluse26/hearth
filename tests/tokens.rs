@@ -184,7 +184,7 @@ async fn token_refresh_flow_end_to_end() {
         .identity()
         .refresh_tokens(&realm, original_pair.access_token());
     assert!(
-        matches!(bad_refresh.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&bad_refresh, Err(IdentityError::InvalidToken)),
         "using access token as refresh must return InvalidToken"
     );
 }
@@ -234,7 +234,7 @@ async fn token_invalid_after_session_revoked() {
         .identity()
         .validate_token(&realm, pair.access_token());
     assert!(
-        matches!(result.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&result, Err(IdentityError::InvalidToken)),
         "token must return InvalidToken after session revocation"
     );
 }
@@ -268,7 +268,7 @@ async fn token_invalid_for_different_realm() {
         .identity()
         .validate_token(&realm_b, pair.access_token());
     assert!(
-        matches!(result.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&result, Err(IdentityError::InvalidToken)),
         "cross-realm token validation must return InvalidToken"
     );
 }
@@ -597,7 +597,7 @@ async fn validate_token_rejects_refresh_token_as_access_token() {
         .identity()
         .validate_token(&realm, pair.refresh_token());
     assert!(
-        matches!(result.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&result, Err(IdentityError::InvalidToken)),
         "refresh token passed to validate_token must return InvalidToken"
     );
 }
@@ -631,7 +631,7 @@ async fn validate_token_rejects_forged_admin_permission() {
 
     let result = harness.identity().validate_token(&realm, &tampered);
     assert!(
-        matches!(result.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&result, Err(IdentityError::InvalidToken)),
         "forged admin-permission token must return InvalidToken (signature mismatch)"
     );
 }
@@ -673,7 +673,7 @@ async fn refresh_token_rejects_forged_exp_extension() {
 
     let result = harness.identity().refresh_tokens(&realm, &tampered);
     assert!(
-        matches!(result.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&result, Err(IdentityError::InvalidToken)),
         "refresh token with forged exp extension must return InvalidToken (signature mismatch)"
     );
 }
@@ -723,7 +723,7 @@ async fn refresh_token_rejects_forged_session_impersonation() {
 
     let result = harness.identity().refresh_tokens(&realm, &tampered);
     assert!(
-        matches!(result.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&result, Err(IdentityError::InvalidToken)),
         "refresh token with forged session ID must return InvalidToken (signature mismatch)"
     );
 

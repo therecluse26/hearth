@@ -214,7 +214,7 @@ async fn realm_scoped_oidc_discovery_and_jwks() {
     // Nonexistent realm should fail
     let err = identity.realm_jwks(&RealmId::generate());
     assert!(
-        matches!(err.unwrap_err(), IdentityError::RealmNotFound),
+        matches!(&err, Err(IdentityError::RealmNotFound)),
         "JWKS for nonexistent realm must return RealmNotFound"
     );
 }

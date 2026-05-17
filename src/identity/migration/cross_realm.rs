@@ -322,6 +322,9 @@ pub fn execute_cross_realm_migration(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Raw key/value pair, as serialized for storage `put_batch`.
+type KvPair = (Vec<u8>, Vec<u8>);
+
 /// Collects all per-user key-value pairs from the source realm for a single
 /// user, ready to be written to the destination realm via `put_batch`.
 ///
@@ -335,8 +338,8 @@ fn build_user_batch(
     email: &str,
     src_realm_id: &RealmId,
     storage: &dyn StorageEngine,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+) -> Result<Vec<KvPair>, String> {
+    let mut batch: Vec<KvPair> = Vec::new();
 
     let scalar_keys: Vec<Vec<u8>> = vec![
         keys::encode_user_id(user_id),

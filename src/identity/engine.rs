@@ -2299,7 +2299,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         // top of the realm-status check added to validate_token).
         if matches!(
             request.status,
-            Some(RealmStatus::Suspended) | Some(RealmStatus::Archived)
+            Some(RealmStatus::Suspended | RealmStatus::Archived)
         ) {
             Self::bulk_revoke_sessions(self.storage.as_ref(), realm_id);
         }

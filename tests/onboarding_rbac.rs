@@ -7,7 +7,6 @@
 
 mod common;
 
-use hearth::core::RealmId;
 use hearth::identity::CreateUserRequest;
 use hearth::rbac::{AssignRoleRequest, Permission, Scope, Subject};
 

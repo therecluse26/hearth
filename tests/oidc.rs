@@ -428,10 +428,7 @@ async fn oidc_pkce_s256_flow() {
         },
     );
     assert!(
-        matches!(
-            no_verifier_result.unwrap_err(),
-            IdentityError::InvalidGrant { .. }
-        ),
+        matches!(&no_verifier_result, Err(IdentityError::InvalidGrant { .. })),
         "exchange with wrong verifier must return InvalidGrant"
     );
 
@@ -467,8 +464,8 @@ async fn oidc_pkce_s256_flow() {
     );
     assert!(
         matches!(
-            wrong_verifier_result.unwrap_err(),
-            IdentityError::InvalidGrant { .. }
+            &wrong_verifier_result,
+            Err(IdentityError::InvalidGrant { .. })
         ),
         "exchange with mismatched PKCE verifier must return InvalidGrant"
     );
@@ -795,10 +792,7 @@ async fn conformance_token_endpoint_rfc6749() {
         },
     );
     assert!(
-        matches!(
-            reuse_result.unwrap_err(),
-            IdentityError::InvalidAuthorizationCode
-        ),
+        matches!(&reuse_result, Err(IdentityError::InvalidAuthorizationCode)),
         "RFC 6749 §4.1.2: reusing authorization code must return InvalidAuthorizationCode"
     );
 
@@ -815,8 +809,8 @@ async fn conformance_token_endpoint_rfc6749() {
     );
     assert!(
         matches!(
-            invalid_result.unwrap_err(),
-            IdentityError::InvalidAuthorizationCode
+            &invalid_result,
+            Err(IdentityError::InvalidAuthorizationCode)
         ),
         "RFC 6749 §5.2: invalid code must return InvalidAuthorizationCode"
     );
@@ -852,8 +846,8 @@ async fn conformance_token_endpoint_rfc6749() {
     );
     assert!(
         matches!(
-            wrong_redirect.unwrap_err(),
-            IdentityError::InvalidAuthorizationCode
+            &wrong_redirect,
+            Err(IdentityError::InvalidAuthorizationCode)
         ),
         "RFC 6749 §4.1.3: mismatched redirect_uri must return InvalidAuthorizationCode"
     );

@@ -396,11 +396,7 @@ async fn grpc_create_realm_fails_when_seed_fails() {
     );
 
     let result = svc.create_realm(req).await;
-    assert!(
-        result.is_err(),
-        "create_realm must return an error when seed_realm fails, got: {result:?}"
-    );
-    let status = result.unwrap_err();
+    let status = result.expect_err("create_realm must return an error when seed_realm fails");
     assert_eq!(
         status.code(),
         tonic::Code::Internal,

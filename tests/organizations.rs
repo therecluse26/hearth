@@ -689,7 +689,7 @@ async fn invitation_revocation() {
     // Try to accept — should fail
     let result = identity.accept_invitation(&realm_id, &token);
     assert!(
-        matches!(result.unwrap_err(), IdentityError::InvitationInvalid),
+        matches!(&result, Err(IdentityError::InvitationInvalid)),
         "revoked invitation must return InvitationInvalid"
     );
 }

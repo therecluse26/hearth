@@ -130,11 +130,9 @@ fn confidential_client_without_pkce_rejected_by_default() {
         },
     );
 
-    assert!(
-        result.is_err(),
-        "confidential client without PKCE must be rejected (RFC 9700 §2.1.1)"
-    );
-    let err = result.unwrap_err().to_string();
+    let err = result
+        .expect_err("confidential client without PKCE must be rejected (RFC 9700 §2.1.1)")
+        .to_string();
     assert!(err.contains("PKCE"), "error must mention PKCE, got: {err}");
 }
 

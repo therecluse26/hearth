@@ -392,7 +392,7 @@ async fn oidc_userinfo_endpoint() {
         .identity()
         .userinfo(&realm_id, token_response.access_token());
     assert!(
-        matches!(revoked_result.unwrap_err(), IdentityError::InvalidToken),
+        matches!(&revoked_result, Err(IdentityError::InvalidToken)),
         "userinfo with revoked session token must return InvalidToken"
     );
 }
