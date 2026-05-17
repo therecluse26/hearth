@@ -78,9 +78,9 @@
       {% if email.html_body.is_empty() %}
         <p class="text-sm text-ht-content-muted italic">No HTML body.</p>
       {% else %}
-        <iframe srcdoc="{{ email.html_body }}"
+        <iframe srcdoc="&lt;base target=&quot;_blank&quot;&gt;{{ email.html_body }}"
                 class="w-full min-h-96 rounded-lg border border-white/6 bg-white"
-                sandbox="allow-same-origin"
+                sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"
                 title="HTML email preview"></iframe>
       {% endif %}
     </div>
