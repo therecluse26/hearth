@@ -15,10 +15,9 @@
         <h1 class="font-display text-lg font-semibold text-ht-content-primary">Mailcatcher Inbox</h1>
         <p class="text-xs text-ht-content-muted">{{ emails.len() }} message{% if emails.len() != 1 %}s{% endif %} captured</p>
       </div>
-      <form method="post" action="/dev/mail"
+      <form method="post" action="/dev/mail/clear"
             onsubmit="return confirm('Clear all captured emails?')"
             class="inline">
-        <input type="hidden" name="_method" value="DELETE">
         <button type="submit"
                 class="rounded border border-white/6 bg-ht-surface px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover:bg-ht-surface-hover hover:text-ht-content-primary transition-colors">
           Clear all
@@ -58,10 +57,9 @@
               </td>
               <td class="px-4 py-3 text-xs text-ht-content-muted whitespace-nowrap">{{ email.received_at }}</td>
               <td class="px-4 py-3 text-right">
-                <form method="post" action="/dev/mail/{{ email.id }}"
+                <form method="post" action="/dev/mail/{{ email.id }}/delete"
                       onsubmit="return confirm('Delete this email?')"
                       class="inline">
-                  <input type="hidden" name="_method" value="DELETE">
                   <button type="submit"
                           class="text-xs text-ht-content-muted hover:text-danger transition-colors">
                     Delete

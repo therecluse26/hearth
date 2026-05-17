@@ -28,10 +28,9 @@
           {{ email.subject }}
         </h1>
       </div>
-      <form method="post" action="/dev/mail/{{ email.id }}"
+      <form method="post" action="/dev/mail/{{ email.id }}/delete"
             onsubmit="return confirm('Delete this email?')"
             class="shrink-0">
-        <input type="hidden" name="_method" value="DELETE">
         <button type="submit"
                 class="rounded border border-danger/40 px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
           Delete
