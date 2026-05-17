@@ -9,8 +9,8 @@ mod common;
 
 use hearth::core::RealmId;
 use hearth::identity::{
-    CleartextPassword, CreateRealmRequest, CreateUserRequest, IdentityError, PasswordPolicy,
-    RealmConfig, SessionContext, UpdateRealmRequest,
+    CleartextPassword, CreateRealmRequest, CreateUserRequest, IdentityError, MagicLinkResponse,
+    PasswordPolicy, RealmConfig, SessionContext, UpdateRealmRequest,
 };
 
 // ===== TOTP helper (mirrors tests/mfa.rs) =====
@@ -119,10 +119,14 @@ async fn magic_link_allowed_when_in_allowed_methods() {
     );
     let user = create_user(&harness, realm.id());
 
-    harness
+    let resp: MagicLinkResponse = harness
         .identity()
         .request_magic_link(realm.id(), user.email())
         .expect("magic_link should succeed when allowed");
+    assert!(
+        !resp.token().is_empty(),
+        "magic link token must be non-empty"
+    );
 }
 
 #[tokio::test]
@@ -131,10 +135,14 @@ async fn magic_link_allowed_when_no_restriction() {
     let realm = create_realm_with_config(&harness, RealmConfig::default());
     let user = create_user(&harness, realm.id());
 
-    harness
+    let resp: MagicLinkResponse = harness
         .identity()
         .request_magic_link(realm.id(), user.email())
         .expect("magic_link should succeed when allowed_auth_methods is unconfigured");
+    assert!(
+        !resp.token().is_empty(),
+        "magic link token must be non-empty"
+    );
 }
 
 // ===== per-realm token TTL enforcement =====
@@ -325,10 +333,15 @@ async fn mfa_required_allows_session_when_user_has_mfa() {
     let user = create_user(&harness, realm.id());
     enroll_mfa(&harness, realm.id(), user.id());
 
-    harness
+    let session = harness
         .identity()
         .create_session(realm.id(), user.id(), &SessionContext::default())
         .expect("create_session should succeed: user has MFA enrolled");
+    assert_eq!(
+        session.user_id(),
+        user.id(),
+        "session must be bound to the correct user"
+    );
 }
 
 #[tokio::test]
@@ -350,10 +363,15 @@ async fn mfa_required_passkey_satisfies_policy() {
         satisfies_mfa_via_passkey: true,
         ..SessionContext::default()
     };
-    harness
+    let session = harness
         .identity()
         .create_session(realm.id(), user.id(), &ctx)
         .expect("passkey session should bypass mfa_required TOTP gate");
+    assert_eq!(
+        session.user_id(),
+        user.id(),
+        "session must be bound to the correct user"
+    );
 }
 
 // ===== allowed_auth_methods enforcement for password =====
