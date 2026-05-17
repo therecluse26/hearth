@@ -38,13 +38,21 @@ fn app_css_fallback_meets_minimum_size() {
 #[test]
 fn assert_bytes_sane_rejects_undersized_input() {
     let tiny = vec![b'x'; 100];
-    assert!(assert_bytes_sane(&tiny).is_err());
+    let err = assert_bytes_sane(&tiny).expect_err("undersized buffer must be rejected");
+    assert!(
+        err.contains("4 KiB"),
+        "undersized error must mention size limit, got: {err}"
+    );
 }
 
 #[test]
 fn assert_bytes_sane_rejects_missing_sentinel() {
     let bytes = vec![b'a'; APP_CSS_MIN_BYTES + 1];
-    assert!(assert_bytes_sane(&bytes).is_err());
+    let err = assert_bytes_sane(&bytes).expect_err("buffer without sentinel must be rejected");
+    assert!(
+        err.contains("Hearth theme layer"),
+        "missing-sentinel error must mention theme layer, got: {err}"
+    );
 }
 
 #[test]

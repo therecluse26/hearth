@@ -85,13 +85,13 @@ fn valid_registry_passes() {
         protected_resources: vec![],
         claim_profile: None,
     };
-    assert!(reg.validate().is_ok(), "valid registry must pass");
+    reg.validate().expect("valid registry must pass");
 }
 
 #[test]
 fn empty_registry_passes() {
     let reg = RealmPermissionRegistry::default();
-    assert!(reg.validate().is_ok());
+    reg.validate().expect("empty registry must pass validation");
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +133,8 @@ fn bundle_name_valid_colon_passes() {
         scopes: vec![make_bundle("read:docs", &["docs.read"])],
         ..Default::default()
     };
-    assert!(reg.validate().is_ok());
+    reg.validate()
+        .expect("bundle name with colon separator must pass validation");
 }
 
 #[test]
@@ -143,7 +144,8 @@ fn bundle_name_nested_colons_passes() {
         scopes: vec![make_bundle("mcp:tools:invoke", &["docs.read"])],
         ..Default::default()
     };
-    assert!(reg.validate().is_ok());
+    reg.validate()
+        .expect("bundle name with nested colons must pass validation");
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +301,7 @@ fn role_diamond_no_cycle_passes() {
         ],
         ..Default::default()
     };
-    assert!(reg.validate().is_ok(), "diamond-shaped DAG must pass");
+    reg.validate().expect("diamond-shaped DAG must pass validation");
 }
 
 #[test]

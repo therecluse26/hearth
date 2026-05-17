@@ -8,7 +8,9 @@
 
 mod common;
 
-use hearth::identity::email::{validate_email_template, EmailTemplateBody, LocalizedEmailTemplate};
+use hearth::identity::email::{
+    validate_email_template, EmailError, EmailTemplateBody, LocalizedEmailTemplate,
+};
 use hearth::identity::{CreateRealmRequest, RealmConfig, UpdateRealmRequest};
 
 // ===== Branding field persistence =====
@@ -251,7 +253,6 @@ async fn locale_fallback_language_prefix() {
 #[test]
 fn validate_rejects_disallowed_placeholder_in_verification() {
     let result = validate_email_template("verification", "Click {{reset_url}} to verify.");
-    assert!(result.is_err());
     let msg = format!("{}", result.expect_err("expected error"));
     assert!(msg.contains("disallowed"), "got: {msg}");
     assert!(msg.contains("reset_url"), "got: {msg}");
@@ -259,27 +260,26 @@ fn validate_rejects_disallowed_placeholder_in_verification() {
 
 #[test]
 fn validate_accepts_allowed_placeholders() {
-    assert!(validate_email_template(
+    validate_email_template(
         "verification",
-        "Welcome to {{product_name}}! Click {{verification_url}}."
+        "Welcome to {{product_name}}! Click {{verification_url}}.",
     )
-    .is_ok());
-    assert!(validate_email_template(
+    .expect("verification template with allowed placeholders must pass");
+    validate_email_template(
         "password_reset",
-        "Reset at {{reset_url}} — {{product_name}}"
+        "Reset at {{reset_url}} — {{product_name}}",
     )
-    .is_ok());
-    assert!(validate_email_template(
+    .expect("password_reset template with allowed placeholders must pass");
+    validate_email_template(
         "invitation",
-        "{{org_name}} via {{inviter_email}} — {{accept_url}}"
+        "{{org_name}} via {{inviter_email}} — {{accept_url}}",
     )
-    .is_ok());
+    .expect("invitation template with allowed placeholders must pass");
 }
 
 #[test]
 fn validate_rejects_unknown_kind() {
     let result = validate_email_template("unknown_kind", "anything");
-    assert!(result.is_err());
     let msg = format!("{}", result.expect_err("expected error"));
     assert!(msg.contains("unknown email template kind"), "got: {msg}");
 }
@@ -288,21 +288,24 @@ fn validate_rejects_unknown_kind() {
 fn validate_rejects_cross_kind_contamination() {
     // verification_url must not appear in password_reset templates.
     let result = validate_email_template("password_reset", "Link: {{verification_url}}");
-    assert!(result.is_err());
+    assert!(
+        matches!(result, Err(EmailError::Template { .. })),
+        "cross-kind placeholder contamination must return Template error"
+    );
 }
 
 #[test]
 fn validate_detects_unclosed_braces() {
     let result = validate_email_template("verification", "{{unclosed_brace");
-    assert!(result.is_err());
     let msg = format!("{}", result.expect_err("expected error"));
     assert!(msg.contains("unclosed"), "got: {msg}");
 }
 
 #[test]
 fn validate_empty_body_is_ok() {
-    assert!(validate_email_template("verification", "").is_ok());
-    assert!(validate_email_template("password_reset", "Plain text without placeholders").is_ok());
+    validate_email_template("verification", "").expect("empty verification body must pass");
+    validate_email_template("password_reset", "Plain text without placeholders")
+        .expect("plain-text password_reset body without placeholders must pass");
 }
 
 // ===== Placeholder substitution via EmailService =====

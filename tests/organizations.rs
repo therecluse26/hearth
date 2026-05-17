@@ -8,7 +8,7 @@ mod common;
 use hearth::core::OrganizationId;
 use hearth::identity::{
     CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest,
-    IdentityEngine, OrganizationConfig, OrganizationRole, OrganizationStatus,
+    IdentityEngine, IdentityError, OrganizationConfig, OrganizationRole, OrganizationStatus,
     UpdateOrganizationRequest,
 };
 
@@ -688,7 +688,10 @@ async fn invitation_revocation() {
 
     // Try to accept — should fail
     let result = identity.accept_invitation(&realm_id, &token);
-    assert!(result.is_err(), "revoked invitation should not be accepted");
+    assert!(
+        matches!(result.unwrap_err(), IdentityError::InvitationInvalid),
+        "revoked invitation must return InvitationInvalid"
+    );
 }
 
 // ===== Integration Scenario 10: Organization not found =====

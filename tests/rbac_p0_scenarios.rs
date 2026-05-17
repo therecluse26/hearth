@@ -25,9 +25,20 @@ fn p(s: &str) -> Permission {
 
 #[test]
 fn permission_grammar_basic_dotted_accepted() {
-    assert!(Permission::new("docs.read").is_ok());
-    assert!(Permission::new("org.billing.view").is_ok());
-    assert!(Permission::new("a.b.c.d").is_ok());
+    assert_eq!(
+        Permission::new("docs.read").expect("docs.read is valid").as_str(),
+        "docs.read"
+    );
+    assert_eq!(
+        Permission::new("org.billing.view")
+            .expect("org.billing.view is valid")
+            .as_str(),
+        "org.billing.view"
+    );
+    assert_eq!(
+        Permission::new("a.b.c.d").expect("a.b.c.d is valid").as_str(),
+        "a.b.c.d"
+    );
 }
 
 #[test]
@@ -41,15 +52,23 @@ fn permission_grammar_empty_rejected() {
 #[test]
 fn permission_grammar_no_dot_rejected() {
     // A permission must contain at least one `.` namespace separator.
-    assert!(Permission::new("docs").is_err());
-    assert!(Permission::new("nodot").is_err());
+    let err = Permission::new("docs").expect_err("single-segment must be rejected");
+    assert!(err.contains("separator"), "got: {err}");
+    let err = Permission::new("nodot").expect_err("single-segment must be rejected");
+    assert!(err.contains("separator"), "got: {err}");
 }
 
 #[test]
 fn permission_grammar_delimiter_chars_rejected() {
-    assert!(Permission::new("docs read").is_err(), "space");
-    assert!(Permission::new("docs/read").is_err(), "slash");
-    assert!(Permission::new("docs:read").is_err(), "colon");
+    // "docs read" has no dot, so the separator check fires first.
+    let err = Permission::new("docs read").expect_err("space in permission must be rejected");
+    assert!(err.contains("separator"), "space: got: {err}");
+    // "docs/read" has no dot either; separator check fires before character check.
+    let err = Permission::new("docs/read").expect_err("slash in permission must be rejected");
+    assert!(err.contains("separator"), "slash: got: {err}");
+    // Colon has a dedicated early-exit check before splitting.
+    let err = Permission::new("docs:read").expect_err("colon in permission must be rejected");
+    assert!(err.contains(':'), "colon: got: {err}");
 }
 
 #[test]
@@ -58,10 +77,8 @@ fn permission_grammar_length_over_128_rejected() {
     let seg = "a".repeat(65);
     let long = format!("{seg}.{seg}"); // 131 chars
     assert!(long.len() > 128);
-    assert!(
-        Permission::new(&long).is_err(),
-        "length > 128 must be rejected"
-    );
+    let err = Permission::new(&long).expect_err("length > 128 must be rejected");
+    assert!(err.contains("maximum length"), "got: {err}");
 }
 
 #[test]
@@ -70,9 +87,11 @@ fn permission_grammar_max_128_accepted() {
     let seg = "a".repeat(63);
     let s = format!("{seg}.{seg}");
     assert_eq!(s.len(), 127);
-    assert!(
-        Permission::new(&s).is_ok(),
-        "length == 127 must be accepted"
+    assert_eq!(
+        Permission::new(&s)
+            .expect("length == 127 must be accepted")
+            .as_str(),
+        s.as_str()
     );
 }
 
@@ -146,13 +165,20 @@ async fn group_depth_cap_exceeded() {
 fn invalid_permission_grammar_rejected_at_construction() {
     // Permission is a validated newtype. These must all fail at the type boundary
     // before reaching the engine, guaranteeing no invalid permission ever enters.
-    assert!(Permission::new("").is_err(), "empty");
-    assert!(Permission::new("no-dot").is_err(), "no namespace separator");
-    assert!(Permission::new("has space.x").is_err(), "whitespace");
-    assert!(Permission::new("slash/x.y").is_err(), "slash");
-    assert!(Permission::new("colon:x.y").is_err(), "colon");
+    let err = Permission::new("").expect_err("empty string must be rejected");
+    assert!(err.contains("empty"), "empty: got: {err}");
+    let err = Permission::new("no-dot").expect_err("no namespace separator must be rejected");
+    assert!(err.contains("separator"), "no-dot: got: {err}");
+    let err =
+        Permission::new("has space.x").expect_err("whitespace in permission must be rejected");
+    assert!(err.contains("invalid character"), "whitespace: got: {err}");
+    let err = Permission::new("slash/x.y").expect_err("slash in permission must be rejected");
+    assert!(err.contains("invalid character"), "slash: got: {err}");
+    let err = Permission::new("colon:x.y").expect_err("colon in permission must be rejected");
+    assert!(err.contains(':'), "colon: got: {err}");
     let long = format!("a.{}", "z".repeat(130));
-    assert!(Permission::new(&long).is_err(), "too long");
+    let err = Permission::new(&long).expect_err("too-long permission must be rejected");
+    assert!(err.contains("maximum length"), "too-long: got: {err}");
 }
 
 // ---------------------------------------------------------------------------

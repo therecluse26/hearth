@@ -7,7 +7,8 @@ mod common;
 
 use hearth::core::RealmId;
 use hearth::identity::{
-    CreateRealmRequest, CreateUserRequest, RealmConfig, RealmStatus, UpdateRealmRequest,
+    CreateRealmRequest, CreateUserRequest, IdentityError, RealmConfig, RealmStatus,
+    UpdateRealmRequest,
 };
 
 // ===== Integration Scenario 1: Full realm lifecycle =====
@@ -212,7 +213,10 @@ async fn realm_scoped_oidc_discovery_and_jwks() {
 
     // Nonexistent realm should fail
     let err = identity.realm_jwks(&RealmId::generate());
-    assert!(err.is_err(), "JWKS for nonexistent realm should fail");
+    assert!(
+        matches!(err.unwrap_err(), IdentityError::RealmNotFound),
+        "JWKS for nonexistent realm must return RealmNotFound"
+    );
 }
 
 // ===== Adversarial Scenario 1: Cross-realm session injection =====

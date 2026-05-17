@@ -538,49 +538,102 @@ mod tests {
 
     #[test]
     fn permission_rejects_single_segment() {
-        assert!(
-            Permission::new("docs").is_err(),
-            "single-segment names belong to the OIDC scope namespace"
-        );
+        let err = Permission::new("docs")
+            .expect_err("single-segment names belong to the OIDC scope namespace");
+        assert!(err.contains("separator"), "got: {err}");
     }
 
     #[test]
     fn permission_accepts_dotted() {
-        assert!(Permission::new("docs.edit").is_ok());
-        assert!(Permission::new("org.billing.view").is_ok());
+        assert_eq!(
+            Permission::new("docs.edit")
+                .expect("docs.edit is valid")
+                .as_str(),
+            "docs.edit"
+        );
+        assert_eq!(
+            Permission::new("org.billing.view")
+                .expect("org.billing.view is valid")
+                .as_str(),
+            "org.billing.view"
+        );
     }
 
     #[test]
     fn permission_accepts_digits_and_underscores_in_non_first_position() {
-        assert!(Permission::new("docs.v1").is_ok());
-        assert!(Permission::new("docs.edit_self").is_ok());
-        assert!(Permission::new("a1b2c3.x_y").is_ok());
+        assert_eq!(
+            Permission::new("docs.v1").expect("docs.v1 is valid").as_str(),
+            "docs.v1"
+        );
+        assert_eq!(
+            Permission::new("docs.edit_self")
+                .expect("docs.edit_self is valid")
+                .as_str(),
+            "docs.edit_self"
+        );
+        assert_eq!(
+            Permission::new("a1b2c3.x_y")
+                .expect("a1b2c3.x_y is valid")
+                .as_str(),
+            "a1b2c3.x_y"
+        );
     }
 
     #[test]
     fn permission_rejects_empty() {
-        assert!(Permission::new("").is_err());
+        let err = Permission::new("").expect_err("empty string must be rejected");
+        assert!(!err.is_empty(), "got: {err}");
     }
 
     #[test]
     fn permission_accepts_mixed_case() {
         // Per AUTHZ_EXPANSION.md the grammar is case-insensitive.
-        assert!(Permission::new("Docs.edit").is_ok());
-        assert!(Permission::new("docs.Edit").is_ok());
+        assert_eq!(
+            Permission::new("Docs.edit")
+                .expect("Docs.edit is valid")
+                .as_str(),
+            "Docs.edit"
+        );
+        assert_eq!(
+            Permission::new("docs.Edit")
+                .expect("docs.Edit is valid")
+                .as_str(),
+            "docs.Edit"
+        );
     }
 
     #[test]
     fn permission_accepts_leading_digit() {
         // Grammar permits any ASCII alnum/underscore/hyphen at any position.
-        assert!(Permission::new("1docs.x").is_ok());
-        assert!(Permission::new("docs.1bad").is_ok());
+        assert_eq!(
+            Permission::new("1docs.x")
+                .expect("1docs.x is valid")
+                .as_str(),
+            "1docs.x"
+        );
+        assert_eq!(
+            Permission::new("docs.1bad")
+                .expect("docs.1bad is valid")
+                .as_str(),
+            "docs.1bad"
+        );
     }
 
     #[test]
     fn permission_accepts_leading_underscore() {
         // Same grammar relaxation as above.
-        assert!(Permission::new("_docs.x").is_ok());
-        assert!(Permission::new("docs._bad").is_ok());
+        assert_eq!(
+            Permission::new("_docs.x")
+                .expect("_docs.x is valid")
+                .as_str(),
+            "_docs.x"
+        );
+        assert_eq!(
+            Permission::new("docs._bad")
+                .expect("docs._bad is valid")
+                .as_str(),
+            "docs._bad"
+        );
     }
 
     #[test]

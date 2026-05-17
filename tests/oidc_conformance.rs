@@ -11,6 +11,7 @@ mod common;
 use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::tokens::{decode_claims_unverified, verify_token_signature, Audience};
+use hearth::identity::IdentityError;
 use hearth::identity::{
     AuthorizationRequest, CodeChallengeMethod, CreateRealmRequest, CreateUserRequest, OAuthClient,
     RegisterClientRequest, TokenExchangeRequest,
@@ -177,10 +178,11 @@ async fn oidc_core_required_claims_and_signing() {
     let pub_key_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(pub_key_b64)
         .expect("decode public key");
-    let verified = verify_token_signature(id_token, &pub_key_bytes);
-    assert!(
-        verified.is_ok(),
-        "ID token signature must verify with realm key"
+    let verified_claims = verify_token_signature(id_token, &pub_key_bytes)
+        .expect("ID token signature must verify with realm key");
+    assert_eq!(
+        verified_claims.sub, claims.sub,
+        "verified signature claims must match decoded claims"
     );
 
     // 7. exp > iat
@@ -369,7 +371,10 @@ async fn oidc_userinfo_endpoint() {
 
     // 4. Verify userinfo with an invalid token fails
     let bad_result = harness.identity().userinfo(&realm_id, "invalid.token.here");
-    assert!(bad_result.is_err(), "userinfo with invalid token must fail");
+    assert!(
+        matches!(bad_result, Err(IdentityError::InvalidToken)),
+        "userinfo with invalid token must return InvalidToken"
+    );
 
     // 5. Verify userinfo with a revoked session token fails
     // First extract session from claims to revoke it
@@ -387,8 +392,8 @@ async fn oidc_userinfo_endpoint() {
         .identity()
         .userinfo(&realm_id, token_response.access_token());
     assert!(
-        revoked_result.is_err(),
-        "userinfo with revoked session token must fail"
+        matches!(revoked_result.unwrap_err(), IdentityError::InvalidToken),
+        "userinfo with revoked session token must return InvalidToken"
     );
 }
 
