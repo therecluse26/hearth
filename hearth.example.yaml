@@ -148,7 +148,11 @@ operational:
 
 email:
   # Outbound mail transport for verification and transactional mail.
-  # Supported: log | smtp | sendgrid | postmark | mailgun | mailtrap
+  # Supported: log | mailcatcher | smtp | sendgrid | postmark | mailgun | mailtrap
+  #
+  # Local development (no Docker required):
+  #   transport: mailcatcher  # captures emails in-process; UI at /dev/mail
+  #                           # only works with --dev mode; auto-enabled by default
   transport: log                    # default: log (no network I/O)
 
   # Sender address (From: header). Required for all transports except `log`.

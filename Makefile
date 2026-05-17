@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test test-quality ci-fast bench-gate ci-standard docker-up docker-reload
+.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test test-quality ci-fast bench-gate ci-standard docker-up docker-reload dev
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -158,3 +158,8 @@ docker-up:
 docker-reload:
 	docker compose down
 	DOCKER_BUILDKIT=1 docker compose up --build -d hearth
+
+## Run Hearth in dev mode (mailcatcher UI at http://127.0.0.1:8420/dev/mail).
+## No Docker required — emails are captured in-process.
+dev:
+	cargo run -- serve --dev

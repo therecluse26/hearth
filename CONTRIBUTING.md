@@ -1,5 +1,47 @@
 # Contributing to Hearth
 
+## Local development without Docker
+
+Hearth runs fully in-process — no external services required.
+
+**Cargo-only path (recommended for day-to-day development):**
+
+```sh
+make dev   # cargo run -- serve --dev
+```
+
+`--dev` mode:
+- Binds to `127.0.0.1:8420` with in-memory storage (no `data/` directory needed).
+- Auto-enables the **mailcatcher** transport, which captures all outgoing email
+  in-process. Inspect captured mail at <http://127.0.0.1:8420/dev/mail>.
+- No `hearth.yaml` required — all defaults are development-safe.
+
+Bootstrap a realm and admin token after the server starts:
+
+```sh
+curl -X POST http://127.0.0.1:8420/admin/bootstrap
+```
+
+**Docker path (for production-parity or team demos):**
+
+```sh
+cp hearth.example.yaml hearth.yaml        # edit to taste
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+This starts **hearth only** — email is still handled by mailcatcher by default.
+To also start [Mailpit](https://mailpit.axllent.org/) (an external SMTP sink with
+a richer web UI at <http://localhost:8025>):
+
+```sh
+docker compose -f deploy/docker-compose.yml --profile mail up -d
+```
+
+Then point `email.transport: smtp` and `email.smtp.host: mailpit` in your
+`hearth.yaml` to route mail through Mailpit.
+
+---
+
 ## Contributor Setup
 
 Run once after cloning the repo:
