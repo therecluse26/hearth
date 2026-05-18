@@ -149,7 +149,7 @@ export async function requirePermission(req, res, next, permission) {
 
   const { payload } = await jwtVerify(token, JWKS, {
     issuer:   process.env.HEARTH_ISSUER,   // e.g. "https://auth.example.com"
-    audience: 'hearth',
+    audience: process.env.HEARTH_ISSUER,   // aud defaults to oidc.issuer; set token.audience in config to override
   });
 
   if (!payload.permissions?.includes(permission))
@@ -178,12 +178,82 @@ def _get_key(token: str, realm_id: str):
 def require_permission(token: str, permission: str) -> dict:
     key = _get_key(token, HEARTH_REALM_ID)
     payload = jwt.decode(token, key.to_dict(), algorithms=['EdDSA'],
-                         audience='hearth', issuer=HEARTH_ISSUER)
+                         audience=HEARTH_ISSUER, issuer=HEARTH_ISSUER)  # aud defaults to oidc.issuer
     assert permission in payload.get('permissions', []), 'Forbidden'
     return payload
 ```
 
 > **JWKS caching:** `createRemoteJWKSet` caches keys automatically. In Python, cache `_get_key` results (e.g., with `functools.lru_cache(ttl=...)`) to avoid a JWKS fetch on every request.
+
+## 7. Token delivery for browser SPAs
+
+All Hearth token endpoints (`/token`, `/realms/{name}/token`) return tokens in the JSON response body — the standard RFC 6749 format:
+
+```json
+{
+  "access_token":  "eyJ...",
+  "token_type":    "Bearer",
+  "expires_in":    900,
+  "refresh_token": "eyJ...",
+  "id_token":      "eyJ..."
+}
+```
+
+No `Set-Cookie` header is emitted. You receive the tokens and are responsible for how they are stored and transported.
+
+### Where to store tokens in the browser
+
+| Location | XSS risk | CSRF risk | Verdict |
+|---|---|---|---|
+| `localStorage` | **High** — any injected script reads it | None | **Never** |
+| `sessionStorage` | **High** — same as localStorage | None | **Never** |
+| JavaScript variable (in-memory) | Low — lost on page reload; attacker script must be active | None | **OK for access tokens** |
+| `HttpOnly` cookie (via a BFF server) | None — JS cannot read it | Mitigated by `SameSite=Strict` | **Best for refresh tokens** |
+
+### Recommended SPA pattern: PKCE + in-memory access token
+
+The PKCE Authorization Code flow from step 4 is the correct grant for SPAs. After the exchange:
+
+- **Access token**: keep it in a JavaScript module-scoped variable. Never write it to `localStorage` or `sessionStorage`. On a page reload, silently re-acquire it using the refresh token or a `prompt=none` silent redirect.
+- **Refresh token**: the highest-risk credential. For most SPAs, store it in-memory alongside the access token and rotate it on each use (Hearth rotates refresh tokens automatically). For maximum security, never let the browser hold the refresh token at all — use the BFF pattern below.
+
+### Backend for Frontend (BFF) pattern
+
+In the BFF pattern, your SPA delegates all token handling to your own server-side component:
+
+```
+Browser SPA  ──POST /api/auth/callback──►  Your BFF server
+                                            │
+                                            ├─► POST /token to Hearth (gets access + refresh tokens)
+                                            │   Stores refresh_token server-side (never sent to browser)
+                                            │
+             ◄── Set-Cookie: sid=...; HttpOnly; Secure; SameSite=Strict ──┘
+
+Browser SPA  ──API requests (cookie auto-attached)──►  Your BFF server
+                                                         │
+                                                         └─► Forwards access token to backend API
+```
+
+Your BFF server issues its own `HttpOnly; Secure; SameSite=Strict` session cookie. The SPA never receives or stores OAuth tokens directly. You are responsible for building and securing the BFF — Hearth's role is the authorization server only.
+
+### What Hearth's built-in admin UI does
+
+Hearth's admin console (`/ui/*`) follows this same approach internally using two cookies:
+
+| Cookie | Flags | Purpose |
+|---|---|---|
+| `hearth_ui_session` | `HttpOnly; Path=/ui; SameSite=Lax` | Binds session+realm; JS cannot read it |
+| `hearth_ui_csrf` | `Path=/ui; SameSite=Lax` | JS-readable CSRF token; echoed on every mutation |
+
+`SameSite=Lax` (not `Strict`) is used here deliberately: `Strict` would drop the cookie on the redirect back from the login page, breaking the flow. For your own BFF cookie, `SameSite=Strict` is safe because your SPA and BFF share an origin.
+
+**These cookies are for the admin console only — they are not available to your OAuth clients.**
+
+### Current implementation status
+
+Hearth does not offer a built-in OAuth token-handler mode (delivering `/token` responses as `HttpOnly` cookies). If you need Hearth to issue tokens directly into cookies, implement the BFF pattern in your application server. A feature request for a native cookie-delivery mode is tracked separately.
+
+---
 
 ## Next steps
 

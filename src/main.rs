@@ -21,7 +21,7 @@ use hearth::identity::email::{
 use hearth::identity::onboarding::{self, OnboardingService};
 use hearth::identity::{
     CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, OidcConfig,
-    TokenConfig,
+    RateLimitConfig, TokenConfig,
 };
 use hearth::protocol;
 use hearth::protocol::http::{self, AppState};
@@ -602,17 +602,45 @@ async fn run_serve(
         tc
     };
 
+    // Build rate-limit config from YAML, falling back to compiled-in defaults.
+    let rate_limit_config = {
+        let defaults = RateLimitConfig::default();
+        let rl = config.security.rate_limiting.as_ref();
+        RateLimitConfig {
+            max_failed_attempts: rl
+                .and_then(|r| r.login_per_account.as_ref())
+                .and_then(|a| a.max_failures)
+                .unwrap_or(defaults.max_failed_attempts),
+            lockout_duration_micros: rl
+                .and_then(|r| r.login_per_account.as_ref())
+                .and_then(|a| a.lockout_seconds)
+                .map(|s| s as i64 * 1_000_000)
+                .unwrap_or(defaults.lockout_duration_micros),
+            ip_max_attempts: rl
+                .and_then(|r| r.login_per_ip.as_ref())
+                .and_then(|i| i.max_attempts)
+                .unwrap_or(defaults.ip_max_attempts),
+            ip_window_micros: rl
+                .and_then(|r| r.login_per_ip.as_ref())
+                .and_then(|i| i.window_seconds)
+                .map(|s| s as i64 * 1_000_000)
+                .unwrap_or(defaults.ip_window_micros),
+        }
+    };
+
     let identity_config = if config.dev_mode {
         IdentityConfig {
             credential: CredentialConfig::fast_for_testing(),
             oidc: oidc_config,
             token: token_config,
+            rate_limit: rate_limit_config,
             ..IdentityConfig::default()
         }
     } else {
         IdentityConfig {
             oidc: oidc_config,
             token: token_config,
+            rate_limit: rate_limit_config,
             ..IdentityConfig::default()
         }
     };
@@ -1074,6 +1102,20 @@ async fn run_serve(
         .map(|micros| (micros / 1_000_000) as u64)
         .unwrap_or(86_400);
 
+    // Parse trusted proxy IPs early so both AppState (JSON API) and WebState
+    // (browser UI) can use the same list for real client IP extraction.
+    let api_trusted_proxies: Vec<std::net::IpAddr> = config
+        .server
+        .trusted_proxies
+        .iter()
+        .filter_map(|s| {
+            s.parse::<std::net::IpAddr>().ok().or_else(|| {
+                warn!(addr = %s, "ignoring invalid trusted_proxies entry (expected IP address)");
+                None
+            })
+        })
+        .collect();
+
     let app_state = if config.dev_mode {
         Arc::new(
             AppState::new_dev(
@@ -1083,7 +1125,8 @@ async fn run_serve(
             )
             .with_webhook(Arc::clone(&webhook_engine))
             .with_metrics_enabled(config.metrics.enabled)
-            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs),
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs)
+            .with_trusted_proxies(api_trusted_proxies.clone()),
         )
     } else {
         Arc::new(
@@ -1094,7 +1137,8 @@ async fn run_serve(
             )
             .with_webhook(Arc::clone(&webhook_engine))
             .with_metrics_enabled(config.metrics.enabled)
-            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs),
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs)
+            .with_trusted_proxies(api_trusted_proxies.clone()),
         )
     };
 
@@ -1128,22 +1172,10 @@ async fn run_serve(
     .with_default_realm(config.server.default_realm.clone())
     .with_config(Arc::new(config.clone()));
 
-    // Parse trusted proxy IPs from config for real client IP extraction.
-    let trusted_proxies: Vec<std::net::IpAddr> = config
-        .server
-        .trusted_proxies
-        .iter()
-        .filter_map(|s| {
-            s.parse::<std::net::IpAddr>().ok().or_else(|| {
-                warn!(addr = %s, "ignoring invalid trusted_proxies entry (expected IP address)");
-                None
-            })
-        })
-        .collect();
-    if !trusted_proxies.is_empty() {
-        info!(count = trusted_proxies.len(), "loaded trusted_proxies");
+    if !api_trusted_proxies.is_empty() {
+        info!(count = api_trusted_proxies.len(), "loaded trusted_proxies");
     }
-    web_state = web_state.with_trusted_proxies(trusted_proxies);
+    web_state = web_state.with_trusted_proxies(api_trusted_proxies);
 
     if let Some((bytes, content_type)) = custom_logo {
         web_state = web_state.with_custom_logo(bytes, content_type);

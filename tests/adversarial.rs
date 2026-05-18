@@ -47,6 +47,7 @@ fn build_engine(max_attempts: u32) -> (impl IdentityEngine, tempfile::TempDir) {
             rate_limit: RateLimitConfig {
                 max_failed_attempts: max_attempts,
                 lockout_duration_micros: 15 * 60 * 1_000_000,
+                ..RateLimitConfig::default()
             },
             ..IdentityConfig::default()
         },

@@ -138,6 +138,13 @@ const FED_STATE_PREFIX: &str = "fed:state:";
 /// HMAC-bound to the matched user; single-use; 10-minute TTL.
 const FED_CONFIRM_PREFIX: &str = "fed:confirm:";
 
+/// Prefix for WAL-persisted per-user login-failure attempt trackers.
+///
+/// Format: `rl:user:{user_uuid}`
+/// Storage is already realm-scoped via the `StorageEngine` realm handle,
+/// so no realm UUID is embedded in the key.
+const ATTEMPT_TRACKER_PREFIX: &str = "rl:user:";
+
 /// Prefix for the reverse external-identity → user index.
 ///
 /// Keyed by `(realm, idp_id, external_sub)`. Primary lookup on every
@@ -1809,4 +1816,23 @@ mod tests {
             assert!(!p.starts_with(&fed));
         }
     }
+}
+
+// ===== Attempt tracker WAL keys =====
+
+/// Encodes the WAL storage key for a per-user login-failure attempt tracker.
+///
+/// Format: `rl:user:{user_uuid}`
+///
+/// Keys are realm-scoped via the `StorageEngine` handle; no realm segment is
+/// embedded here (same convention as `oauth:client:`, `cred:user:`, etc.).
+pub(crate) fn encode_attempt_tracker(user_id: &UserId) -> Vec<u8> {
+    format!("{ATTEMPT_TRACKER_PREFIX}{}", user_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all persisted attempt trackers in a realm.
+///
+/// Format: `rl:user:`
+pub(crate) fn attempt_tracker_scan_prefix() -> Vec<u8> {
+    ATTEMPT_TRACKER_PREFIX.as_bytes().to_vec()
 }
