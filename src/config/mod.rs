@@ -24,6 +24,7 @@ pub use types::{
     SamlServiceProviderYaml, ScopeBundleYamlConfig, SecurityYaml, SendgridConfig, ServerConfig,
     SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
 };
+pub use types::ClusterConfig;
 
 /// Helper: construct a validation error without repeating the struct
 /// literal everywhere the email validator fires.
