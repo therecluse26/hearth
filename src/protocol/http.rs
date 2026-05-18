@@ -365,9 +365,6 @@ fn make_ip_rate_limit_response(retry_after_secs: u32) -> Response {
         .into_response()
 }
 
-/// Extracts the effective client IP for API (non-browser) endpoints.
-///
-
 /// Builds the HTTP router with all configured routes.
 ///
 /// The returned router is ready to be served with [`serve`].
@@ -1889,7 +1886,7 @@ async fn token_exchange_impl(
                     .into_response();
             };
 
-            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+            let oauth_client_id = match body.client_id.parse::<uuid::Uuid>() {
                 Ok(u) => ClientId::new(u),
                 Err(_) => {
                     return (
@@ -1902,7 +1899,7 @@ async fn token_exchange_impl(
 
             match state
                 .identity
-                .poll_device_token(&realm_id, &device_code, &client_id)
+                .poll_device_token(&realm_id, &device_code, &oauth_client_id)
             {
                 Ok(response) => {
                     crate::metrics::metrics()
@@ -1954,8 +1951,10 @@ async fn token_exchange_impl(
                     )
                         .into_response()
                 }
-                Err(ref e @ crate::identity::IdentityError::InvalidCredential { .. })
-                | Err(ref e @ crate::identity::IdentityError::RateLimited) => {
+                Err(
+                    ref e @ (crate::identity::IdentityError::InvalidCredential { .. }
+                    | crate::identity::IdentityError::RateLimited),
+                ) => {
                     // Record the failed attempt against the IP for credential failures.
                     state
                         .identity
@@ -5359,7 +5358,7 @@ async fn realm_token_exchange(
                 )
                     .into_response();
             };
-            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+            let oauth_client_id = match body.client_id.parse::<uuid::Uuid>() {
                 Ok(u) => ClientId::new(u),
                 Err(_) => {
                     return (
@@ -5371,7 +5370,7 @@ async fn realm_token_exchange(
             };
             match state
                 .identity
-                .poll_device_token(&realm_id, &device_code, &client_id)
+                .poll_device_token(&realm_id, &device_code, &oauth_client_id)
             {
                 Ok(response) => (
                     StatusCode::OK,
@@ -5405,8 +5404,10 @@ async fn realm_token_exchange(
                     })),
                 )
                     .into_response(),
-                Err(ref e @ crate::identity::IdentityError::InvalidCredential { .. })
-                | Err(ref e @ crate::identity::IdentityError::RateLimited) => {
+                Err(
+                    ref e @ (crate::identity::IdentityError::InvalidCredential { .. }
+                    | crate::identity::IdentityError::RateLimited),
+                ) => {
                     state
                         .identity
                         .record_ip_login_attempt(&realm_id, &client_ip);

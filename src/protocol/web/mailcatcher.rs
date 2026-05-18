@@ -237,13 +237,16 @@ pub async fn clear_inbox(
 /// Only call this when `email.transport = mailcatcher` and `dev_mode = true`.
 pub fn mailcatcher_router(state: Arc<MailcatcherState>) -> Router {
     Router::new()
-        .route("/dev/mail", axum::routing::get(inbox))
+        .route("/dev/mail", axum::routing::get(inbox).delete(clear_inbox))
         .route("/dev/mail/clear", axum::routing::post(clear_inbox))
         .route(
             "/dev/mail/login",
             axum::routing::get(login_form).post(login_submit),
         )
-        .route("/dev/mail/{id}", axum::routing::get(email_detail))
+        .route(
+            "/dev/mail/{id}",
+            axum::routing::get(email_detail).delete(delete_email),
+        )
         .route("/dev/mail/{id}/delete", axum::routing::post(delete_email))
         .with_state(state)
 }

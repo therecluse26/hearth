@@ -1275,6 +1275,25 @@ pub(crate) fn config_migration_history_scan_prefix() -> Vec<u8> {
     CONFIG_MIGRATION_HISTORY_PREFIX.as_bytes().to_vec()
 }
 
+// ===== Attempt tracker WAL keys =====
+
+/// Encodes the WAL storage key for a per-user login-failure attempt tracker.
+///
+/// Format: `rl:user:{user_uuid}`
+///
+/// Keys are realm-scoped via the `StorageEngine` handle; no realm segment is
+/// embedded here (same convention as `oauth:client:`, `cred:user:`, etc.).
+pub(crate) fn encode_attempt_tracker(user_id: &UserId) -> Vec<u8> {
+    format!("{ATTEMPT_TRACKER_PREFIX}{}", user_id.as_uuid()).into_bytes()
+}
+
+/// Returns the scan prefix for all persisted attempt trackers in a realm.
+///
+/// Format: `rl:user:`
+pub(crate) fn attempt_tracker_scan_prefix() -> Vec<u8> {
+    ATTEMPT_TRACKER_PREFIX.as_bytes().to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1816,23 +1835,4 @@ mod tests {
             assert!(!p.starts_with(&fed));
         }
     }
-}
-
-// ===== Attempt tracker WAL keys =====
-
-/// Encodes the WAL storage key for a per-user login-failure attempt tracker.
-///
-/// Format: `rl:user:{user_uuid}`
-///
-/// Keys are realm-scoped via the `StorageEngine` handle; no realm segment is
-/// embedded here (same convention as `oauth:client:`, `cred:user:`, etc.).
-pub(crate) fn encode_attempt_tracker(user_id: &UserId) -> Vec<u8> {
-    format!("{ATTEMPT_TRACKER_PREFIX}{}", user_id.as_uuid()).into_bytes()
-}
-
-/// Returns the scan prefix for all persisted attempt trackers in a realm.
-///
-/// Format: `rl:user:`
-pub(crate) fn attempt_tracker_scan_prefix() -> Vec<u8> {
-    ATTEMPT_TRACKER_PREFIX.as_bytes().to_vec()
 }

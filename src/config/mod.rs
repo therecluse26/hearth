@@ -14,15 +14,15 @@ pub use error::ConfigError;
 pub use types::parse_duration_to_micros;
 pub use types::{
     AccountRateLimitYaml, ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig,
-    CompactionSection, EmailConfig, EmailTransport, FederationProviderYaml,
-    FederationYamlConfig, GlobalRateLimitYaml, GroupYamlConfig, IpRateLimitYaml, LinkModeYaml,
-    MailgunConfig, MailgunRegion, MailtrapConfig, MetricsConfig, MigrateConflictPolicy,
-    ObservabilityConfig, OidcYamlConfig, OnboardingConfig, OperationalConfig, OrgConfigYaml,
-    OrganizationYamlConfig, OtlpConfig, OtlpProtocol, PasswordPolicyYaml, PermissionYamlConfig,
-    PostmarkConfig, ProtectedResourceYamlConfig, RateLimitYaml, RealmAuthYaml, RealmEmailYaml,
-    RealmMigrateYaml, RealmScimYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig,
-    RoleYamlConfig, SamlServiceProviderYaml, ScopeBundleYamlConfig, SecurityYaml, SendgridConfig,
-    ServerConfig, SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
+    CompactionSection, EmailConfig, EmailTransport, FederationProviderYaml, FederationYamlConfig,
+    GlobalRateLimitYaml, GroupYamlConfig, IpRateLimitYaml, LinkModeYaml, MailgunConfig,
+    MailgunRegion, MailtrapConfig, MetricsConfig, MigrateConflictPolicy, ObservabilityConfig,
+    OidcYamlConfig, OnboardingConfig, OperationalConfig, OrgConfigYaml, OrganizationYamlConfig,
+    OtlpConfig, OtlpProtocol, PasswordPolicyYaml, PermissionYamlConfig, PostmarkConfig,
+    ProtectedResourceYamlConfig, RateLimitYaml, RealmAuthYaml, RealmEmailYaml, RealmMigrateYaml,
+    RealmScimYaml, RealmTokenYaml, RealmWebYaml, RealmYamlConfig, RoleYamlConfig,
+    SamlServiceProviderYaml, ScopeBundleYamlConfig, SecurityYaml, SendgridConfig, ServerConfig,
+    SmtpConfig, SmtpEncryption, StorageSection, TokenYamlConfig,
 };
 
 /// Helper: construct a validation error without repeating the struct
@@ -2113,7 +2113,7 @@ email:
 
     #[test]
     fn security_rate_limiting_yaml_parses_correctly() {
-        let yaml = r#"
+        let yaml = r"
 storage:
   data_dir: /tmp/hearth-test
 security:
@@ -2124,7 +2124,7 @@ security:
     login_per_account:
       max_failures: 3
       lockout_seconds: 600
-"#;
+";
         let config = Config::from_yaml_str_unchecked(yaml).expect("config parses");
         let rl = config
             .security
@@ -2134,17 +2134,20 @@ security:
         let ip = rl.login_per_ip.as_ref().expect("login_per_ip present");
         assert_eq!(ip.max_attempts, Some(20));
         assert_eq!(ip.window_seconds, Some(120));
-        let acct = rl.login_per_account.as_ref().expect("login_per_account present");
+        let acct = rl
+            .login_per_account
+            .as_ref()
+            .expect("login_per_account present");
         assert_eq!(acct.max_failures, Some(3));
         assert_eq!(acct.lockout_seconds, Some(600));
     }
 
     #[test]
     fn security_rate_limiting_defaults_when_absent() {
-        let yaml = r#"
+        let yaml = r"
 storage:
   data_dir: /tmp/hearth-test
-"#;
+";
         let config = Config::from_yaml_str_unchecked(yaml).expect("config parses");
         assert!(
             config.security.rate_limiting.is_none(),

@@ -214,9 +214,9 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             max_failed_attempts: 5,
-            lockout_duration_micros: 5 * 60 * 1_000_000,   // 5 minutes
+            lockout_duration_micros: 5 * 60 * 1_000_000, // 5 minutes
             ip_max_attempts: 10,
-            ip_window_micros: 60 * 1_000_000,              // 60 seconds
+            ip_window_micros: 60 * 1_000_000, // 60 seconds
         }
     }
 }
@@ -656,10 +656,7 @@ impl EmbeddedIdentityEngine {
                 continue;
             }
 
-            let entries = match self
-                .storage
-                .scan(realm.id(), &tracker_prefix, &tracker_end)
-            {
+            let entries = match self.storage.scan(realm.id(), &tracker_prefix, &tracker_end) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
@@ -2230,7 +2227,7 @@ impl IdentityEngine for EmbeddedIdentityEngine {
             return 0;
         }
         // Round up to whole seconds
-        ((micros as u64) + 999_999) / 1_000_000
+        (micros as u64).div_ceil(1_000_000)
     }
 
     // ===== Realm lifecycle (Phase 1 Step 19) =====
@@ -4746,7 +4743,11 @@ impl IdentityEngine for EmbeddedIdentityEngine {
         }
 
         // 3. Create session and issue token pair
-        let session = self.create_session(realm_id, user.id(), &crate::identity::SessionContext::default())?;
+        let session = self.create_session(
+            realm_id,
+            user.id(),
+            &crate::identity::SessionContext::default(),
+        )?;
         let token_pair = self.issue_tokens(realm_id, user.id(), session.id())?;
 
         Ok(crate::identity::oidc::PasswordGrantResponse {
@@ -11594,7 +11595,12 @@ mod tests {
 
     // ===== WAL persistence: attempt tracker survives restart =====
 
-    fn open_engine_at(dir: &tempfile::TempDir, max_attempts: u32, lockout_micros: i64, clock: Arc<FakeClock>) -> EmbeddedIdentityEngine {
+    fn open_engine_at(
+        dir: &tempfile::TempDir,
+        max_attempts: u32,
+        lockout_micros: i64,
+        clock: Arc<FakeClock>,
+    ) -> EmbeddedIdentityEngine {
         let storage = Arc::new(
             EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf()))
                 .expect("reopen storage"),
@@ -11634,21 +11640,40 @@ mod tests {
             let user = create_test_user(&engine, &realm);
             user_id = user.id().clone();
             engine
-                .set_password(&realm, &user_id, &CleartextPassword::from_string("pw".to_string()))
+                .set_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string("pw".to_string()),
+                )
                 .expect("set password");
             // 3 failures → lockout written to WAL
             for i in 0..3 {
-                let _ = engine.verify_password(&realm, &user_id, &CleartextPassword::from_string(format!("bad-{i}")));
+                let _ = engine.verify_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string(format!("bad-{i}")),
+                );
             }
             assert!(
-                matches!(engine.verify_password(&realm, &user_id, &CleartextPassword::from_string("pw".to_string())), Err(IdentityError::RateLimited)),
+                matches!(
+                    engine.verify_password(
+                        &realm,
+                        &user_id,
+                        &CleartextPassword::from_string("pw".to_string())
+                    ),
+                    Err(IdentityError::RateLimited)
+                ),
                 "should be locked out before restart"
             );
         } // engine dropped — simulates restart
 
         // Reopen same storage with a fresh engine instance
         let engine2 = open_engine_at(&dir, 3, lockout_micros, Arc::clone(&clock));
-        let result = engine2.verify_password(&realm, &user_id, &CleartextPassword::from_string("pw".to_string()));
+        let result = engine2.verify_password(
+            &realm,
+            &user_id,
+            &CleartextPassword::from_string("pw".to_string()),
+        );
         assert!(
             matches!(result, Err(IdentityError::RateLimited)),
             "lockout must persist across restart; got: {result:?}"
@@ -11669,10 +11694,18 @@ mod tests {
             let user = create_test_user(&engine, &realm);
             user_id = user.id().clone();
             engine
-                .set_password(&realm, &user_id, &CleartextPassword::from_string("pw".to_string()))
+                .set_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string("pw".to_string()),
+                )
                 .expect("set password");
             for i in 0..3 {
-                let _ = engine.verify_password(&realm, &user_id, &CleartextPassword::from_string(format!("bad-{i}")));
+                let _ = engine.verify_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string(format!("bad-{i}")),
+                );
             }
         }
 
@@ -11681,7 +11714,11 @@ mod tests {
 
         let engine2 = open_engine_at(&dir, 3, lockout_micros, Arc::clone(&clock));
         // WAL entry should be ignored because it is expired — login should succeed
-        let result = engine2.verify_password(&realm, &user_id, &CleartextPassword::from_string("pw".to_string()));
+        let result = engine2.verify_password(
+            &realm,
+            &user_id,
+            &CleartextPassword::from_string("pw".to_string()),
+        );
         assert!(
             matches!(result, Ok(true)),
             "expired lockout must not persist; got: {result:?}"
