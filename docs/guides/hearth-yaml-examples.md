@@ -638,8 +638,7 @@ content to the log instead of attempting delivery.
 
 ### Example 19 — SMTP
 
-**Audience:** operators self-hosting email delivery via any SMTP relay (AWS SES SMTP, Postfix,
-Mailpit, etc.).
+**Audience:** operators self-hosting email delivery via any SMTP relay (AWS SES SMTP, Postfix, etc.).
 
 ```yaml
 email:
@@ -660,7 +659,7 @@ onboarding:
 ```
 
 - `encryption: starttls` (STARTTLS on port 587) is the default. Use `tls` for implicit TLS on
-  port 465. Use `none` only against a local relay on a trusted network (e.g. Mailpit on `:1025`).
+  port 465. Use `none` only against a local relay on a trusted network (e.g. a local SMTP proxy on `:1025`).
 - `username` and `password` must either both be set or both be absent — the config validator
   enforces the pair.
 - Store credentials in environment variables; never commit them to `hearth.yaml`.

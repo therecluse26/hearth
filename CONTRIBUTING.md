@@ -22,24 +22,6 @@ Bootstrap a realm and admin token after the server starts:
 curl -X POST http://127.0.0.1:8420/admin/bootstrap
 ```
 
-**Docker path (for production-parity or team demos):**
-
-```sh
-cp hearth.example.yaml hearth.yaml        # edit to taste
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-This starts **hearth only** — email is still handled by mailcatcher by default.
-To also start [Mailpit](https://mailpit.axllent.org/) (an external SMTP sink with
-a richer web UI at <http://localhost:8025>):
-
-```sh
-docker compose -f deploy/docker-compose.yml --profile mail up -d
-```
-
-Then point `email.transport: smtp` and `email.smtp.host: mailpit` in your
-`hearth.yaml` to route mail through Mailpit.
-
 ---
 
 ## Contributor Setup

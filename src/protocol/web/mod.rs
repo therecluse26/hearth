@@ -56,6 +56,7 @@ pub mod auth;
 pub mod federation;
 pub mod handlers;
 pub(crate) mod handlers_common;
+pub mod mailcatcher;
 pub mod oauth_consent;
 pub mod realm_resolver;
 pub mod saml;
@@ -64,6 +65,7 @@ pub(crate) mod templates;
 pub mod themes;
 
 pub use auth::CookieSecret;
+pub use mailcatcher::mailcatcher_router;
 
 /// Default logo URL served from the embedded static assets. Used when
 /// no custom `branding.logo_url` is configured.

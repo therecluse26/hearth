@@ -45,11 +45,15 @@ make tailwind-install  # downloads Tailwind standalone CLI to ui/tailwindcss
 ### Quick Start
 
 ```bash
+make dev                              # cargo run -- serve --dev  (preferred)
+# or:
 cargo build --release
 ./target/release/hearth serve --dev   # binds 127.0.0.1:8420, in-memory storage
 curl http://127.0.0.1:8420/health
 curl -X POST http://127.0.0.1:8420/admin/bootstrap  # dev-only, creates realm+admin+token
 ```
+
+`--dev` auto-enables the in-process **mailcatcher** email transport. All outbound emails are captured and visible at `http://127.0.0.1:8420/dev/mail`. No Docker or external mail server needed.
 
 ## Reference Documents
 

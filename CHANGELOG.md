@@ -7,6 +7,30 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ## [Unreleased]
 
+### Added
+
+- **Built-in `mailcatcher` email transport** — captures outbound emails in an in-process ring
+  buffer (cap 50) and serves them via a password-protected browser UI at `/dev/mail`. Auto-enabled
+  when `--dev` is passed and no explicit transport is configured. Startup banner prints the inbox
+  URL and a randomly generated 16-character access password. Fatal startup error if
+  `email.transport = mailcatcher` is used outside dev mode (HEA-574).
+- **`--dev` now overrides SMTP transport → mailcatcher** — previously `--dev` only auto-enabled
+  mailcatcher when the transport was the default `log`. Users migrating from Docker-based Mailpit
+  setups who had `transport: smtp` in their `hearth.yaml` would still attempt a network SMTP
+  connection and see a DNS resolution error. `--dev` now upgrades both `log` and `smtp` to
+  mailcatcher; a startup warning advises updating the config explicitly. Production cloud transports
+  (`sendgrid`, `postmark`, `mailgun`, `mailtrap`) are kept unchanged (HEA-573).
+- **`docs/guides/local-dev.md`** — new developer guide covering the no-Docker local dev setup:
+  mailcatcher email capture, transport selection rules table, first-run setup flow, and persistent
+  dev storage instructions (HEA-575).
+
+### Removed
+
+- **Docker Compose dev stack removed** — `compose.yaml` (root) and the `docker-up`/`docker-reload`
+  Makefile targets are gone. `make dev` (`cargo run -- serve --dev`) replaces Docker entirely for
+  local development; the built-in mailcatcher handles email without any external services. The
+  production deployment stack in `deploy/docker-compose.yml` is unaffected (HEA-575).
+
 ### Security
 
 - **Mutating operations on Suspended/Archived realms are now rejected** — `create_user`,
