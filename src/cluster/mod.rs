@@ -25,9 +25,11 @@ pub mod log_store;
 pub(crate) mod rpc;
 pub mod network;
 pub mod server;
+pub mod state_machine;
 pub mod types;
 
 pub use log_store::{HearthLogReader, HearthLogStore};
 pub use network::HearthNetworkFactory;
 pub use server::{serve, IncomingRpcDispatch, NoopDispatch, RaftRpcHandler};
-pub use types::{HearthLogData, HearthLogResponse, HearthNode, HearthRaftConfig};
+pub use state_machine::HearthStateMachine;
+pub use types::{HearthLogData, HearthLogResponse, HearthNode, HearthRaftConfig, RaftCommand};
