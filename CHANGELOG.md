@@ -9,6 +9,14 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Added
 
+- **Per-IP and per-account rate limiting on auth endpoints** — `POST /token` (password grant),
+  `POST /v1/auth/magic-link`, and realm token exchange now enforce a configurable sliding-window
+  per-IP limit and a consecutive-failure lockout per account. Blocked callers receive
+  `429 Too Many Requests` with a `Retry-After` header. Configure via `security.rate_limiting`
+  in `hearth.yaml`; defaults are 10 attempts / 60 s per IP and 5 failures / 5 min lockout per
+  account. Trusted-proxy `X-Forwarded-For` handling is used when `server.trusted_proxies` is
+  set (HEA-587).
+
 - **Built-in `mailcatcher` email transport** — captures outbound emails in an in-process ring
   buffer (cap 50) and serves them via a password-protected browser UI at `/dev/mail`. Auto-enabled
   when `--dev` is passed and no explicit transport is configured. Startup banner prints the inbox
@@ -32,6 +40,12 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
   production deployment stack in `deploy/docker-compose.yml` is unaffected (HEA-575).
 
 ### Security
+
+- **Rate-limiting gaps closed** — per-IP sliding-window enforcement added to `POST /token`
+  (password grant) and the new `POST /v1/{realm}/auth/magic-link` endpoint; per-account lockout
+  state is now persisted to WAL and restored on startup so active lockouts survive server restarts;
+  `security.rate_limiting` YAML section added for configuring IP window and account lockout
+  thresholds without recompiling (HEA-592).
 
 - **Mutating operations on Suspended/Archived realms are now rejected** — `create_user`,
   `update_user`, `create_session`, `authorize` (OAuth 2.0 code issuance), `create_organization`,

@@ -6,12 +6,16 @@
 
 mod common;
 
-use hearth::core::RealmId;
+use std::sync::Arc;
+
+use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
-    ApplicationStatus, AuthorizationRequest, ClientCredentialsRequest, CreateRealmRequest,
-    CreateUserRequest, DeviceAuthorizationRequest, RegisterClientRequest, TokenRevocationRequest,
-    UpdateClientRequest, User,
+    ApplicationStatus, AuthorizationRequest, CleartextPassword, ClientCredentialsRequest,
+    CreateRealmRequest, CreateUserRequest, CredentialConfig, DeviceAuthorizationRequest,
+    EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, IdentityError, PasswordGrantRequest,
+    RateLimitConfig, RegisterClientRequest, TokenRevocationRequest, UpdateClientRequest, User,
 };
+use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
 /// Helper: creates a real realm with a signing key.
 fn pkce_challenge(verifier: &str) -> String {
@@ -733,4 +737,170 @@ async fn archived_client_blocks_and_restore_allows_authorize() {
             },
         )
         .expect("authorize on restored client must succeed");
+}
+
+// ===== Password grant (ROPC) =====
+
+fn build_engine_with_ip_rl(ip_max: u32) -> (impl IdentityEngine, tempfile::TempDir) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage = Arc::new(
+        EmbeddedStorageEngine::open(StorageConfig::dev(temp.path().to_path_buf()))
+            .expect("storage"),
+    ) as Arc<dyn StorageEngine>;
+    let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
+    let rbac = Arc::new(hearth::rbac::EmbeddedRbacEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
+    let engine = EmbeddedIdentityEngine::with_rbac(
+        storage,
+        clock,
+        IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            rate_limit: RateLimitConfig {
+                ip_max_attempts: ip_max,
+                ip_window_micros: 60_000_000,
+                ..RateLimitConfig::default()
+            },
+            ..IdentityConfig::default()
+        },
+        rbac as Arc<dyn hearth::rbac::RbacEngine>,
+        audit as Arc<dyn hearth::audit::AuditEngine>,
+    )
+    .expect("engine");
+    (engine, temp)
+}
+
+#[tokio::test]
+async fn password_grant_success() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    let password = "correct-horse-battery-staple";
+    harness
+        .identity()
+        .set_password(
+            &realm,
+            user.id(),
+            &CleartextPassword::from_string(password.to_string()),
+        )
+        .expect("set password");
+
+    let response = harness
+        .identity()
+        .password_grant_token(
+            &realm,
+            &PasswordGrantRequest {
+                email: user.email().to_string(),
+                password: password.to_string(),
+                scope: None,
+            },
+        )
+        .expect("password_grant_token should succeed");
+
+    assert!(!response.access_token().is_empty());
+    assert!(!response.refresh_token().is_empty());
+    assert_eq!(response.token_type, "Bearer");
+}
+
+#[tokio::test]
+async fn password_grant_wrong_password_returns_invalid_credential() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let realm = create_realm(&harness);
+    let user = create_user(&harness, &realm);
+    harness
+        .identity()
+        .set_password(
+            &realm,
+            user.id(),
+            &CleartextPassword::from_string("right".to_string()),
+        )
+        .expect("set password");
+
+    let result = harness.identity().password_grant_token(
+        &realm,
+        &PasswordGrantRequest {
+            email: user.email().to_string(),
+            password: "wrong".to_string(),
+            scope: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(IdentityError::InvalidCredential { .. })),
+        "wrong password must return InvalidCredential; got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn password_grant_unknown_email_returns_invalid_credential() {
+    let harness = common::TestHarness::embedded().await.expect("harness");
+    let realm = create_realm(&harness);
+
+    let result = harness.identity().password_grant_token(
+        &realm,
+        &PasswordGrantRequest {
+            email: "nobody@nowhere.invalid".to_string(),
+            password: "anything".to_string(),
+            scope: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(IdentityError::InvalidCredential { .. })),
+        "unknown email must return InvalidCredential (not NotFound); got: {result:?}"
+    );
+}
+
+#[test]
+fn per_ip_rate_limit_blocks_after_threshold() {
+    let (engine, _temp) = build_engine_with_ip_rl(3);
+    let realm = engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("ip-rl-test-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone();
+
+    let ip = "10.0.0.1";
+
+    // 3 failed attempts
+    for _ in 0..3 {
+        engine.record_ip_login_attempt(&realm, ip);
+    }
+
+    assert!(
+        engine.check_ip_login_rate_limit(&realm, ip).is_err(),
+        "IP should be blocked after threshold"
+    );
+}
+
+#[test]
+fn per_ip_rate_limit_different_ips_independent() {
+    let (engine, _temp) = build_engine_with_ip_rl(3);
+    let realm = engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("ip-rl-indep-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone();
+
+    // Exhaust the limit for ip_a
+    for _ in 0..3 {
+        engine.record_ip_login_attempt(&realm, "192.168.1.1");
+    }
+
+    // ip_b should still be allowed
+    assert!(
+        engine
+            .check_ip_login_rate_limit(&realm, "192.168.1.2")
+            .is_ok(),
+        "unaffected IP must not be rate limited"
+    );
 }

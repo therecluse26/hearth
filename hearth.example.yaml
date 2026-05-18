@@ -219,6 +219,18 @@ oidc:
 #   access_token_ttl: "15m"             # default: 15 minutes
 #   refresh_token_ttl: "7d"             # default: 7 days
 
+# --- Security -----------------------------------------------------------------
+# Global security settings: rate limiting, trusted proxies, etc.
+
+# security:
+#   rate_limiting:
+#     login_per_ip:
+#       max_attempts: 10      # default: 10; blocked IPs get a 429 with Retry-After
+#       window_seconds: 60    # default: 60; sliding window length in seconds
+#     login_per_account:
+#       max_failures: 5       # default: 5; consecutive failures before lockout
+#       lockout_seconds: 300  # default: 300 (5 min); per-account lockout duration
+
 # --- Auth defaults (global) -------------------------------------------------
 # These apply to all realms unless overridden per-realm below.
 

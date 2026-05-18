@@ -195,23 +195,28 @@ pub struct TokenIssuanceContext {
 
 /// Configuration for credential rate limiting.
 ///
-/// Limits the number of consecutive failed password verification attempts
-/// per user. After `max_failed_attempts` failures, the account is temporarily
-/// locked for `lockout_duration_micros`.
+/// Covers both per-account consecutive-failure lockout and per-IP sliding-window
+/// throttling. All values are configurable via `security.rate_limiting` in YAML.
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
-    /// Maximum consecutive failed attempts before lockout.
+    /// Maximum consecutive failed attempts before per-account lockout. Default: 5.
     pub max_failed_attempts: u32,
-    /// Lockout duration in microseconds.
+    /// Per-account lockout duration in microseconds. Default: 300 s (5 min).
     pub lockout_duration_micros: i64,
+    /// Maximum failed logins from a single IP within the window before it is
+    /// blocked. Default: 10.
+    pub ip_max_attempts: u32,
+    /// Per-IP sliding window length in microseconds. Default: 60 s.
+    pub ip_window_micros: i64,
 }
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             max_failed_attempts: 5,
-            // 15 minutes in microseconds
-            lockout_duration_micros: 15 * 60 * 1_000_000,
+            lockout_duration_micros: 5 * 60 * 1_000_000, // 5 minutes
+            ip_max_attempts: 10,
+            ip_window_micros: 60 * 1_000_000, // 60 seconds
         }
     }
 }
@@ -616,7 +621,89 @@ impl EmbeddedIdentityEngine {
             realm_ops_lock: Mutex::new(()),
         };
         engine.seed_system_realm_if_absent()?;
+        engine.restore_attempt_trackers_from_wal()?;
         Ok(engine)
+    }
+
+    /// Scans the WAL for persisted per-user attempt trackers and loads any
+    /// non-expired entries into the in-memory `attempt_trackers` map.
+    ///
+    /// Called once at startup from [`Self::with_rbac`]. Entries where the
+    /// lockout window has already expired are silently skipped.
+    fn restore_attempt_trackers_from_wal(&self) -> Result<(), IdentityError> {
+        // Collect all non-system realm IDs by scanning the system realm.
+        let sys_realm = keys::system_realm_id();
+        let realm_prefix = keys::realm_id_scan_prefix();
+        let realm_end = keys::prefix_end(&realm_prefix);
+        let realm_entries = self
+            .storage
+            .scan(&sys_realm, &realm_prefix, &realm_end)
+            .map_err(Self::storage_err)?;
+
+        let tracker_prefix = keys::attempt_tracker_scan_prefix();
+        let tracker_end = keys::prefix_end(&tracker_prefix);
+        let now = self.clock.now().as_micros();
+        let prefix_len = tracker_prefix.len();
+
+        let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
+
+        for realm_entry in &realm_entries {
+            let realm: Realm = match serde_json::from_slice(&realm_entry.value) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if keys::is_system_realm(realm.id()) {
+                continue;
+            }
+
+            let entries = match self.storage.scan(realm.id(), &tracker_prefix, &tracker_end) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let (max_attempts, lockout_micros) = self.effective_rate_limit(realm.id());
+
+            for entry in entries {
+                let Ok(blob) = serde_json::from_slice::<serde_json::Value>(&entry.value) else {
+                    continue;
+                };
+                let Some(failed_count) = blob["failed_count"].as_u64().map(|v| v as u32) else {
+                    continue;
+                };
+                let Some(last_failure_micros) = blob["last_failure_micros"].as_i64() else {
+                    continue;
+                };
+
+                // Skip entries whose lockout window has already expired.
+                if failed_count >= max_attempts {
+                    let elapsed = now - last_failure_micros;
+                    if elapsed >= lockout_micros {
+                        continue;
+                    }
+                }
+
+                // Extract user UUID from key suffix "rl:user:{uuid}"
+                if entry.key.len() <= prefix_len {
+                    continue;
+                }
+                let Ok(uuid_str) = std::str::from_utf8(&entry.key[prefix_len..]) else {
+                    continue;
+                };
+                let Ok(uuid) = uuid::Uuid::parse_str(uuid_str) else {
+                    continue;
+                };
+                let user_id = UserId::new(uuid);
+                let mem_key = Self::tracker_key(realm.id(), &user_id);
+                trackers.insert(
+                    mem_key,
+                    AttemptTracker {
+                        failed_count,
+                        last_failure_micros,
+                    },
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Creates a new identity engine with a pre-existing signing key.
@@ -779,8 +866,8 @@ impl EmbeddedIdentityEngine {
 
     /// Records a failed verification attempt for the given user.
     ///
-    /// Returns the new consecutive failure count so callers can determine
-    /// whether this attempt triggered a lockout.
+    /// Updates the in-memory tracker and persists the state to WAL so it
+    /// survives restarts. Returns the new consecutive failure count.
     fn record_failed_attempt(&self, realm_id: &RealmId, user_id: &UserId) -> u32 {
         let key = Self::tracker_key(realm_id, user_id);
         let now = self.clock.now().as_micros();
@@ -791,14 +878,34 @@ impl EmbeddedIdentityEngine {
         });
         tracker.failed_count += 1;
         tracker.last_failure_micros = now;
-        tracker.failed_count
+        let count = tracker.failed_count;
+        let last = tracker.last_failure_micros;
+        drop(trackers);
+
+        // Persist to WAL (best-effort: don't fail the login path on storage errors)
+        let wal_key = keys::encode_attempt_tracker(user_id);
+        let blob = serde_json::json!({
+            "failed_count": count,
+            "last_failure_micros": last,
+        });
+        if let Ok(bytes) = serde_json::to_vec(&blob) {
+            let _ = self.storage.put(realm_id, &wal_key, &bytes);
+        }
+
+        count
     }
 
     /// Clears the failed attempt tracker for the given user (on success).
+    ///
+    /// Removes the in-memory entry and deletes the WAL record.
     fn clear_attempts(&self, realm_id: &RealmId, user_id: &UserId) {
         let key = Self::tracker_key(realm_id, user_id);
         let mut trackers = self.attempt_trackers.lock().expect("tracker lock");
         trackers.remove(&key);
+        drop(trackers);
+
+        let wal_key = keys::encode_attempt_tracker(user_id);
+        let _ = self.storage.delete(realm_id, &wal_key);
     }
 
     /// Returns the effective `(max_attempts, lockout_micros)` for the given
@@ -862,19 +969,39 @@ impl EmbeddedIdentityEngine {
 
     // ===== Per-IP login rate limiting helpers =====
 
-    /// Max failed login attempts per IP per realm before the IP is rate-limited.
-    const IP_LOGIN_MAX_ATTEMPTS: u32 = 20;
-    /// Rate-limit window for IP-based login throttling: 15 minutes.
-    const IP_LOGIN_RATE_WINDOW_MICROS: i64 = 15 * 60 * 1_000_000;
-
     fn ip_login_tracker_key(realm_id: &RealmId, ip: &str) -> String {
         format!("login-ip:{}:{ip}", realm_id.as_uuid())
+    }
+
+    /// Returns the remaining window microseconds for an IP that has already hit
+    /// its limit, used to compute `Retry-After` values. Returns 0 when the IP
+    /// is not currently blocked.
+    pub fn ip_login_retry_after_micros(&self, realm_id: &RealmId, ip: &str) -> i64 {
+        if ip.is_empty() {
+            return 0;
+        }
+        let key = Self::ip_login_tracker_key(realm_id, ip);
+        let trackers = self
+            .ip_login_rate_trackers
+            .lock()
+            .expect("ip login tracker lock");
+        if let Some(tracker) = trackers.get(&key) {
+            if tracker.failed_count >= self.config.rate_limit.ip_max_attempts {
+                let now = self.clock.now().as_micros();
+                let elapsed = now - tracker.last_failure_micros;
+                let remaining = self.config.rate_limit.ip_window_micros - elapsed;
+                if remaining > 0 {
+                    return remaining;
+                }
+            }
+        }
+        0
     }
 
     /// Checks whether the given IP has exceeded the per-IP login rate limit.
     ///
     /// Returns `Err(RateLimited)` if the IP has made more than
-    /// [`Self::IP_LOGIN_MAX_ATTEMPTS`] failed login attempts within the
+    /// `config.rate_limit.ip_max_attempts` failed login attempts within the
     /// sliding window. Passes through for trusted callers (empty IP).
     pub fn check_ip_login_rate_limit(
         &self,
@@ -890,10 +1017,10 @@ impl EmbeddedIdentityEngine {
             .lock()
             .expect("ip login tracker lock");
         if let Some(tracker) = trackers.get(&key) {
-            if tracker.failed_count >= Self::IP_LOGIN_MAX_ATTEMPTS {
+            if tracker.failed_count >= self.config.rate_limit.ip_max_attempts {
                 let now = self.clock.now().as_micros();
                 let elapsed = now - tracker.last_failure_micros;
-                if elapsed < Self::IP_LOGIN_RATE_WINDOW_MICROS {
+                if elapsed < self.config.rate_limit.ip_window_micros {
                     return Err(IdentityError::RateLimited);
                 }
             }
@@ -904,7 +1031,7 @@ impl EmbeddedIdentityEngine {
     /// Records a failed login attempt for the given IP.
     ///
     /// Emits `IpLoginLimitExceeded` to the audit log the first time the count
-    /// reaches [`Self::IP_LOGIN_MAX_ATTEMPTS`] within the window.
+    /// reaches `config.rate_limit.ip_max_attempts` within the window.
     pub fn record_ip_login_attempt(&self, realm_id: &RealmId, ip: &str) {
         if ip.is_empty() {
             return;
@@ -924,7 +1051,7 @@ impl EmbeddedIdentityEngine {
             tracker.last_failure_micros = now;
             tracker.failed_count
         };
-        if new_count == Self::IP_LOGIN_MAX_ATTEMPTS {
+        if new_count == self.config.rate_limit.ip_max_attempts {
             let ctx = AuditContext {
                 actor: Actor::Anonymous,
                 metadata: Some(serde_json::json!({ "ip": ip, "attempt_count": new_count })),
@@ -2092,6 +2219,15 @@ impl IdentityEngine for EmbeddedIdentityEngine {
 
     fn record_ip_login_attempt(&self, realm_id: &RealmId, ip: &str) {
         self.record_ip_login_attempt(realm_id, ip);
+    }
+
+    fn ip_login_retry_after_secs(&self, realm_id: &RealmId, ip: &str) -> u64 {
+        let micros = self.ip_login_retry_after_micros(realm_id, ip);
+        if micros <= 0 {
+            return 0;
+        }
+        // Round up to whole seconds
+        (micros as u64).div_ceil(1_000_000)
     }
 
     // ===== Realm lifecycle (Phase 1 Step 19) =====
@@ -4579,6 +4715,48 @@ impl IdentityEngine for EmbeddedIdentityEngine {
     }
 
     // ===== OAuth 2.0 Extended (Step 22) =====
+
+    fn password_grant_token(
+        &self,
+        realm_id: &RealmId,
+        request: &crate::identity::oidc::PasswordGrantRequest,
+    ) -> Result<crate::identity::oidc::PasswordGrantResponse, IdentityError> {
+        // 1. Look up user by email (timing-safe: dummy-hash on miss)
+        let user = match self.get_user_by_email(realm_id, &request.email)? {
+            Some(u) => u,
+            None => {
+                let dummy_pw = CleartextPassword::from_string(request.password.clone());
+                let _ = credentials::verify_hash(&dummy_pw, &self.dummy_hash);
+                return Err(IdentityError::InvalidCredential {
+                    reason: "verification failed".to_string(),
+                });
+            }
+        };
+
+        // 2. Verify password (also enforces per-account rate limiting)
+        let pw = CleartextPassword::from_string(request.password.clone());
+        let matches = self.verify_password(realm_id, user.id(), &pw)?;
+        if !matches {
+            return Err(IdentityError::InvalidCredential {
+                reason: "verification failed".to_string(),
+            });
+        }
+
+        // 3. Create session and issue token pair
+        let session = self.create_session(
+            realm_id,
+            user.id(),
+            &crate::identity::SessionContext::default(),
+        )?;
+        let token_pair = self.issue_tokens(realm_id, user.id(), session.id())?;
+
+        Ok(crate::identity::oidc::PasswordGrantResponse {
+            access_token: token_pair.access_token().to_string(),
+            refresh_token: token_pair.refresh_token().to_string(),
+            token_type: "Bearer".to_string(),
+            expires_in: self.config.token.access_token_ttl_secs,
+        })
+    }
 
     #[tracing::instrument(
         level = "info",
@@ -11287,6 +11465,7 @@ mod tests {
             rate_limit: RateLimitConfig {
                 max_failed_attempts: max_attempts,
                 lockout_duration_micros: lockout_micros,
+                ..RateLimitConfig::default()
             },
             ..IdentityConfig::default()
         };
@@ -11412,6 +11591,138 @@ mod tests {
             .verify_password(&realm, user.id(), &correct)
             .expect("should be allowed after lockout expires");
         assert!(result, "correct password should verify after lockout");
+    }
+
+    // ===== WAL persistence: attempt tracker survives restart =====
+
+    fn open_engine_at(
+        dir: &tempfile::TempDir,
+        max_attempts: u32,
+        lockout_micros: i64,
+        clock: Arc<FakeClock>,
+    ) -> EmbeddedIdentityEngine {
+        let storage = Arc::new(
+            EmbeddedStorageEngine::open(StorageConfig::dev(dir.path().to_path_buf()))
+                .expect("reopen storage"),
+        ) as Arc<dyn StorageEngine>;
+        let audit = Arc::new(EmbeddedAuditEngine::new(
+            Arc::clone(&storage),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
+        EmbeddedIdentityEngine::new(
+            storage,
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            IdentityConfig {
+                credential: CredentialConfig::fast_for_testing(),
+                rate_limit: RateLimitConfig {
+                    max_failed_attempts: max_attempts,
+                    lockout_duration_micros: lockout_micros,
+                    ..RateLimitConfig::default()
+                },
+                ..IdentityConfig::default()
+            },
+            audit as Arc<dyn AuditEngine>,
+        )
+        .expect("engine creation")
+    }
+
+    #[test]
+    fn wal_lockout_survives_restart() {
+        let lockout_micros = 60_000_000; // 60 s — well beyond test duration
+        let dir = tempfile::tempdir().expect("tempdir");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+
+        let realm;
+        let user_id;
+        {
+            let engine = open_engine_at(&dir, 3, lockout_micros, Arc::clone(&clock));
+            realm = create_test_realm(&engine);
+            let user = create_test_user(&engine, &realm);
+            user_id = user.id().clone();
+            engine
+                .set_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string("pw".to_string()),
+                )
+                .expect("set password");
+            // 3 failures → lockout written to WAL
+            for i in 0..3 {
+                let _ = engine.verify_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string(format!("bad-{i}")),
+                );
+            }
+            assert!(
+                matches!(
+                    engine.verify_password(
+                        &realm,
+                        &user_id,
+                        &CleartextPassword::from_string("pw".to_string())
+                    ),
+                    Err(IdentityError::RateLimited)
+                ),
+                "should be locked out before restart"
+            );
+        } // engine dropped — simulates restart
+
+        // Reopen same storage with a fresh engine instance
+        let engine2 = open_engine_at(&dir, 3, lockout_micros, Arc::clone(&clock));
+        let result = engine2.verify_password(
+            &realm,
+            &user_id,
+            &CleartextPassword::from_string("pw".to_string()),
+        );
+        assert!(
+            matches!(result, Err(IdentityError::RateLimited)),
+            "lockout must persist across restart; got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn wal_expired_lockout_cleared_on_restart() {
+        let lockout_micros = 10_000_000; // 10 s
+        let dir = tempfile::tempdir().expect("tempdir");
+        let clock = Arc::new(FakeClock::new(Timestamp::from_micros(1_000_000)));
+
+        let realm;
+        let user_id;
+        {
+            let engine = open_engine_at(&dir, 3, lockout_micros, Arc::clone(&clock));
+            realm = create_test_realm(&engine);
+            let user = create_test_user(&engine, &realm);
+            user_id = user.id().clone();
+            engine
+                .set_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string("pw".to_string()),
+                )
+                .expect("set password");
+            for i in 0..3 {
+                let _ = engine.verify_password(
+                    &realm,
+                    &user_id,
+                    &CleartextPassword::from_string(format!("bad-{i}")),
+                );
+            }
+        }
+
+        // Advance clock past lockout window before reopening
+        clock.advance(lockout_micros + 1);
+
+        let engine2 = open_engine_at(&dir, 3, lockout_micros, Arc::clone(&clock));
+        // WAL entry should be ignored because it is expired — login should succeed
+        let result = engine2.verify_password(
+            &realm,
+            &user_id,
+            &CleartextPassword::from_string("pw".to_string()),
+        );
+        assert!(
+            matches!(result, Ok(true)),
+            "expired lockout must not persist; got: {result:?}"
+        );
     }
 
     // ===== Adversarial: Nonce reuse detection =====

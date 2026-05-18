@@ -8,7 +8,7 @@
 //! into domain calls on `IdentityEngine` and maps `IdentityError` to HTTP
 //! status codes. No business logic lives here.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -28,10 +28,11 @@ use tracing::{debug, error, info, Level};
 use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::core::{ClientId, RealmId, UserId, WebhookId};
 use crate::identity::email::{validate_email_template, EmailBranding, LocalizedEmailTemplate};
-use crate::identity::{IdentityEngine, UpdateRealmRequest};
+use crate::identity::{IdentityEngine, PasswordGrantRequest, UpdateRealmRequest};
 use crate::protocol::admin_auth::{
     AdminRateLimiter, RateLimitOutcome, TokenRateLimitOutcome, TokenRateLimiter,
 };
+use crate::protocol::client_info::extract_client_ip;
 use crate::protocol::convert::identity::{
     proto_user_status_to_domain, realm_page_to_proto, user_bulk_result_to_proto,
     user_page_to_proto, void_bulk_result_to_proto,
@@ -48,6 +49,13 @@ use crate::rbac::{
 use crate::webhook::{
     CreateWebhookRequest, DeliveryQuery, UpdateWebhookRequest, WebhookEngine, WebhookQuery,
 };
+
+/// Fallback peer address when `ConnectInfo` is unavailable (e.g. test
+/// harnesses that use `tower::oneshot` without connect-info). Results in
+/// per-IP rate limiting being a no-op (empty-string IP) when no trusted
+/// proxies are configured, matching the web-handler pattern.
+const FALLBACK_PEER: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
 /// Default maximum request body size (1 MiB).
 ///
@@ -95,6 +103,12 @@ pub struct AppState {
     /// Grace period (seconds) during which a retiring signing key remains in
     /// JWKS after rotation. Sourced from `token.signing_key_rotation_grace_period`.
     pub signing_key_rotation_grace_period_secs: u64,
+    /// Trusted reverse-proxy IPs for `X-Forwarded-For` extraction.
+    ///
+    /// When non-empty, the OWASP "rightmost non-trusted" algorithm is applied
+    /// to derive the real client IP. When empty (default), the peer socket
+    /// IP is used directly.
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 impl AppState {
@@ -114,6 +128,7 @@ impl AppState {
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
             token_rate_limiter: Arc::new(TokenRateLimiter::new()),
             signing_key_rotation_grace_period_secs: 86_400,
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -135,6 +150,7 @@ impl AppState {
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
             token_rate_limiter: Arc::new(TokenRateLimiter::new()),
             signing_key_rotation_grace_period_secs: 86_400,
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -158,7 +174,14 @@ impl AppState {
             admin_rate_limiter,
             token_rate_limiter: Arc::new(TokenRateLimiter::new()),
             signing_key_rotation_grace_period_secs: 86_400,
+            trusted_proxies: Vec::new(),
         }
+    }
+
+    /// Configures trusted reverse-proxy IPs for `X-Forwarded-For` extraction.
+    pub fn with_trusted_proxies(mut self, proxies: Vec<IpAddr>) -> Self {
+        self.trusted_proxies = proxies;
+        self
     }
 
     /// Attaches a webhook engine, enabling the webhook management endpoints.
@@ -322,6 +345,24 @@ fn check_token_rate_limit(
                 .into_response())
         }
     }
+}
+
+/// Builds a 429 Too Many Requests response with a `Retry-After` header.
+///
+/// Used for per-IP login rate limits on the token and magic-link endpoints.
+fn make_ip_rate_limit_response(retry_after_secs: u32) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(
+            axum::http::header::RETRY_AFTER,
+            retry_after_secs.to_string(),
+        )],
+        Json(serde_json::json!({
+            "error": "too_many_requests",
+            "error_description": "rate limit exceeded"
+        })),
+    )
+        .into_response()
 }
 
 /// Builds the HTTP router with all configured routes.
@@ -490,6 +531,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/userinfo", axum::routing::get(userinfo))
         .route("/v1/me/permissions", axum::routing::get(me_permissions))
+        .route(
+            "/v1/{realm}/auth/magic-link",
+            axum::routing::post(magic_link_request)
+                .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+        )
         .route("/oauth/consents", axum::routing::get(self_list_consents))
         .route(
             "/oauth/consents/{client_id}",
@@ -971,6 +1017,11 @@ struct HttpTokenRequest {
     // Device code field
     #[serde(default)]
     device_code: Option<String>,
+    // ROPC (password grant) fields — RFC 6749 §4.3
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
 }
 
 /// HTTP request body for token revocation (RFC 7009).
@@ -1681,6 +1732,23 @@ async fn token_exchange_impl(
 
     let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
 
+    // Per-IP rate limiting for the ROPC password grant.
+    // In production traffic goes through a reverse proxy so the real IP
+    // arrives via X-Forwarded-For; FALLBACK_PEER is used when ConnectInfo is
+    // unavailable (e.g. tower::ServiceExt::oneshot in tests).
+    let client_ip = extract_client_ip(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    if grant_type == "password"
+        && state
+            .identity
+            .check_ip_login_rate_limit(&realm_id, &client_ip)
+            .is_err()
+    {
+        let retry_after = state
+            .identity
+            .ip_login_retry_after_secs(&realm_id, &client_ip);
+        return make_ip_rate_limit_response(retry_after as u32);
+    }
+
     match grant_type {
         "authorization_code" => {
             let (Some(code), Some(redirect_uri)) = (body.code, body.redirect_uri) else {
@@ -1818,7 +1886,7 @@ async fn token_exchange_impl(
                     .into_response();
             };
 
-            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+            let oauth_client_id = match body.client_id.parse::<uuid::Uuid>() {
                 Ok(u) => ClientId::new(u),
                 Err(_) => {
                     return (
@@ -1831,7 +1899,7 @@ async fn token_exchange_impl(
 
             match state
                 .identity
-                .poll_device_token(&realm_id, &device_code, &client_id)
+                .poll_device_token(&realm_id, &device_code, &oauth_client_id)
             {
                 Ok(response) => {
                     crate::metrics::metrics()
@@ -1847,6 +1915,51 @@ async fn token_exchange_impl(
                         Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
                     )
                         .into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "password" => {
+            let (Some(email), Some(password)) = (body.username, body.password) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "username and password required for password grant"})),
+                )
+                    .into_response();
+            };
+            let request = PasswordGrantRequest {
+                email,
+                password,
+                scope: body.scope,
+            };
+            let realm_str = realm_id.as_uuid().to_string();
+            match state.identity.password_grant_token(&realm_id, &request) {
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[realm_str.as_str(), "password"])
+                        .inc();
+                    crate::metrics::metrics().active_sessions.inc();
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "access_token": response.access_token(),
+                            "refresh_token": response.refresh_token(),
+                            "token_type": response.token_type,
+                            "expires_in": response.expires_in,
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(
+                    ref e @ (crate::identity::IdentityError::InvalidCredential { .. }
+                    | crate::identity::IdentityError::RateLimited),
+                ) => {
+                    // Record the failed attempt against the IP for credential failures.
+                    state
+                        .identity
+                        .record_ip_login_attempt(&realm_id, &client_ip);
+                    identity_error_to_response(e).into_response()
                 }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
@@ -5004,6 +5117,53 @@ fn resolve_realm_by_name(
     }
 }
 
+/// POST /v1/{realm}/auth/magic-link
+///
+/// Requests a magic-link login email. Always returns 202 regardless of whether
+/// the email is registered (enumeration resistance). Returns 429 when the
+/// caller's IP has exceeded the per-IP rate limit.
+#[derive(Deserialize)]
+struct MagicLinkRequestBody {
+    email: String,
+}
+
+async fn magic_link_request(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<MagicLinkRequestBody>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+
+    // Per-IP rate limit. Real IP arrives via X-Forwarded-For in production;
+    // FALLBACK_PEER is used when ConnectInfo is unavailable (tests).
+    let client_ip = extract_client_ip(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    if state
+        .identity
+        .check_ip_login_rate_limit(&realm_id, &client_ip)
+        .is_err()
+    {
+        let retry_after = state
+            .identity
+            .ip_login_retry_after_secs(&realm_id, &client_ip);
+        return make_ip_rate_limit_response(retry_after as u32);
+    }
+
+    // Request magic link; ignore per-email RateLimited to prevent enumeration.
+    let _ = state.identity.request_magic_link(&realm_id, &body.email);
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "message": "If an account exists, a magic link has been sent"
+        })),
+    )
+        .into_response()
+}
+
 async fn realm_oidc_discovery(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -5071,6 +5231,7 @@ async fn realm_authorize(
 async fn realm_token_exchange(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<HttpTokenRequest>,
 ) -> impl IntoResponse {
     let realm_id = match resolve_realm_by_name(&state, &realm_name) {
@@ -5085,6 +5246,21 @@ async fn realm_token_exchange(
         }
     }
     let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
+
+    // Per-IP rate limiting for the ROPC password grant.
+    // Real IP arrives via X-Forwarded-For in production; FALLBACK_PEER used in tests.
+    let client_ip = extract_client_ip(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    if grant_type == "password"
+        && state
+            .identity
+            .check_ip_login_rate_limit(&realm_id, &client_ip)
+            .is_err()
+    {
+        let retry_after = state
+            .identity
+            .ip_login_retry_after_secs(&realm_id, &client_ip);
+        return make_ip_rate_limit_response(retry_after as u32);
+    }
     match grant_type {
         "authorization_code" => {
             let (Some(code), Some(redirect_uri)) = (body.code, body.redirect_uri) else {
@@ -5182,7 +5358,7 @@ async fn realm_token_exchange(
                 )
                     .into_response();
             };
-            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+            let oauth_client_id = match body.client_id.parse::<uuid::Uuid>() {
                 Ok(u) => ClientId::new(u),
                 Err(_) => {
                     return (
@@ -5194,13 +5370,49 @@ async fn realm_token_exchange(
             };
             match state
                 .identity
-                .poll_device_token(&realm_id, &device_code, &client_id)
+                .poll_device_token(&realm_id, &device_code, &oauth_client_id)
             {
                 Ok(response) => (
                     StatusCode::OK,
                     Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
                 )
                     .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "password" => {
+            let (Some(email), Some(password)) = (body.username, body.password) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "username and password required for password grant"})),
+                )
+                    .into_response();
+            };
+            let request = PasswordGrantRequest {
+                email,
+                password,
+                scope: body.scope,
+            };
+            match state.identity.password_grant_token(&realm_id, &request) {
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "access_token": response.access_token(),
+                        "refresh_token": response.refresh_token(),
+                        "token_type": response.token_type,
+                        "expires_in": response.expires_in,
+                    })),
+                )
+                    .into_response(),
+                Err(
+                    ref e @ (crate::identity::IdentityError::InvalidCredential { .. }
+                    | crate::identity::IdentityError::RateLimited),
+                ) => {
+                    state
+                        .identity
+                        .record_ip_login_attempt(&realm_id, &client_ip);
+                    identity_error_to_response(e).into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }

@@ -702,6 +702,49 @@ pub struct TokenYamlConfig {
     pub signing_key_rotation_grace_period: Option<String>,
 }
 
+// ===== Security / rate-limiting YAML config =====
+
+/// Global `security:` section in `hearth.yaml`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SecurityYaml {
+    /// Global rate-limiting thresholds (overrides compiled-in defaults).
+    #[serde(default)]
+    pub rate_limiting: Option<GlobalRateLimitYaml>,
+}
+
+/// `security.rate_limiting` — operator-tunable per-IP and per-account thresholds.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GlobalRateLimitYaml {
+    /// Per-IP failed-login rate limit (credential-stuffing protection).
+    #[serde(default)]
+    pub login_per_ip: Option<IpRateLimitYaml>,
+    /// Per-account consecutive-failure lockout.
+    #[serde(default)]
+    pub login_per_account: Option<AccountRateLimitYaml>,
+}
+
+/// Per-IP rate limit config: sliding window of failed attempts.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct IpRateLimitYaml {
+    /// Maximum failed attempts in the window before the IP is blocked. Default: 10.
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+    /// Window length in seconds. Default: 60.
+    #[serde(default)]
+    pub window_seconds: Option<u64>,
+}
+
+/// Per-account lockout config: consecutive failures trigger a timed lockout.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AccountRateLimitYaml {
+    /// Maximum consecutive failures before lockout. Default: 5.
+    #[serde(default)]
+    pub max_failures: Option<u32>,
+    /// Lockout duration in seconds. Default: 300 (5 minutes).
+    #[serde(default)]
+    pub lockout_seconds: Option<u64>,
+}
+
 // ===== Auth & Realm YAML config =====
 
 /// Global authentication defaults in the `auth:` section.

@@ -232,3 +232,138 @@ async fn magic_link_enumeration_resistance() {
         "tokens should be distinct"
     );
 }
+
+// ===== Per-IP rate limiting on magic-link endpoint (HEA-592) =====
+// Tests the engine-level per-IP rate limiting that the HTTP handler enforces.
+
+#[test]
+fn magic_link_per_ip_rate_limit_blocks_after_threshold() {
+    use hearth::core::{Clock, SystemClock};
+    use hearth::identity::{
+        CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, IdentityError,
+        RateLimitConfig,
+    };
+    use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+    use std::sync::Arc;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage = Arc::new(
+        EmbeddedStorageEngine::open(StorageConfig::dev(temp.path().to_path_buf()))
+            .expect("storage"),
+    ) as Arc<dyn StorageEngine>;
+    let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
+    let rbac = Arc::new(hearth::rbac::EmbeddedRbacEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
+    let engine = EmbeddedIdentityEngine::with_rbac(
+        storage,
+        clock,
+        IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            rate_limit: RateLimitConfig {
+                ip_max_attempts: 3,
+                ip_window_micros: 60_000_000,
+                ..RateLimitConfig::default()
+            },
+            ..IdentityConfig::default()
+        },
+        rbac as Arc<dyn hearth::rbac::RbacEngine>,
+        audit as Arc<dyn hearth::audit::AuditEngine>,
+    )
+    .expect("engine");
+
+    let realm = engine
+        .create_realm(&hearth::identity::CreateRealmRequest {
+            name: format!("ml-ip-rl-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone();
+
+    let ip = "203.0.113.42";
+
+    // Under threshold: allowed
+    engine
+        .check_ip_login_rate_limit(&realm, ip)
+        .expect("IP should be allowed before threshold is reached");
+
+    // Hit threshold (3 attempts)
+    for _ in 0..3 {
+        engine.record_ip_login_attempt(&realm, ip);
+    }
+
+    // Now blocked
+    assert!(
+        matches!(
+            engine.check_ip_login_rate_limit(&realm, ip),
+            Err(IdentityError::RateLimited)
+        ),
+        "IP should be blocked after threshold"
+    );
+}
+
+#[test]
+fn magic_link_retry_after_reports_nonzero_when_blocked() {
+    use hearth::core::{Clock, SystemClock};
+    use hearth::identity::{
+        CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, RateLimitConfig,
+    };
+    use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+    use std::sync::Arc;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage = Arc::new(
+        EmbeddedStorageEngine::open(StorageConfig::dev(temp.path().to_path_buf()))
+            .expect("storage"),
+    ) as Arc<dyn StorageEngine>;
+    let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
+    let audit = Arc::new(hearth::audit::EmbeddedAuditEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
+    let rbac = Arc::new(hearth::rbac::EmbeddedRbacEngine::new(
+        Arc::clone(&storage),
+        Arc::clone(&clock),
+    ));
+    let engine = EmbeddedIdentityEngine::with_rbac(
+        storage,
+        clock,
+        IdentityConfig {
+            credential: CredentialConfig::fast_for_testing(),
+            rate_limit: RateLimitConfig {
+                ip_max_attempts: 2,
+                ip_window_micros: 60_000_000,
+                ..RateLimitConfig::default()
+            },
+            ..IdentityConfig::default()
+        },
+        rbac as Arc<dyn hearth::rbac::RbacEngine>,
+        audit as Arc<dyn hearth::audit::AuditEngine>,
+    )
+    .expect("engine");
+
+    let realm = engine
+        .create_realm(&hearth::identity::CreateRealmRequest {
+            name: format!("ml-retry-after-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone();
+
+    let ip = "198.51.100.7";
+    engine.record_ip_login_attempt(&realm, ip);
+    engine.record_ip_login_attempt(&realm, ip);
+
+    let retry_after = engine.ip_login_retry_after_secs(&realm, ip);
+    assert!(
+        retry_after > 0,
+        "Retry-After secs must be positive when IP is at threshold; got {retry_after}"
+    );
+}

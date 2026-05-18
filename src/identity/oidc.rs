@@ -1203,3 +1203,45 @@ mod tests {
         assert_eq!(doc, deserialized);
     }
 }
+
+// ===== Resource Owner Password Credentials Grant (RFC 6749 §4.3) =====
+
+/// Request for the Resource Owner Password Credentials (ROPC) grant.
+///
+/// Identifies the end-user by email address. The client_id is used for
+/// per-client rate limiting only; no client authentication is required for
+/// public clients.
+#[derive(Debug, Clone)]
+pub struct PasswordGrantRequest {
+    /// The user's email address.
+    pub email: String,
+    /// The user's plaintext password.
+    pub password: String,
+    /// Optional OAuth scope (space-delimited). Passed through to the token.
+    pub scope: Option<String>,
+}
+
+/// Response from a successful ROPC grant — mirrors `OidcTokenResponse`.
+#[derive(Debug, Clone)]
+pub struct PasswordGrantResponse {
+    /// Short-lived access token (JWT).
+    pub access_token: String,
+    /// Long-lived refresh token (JWT).
+    pub refresh_token: String,
+    /// Always `"Bearer"`.
+    pub token_type: String,
+    /// Access token lifetime in seconds.
+    pub expires_in: i64,
+}
+
+impl PasswordGrantResponse {
+    /// Returns the access token.
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
+
+    /// Returns the refresh token.
+    pub fn refresh_token(&self) -> &str {
+        &self.refresh_token
+    }
+}

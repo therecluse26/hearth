@@ -39,8 +39,8 @@ pub use oidc::{
     ClientCredentialsRequest, ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod,
     DeviceAuthorizationRequest, DeviceAuthorizationResponse, DeviceCodeStatus,
     IntrospectionResponse, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
-    RegisterClientRequest, TokenExchangeRequest, TokenIntrospectionRequest, TokenRevocationRequest,
-    UpdateClientRequest, UserInfoResponse,
+    PasswordGrantRequest, PasswordGrantResponse, RegisterClientRequest, TokenExchangeRequest,
+    TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest, UserInfoResponse,
 };
 pub use tokens::{
     decode_claims_unverified, validate_token_with_time, verify_token_signature, IssueTokenRequest,
@@ -221,6 +221,14 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// The default implementation is a no-op; the embedded engine overrides.
     fn record_ip_login_attempt(&self, _realm_id: &RealmId, _ip: &str) {}
+
+    /// Returns the number of seconds remaining in the current rate-limit window
+    /// for an IP that has already hit its limit (for `Retry-After` headers).
+    ///
+    /// Returns 0 when the IP is not blocked. Default implementation returns 0.
+    fn ip_login_retry_after_secs(&self, _realm_id: &RealmId, _ip: &str) -> u64 {
+        0
+    }
 
     /// Changes a user's password after verifying the old one.
     ///
@@ -427,6 +435,18 @@ pub trait IdentityEngine: Send + Sync {
     ) -> Result<OidcDiscoveryDocument, IdentityError>;
 
     // ===== OAuth 2.0 Extended (Step 22) =====
+
+    /// Issues tokens via the Resource Owner Password Credentials Grant (RFC 6749 §4.3).
+    ///
+    /// Looks up the user by email, verifies the password (enforcing per-account
+    /// rate limits), creates a session, and issues an access + refresh token pair.
+    /// Returns `Err(InvalidCredential)` for wrong email or password (intentionally
+    /// vague for enumeration resistance).
+    fn password_grant_token(
+        &self,
+        realm_id: &RealmId,
+        request: &PasswordGrantRequest,
+    ) -> Result<PasswordGrantResponse, IdentityError>;
 
     /// Issues an access token via the Client Credentials Grant (RFC 6749 §4.4).
     ///
