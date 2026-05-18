@@ -2537,7 +2537,10 @@ mod tests {
         cfg.email.transport = EmailTransport::Smtp;
         let warned = maybe_upgrade_email_transport(&mut cfg);
         assert_eq!(cfg.email.transport, EmailTransport::Mailcatcher);
-        assert!(warned, "Smtp→Mailcatcher should return true so caller can warn");
+        assert!(
+            warned,
+            "Smtp→Mailcatcher should return true so caller can warn"
+        );
     }
 
     #[test]

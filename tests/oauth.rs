@@ -12,9 +12,8 @@ use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
     ApplicationStatus, AuthorizationRequest, CleartextPassword, ClientCredentialsRequest,
     CreateRealmRequest, CreateUserRequest, CredentialConfig, DeviceAuthorizationRequest,
-    EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, IdentityError,
-    PasswordGrantRequest, RateLimitConfig, RegisterClientRequest, TokenRevocationRequest,
-    UpdateClientRequest, User,
+    EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, IdentityError, PasswordGrantRequest,
+    RateLimitConfig, RegisterClientRequest, TokenRevocationRequest, UpdateClientRequest, User,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -784,7 +783,11 @@ async fn password_grant_success() {
     let password = "correct-horse-battery-staple";
     harness
         .identity()
-        .set_password(&realm, user.id(), &CleartextPassword::from_string(password.to_string()))
+        .set_password(
+            &realm,
+            user.id(),
+            &CleartextPassword::from_string(password.to_string()),
+        )
         .expect("set password");
 
     let response = harness
@@ -811,7 +814,11 @@ async fn password_grant_wrong_password_returns_invalid_credential() {
     let user = create_user(&harness, &realm);
     harness
         .identity()
-        .set_password(&realm, user.id(), &CleartextPassword::from_string("right".to_string()))
+        .set_password(
+            &realm,
+            user.id(),
+            &CleartextPassword::from_string("right".to_string()),
+        )
         .expect("set password");
 
     let result = harness.identity().password_grant_token(
@@ -891,7 +898,9 @@ fn per_ip_rate_limit_different_ips_independent() {
 
     // ip_b should still be allowed
     assert!(
-        engine.check_ip_login_rate_limit(&realm, "192.168.1.2").is_ok(),
+        engine
+            .check_ip_login_rate_limit(&realm, "192.168.1.2")
+            .is_ok(),
         "unaffected IP must not be rate limited"
     );
 }

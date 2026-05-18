@@ -238,13 +238,13 @@ async fn magic_link_enumeration_resistance() {
 
 #[test]
 fn magic_link_per_ip_rate_limit_blocks_after_threshold() {
-    use std::sync::Arc;
     use hearth::core::{Clock, SystemClock};
     use hearth::identity::{
-        CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityError, IdentityEngine,
+        CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, IdentityError,
         RateLimitConfig,
     };
     use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+    use std::sync::Arc;
 
     let temp = tempfile::tempdir().expect("tempdir");
     let storage = Arc::new(
@@ -300,19 +300,22 @@ fn magic_link_per_ip_rate_limit_blocks_after_threshold() {
 
     // Now blocked
     assert!(
-        matches!(engine.check_ip_login_rate_limit(&realm, ip), Err(IdentityError::RateLimited)),
+        matches!(
+            engine.check_ip_login_rate_limit(&realm, ip),
+            Err(IdentityError::RateLimited)
+        ),
         "IP should be blocked after threshold"
     );
 }
 
 #[test]
 fn magic_link_retry_after_reports_nonzero_when_blocked() {
-    use std::sync::Arc;
     use hearth::core::{Clock, SystemClock};
     use hearth::identity::{
         CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, RateLimitConfig,
     };
     use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
+    use std::sync::Arc;
 
     let temp = tempfile::tempdir().expect("tempdir");
     let storage = Arc::new(
