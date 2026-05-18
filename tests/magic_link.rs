@@ -241,8 +241,8 @@ fn magic_link_per_ip_rate_limit_blocks_after_threshold() {
     use std::sync::Arc;
     use hearth::core::{Clock, SystemClock};
     use hearth::identity::{
-        CleartextPassword, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityError,
-        IdentityEngine, RateLimitConfig,
+        CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityError, IdentityEngine,
+        RateLimitConfig,
     };
     use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 

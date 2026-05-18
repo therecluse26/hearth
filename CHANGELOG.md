@@ -41,6 +41,12 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Security
 
+- **Rate-limiting gaps closed** — per-IP sliding-window enforcement added to `POST /token`
+  (password grant) and the new `POST /v1/{realm}/auth/magic-link` endpoint; per-account lockout
+  state is now persisted to WAL and restored on startup so active lockouts survive server restarts;
+  `security.rate_limiting` YAML section added for configuring IP window and account lockout
+  thresholds without recompiling (HEA-592).
+
 - **Mutating operations on Suspended/Archived realms are now rejected** — `create_user`,
   `update_user`, `create_session`, `authorize` (OAuth 2.0 code issuance), `create_organization`,
   `create_invitation`, and `accept_invitation` now return a `RealmSuspended` error when the
