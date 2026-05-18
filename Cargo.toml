@@ -67,6 +67,8 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 tokio-stream = { version = "0.1", features = ["sync"] }
+openraft = { version = "0.9", features = ["serde", "storage-v2"] }
+redb = "2"
 tonic = { version = "0.14", features = ["transport", "tls-ring", "gzip"] }
 tonic-health = "0.14"
 tonic-prost = "0.14"
