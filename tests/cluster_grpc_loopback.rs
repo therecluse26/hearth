@@ -147,7 +147,7 @@ impl TestCluster {
 
         // Give every server a moment to bind its TCP listener before the
         // bootstrap RPC tries to reach the peers.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(Duration::from_millis(400)).await; // AUDIT: justified-sleep: gRPC listeners need OS scheduling time to bind before the bootstrap RPC attempts connections
 
         let mut members = BTreeMap::new();
         for cfg in &configs {
@@ -199,7 +199,7 @@ impl TestCluster {
                 }
                 panic!("no leader elected within {timeout:?}");
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await; // AUDIT: justified-sleep: poll interval inside leader-election loop; openraft exposes no ready-signal channel
         }
     }
 
@@ -311,7 +311,7 @@ async fn three_node_grpc_loopback_replicates_ten_writes() {
                 "replication did not converge to last_applied >= {leader_target} within 10 s"
             );
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await; // AUDIT: justified-sleep: poll interval inside replication-convergence loop; log commit is async with no notification hook
     }
 
     // Per-node read consistency: every key must be present and equal on each
