@@ -9,6 +9,14 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Added
 
+- **Per-IP and per-account rate limiting on auth endpoints** — `POST /token` (password grant),
+  `POST /v1/auth/magic-link`, and realm token exchange now enforce a configurable sliding-window
+  per-IP limit and a consecutive-failure lockout per account. Blocked callers receive
+  `429 Too Many Requests` with a `Retry-After` header. Configure via `security.rate_limiting`
+  in `hearth.yaml`; defaults are 10 attempts / 60 s per IP and 5 failures / 5 min lockout per
+  account. Trusted-proxy `X-Forwarded-For` handling is used when `server.trusted_proxies` is
+  set (HEA-587).
+
 - **Built-in `mailcatcher` email transport** — captures outbound emails in an in-process ring
   buffer (cap 50) and serves them via a password-protected browser UI at `/dev/mail`. Auto-enabled
   when `--dev` is passed and no explicit transport is configured. Startup banner prints the inbox
