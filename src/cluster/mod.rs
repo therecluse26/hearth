@@ -8,6 +8,12 @@
 //!
 //! ```text
 //!  ┌──────────────────────────────────────────────────────┐
+//!  │  ClusterEngine (public-facing wrapper)               │
+//!  │    • single-node bypass (zero Raft overhead)         │
+//!  │    • leader write routing via client_write           │
+//!  │    • follower read staleness via reads_allowed flag  │
+//!  └──────────────────────────────────────────────────────┘
+//!  ┌──────────────────────────────────────────────────────┐
 //!  │  HearthNetworkFactory (outgoing RPCs)                │
 //!  │    └─ HearthPeerNetwork per peer                     │
 //!  │         • lazy mTLS gRPC channel                     │
@@ -20,6 +26,7 @@
 //!  └──────────────────────────────────────────────────────┘
 //! ```
 
+pub mod engine;
 pub(crate) mod error;
 pub mod log_store;
 pub(crate) mod rpc;
@@ -28,6 +35,7 @@ pub mod server;
 pub mod state_machine;
 pub mod types;
 
+pub use engine::{ClusterBuildError, ClusterEngine, ClusterError};
 pub use log_store::{HearthLogReader, HearthLogStore};
 pub use network::HearthNetworkFactory;
 pub use server::{serve, IncomingRpcDispatch, NoopDispatch, RaftRpcHandler};

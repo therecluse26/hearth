@@ -1699,6 +1699,51 @@ fn make_group_slug(name: &str) -> String {
     out
 }
 
+/// Address and ID for a single cluster peer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PeerConfig {
+    /// Unique node ID within the cluster.
+    pub id: u64,
+    /// gRPC peer address (`host:port`) used for Raft RPC connections.
+    pub address: String,
+}
+
+/// Cluster configuration for multi-node deployments.
+///
+/// When present in `hearth.yaml`, Hearth starts a Raft consensus engine and
+/// participates in peer-to-peer replication over mTLS-secured gRPC.
+/// When absent, Hearth runs in single-node mode with no clustering overhead.
+///
+/// All three TLS fields are required — plaintext peer connections are
+/// unconditionally rejected.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterConfig {
+    /// This node's numeric ID — must be unique across the cluster.
+    pub node_id: u64,
+    /// Local address this node listens on for Raft peer RPCs (`host:port`).
+    #[serde(default = "ClusterConfig::default_peer_address")]
+    pub peer_address: String,
+    /// Known cluster peers.
+    #[serde(default)]
+    pub peers: Vec<PeerConfig>,
+    /// Path to this node's TLS certificate PEM file (presented to peers).
+    pub tls_cert_path: PathBuf,
+    /// Path to this node's TLS private key PEM file.
+    pub tls_key_path: PathBuf,
+    /// Path to the CA certificate PEM file used to verify peer certificates.
+    pub tls_ca_cert_path: PathBuf,
+    /// Maximum follower read-lag in milliseconds before reads are refused
+    /// and the caller is redirected to the leader (default: 500).
+    #[serde(default)]
+    pub read_lag_threshold_ms: Option<u64>,
+}
+
+impl ClusterConfig {
+    fn default_peer_address() -> String {
+        "127.0.0.1:8421".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
