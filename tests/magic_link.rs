@@ -289,7 +289,9 @@ fn magic_link_per_ip_rate_limit_blocks_after_threshold() {
     let ip = "203.0.113.42";
 
     // Under threshold: allowed
-    assert!(engine.check_ip_login_rate_limit(&realm, ip).is_ok());
+    engine
+        .check_ip_login_rate_limit(&realm, ip)
+        .expect("IP should be allowed before threshold is reached");
 
     // Hit threshold (3 attempts)
     for _ in 0..3 {
