@@ -34,6 +34,7 @@ use crate::cluster::types::{HearthNode, HearthRaftConfig};
 // ── TLS credential bundle ────────────────────────────────────────────────────
 
 /// PEM-encoded TLS credentials shared by all peer connections from this node.
+#[allow(clippy::struct_field_names)]
 pub(crate) struct TlsCredentials {
     pub(crate) cert_pem: Vec<u8>,
     pub(crate) key_pem: Vec<u8>,
@@ -268,6 +269,7 @@ mod tests {
     /// Confirms that a connection failure surfaces as `RPCError::Network`
     /// (no panic) so openraft can handle retries gracefully.
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn append_entries_returns_network_error_on_connection_failure() {
         let mut factory =
             HearthNetworkFactory::new(b"bad".to_vec(), b"bad".to_vec(), b"bad".to_vec());

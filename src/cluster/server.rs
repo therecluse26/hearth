@@ -73,7 +73,7 @@ impl<D: IncomingRpcDispatch> RaftService for RaftRpcHandler<D> {
         self.dispatch
             .append_entries(&payload)
             .await
-            .map(|resp| Response::new(AppendEntriesResponse { payload: resp.into() }))
+            .map(|resp| Response::new(AppendEntriesResponse { payload: resp }))
             .map_err(|e| {
                 warn!(error = %e, "AppendEntries dispatch error");
                 Status::internal(e)
@@ -90,7 +90,7 @@ impl<D: IncomingRpcDispatch> RaftService for RaftRpcHandler<D> {
         self.dispatch
             .vote(&payload)
             .await
-            .map(|resp| Response::new(VoteResponse { payload: resp.into() }))
+            .map(|resp| Response::new(VoteResponse { payload: resp }))
             .map_err(|e| {
                 warn!(error = %e, "Vote dispatch error");
                 Status::internal(e)
@@ -107,7 +107,7 @@ impl<D: IncomingRpcDispatch> RaftService for RaftRpcHandler<D> {
         self.dispatch
             .install_snapshot(&payload)
             .await
-            .map(|resp| Response::new(InstallSnapshotResponse { payload: resp.into() }))
+            .map(|resp| Response::new(InstallSnapshotResponse { payload: resp }))
             .map_err(|e| {
                 warn!(error = %e, "InstallSnapshot dispatch error");
                 Status::internal(e)

@@ -528,6 +528,7 @@ mod tests {
     // ── Single-node passthrough ───────────────────────────────────────────────
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn single_node_put_get_roundtrip() {
         let dir = tempdir().unwrap();
         let engine = ClusterEngine::single_node(open_engine(dir.path().join("data").as_path()));
@@ -538,6 +539,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn single_node_delete_removes_value() {
         let dir = tempdir().unwrap();
         let engine = ClusterEngine::single_node(open_engine(dir.path().join("data").as_path()));
@@ -548,6 +550,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn single_node_put_batch_writes_all() {
         let dir = tempdir().unwrap();
         let engine = ClusterEngine::single_node(open_engine(dir.path().join("data").as_path()));
@@ -568,6 +571,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn single_node_scan_returns_entries() {
         let dir = tempdir().unwrap();
         let engine = ClusterEngine::single_node(open_engine(dir.path().join("data").as_path()));
@@ -579,6 +583,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn single_node_reads_ok_always_true() {
         let dir = tempdir().unwrap();
         let engine = ClusterEngine::single_node(open_engine(dir.path().join("data").as_path()));

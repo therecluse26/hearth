@@ -102,7 +102,7 @@ impl RaftSnapshotBuilder<HearthRaftConfig> for HearthSnapshotBuilder {
     async fn build_snapshot(&mut self) -> Result<Snapshot<HearthRaftConfig>, StorageError<u64>> {
         let engine = Arc::clone(&self.engine);
         let realms = self.known_realms.iter().cloned().collect::<Vec<_>>();
-        let last_applied = self.last_applied.clone();
+        let last_applied = self.last_applied;
         let last_membership = self.last_membership.clone();
 
         let snapshot_id = format!(
@@ -201,10 +201,11 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
     async fn applied_state(
         &mut self,
     ) -> Result<(Option<LogId<u64>>, StoredMembership<u64, HearthNode>), StorageError<u64>> {
-        Ok((self.last_applied.clone(), self.last_membership.clone()))
+        Ok((self.last_applied, self.last_membership.clone()))
     }
 
     #[instrument(skip(self, entries), name = "sm_apply")]
+    #[allow(clippy::cast_precision_loss)]
     async fn apply<I>(
         &mut self,
         entries: I,
@@ -219,7 +220,7 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
         let count = entries.len();
 
         for entry in entries {
-            self.last_applied = Some(entry.log_id.clone());
+            self.last_applied = Some(entry.log_id);
 
             match &entry.payload {
                 EntryPayload::Blank => {}
@@ -230,7 +231,7 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
 
                 EntryPayload::Membership(membership) => {
                     self.last_membership = StoredMembership::new(
-                        Some(entry.log_id.clone()),
+                        Some(entry.log_id),
                         membership.clone(),
                     );
                     debug!(log_id = ?entry.log_id, "membership change applied");
@@ -258,7 +259,7 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
         HearthSnapshotBuilder {
             engine: Arc::clone(&self.engine),
             known_realms: self.known_realms.clone(),
-            last_applied: self.last_applied.clone(),
+            last_applied: self.last_applied,
             last_membership: self.last_membership.clone(),
         }
     }
@@ -304,7 +305,7 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
         // Rebuild known_realms from the snapshot.
         self.known_realms = realm_ids;
 
-        self.last_applied = meta.last_log_id.clone();
+        self.last_applied = meta.last_log_id;
         self.last_membership = meta.last_membership.clone();
 
         self.current_snapshot = Some(StoredSnapshot {
@@ -539,6 +540,7 @@ mod tests {
     // ── Put / Delete / Batch ──────────────────────────────────────────────────
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn put_command_stores_value() {
         let dir = tempdir().unwrap();
         let mut sm = open_sm(dir.path().join("data").as_path());
@@ -553,6 +555,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn delete_command_removes_value() {
         let dir = tempdir().unwrap();
         let mut sm = open_sm(dir.path().join("data").as_path());
@@ -570,6 +573,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn batch_command_writes_all_pairs() {
         let dir = tempdir().unwrap();
         let mut sm = open_sm(dir.path().join("data").as_path());
@@ -591,6 +595,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn last_applied_tracks_log_index() {
         let dir = tempdir().unwrap();
         let mut sm = open_sm(dir.path().join("data").as_path());
@@ -612,6 +617,7 @@ mod tests {
     // ── Snapshot round-trip ───────────────────────────────────────────────────
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn snapshot_roundtrip_identical_keyspace() {
         let dir_a = tempdir().unwrap();
         let dir_b = tempdir().unwrap();
@@ -671,6 +677,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn snapshot_compress_decompress_roundtrip() {
         let payload = SnapshotPayload {
             realms: vec![RealmData {
@@ -693,6 +700,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn get_current_snapshot_none_initially() {
         let dir = tempdir().unwrap();
         let mut sm = open_sm(dir.path().join("data").as_path());
@@ -700,6 +708,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn get_current_snapshot_returns_after_build_and_install() {
         let dir = tempdir().unwrap();
         let data_dir = dir.path().join("data");
@@ -727,6 +736,7 @@ mod tests {
     // ── Concurrent reads during snapshot ─────────────────────────────────────
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn concurrent_reads_during_snapshot_build() {
         let dir = tempdir().unwrap();
         let data_dir = dir.path().join("data");

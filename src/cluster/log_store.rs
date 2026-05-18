@@ -117,7 +117,7 @@ impl Inner {
         if let Some(result) = table.last().map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))? {
             let (_, v) = result;
             let entry: Entry<HearthRaftConfig> = serde_json::from_slice(v.value()).map_err(|e| read_err(e))?;
-            return Ok(Some(entry.log_id.clone()));
+            return Ok(Some(entry.log_id));
         }
         Ok(None)
     }
@@ -199,7 +199,7 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
         let last_purged_log_id = inner.last_purged_log_id()?;
         let last_log_id = inner.last_log_id()?;
         // If the log is empty, last_log_id falls back to last_purged_log_id.
-        let last_log_id = last_log_id.or_else(|| last_purged_log_id.clone());
+        let last_log_id = last_log_id.or(last_purged_log_id);
         Ok(LogState {
             last_purged_log_id,
             last_log_id,
@@ -360,6 +360,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn append_and_read_range() {
         let dir = tempdir().unwrap();
         let mut store = open_store(dir.path().join("raft.db").as_path());
@@ -374,6 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn vote_persistence_survives_reopen() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("raft.db");
@@ -391,6 +393,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn truncate_removes_entries_from_index() {
         let dir = tempdir().unwrap();
         let mut store = open_store(dir.path().join("raft.db").as_path());
@@ -404,6 +407,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn purge_updates_last_purged_state() {
         let dir = tempdir().unwrap();
         let mut store = open_store(dir.path().join("raft.db").as_path());
@@ -422,6 +426,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn get_log_state_empty_store() {
         let dir = tempdir().unwrap();
         let mut store = open_store(dir.path().join("raft.db").as_path());
@@ -431,13 +436,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_used)]
     async fn committed_roundtrip() {
         let dir = tempdir().unwrap();
         let mut store = open_store(dir.path().join("raft.db").as_path());
         assert!(store.read_committed().await.unwrap().is_none());
 
         let id = LogId::new(openraft::CommittedLeaderId::new(2, 1), 10);
-        store.save_committed(Some(id.clone())).await.unwrap();
+        store.save_committed(Some(id)).await.unwrap();
         assert_eq!(store.read_committed().await.unwrap(), Some(id));
 
         store.save_committed(None).await.unwrap();
@@ -445,6 +451,7 @@ mod tests {
     }
 
     /// Helper: append entries and block until the flush callback fires.
+    #[allow(clippy::unwrap_used)]
     async fn append_entries_with_signal(
         store: &mut HearthLogStore,
         entries: Vec<Entry<HearthRaftConfig>>,
