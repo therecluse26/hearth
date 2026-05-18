@@ -13,6 +13,7 @@ use hearth::core::{RealmId, Timestamp};
 use hearth::storage::encryption;
 use hearth::storage::error::StorageError;
 use hearth::storage::fs::RealFs;
+use hearth::storage::migrations::WAL_VERSION_HEADER_SIZE;
 use hearth::storage::wal::{SyncMode, Wal, WalConfig, WalEntry, WalOperation};
 
 /// Deterministic test KEK for WAL crash tests.
@@ -213,6 +214,117 @@ fn simulation_disk_io_failure() {
     }
 }
 
+/// Mid-record truncation: file is cut at an exact mid-record byte boundary.
+///
+/// Uses `set_len()` to simulate a truncation at the OS level (e.g. a crash
+/// during `write()` on a file system without atomic append). The WAL reader
+/// must discard the truncated record and return only intact predecessors.
+#[test]
+fn simulation_wal_mid_record_truncation() {
+    let seed = 45u64;
+    let _ = seed;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal_path = dir.path().join("test.wal");
+    let config = WalConfig {
+        max_size: u64::MAX,
+        sync_mode: SyncMode::None,
+    };
+
+    let entry1 = make_entry(b"trunc-committed", b"survives");
+    let entry2 = make_entry(b"trunc-inflight", b"lost");
+
+    // Write one valid entry, note the file length, then write a second entry.
+    let committed_len = {
+        let wal = open_test_wal(&wal_path, config.clone());
+        wal.append(&entry1).expect("append 1");
+        std::fs::metadata(&wal_path)
+            .expect("stat after first append")
+            .len()
+    };
+
+    {
+        let wal = open_test_wal(&wal_path, config.clone());
+        wal.append(&entry2).expect("append 2");
+    }
+
+    // Truncate the file to midway through the second record.
+    let full_len = std::fs::metadata(&wal_path).expect("stat").len();
+    let mid = committed_len + (full_len - committed_len) / 2;
+    {
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .expect("open for truncation");
+        f.set_len(mid).expect("set_len mid-record");
+    }
+
+    // Recovery: only the fully committed entry must survive.
+    {
+        let wal = open_test_wal(&wal_path, config);
+        let entries = wal.read_all().expect("read after mid-record truncation");
+        assert_eq!(
+            entries.len(),
+            1,
+            "mid-record truncation: only committed entries must survive (seed={seed})"
+        );
+        assert_eq!(entries[0], entry1);
+    }
+}
+
+/// Tail corruption: random garbage bytes appended after committed records.
+///
+/// Simulates bit-rot, a concurrent write from another process, or a kernel
+/// buffer flush that produces garbage at the file tail. The WAL reader must
+/// detect the structurally invalid tail bytes and recover the committed prefix.
+#[test]
+fn simulation_wal_tail_corruption() {
+    let seed = 46u64;
+    let _ = seed;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal_path = dir.path().join("test.wal");
+    let config = WalConfig {
+        max_size: u64::MAX,
+        sync_mode: SyncMode::None,
+    };
+
+    let entry1 = make_entry(b"tail-safe-1", b"val-1");
+    let entry2 = make_entry(b"tail-safe-2", b"val-2");
+
+    // Write two valid entries and close.
+    {
+        let wal = open_test_wal(&wal_path, config.clone());
+        wal.append(&entry1).expect("append 1");
+        wal.append(&entry2).expect("append 2");
+    }
+
+    // Append garbage bytes that do not form a valid record.
+    // 13 bytes — not a multiple of 4, so any length prefix interpretation fails.
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&wal_path)
+            .expect("open for tail corruption");
+        file.write_all(b"\xDE\xAD\xBE\xEF\xCA\xFE\xBA\xBE\x01\x02\x03\x04\x05")
+            .expect("write garbage tail");
+        file.sync_all().expect("sync");
+    }
+
+    // Recovery: valid committed records survive; garbage tail is discarded.
+    {
+        let wal = open_test_wal(&wal_path, config);
+        let entries = wal.read_all().expect("read after tail corruption");
+        assert_eq!(
+            entries.len(),
+            2,
+            "tail corruption: both committed entries must survive (seed={seed})"
+        );
+        assert_eq!(entries[0], entry1);
+        assert_eq!(entries[1], entry2);
+    }
+}
+
 /// Tampering: byte-flip in ciphertext with a recomputed CRC must be
 /// detected by AEAD authentication, not silently truncated.
 #[test]
@@ -235,8 +347,8 @@ fn simulation_aead_detects_tampered_ciphertext_with_valid_crc() {
     // structural check passes. This isolates the AEAD tag check.
     {
         let mut data = std::fs::read(&wal_path).expect("read wal");
-        let header_size = encryption::ENCRYPTION_HEADER_SIZE;
-        // Record 0 starts at header_size: [u32 len][ciphertext][u32 crc]
+        // Record 0 starts after the version header + encryption header.
+        let header_size = WAL_VERSION_HEADER_SIZE + encryption::ENCRYPTION_HEADER_SIZE;
         let len_off = header_size;
         let ct_off = len_off + 4;
         let len = u32::from_le_bytes(data[len_off..len_off + 4].try_into().unwrap()) as usize;

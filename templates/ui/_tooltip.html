@@ -1,0 +1,43 @@
+{# Inline tooltip trigger — wraps a "?" icon that reveals a popover on hover/focus.
+   Alpine.js required (already included in _layout.html).
+
+   Usage: copy the pattern below into a label row. Askama does not support
+   parameterised includes, so this file serves as the canonical design reference.
+   Engineers: either inline this pattern or convert to an Askama macro.
+
+   Expected variable: tooltip_text: &str — the tooltip body copy.
+
+   Example label row:
+     <div class="flex items-center gap-1">
+       <label for="my_field" class="block text-sm font-medium text-ht-content-secondary">Field label</label>
+       {% let tooltip_text = "Explanation of what this field controls." %}
+       {% include "ui/_tooltip.html" %}
+     </div>
+#}
+<span x-data="{ tipOpen: false }" class="relative inline-flex">
+  <button type="button"
+          @mouseenter="tipOpen = true"
+          @mouseleave="tipOpen = false"
+          @focus="tipOpen = true"
+          @blur="tipOpen = false"
+          class="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-divider bg-ht-surface-elevated text-ht-content-muted transition-colors hover:border-ht-divider/[0.18] hover:text-ht-content-secondary focus:outline-none focus:shadow-focus"
+          aria-label="More information">
+    <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="8" x2="12" y2="12"/>
+      <line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+  </button>
+  <span x-show="tipOpen"
+        x-cloak
+        x-transition:enter="transition ease-out duration-100"
+        x-transition:enter-start="opacity-0 scale-95"
+        x-transition:enter-end="opacity-100 scale-100"
+        x-transition:leave="transition ease-in duration-75"
+        x-transition:leave-start="opacity-100 scale-100"
+        x-transition:leave-end="opacity-0 scale-95"
+        role="tooltip"
+        class="absolute left-6 top-1/2 z-50 w-56 -translate-y-1/2 rounded-md bg-ht-surface-raised p-3 text-xs leading-relaxed text-ht-content-secondary shadow ring-1 ring-divider-subtle">
+    {{ tooltip_text }}
+  </span>
+</span>

@@ -1,0 +1,185 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Import Users{% endblock %}
+{% block body %}
+{% if !realm_name.is_empty() %}{% include "ui/admin/realms/_workspace_tabs.html" %}{% endif %}
+
+<div class="mb-2 flex flex-wrap items-center gap-2 text-sm text-ht-content-muted">
+  <a href="{{ list_url }}" class="hover:text-ht-content-primary">Users</a>
+  <span>›</span>
+  <span class="text-ht-content-secondary">Import CSV</span>
+</div>
+<div class="mb-6">
+  <h1 class="font-display text-2xl font-medium text-ht-content-primary">Import users from CSV</h1>
+  <p class="mt-1 text-sm text-ht-content-muted">Upload a CSV file to create or update users in bulk. Email is required; name and role are optional.</p>
+</div>
+
+{% match error %}
+  {% when Some with (msg) %}
+    <div class="mb-4 rounded-lg bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
+  {% when None %}
+{% endmatch %}
+
+<div class="rounded-md bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle"
+     x-data="{
+       file: null,
+       fileName: '',
+       headers: [],
+       mapping: { email: '', name: '', role: '' },
+       dragOver: false,
+       step: 'upload',
+
+       handleFile(f) {
+         if (!f) return;
+         this.file = f;
+         this.fileName = f.name;
+         const reader = new FileReader();
+         reader.onload = (e) => {
+           const firstLine = e.target.result.split('\n')[0] || '';
+           this.headers = firstLine.split(',').map(h => h.trim().replace(/^['\"]|['\"]$/g, ''));
+           const guess = (candidates) => candidates.find(c => this.headers.map(h => h.toLowerCase()).includes(c)) || '';
+           this.mapping.email = this.headers.find(h => h.toLowerCase().includes('email')) || '';
+           this.mapping.name  = this.headers.find(h => h.toLowerCase().includes('name'))  || '';
+           this.mapping.role  = this.headers.find(h => h.toLowerCase().includes('role'))  || '';
+           this.step = 'map';
+         };
+         reader.readAsText(f);
+       },
+
+       onDrop(e) {
+         this.dragOver = false;
+         const f = e.dataTransfer.files[0];
+         if (f) this.handleFile(f);
+       }
+     }">
+
+  <form method="post"
+        action="{{ list_url }}/import"
+        enctype="multipart/form-data"
+        class="space-y-6">
+    {% match csrf %}
+      {% when Some with (token) %}
+        <input type="hidden" name="_csrf" value="{{ token }}">
+      {% when None %}
+    {% endmatch %}
+
+    {# Step 1 — file drop zone #}
+    <div x-show="step === 'upload'">
+      <div class="relative flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-divider px-8 py-14 text-center transition-colors"
+           :class="dragOver ? 'border-ht-content-brand bg-ht-surface-overlay' : 'hover:border-divider-strong'"
+           @dragover.prevent="dragOver = true"
+           @dragleave="dragOver = false"
+           @drop.prevent="onDrop($event)">
+        <svg class="h-10 w-10 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <div>
+          <p class="text-sm font-medium text-ht-content-secondary">
+            Drag and drop a CSV file here, or
+            <button type="button"
+                    @click="$refs.fileInput.click()"
+                    class="text-ht-content-brand hover:text-ht-brand-deep underline underline-offset-2">
+              browse
+            </button>
+          </p>
+          <p class="mt-1 text-xs text-ht-content-muted">First row must be a header. Supported columns: email, name, role.</p>
+        </div>
+        <input x-ref="fileInput"
+               type="file"
+               name="csv_file"
+               accept=".csv,text/csv"
+               class="sr-only"
+               @change="handleFile($event.target.files[0])">
+      </div>
+    </div>
+
+    {# Step 2 — column mapping (shown after file parsed) #}
+    <div x-show="step === 'map'" x-cloak class="space-y-5">
+      <div class="flex items-center gap-3 rounded-sm bg-ht-surface-base px-4 py-3 ring-1 ring-divider-subtle">
+        <svg class="h-4 w-4 shrink-0 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span class="min-w-0 truncate font-mono text-xs text-ht-content-secondary" x-text="fileName"></span>
+        <button type="button"
+                @click="step = 'upload'; file = null; fileName = ''; headers = [];"
+                class="ml-auto shrink-0 text-xs text-ht-content-muted hover:text-ht-content-secondary">
+          Change file
+        </button>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-3">
+        {# Email column — required #}
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">
+            Email column <span class="text-danger-fg">*</span>
+          </label>
+          <select name="col_email"
+                  x-model="mapping.email"
+                  required
+                  class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+            <option value="">Select column…</option>
+            <template x-for="h in headers" :key="h">
+              <option :value="h" :selected="mapping.email === h" x-text="h"></option>
+            </template>
+          </select>
+          <p class="mt-1 text-xs text-ht-content-muted">Required. Used as the unique identifier.</p>
+        </div>
+
+        {# Name column — optional #}
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">
+            Name column <span class="text-ht-content-muted">(optional)</span>
+          </label>
+          <select name="col_name"
+                  x-model="mapping.name"
+                  class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+            <option value="">None</option>
+            <template x-for="h in headers" :key="h">
+              <option :value="h" :selected="mapping.name === h" x-text="h"></option>
+            </template>
+          </select>
+        </div>
+
+        {# Role column — optional #}
+        <div>
+          <label class="block text-sm font-medium text-ht-content-secondary">
+            Role column <span class="text-ht-content-muted">(optional)</span>
+          </label>
+          <select name="col_role"
+                  x-model="mapping.role"
+                  class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-elevated px-3 py-2 text-sm text-ht-content-primary focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+            <option value="">None</option>
+            <template x-for="h in headers" :key="h">
+              <option :value="h" :selected="mapping.role === h" x-text="h"></option>
+            </template>
+          </select>
+        </div>
+      </div>
+
+      <div class="rounded-sm border border-divider-subtle bg-ht-surface-base px-4 py-3 text-xs text-ht-content-muted">
+        <strong class="text-ht-content-secondary">Behaviour:</strong>
+        Existing users matched by email will have their name updated if the name column is mapped.
+        New users will be created with a password-reset required flag and receive a welcome email if configured.
+        Role values must match an existing role slug in this realm.
+      </div>
+
+      <div class="flex items-center gap-3 pt-1">
+        <button type="submit"
+                :disabled="!mapping.email"
+                class="btn-ember rounded px-4 py-2 text-sm font-semibold disabled:opacity-40">
+          Import
+        </button>
+        <a href="{{ list_url }}" class="text-sm font-medium text-ht-content-muted hover:text-ht-content-secondary">Cancel</a>
+      </div>
+    </div>
+  </form>
+</div>
+
+{# Download a blank template CSV to help users get started #}
+<p class="mt-4 text-xs text-ht-content-muted">
+  Need a starting point?
+  <a href="{{ list_url }}/import/template.csv"
+     class="text-ht-content-brand hover:text-ht-brand-deep underline underline-offset-2">
+    Download template CSV
+  </a>
+</p>
+{% endblock %}

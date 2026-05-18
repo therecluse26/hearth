@@ -196,6 +196,12 @@ fn sleep_with_jitter(base_us: u64, jitter_us: u64, seed: &AtomicU64) {
     } else {
         splitmix64(prev) % (jitter_us + 1)
     };
+    // Intentional wall-clock delay: this is a simulation primitive that injects
+    // realistic I/O timing jitter into deterministic simulation tests. It cannot
+    // be replaced with tokio::time::advance because the delay must affect real
+    // synchronous storage calls on blocking threads, not the async scheduler.
+    // Returns immediately when base_us == 0 && jitter_us == 0 (the default).
+    // AUDIT: justified-sleep: simulation primitive for I/O jitter injection (HEA-571).
     std::thread::sleep(Duration::from_micros(base_us.saturating_add(extra)));
 }
 

@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId};
+use crate::core::{
+    ClientId, InvitationId, OrganizationId, RealmId, SessionId, Timestamp, UserId, WebhookId,
+};
 use crate::identity::claims_config::ClaimProfile;
 use crate::identity::credentials::CleartextPassword;
 use crate::identity::email::stored_templates::LocalizedEmailTemplate;
@@ -192,6 +194,11 @@ pub struct SessionContext {
     pub user_agent_raw: Option<String>,
     /// Pre-parsed device label, e.g. `"Chrome, Mac OSX"`.
     pub device_label: Option<String>,
+    /// Set to `true` when the session originates from a completed WebAuthn
+    /// (passkey) ceremony. Passkeys are inherently multi-factor
+    /// (possession + biometric/PIN), so they satisfy a realm's `mfa_required`
+    /// policy without requiring a separate TOTP enrollment check.
+    pub satisfies_mfa_via_passkey: bool,
 }
 
 /// An authentication session bound to a user.
@@ -674,11 +681,18 @@ pub struct UpdateRealmRequest {
 
 /// The lifecycle status of an organization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum OrganizationStatus {
     /// Organization is active; members can operate normally.
     Active,
     /// Organization is suspended by an administrator.
     Suspended,
+    /// Organization was removed from YAML config and soft-deleted.
+    ///
+    /// Behaves like `Suspended` (new membership operations denied) but
+    /// additionally signals that the org can be permanently deleted from
+    /// the admin UI. Restored to `Active` if the org slug reappears in YAML.
+    Archived,
 }
 
 /// Per-organization configuration.
@@ -1270,6 +1284,80 @@ pub enum ConsentDecision {
     Approve,
     /// User denied the authorization entirely.
     Deny,
+}
+
+// ---------------------------------------------------------------------------
+// Webhook types
+// ---------------------------------------------------------------------------
+
+/// A registered webhook endpoint that receives HTTP POST notifications for
+/// subscribed realm events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Webhook {
+    id: WebhookId,
+    realm_id: RealmId,
+    /// HTTPS (or HTTP-localhost) endpoint URL.
+    pub url: String,
+    /// HMAC-SHA256 signing secret. `None` means deliveries are unsigned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Subscribed event types. Empty list = subscribe to all events.
+    pub events: Vec<String>,
+    /// Whether this webhook is active and should receive deliveries.
+    pub enabled: bool,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl Webhook {
+    /// Creates a new webhook. Used internally by the identity engine.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        id: WebhookId,
+        realm_id: RealmId,
+        url: String,
+        secret: Option<String>,
+        events: Vec<String>,
+        enabled: bool,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            realm_id,
+            url,
+            secret,
+            events,
+            enabled,
+            created_at,
+            updated_at,
+        }
+    }
+
+    /// Returns the unique identifier for this webhook.
+    #[must_use]
+    pub fn id(&self) -> &WebhookId {
+        &self.id
+    }
+
+    /// Returns the realm this webhook belongs to.
+    #[must_use]
+    pub fn realm_id(&self) -> &RealmId {
+        &self.realm_id
+    }
+}
+
+/// Request to register a new webhook.
+#[derive(Clone, Debug)]
+pub struct CreateWebhookRequest {
+    /// Endpoint URL.
+    pub url: String,
+    /// Optional HMAC-SHA256 signing secret.
+    pub secret: Option<String>,
+    /// Event type filter. Empty = all events.
+    pub events: Vec<String>,
+    /// Whether to activate the webhook immediately.
+    pub enabled: bool,
 }
 
 #[cfg(test)]

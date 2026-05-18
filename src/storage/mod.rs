@@ -18,6 +18,7 @@ pub mod fs;
 pub(crate) mod key_registry;
 #[allow(dead_code)]
 pub(crate) mod memtable;
+pub mod migrations;
 #[allow(dead_code)]
 pub(crate) mod sst;
 #[allow(dead_code)]

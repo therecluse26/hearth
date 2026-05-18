@@ -163,6 +163,35 @@ impl fmt::Display for Permission {
 // Core entity types
 // ---------------------------------------------------------------------------
 
+/// The lifecycle status of a permission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionStatus {
+    /// Permission is active; it may be granted to roles.
+    #[default]
+    Active,
+    /// Permission was removed from YAML config and soft-deleted.
+    ///
+    /// The permission record is preserved for audit but cannot be granted
+    /// to new roles. Restored to `Active` if the permission reappears in YAML.
+    Archived,
+}
+
+/// Persisted permission record stored at `rba:perm:{realm_id}:{name}`.
+///
+/// Extends the bare `Permission` name with a lifecycle status so YAML-driven
+/// removal produces an archive rather than a hard delete.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionRecord {
+    /// The validated permission name.
+    pub name: Permission,
+    /// Lifecycle status; defaults to `Active` for old records serialised
+    /// before this field was introduced.
+    #[serde(default)]
+    pub status: PermissionStatus,
+}
+
 /// YAML-defined permission metadata loaded into the registry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionDefinition {
@@ -200,6 +229,22 @@ pub enum RoleScopeKind {
     Any,
 }
 
+/// The lifecycle status of a role.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum RoleStatus {
+    /// Role is active; it may be assigned to subjects.
+    #[default]
+    Active,
+    /// Role was removed from YAML config and soft-deleted.
+    ///
+    /// New assignments are rejected. Existing assignments are preserved
+    /// so that effective-permission resolution and audit remain coherent.
+    /// Restored to `Active` if the role reappears in YAML.
+    Archived,
+}
+
 /// A named set of permissions with optional parent-role composition edges.
 ///
 /// Effective permissions are the union of `permissions` and the transitive
@@ -221,6 +266,17 @@ pub struct Role {
     /// Where this role may be assigned.
     #[serde(default = "default_role_scope_kind")]
     pub scope_kind: RoleScopeKind,
+    /// Lifecycle status; defaults to `Active` for backward-compatible
+    /// deserialization of records written before this field was introduced.
+    #[serde(default)]
+    pub status: RoleStatus,
+    /// True when this role was created and is managed by YAML reconciliation.
+    ///
+    /// Only YAML-managed roles are archived when their declaration is removed
+    /// from the YAML config. Roles created via the admin UI keep `false` and
+    /// are never touched by YAML-driven archival.
+    #[serde(default)]
+    pub yaml_managed: bool,
     /// Creation timestamp (UTC microseconds).
     pub created_at: Timestamp,
     /// Last-update timestamp (UTC microseconds).
@@ -420,6 +476,8 @@ pub struct UpdateRoleRequest {
     pub parent_roles: Option<Vec<RoleId>>,
     /// New assignment boundary; replaces when `Some`.
     pub scope_kind: Option<RoleScopeKind>,
+    /// New lifecycle status. Used to archive or restore a role.
+    pub status: Option<RoleStatus>,
 }
 
 /// Input for `create_group`.
@@ -538,49 +596,104 @@ mod tests {
 
     #[test]
     fn permission_rejects_single_segment() {
-        assert!(
-            Permission::new("docs").is_err(),
-            "single-segment names belong to the OIDC scope namespace"
-        );
+        let err = Permission::new("docs")
+            .expect_err("single-segment names belong to the OIDC scope namespace");
+        assert!(err.contains("separator"), "got: {err}");
     }
 
     #[test]
     fn permission_accepts_dotted() {
-        assert!(Permission::new("docs.edit").is_ok());
-        assert!(Permission::new("org.billing.view").is_ok());
+        assert_eq!(
+            Permission::new("docs.edit")
+                .expect("docs.edit is valid")
+                .as_str(),
+            "docs.edit"
+        );
+        assert_eq!(
+            Permission::new("org.billing.view")
+                .expect("org.billing.view is valid")
+                .as_str(),
+            "org.billing.view"
+        );
     }
 
     #[test]
     fn permission_accepts_digits_and_underscores_in_non_first_position() {
-        assert!(Permission::new("docs.v1").is_ok());
-        assert!(Permission::new("docs.edit_self").is_ok());
-        assert!(Permission::new("a1b2c3.x_y").is_ok());
+        assert_eq!(
+            Permission::new("docs.v1")
+                .expect("docs.v1 is valid")
+                .as_str(),
+            "docs.v1"
+        );
+        assert_eq!(
+            Permission::new("docs.edit_self")
+                .expect("docs.edit_self is valid")
+                .as_str(),
+            "docs.edit_self"
+        );
+        assert_eq!(
+            Permission::new("a1b2c3.x_y")
+                .expect("a1b2c3.x_y is valid")
+                .as_str(),
+            "a1b2c3.x_y"
+        );
     }
 
     #[test]
     fn permission_rejects_empty() {
-        assert!(Permission::new("").is_err());
+        let err = Permission::new("").expect_err("empty string must be rejected");
+        assert!(!err.is_empty(), "got: {err}");
     }
 
     #[test]
     fn permission_accepts_mixed_case() {
         // Per AUTHZ_EXPANSION.md the grammar is case-insensitive.
-        assert!(Permission::new("Docs.edit").is_ok());
-        assert!(Permission::new("docs.Edit").is_ok());
+        assert_eq!(
+            Permission::new("Docs.edit")
+                .expect("Docs.edit is valid")
+                .as_str(),
+            "Docs.edit"
+        );
+        assert_eq!(
+            Permission::new("docs.Edit")
+                .expect("docs.Edit is valid")
+                .as_str(),
+            "docs.Edit"
+        );
     }
 
     #[test]
     fn permission_accepts_leading_digit() {
         // Grammar permits any ASCII alnum/underscore/hyphen at any position.
-        assert!(Permission::new("1docs.x").is_ok());
-        assert!(Permission::new("docs.1bad").is_ok());
+        assert_eq!(
+            Permission::new("1docs.x")
+                .expect("1docs.x is valid")
+                .as_str(),
+            "1docs.x"
+        );
+        assert_eq!(
+            Permission::new("docs.1bad")
+                .expect("docs.1bad is valid")
+                .as_str(),
+            "docs.1bad"
+        );
     }
 
     #[test]
     fn permission_accepts_leading_underscore() {
         // Same grammar relaxation as above.
-        assert!(Permission::new("_docs.x").is_ok());
-        assert!(Permission::new("docs._bad").is_ok());
+        assert_eq!(
+            Permission::new("_docs.x")
+                .expect("_docs.x is valid")
+                .as_str(),
+            "_docs.x"
+        );
+        assert_eq!(
+            Permission::new("docs._bad")
+                .expect("docs._bad is valid")
+                .as_str(),
+            "docs._bad"
+        );
     }
 
     #[test]

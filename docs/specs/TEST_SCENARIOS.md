@@ -31,7 +31,8 @@ Phase 0 scenario counts by module and testing layer. `0/N` = completed/total. `-
 | CLI Tool | -- | 3/3 | -- | -- | -- | -- | -- | -- | **3/3** |
 | End-to-End Flows | -- | 4/4 | -- | -- | -- | -- | -- | -- | **4/4** |
 | Cross-Cutting Concerns | -- | -- | -- | -- | -- | 5/5 | -- | -- | **5/5** |
-| **Column Total** | **54/54** | **24/24** | **18/18** | **5/5** | **10/10** | **23/23** | **2/2** | **12/12** | **148/148** |
+| Per-Realm Auth Policies | -- | 10/10 | -- | -- | -- | 2/2 | -- | -- | **12/12** |
+| **Column Total** | **54/54** | **34/34** | **18/18** | **5/5** | **10/10** | **25/25** | **2/2** | **12/12** | **160/160** |
 
 ---
 
@@ -591,6 +592,28 @@ Phase 1 scenario counts by module and testing layer. `0/N` = completed/total. `-
 - [x] Cross-realm session injection: session ID from realm A rejected when presented to realm B `P0` `fast`
 - [x] Realm ID spoofing: forged RealmId in request path rejected by ownership validation `P0` `fast`
 - [x] Realm enumeration resistance: responses for nonexistent realms are indistinguishable from forbidden `P0` `fast`
+
+---
+
+### Per-Realm Auth Policies
+
+#### Integration
+
+- [x] `mfa_required`: `create_session` returns `MfaRequired` when realm requires MFA and user has no TOTP enrolled `P0` `fast`
+- [x] `mfa_required`: `create_session` succeeds when realm requires MFA and user has TOTP enrolled `P0` `fast`
+- [x] `mfa_required`: passkey-originated sessions bypass the TOTP gate (`satisfies_mfa_via_passkey`) `P0` `fast`
+- [x] `allowed_auth_methods`: `verify_password` returns `AuthMethodNotAllowed` when `password` is not in the allow-list `P0` `fast`
+- [x] `allowed_auth_methods`: `verify_password` succeeds when `password` is in the allow-list `P0` `fast`
+- [x] `allowed_auth_methods`: `request_magic_link` returns `AuthMethodNotAllowed` when `magic_link` is not in the allow-list `P0` `fast`
+- [x] `allowed_auth_methods`: policy update takes immediate effect — re-restricting a realm blocks previously allowed method `P0` `fast`
+- [x] `passwordComplexity.require_special`: password missing special character rejected; password with special character accepted `P0` `fast`
+- [x] `passwordComplexity.not_email`: password matching the user's email rejected `P0` `fast`
+- [x] `passwordComplexity` enforcement on `set_password`: min_length, require_uppercase, require_number checked at set time `P0` `fast`
+
+#### Adversarial
+
+- [x] Bypass attempt: direct `create_session` call without prior MFA verification fails when `mfa_required = true` `P0` `fast`
+- [x] Passkey MFA bypass: passkey-tagged session correctly exempted from TOTP enrollment check `P0` `fast`
 
 ---
 

@@ -322,6 +322,8 @@ function configEditor() {
         obj = obj[parts[i]];
       }
       const key = parts[parts.length - 1];
+      // Guard redundant with parts.some() above; kept to make CodeQL dataflow locally provable.
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return;
       if (value === '' || value === null) {
         delete obj[key];
       } else if (typeof value === 'string' && !value.includes('${')) {

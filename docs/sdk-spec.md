@@ -3,9 +3,11 @@
 > **Canonical reference.** This document is the board-approved specification for all Hearth client SDKs.  
 > Generated from [HEA-332](https://github.com/therecluse26/hearth) — do not edit without board approval.
 
+> **Pre-release note (board, 2026-05-15):** Hearth has not shipped yet. Breaking changes are fully acceptable during all remediation phases. No backward-compatibility work, deprecation periods, or migration guides are required.
+
 ---
 
-### 1. Configuration
+## 1. Configuration
 
 Every SDK must accept a single primary entry point (a `HearthClient` class, struct, or equivalent) configured with:
 
@@ -22,7 +24,7 @@ SDKs **must** auto-discover all endpoint URLs from `{issuer_url}/.well-known/ope
 
 ---
 
-### 2. JWKS & Token Verification
+## 2. JWKS & Token Verification
 
 **Required algorithms:** RS256, ES256. Both must be supported; others may be allowed if the server advertises them in `jwks_uri`.
 
@@ -44,7 +46,7 @@ SDKs **must** auto-discover all endpoint URLs from `{issuer_url}/.well-known/ope
 
 ---
 
-### 3. Token Introspection
+## 3. Token Introspection
 
 All SDKs must expose an introspection method (RFC 7662):
 
@@ -70,7 +72,7 @@ Introspection results **must not be cached** (RFC 7662 §2.1 — the token state
 
 ---
 
-### 4. Claims API
+## 4. Claims API
 
 Every SDK must provide typed access to standard JWT claims from a verified token, without requiring consumers to parse raw JSON:
 
@@ -93,7 +95,7 @@ Every SDK must provide typed access to standard JWT claims from a verified token
 
 ---
 
-### 5. Error Taxonomy
+## 5. Error Taxonomy
 
 All SDKs must define and expose the following error/exception types. Language-native error handling patterns apply (Go: sentinel errors + types; Python: exceptions; TypeScript: typed Error subclasses; etc.):
 
@@ -115,7 +117,7 @@ All errors must include a human-readable `message`. Errors that wrap an underlyi
 
 ---
 
-### 6. Middleware
+## 6. Middleware
 
 All server-side SDKs (node, go, python) must provide HTTP middleware that:
 
@@ -132,7 +134,7 @@ The browser SDK (`@hearth/browser`) is exempt from the middleware requirement bu
 
 ---
 
-### 7. PKCE & Browser Flows (browser SDK only)
+## 7. PKCE & Browser Flows (browser SDK only)
 
 The browser SDK must additionally implement:
 
@@ -144,7 +146,7 @@ The browser SDK must additionally implement:
 
 ---
 
-### 8. Versioning
+## 8. Versioning
 
 - All SDKs use **SemVer** (MAJOR.MINOR.PATCH).
 - Each SDK release declares a minimum compatible Hearth server version in its README and package metadata.
@@ -153,7 +155,7 @@ The browser SDK must additionally implement:
 
 ---
 
-### 9. Testing Requirements
+## 9. Testing Requirements
 
 | Category | Requirement |
 |----------|-------------|
@@ -166,7 +168,7 @@ The browser SDK must additionally implement:
 
 ---
 
-### 10. Documentation Requirements
+## 10. Documentation Requirements
 
 Every SDK repo must contain:
 
@@ -178,7 +180,7 @@ Every SDK repo must contain:
 
 ---
 
-### 11. Security Requirements
+## 11. Security Requirements
 
 - Tokens and secrets must **never** appear in logs, error messages, or stack traces.
 - All HTTPS connections must validate TLS certificates (no `InsecureSkipVerify` or equivalent).

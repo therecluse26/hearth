@@ -1,0 +1,160 @@
+{# Step 2 of 4 — Create first OAuth application.
+   Rust handler vars: product_name, logo_url, theme_css, realm_theme_css, csrf,
+     chrome: bool, active: &str ("onboarding"),
+     realm_name: String,           -- the realm created in step 1
+     error: Option<String>,
+     form_app_name: String,
+     form_redirect_uri: String,
+     form_grant_types: Vec<String>  -- selected grant types #}
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Setup · Application{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-xl py-6">
+
+  <div class="mb-6">
+    <p class="font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Getting started · Realm: <span class="text-ht-content-secondary">{{ realm_name }}</span></p>
+    <h1 class="font-display text-3xl font-medium text-ht-content-primary">Register an application</h1>
+    <p class="mt-2 text-sm text-ht-content-secondary">
+      Applications are OAuth 2.0 clients that authenticate users or services against this realm.
+    </p>
+  </div>
+
+  {% let step = 2_u8 %}
+  {% include "ui/admin/onboarding/_progress.html" %}
+
+  <div class="rounded-lg bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+    <div class="mb-5">
+      <h2 class="text-base font-semibold text-ht-content-primary">Application details</h2>
+      <p class="mt-0.5 text-sm text-ht-content-muted">You can create more applications later from the realm dashboard.</p>
+    </div>
+
+    {% match error %}
+      {% when Some with (msg) %}
+        <div class="mb-4 rounded-md bg-danger/[0.12] px-4 py-3 text-sm font-medium text-danger-fg" role="alert">{{ msg }}</div>
+      {% when None %}
+    {% endmatch %}
+
+    <form method="post"
+          action="/ui/admin/onboarding/app"
+          autocomplete="off"
+          class="space-y-5">
+      {% match csrf %}
+        {% when Some with (token) %}
+          <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+
+      {# App name #}
+      <div>
+        <label for="app_name" class="block text-sm font-medium text-ht-content-secondary">Application name</label>
+        <input type="text"
+               id="app_name"
+               name="app_name"
+               required
+               autofocus
+               maxlength="80"
+               placeholder="My Web App"
+               value="{{ form_app_name }}"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      </div>
+
+      {# Redirect URI #}
+      <div>
+        <div class="flex items-center gap-1">
+          <label for="redirect_uri" class="block text-sm font-medium text-ht-content-secondary">Redirect URI</label>
+          <span x-data="{ tip: false }" class="relative inline-flex">
+            <button type="button" @mouseenter="tip=true" @mouseleave="tip=false" @focus="tip=true" @blur="tip=false"
+                    class="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-divider bg-ht-surface-elevated text-ht-content-muted transition-colors hover:text-ht-content-secondary"
+                    aria-label="About redirect URIs">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </button>
+            <span x-show="tip" x-cloak role="tooltip"
+                  class="absolute left-6 top-1/2 z-50 w-64 -translate-y-1/2 rounded-md bg-ht-surface-raised p-3 text-xs text-ht-content-secondary shadow ring-1 ring-divider-subtle">
+              After login, the browser is redirected here with the authorization code. Must be an exact HTTPS URL in production (HTTP allowed for localhost).
+            </span>
+          </span>
+        </div>
+        <input type="url"
+               id="redirect_uri"
+               name="redirect_uri"
+               required
+               maxlength="2048"
+               placeholder="https://myapp.example.com/auth/callback"
+               value="{{ form_redirect_uri }}"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 font-mono text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      </div>
+
+      {# Grant types #}
+      <div>
+        <div class="flex items-center gap-1">
+          <p class="block text-sm font-medium text-ht-content-secondary">Grant types</p>
+          <span x-data="{ tip: false }" class="relative inline-flex">
+            <button type="button" @mouseenter="tip=true" @mouseleave="tip=false" @focus="tip=true" @blur="tip=false"
+                    class="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-divider bg-ht-surface-elevated text-ht-content-muted transition-colors hover:text-ht-content-secondary"
+                    aria-label="About grant types">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </button>
+            <span x-show="tip" x-cloak role="tooltip"
+                  class="absolute left-6 top-1/2 z-50 w-64 -translate-y-1/2 rounded-md bg-ht-surface-raised p-3 text-xs text-ht-content-secondary shadow ring-1 ring-divider-subtle">
+              Authorization Code + PKCE is recommended for web and mobile apps. Client Credentials is for machine-to-machine (no user involved).
+            </span>
+          </span>
+        </div>
+        <p class="mt-0.5 text-xs text-ht-content-muted">Select all that apply.</p>
+        <div class="mt-2 space-y-2">
+          <label class="flex cursor-pointer items-start gap-3 rounded-sm border border-divider bg-ht-surface-input p-3 transition-colors hover:border-ht-divider/[0.18] has-[:checked]:border-ht-content-brand has-[:checked]:bg-brand-subtle">
+            <input type="checkbox"
+                   name="grant_authorization_code"
+                   value="1"
+                   {% if form_grant_authorization_code %}checked{% endif %}
+                   class="mt-0.5 h-4 w-4 shrink-0 accent-ember-gold">
+            <div>
+              <span class="block text-sm font-medium text-ht-content-primary">Authorization Code + PKCE</span>
+              <span class="text-xs text-ht-content-muted">Browser and mobile apps — users log in interactively</span>
+            </div>
+          </label>
+          <label class="flex cursor-pointer items-start gap-3 rounded-sm border border-divider bg-ht-surface-input p-3 transition-colors hover:border-ht-divider/[0.18] has-[:checked]:border-ht-content-brand has-[:checked]:bg-brand-subtle">
+            <input type="checkbox"
+                   name="grant_refresh_token"
+                   value="1"
+                   {% if form_grant_refresh_token %}checked{% endif %}
+                   class="mt-0.5 h-4 w-4 shrink-0 accent-ember-gold">
+            <div>
+              <span class="block text-sm font-medium text-ht-content-primary">Refresh Token</span>
+              <span class="text-xs text-ht-content-muted">Keep sessions alive with rotating refresh tokens</span>
+            </div>
+          </label>
+          <label class="flex cursor-pointer items-start gap-3 rounded-sm border border-divider bg-ht-surface-input p-3 transition-colors hover:border-ht-divider/[0.18] has-[:checked]:border-ht-content-brand has-[:checked]:bg-brand-subtle">
+            <input type="checkbox"
+                   name="grant_client_credentials"
+                   value="1"
+                   {% if form_grant_client_credentials %}checked{% endif %}
+                   class="mt-0.5 h-4 w-4 shrink-0 accent-ember-gold">
+            <div>
+              <span class="block text-sm font-medium text-ht-content-primary">Client Credentials</span>
+              <span class="text-xs text-ht-content-muted">Machine-to-machine — no user involved</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      {# PKCE enforcement notice #}
+      <div class="flex items-start gap-3 rounded-sm bg-info/[0.08] px-4 py-3 text-xs text-ht-content-secondary">
+        <svg class="mt-0.5 h-4 w-4 shrink-0 text-info-fg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span>PKCE is enforced by default for all authorization-code flows. You can relax this per-application in the realm settings after setup.</span>
+      </div>
+
+      {# Actions #}
+      <div class="flex items-center gap-4 pt-2">
+        <button type="submit"
+                class="btn-ember rounded px-5 py-2 text-sm font-semibold">
+          Register application
+          <svg class="ml-1.5 inline-block h-4 w-4 align-[-2px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+        <a href="/ui/admin/onboarding/invite" class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Skip this step</a>
+      </div>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

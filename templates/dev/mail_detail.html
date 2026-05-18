@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hearth Mailcatcher · {{ email.subject }}</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/ui/static/app.css">
+  <script>
+    function showTab(tab) {
+      ['html','text','headers'].forEach(function(t) {
+        document.getElementById('tab-' + t).classList.toggle('hidden', t !== tab);
+        document.getElementById('btn-' + t).setAttribute('aria-selected', t === tab ? 'true' : 'false');
+      });
+    }
+  </script>
+</head>
+<body class="min-h-screen bg-ht-surface-base text-ht-content-primary">
+
+  <header class="border-b border-white/6 bg-ht-surface-raised px-6 py-4">
+    <div class="mx-auto flex max-w-4xl items-center justify-between gap-4">
+      <div class="min-w-0">
+        <a href="/dev/mail"
+           class="mb-1 inline-flex items-center gap-1 text-xs text-ht-content-muted hover:text-ht-content-secondary transition-colors">
+          ← Inbox
+        </a>
+        <h1 class="truncate font-display text-lg font-semibold text-ht-content-primary">
+          {{ email.subject }}
+        </h1>
+      </div>
+      <form method="post" action="/dev/mail/{{ email.id }}/delete"
+            onsubmit="return confirm('Delete this email?')"
+            class="shrink-0">
+        <button type="submit"
+                class="rounded border border-danger/40 px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 transition-colors">
+          Delete
+        </button>
+      </form>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-4xl px-6 py-6 space-y-4">
+
+    <div class="rounded-lg border border-white/6 bg-ht-surface-elevated px-4 py-3 text-sm space-y-1.5">
+      <div class="flex gap-2">
+        <span class="w-16 shrink-0 font-medium text-ht-content-muted">To</span>
+        <span class="font-mono text-xs text-ht-content-secondary">{{ email.to }}</span>
+      </div>
+      <div class="flex gap-2">
+        <span class="w-16 shrink-0 font-medium text-ht-content-muted">Subject</span>
+        <span class="text-ht-content-primary">{{ email.subject }}</span>
+      </div>
+      <div class="flex gap-2">
+        <span class="w-16 shrink-0 font-medium text-ht-content-muted">Received</span>
+        <span class="text-xs text-ht-content-muted">{{ email.received_at }}</span>
+      </div>
+    </div>
+
+    {# Tab bar #}
+    <div class="border-b border-white/6" role="tablist">
+      <button id="btn-html" role="tab" aria-selected="true" onclick="showTab('html')"
+              class="px-4 py-2 text-sm font-medium border-b-2 border-transparent [&[aria-selected=true]]:border-ht-content-brand [&[aria-selected=true]]:text-ht-content-primary text-ht-content-muted hover:text-ht-content-secondary transition-colors">
+        HTML
+      </button>
+      <button id="btn-text" role="tab" aria-selected="false" onclick="showTab('text')"
+              class="px-4 py-2 text-sm font-medium border-b-2 border-transparent [&[aria-selected=true]]:border-ht-content-brand [&[aria-selected=true]]:text-ht-content-primary text-ht-content-muted hover:text-ht-content-secondary transition-colors">
+        Plain text
+      </button>
+      <button id="btn-headers" role="tab" aria-selected="false" onclick="showTab('headers')"
+              class="px-4 py-2 text-sm font-medium border-b-2 border-transparent [&[aria-selected=true]]:border-ht-content-brand [&[aria-selected=true]]:text-ht-content-primary text-ht-content-muted hover:text-ht-content-secondary transition-colors">
+        Headers
+      </button>
+    </div>
+
+    {# HTML tab #}
+    <div id="tab-html">
+      {% if email.html_body.is_empty() %}
+        <p class="text-sm text-ht-content-muted italic">No HTML body.</p>
+      {% else %}
+        <iframe srcdoc="&lt;base target=&quot;_blank&quot;&gt;{{ email.html_body }}"
+                class="w-full min-h-96 rounded-lg border border-white/6 bg-white"
+                sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"
+                title="HTML email preview"></iframe>
+      {% endif %}
+    </div>
+
+    {# Plain text tab #}
+    <div id="tab-text" class="hidden">
+      {% if email.text_body.is_empty() %}
+        <p class="text-sm text-ht-content-muted italic">No plain text body.</p>
+      {% else %}
+        <pre class="overflow-x-auto rounded-lg border border-white/6 bg-ht-surface-elevated p-4 font-mono text-xs text-ht-content-secondary whitespace-pre-wrap">{{ email.text_body }}</pre>
+      {% endif %}
+    </div>
+
+    {# Headers tab #}
+    <div id="tab-headers" class="hidden">
+      <div class="overflow-hidden rounded-lg border border-white/6 bg-ht-surface-elevated">
+        <table class="w-full text-xs font-mono">
+          <tbody class="divide-y divide-white/[0.04]">
+            <tr>
+              <td class="px-4 py-2 font-medium text-ht-content-muted w-32">To</td>
+              <td class="px-4 py-2 text-ht-content-secondary">{{ email.to }}</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-2 font-medium text-ht-content-muted">Subject</td>
+              <td class="px-4 py-2 text-ht-content-secondary">{{ email.subject }}</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-2 font-medium text-ht-content-muted">Date</td>
+              <td class="px-4 py-2 text-ht-content-secondary">{{ email.received_at }}</td>
+            </tr>
+            <tr>
+              <td class="px-4 py-2 font-medium text-ht-content-muted">Message-ID</td>
+              <td class="px-4 py-2 text-ht-content-secondary">{{ email.id }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+</body>
+</html>

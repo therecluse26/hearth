@@ -1,19 +1,23 @@
 //! Write-ahead log for durable storage of mutations.
 //!
 //! All WAL records are encrypted at rest using AES-256-GCM envelope encryption.
-//! The WAL file starts with a 76-byte encryption header containing the
-//! per-segment DEK wrapped by a realm KEK. Each record payload is encrypted
-//! with a monotonic counter-based nonce.
+//! New WAL files start with a 6-byte version header followed by the 76-byte
+//! encryption header. Legacy files (v0) that lack the version header are
+//! migrated in-place on first open.
 //!
-//! On-disk layout:
+//! On-disk layout (v1, default for new files):
 //! ```text
+//! VERSION HEADER (6 bytes):
+//!   [4B] Magic: b"HWAL"
+//!   [2B] Version: 0x0001 (u16 LE)
+//!
 //! ENCRYPTION HEADER (76 bytes):
 //!   [16B] KEK identifier
 //!   [12B] Nonce for DEK wrapping
 //!   [32B] DEK ciphertext
 //!   [16B] GCM auth tag
 //!
-//! RECORDS (starting at byte 76):
+//! RECORDS (starting at byte 82):
 //!   Per record:
 //!     [4B] encrypted payload length (u32 LE, includes GCM tag)
 //!     [NB] encrypted payload (AES-256-GCM ciphertext + 16B tag)
@@ -37,6 +41,7 @@ use crate::storage::encryption::{
 };
 use crate::storage::error::StorageError;
 use crate::storage::fs::{Fs, FsFile};
+use crate::storage::migrations::{self, WAL_MAGIC, WAL_VERSION_CURRENT, WAL_VERSION_HEADER_SIZE};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -348,6 +353,10 @@ pub fn decode_batch_payload(data: &[u8]) -> Result<Vec<BatchEntry>, StorageError
     Ok(entries)
 }
 
+/// Byte offset of the first WAL record in a v1 (or migrated) file.
+/// = `WAL_VERSION_HEADER_SIZE` (6) + `ENCRYPTION_HEADER_SIZE` (76) = 82.
+const V1_RECORD_OFFSET: u64 = (WAL_VERSION_HEADER_SIZE + ENCRYPTION_HEADER_SIZE) as u64;
+
 /// Controls when the WAL fsyncs to disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncMode {
@@ -403,6 +412,9 @@ pub struct Wal {
     /// Retained for potential re-open after rotation in future phases.
     #[allow(dead_code)]
     fs: Arc<dyn Fs>,
+    /// Byte offset of the first WAL record in the file.
+    /// Always `V1_RECORD_OFFSET` (82) for files created or migrated by this binary.
+    record_start: u64,
 }
 
 impl Wal {
@@ -420,45 +432,65 @@ impl Wal {
         let file_size = file.seek(SeekFrom::End(0))?;
 
         let (dek, enc_header, record_count) = if file_size == 0 {
-            // New file: generate DEK, write encryption header
+            // New file: write version header then encryption header.
             let dek = encryption::generate_dek()?;
             let enc_header = encryption::wrap_dek(&dek, kek, kek_id)?;
+            file.write_all(&WAL_MAGIC)?;
+            file.write_all(&WAL_VERSION_CURRENT.to_le_bytes())?;
             file.write_all(&enc_header.to_bytes())?;
             file.sync_all()?;
             (dek, enc_header, 0u64)
         } else {
-            // Existing file: read encryption header
-            if file_size < ENCRYPTION_HEADER_SIZE as u64 {
-                return Err(StorageError::Crypto {
-                    reason: format!("WAL file too small for encryption header: {file_size} bytes"),
-                });
-            }
-
-            // Read entire file to get the header + count records
+            // Existing file: read all bytes, detect format version, migrate if needed.
             let mut all_data = Vec::new();
             file.seek(SeekFrom::Start(0))?;
             file.read_to_end(&mut all_data)?;
 
-            if all_data.len() < ENCRYPTION_HEADER_SIZE {
+            // Detect v0 (no magic) vs v1+ (starts with HWAL).
+            let all_data = if all_data.starts_with(&WAL_MAGIC) {
+                // Versioned file — validate version.
+                if all_data.len() < WAL_VERSION_HEADER_SIZE {
+                    return Err(StorageError::Crypto {
+                        reason: "WAL version header is truncated".to_string(),
+                    });
+                }
+                let version = u16::from_le_bytes([all_data[4], all_data[5]]);
+                if version > WAL_VERSION_CURRENT {
+                    return Err(StorageError::UnsupportedWalVersion { found: version });
+                }
+                all_data
+            } else {
+                // Legacy v0 file — migrate to current version in-place.
+                let migrated = migrations::apply_migrations(&all_data, 0, WAL_VERSION_CURRENT)?;
+                file.set_len(0)?;
+                file.write_all(&migrated)?;
+                file.sync_all()?;
+                migrated
+            };
+
+            // After detection/migration, layout is: [6B ver][76B enc][records...].
+            let enc_start = WAL_VERSION_HEADER_SIZE;
+            let enc_end = enc_start + ENCRYPTION_HEADER_SIZE;
+
+            if all_data.len() < enc_end {
                 return Err(StorageError::Crypto {
-                    reason: "failed to read full encryption header from WAL".to_string(),
+                    reason: format!("WAL file too small for headers: {} bytes", all_data.len()),
                 });
             }
 
-            let header_arr: [u8; ENCRYPTION_HEADER_SIZE] = all_data[..ENCRYPTION_HEADER_SIZE]
+            let header_arr: [u8; ENCRYPTION_HEADER_SIZE] = all_data[enc_start..enc_end]
                 .try_into()
                 .map_err(|_| StorageError::Crypto {
-                    reason: "failed to convert WAL header bytes".to_string(),
+                    reason: "failed to read WAL encryption header".to_string(),
                 })?;
 
             let enc_header = EncryptionHeader::from_bytes(&header_arr);
             let dek = encryption::unwrap_dek(&enc_header, kek)?;
 
-            // Count existing records for the counter
+            // Count existing records for the nonce counter.
             let mut count = 0u64;
-            let record_data = &all_data[ENCRYPTION_HEADER_SIZE..];
+            let record_data = &all_data[enc_end..];
             let mut pos = 0usize;
-
             while pos + 4 <= record_data.len() {
                 let len_bytes: [u8; 4] = match record_data[pos..pos + 4].try_into() {
                     Ok(b) => b,
@@ -485,6 +517,7 @@ impl Wal {
             kek: kek.clone_key(),
             kek_id,
             fs,
+            record_start: V1_RECORD_OFFSET,
         })
     }
 
@@ -574,14 +607,14 @@ impl Wal {
             DataEncryptionKey::from_bytes(bytes)
         };
 
-        // Skip encryption header
+        // Skip version + encryption headers; seek directly to the first record.
         let file_size = file.seek(SeekFrom::End(0))?;
-        if file_size < ENCRYPTION_HEADER_SIZE as u64 {
+        if file_size <= self.record_start {
             return Ok(Vec::new());
         }
 
         let mut all_data = Vec::new();
-        file.seek(SeekFrom::Start(ENCRYPTION_HEADER_SIZE as u64))?;
+        file.seek(SeekFrom::Start(self.record_start))?;
         file.read_to_end(&mut all_data)?;
 
         let mut entries = Vec::new();
@@ -666,7 +699,7 @@ impl Wal {
         Ok(())
     }
 
-    /// Rotates the WAL file by truncating and writing a fresh encryption header.
+    /// Rotates the WAL file by truncating and writing a fresh version + encryption header.
     fn rotate_locked(&self, file: &mut dyn FsFile) -> Result<(), StorageError> {
         // Generate new per-segment DEK and encrypt with the KEK
         let new_dek = encryption::generate_dek()?;
@@ -677,6 +710,8 @@ impl Wal {
 
         file.set_len(0)?;
         file.seek(SeekFrom::Start(0))?;
+        file.write_all(&WAL_MAGIC)?;
+        file.write_all(&WAL_VERSION_CURRENT.to_le_bytes())?;
         file.write_all(&new_enc_header.to_bytes())?;
 
         if self.config.sync_mode == SyncMode::EveryWrite {
@@ -746,6 +781,100 @@ mod tests {
             operation: op,
             key: key.to_vec(),
             value: value.to_vec(),
+        }
+    }
+
+    // --- Version header tests ---
+
+    #[test]
+    fn new_wal_file_has_hwal_version_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = dir.path().join("test.wal");
+        let wal = open_test_wal(
+            &wal_path,
+            WalConfig {
+                max_size: 0,
+                sync_mode: SyncMode::None,
+            },
+        );
+        drop(wal);
+
+        let data = std::fs::read(&wal_path).expect("read wal file");
+        assert!(
+            data.starts_with(b"HWAL"),
+            "new WAL should start with HWAL magic, got: {:?}",
+            &data[..4.min(data.len())]
+        );
+        assert_eq!(
+            u16::from_le_bytes([data[4], data[5]]),
+            1,
+            "expected format version 1"
+        );
+        assert_eq!(
+            data.len(),
+            V1_RECORD_OFFSET as usize,
+            "new empty WAL should be exactly {} bytes",
+            V1_RECORD_OFFSET
+        );
+    }
+
+    #[test]
+    fn legacy_v0_wal_migrated_to_v1_on_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = dir.path().join("legacy.wal");
+        let (kek, kek_id) = test_kek();
+
+        // Manually write a v0 WAL file: just the 76-byte encryption header, no HWAL magic.
+        {
+            let dek = encryption::generate_dek().expect("generate dek");
+            let enc_header = encryption::wrap_dek(&dek, &kek, kek_id).expect("wrap dek");
+            std::fs::write(&wal_path, enc_header.to_bytes()).expect("write v0 wal");
+        }
+
+        // Open: should detect v0, run migration, rewrite with HWAL prefix.
+        let wal = Wal::open_with_fs(
+            &wal_path,
+            WalConfig::default(),
+            Arc::new(RealFs),
+            &kek,
+            kek_id,
+        )
+        .expect("open migrated wal");
+        let entries = wal.read_all().expect("read migrated wal");
+        assert!(
+            entries.is_empty(),
+            "migrated empty WAL should have no records"
+        );
+        drop(wal);
+
+        let data = std::fs::read(&wal_path).expect("read migrated file");
+        assert!(
+            data.starts_with(b"HWAL"),
+            "v0 file should have been migrated to v1 on open"
+        );
+        assert_eq!(
+            u16::from_le_bytes([data[4], data[5]]),
+            1,
+            "migrated file should be at version 1"
+        );
+    }
+
+    #[test]
+    fn v1_wal_entries_survive_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_path = dir.path().join("test.wal");
+        let entry = make_entry(b"persist-key", b"persist-val", WalOperation::Put);
+
+        {
+            let wal = open_test_wal(&wal_path, WalConfig::default());
+            wal.append(&entry).expect("append");
+        }
+        {
+            let wal = open_test_wal(&wal_path, WalConfig::default());
+            let entries = wal.read_all().expect("read all");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].key, b"persist-key");
+            assert_eq!(entries[0].value, b"persist-val");
         }
     }
 
@@ -963,12 +1092,11 @@ mod tests {
         {
             // Read the raw WAL file
             let mut data = std::fs::read(&wal_path).expect("read wal");
-            // Skip encryption header (76 bytes)
+            // Skip version header (6 bytes) + encryption header (76 bytes) = 82 bytes.
             // Record 0: [4B len][ciphertext][4B CRC]
             // Record 1: [4B len][ciphertext][4B CRC]
             // Find the second record's ciphertext and flip a byte near the end
-            let enc_header_size = ENCRYPTION_HEADER_SIZE as usize;
-            let mut pos = enc_header_size;
+            let mut pos = V1_RECORD_OFFSET as usize;
 
             // Skip record 0
             if pos + 4 <= data.len() {

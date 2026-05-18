@@ -35,10 +35,11 @@ pub use engine::{
 pub use error::IdentityError;
 pub use magic_link::MagicLinkResponse;
 pub use oidc::{
-    AuthorizationRequest, AuthorizationResponse, ClientCredentialsRequest,
-    ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod, DeviceAuthorizationRequest,
-    DeviceAuthorizationResponse, DeviceCodeStatus, IntrospectionResponse, OAuthClient, OidcConfig,
-    OidcDiscoveryDocument, OidcTokenResponse, RegisterClientRequest, TokenExchangeRequest,
+    fuzz_parse_token_exchange, ApplicationStatus, AuthorizationRequest, AuthorizationResponse,
+    ClientCredentialsRequest, ClientCredentialsResponse, ClientTrustLevel, CodeChallengeMethod,
+    DeviceAuthorizationRequest, DeviceAuthorizationResponse, DeviceCodeStatus,
+    IntrospectionResponse, OAuthClient, OidcConfig, OidcDiscoveryDocument, OidcTokenResponse,
+    PasswordGrantRequest, PasswordGrantResponse, RegisterClientRequest, TokenExchangeRequest,
     TokenIntrospectionRequest, TokenRevocationRequest, UpdateClientRequest, UserInfoResponse,
 };
 pub use tokens::{
@@ -49,19 +50,20 @@ pub use totp::{RecoveryCodes, TotpEnrollment};
 pub use types::{
     canonicalize_scopes, BulkResult, ConsentDecision, ConsentListEntry, ConsentRecord,
     CreateInvitationRequest, CreateOrganizationRequest, CreateRealmRequest, CreateUserRequest,
-    DcrPolicy, ImportClientRequest, ImportUserRequest, InvitationStatus, MigrationReport,
-    Organization, OrganizationConfig, OrganizationInvitation, OrganizationMembership,
-    OrganizationRole, OrganizationStatus, Page, PasswordPolicy, PendingAuthorizationRequest,
-    RawCredential, Realm, RealmConfig, RealmStatus, RegisterUserRequest, RegisterUserResponse,
-    RegistrationPolicy, Session, SessionContext, UpdateOrganizationRequest, UpdateRealmRequest,
-    UpdateUserRequest, User, UserStatus,
+    CreateWebhookRequest, DcrPolicy, ImportClientRequest, ImportUserRequest, InvitationStatus,
+    MigrationReport, Organization, OrganizationConfig, OrganizationInvitation,
+    OrganizationMembership, OrganizationRole, OrganizationStatus, Page, PasswordPolicy,
+    PendingAuthorizationRequest, RawCredential, Realm, RealmConfig, RealmStatus,
+    RegisterUserRequest, RegisterUserResponse, RegistrationPolicy, Session, SessionContext,
+    UpdateOrganizationRequest, UpdateRealmRequest, UpdateUserRequest, User, UserStatus, Webhook,
 };
+pub use validation::fuzz_validate_redirect_uri;
 pub use webauthn::{
     fuzz_parse_webauthn, AuthenticationOptions, CompleteAuthenticationParams, RegistrationOptions,
     WebAuthnAuthResult, WebAuthnCredentialInfo,
 };
 
-use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId};
+use crate::core::{ClientId, InvitationId, OrganizationId, RealmId, SessionId, UserId, WebhookId};
 
 /// Trait defining the identity engine interface.
 ///
@@ -108,8 +110,20 @@ pub trait IdentityEngine: Send + Sync {
     /// Returns the JWKS document for a specific realm.
     ///
     /// Each realm has its own signing key, so its JWKS document contains
-    /// only that realm's public key.
+    /// only that realm's public key. During a key rotation grace period both
+    /// the new active key and any non-expired retiring keys are included.
     fn realm_jwks(&self, realm_id: &RealmId) -> Result<JwksDocument, IdentityError>;
+
+    /// Rotates the Ed25519 signing key for a realm.
+    ///
+    /// Generates a new key, writes it as the active key, and stores the old
+    /// key as a retiring key with a deadline of `now + grace_period_secs`.
+    /// The JWKS endpoint will serve both keys until the deadline passes.
+    fn rotate_realm_signing_key(
+        &self,
+        realm_id: &RealmId,
+        grace_period_secs: u64,
+    ) -> Result<(), IdentityError>;
 
     /// Creates a new user in the given realm.
     ///
@@ -207,6 +221,14 @@ pub trait IdentityEngine: Send + Sync {
     ///
     /// The default implementation is a no-op; the embedded engine overrides.
     fn record_ip_login_attempt(&self, _realm_id: &RealmId, _ip: &str) {}
+
+    /// Returns the number of seconds remaining in the current rate-limit window
+    /// for an IP that has already hit its limit (for `Retry-After` headers).
+    ///
+    /// Returns 0 when the IP is not blocked. Default implementation returns 0.
+    fn ip_login_retry_after_secs(&self, _realm_id: &RealmId, _ip: &str) -> u64 {
+        0
+    }
 
     /// Changes a user's password after verifying the old one.
     ///
@@ -413,6 +435,18 @@ pub trait IdentityEngine: Send + Sync {
     ) -> Result<OidcDiscoveryDocument, IdentityError>;
 
     // ===== OAuth 2.0 Extended (Step 22) =====
+
+    /// Issues tokens via the Resource Owner Password Credentials Grant (RFC 6749 §4.3).
+    ///
+    /// Looks up the user by email, verifies the password (enforcing per-account
+    /// rate limits), creates a session, and issues an access + refresh token pair.
+    /// Returns `Err(InvalidCredential)` for wrong email or password (intentionally
+    /// vague for enumeration resistance).
+    fn password_grant_token(
+        &self,
+        realm_id: &RealmId,
+        request: &PasswordGrantRequest,
+    ) -> Result<PasswordGrantResponse, IdentityError>;
 
     /// Issues an access token via the Client Credentials Grant (RFC 6749 §4.4).
     ///
@@ -1398,6 +1432,34 @@ pub trait IdentityEngine: Send + Sync {
         realm_id: &RealmId,
         external_id: &str,
     ) -> Result<Option<Organization>, IdentityError>;
+
+    // =========================================================================
+    // Webhooks
+    // =========================================================================
+
+    /// Registers a new webhook endpoint for the given realm.
+    fn create_webhook(
+        &self,
+        realm_id: &RealmId,
+        req: &CreateWebhookRequest,
+    ) -> Result<Webhook, IdentityError>;
+
+    /// Returns a single webhook by ID, or `None` if not found.
+    fn get_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<Option<Webhook>, IdentityError>;
+
+    /// Lists all webhooks registered in a realm, in insertion order.
+    fn list_webhooks(&self, realm_id: &RealmId) -> Result<Vec<Webhook>, IdentityError>;
+
+    /// Deletes a webhook from the realm.
+    fn delete_webhook(
+        &self,
+        realm_id: &RealmId,
+        webhook_id: &WebhookId,
+    ) -> Result<(), IdentityError>;
 
     /// Sweeps expired entities (authorization codes, device codes,
     /// pending authorization tickets, grant families) from storage.

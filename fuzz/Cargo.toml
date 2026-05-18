@@ -50,3 +50,18 @@ doc = false
 name = "federation_claims"
 path = "fuzz_targets/federation_claims.rs"
 doc = false
+
+[[bin]]
+name = "saml_xml_parse"
+path = "fuzz_targets/saml_xml_parse.rs"
+doc = false
+
+[[bin]]
+name = "token_exchange_parse"
+path = "fuzz_targets/token_exchange_parse.rs"
+doc = false
+
+[[bin]]
+name = "redirect_uri_parse"
+path = "fuzz_targets/redirect_uri_parse.rs"
+doc = false

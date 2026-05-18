@@ -1,0 +1,20 @@
+{% if destination.is_some() %}
+<div class="mt-3 rounded-md border border-white/10 bg-ht-surface-base p-4">
+  <p class="mb-2 text-xs font-medium text-ht-content-muted">
+    Add this to your <code class="font-mono">hearth.yaml</code>, then restart:
+  </p>
+  <pre class="overflow-x-auto whitespace-pre-wrap rounded-sm bg-ht-surface-elevated px-3 py-2 font-mono text-xs text-ht-content-primary ring-1 ring-white/6">{{ yaml_migrate }}</pre>
+  <p class="mt-2 text-xs text-ht-content-muted">
+    On next restart, users from <code class="font-mono">{{ slug }}</code> will be moved to
+    <code class="font-mono">{{ destination.as_ref().unwrap() }}</code>.
+  </p>
+</div>
+{% else %}
+<div class="mt-3 rounded-md border border-warning/30 bg-warning/[0.08] p-4">
+  <p class="mb-2 text-xs font-medium text-warning-fg">
+    To permanently discard the orphaned users in <code class="font-mono">{{ slug }}</code>, add this:
+  </p>
+  <pre class="overflow-x-auto whitespace-pre-wrap rounded-sm bg-ht-surface-elevated px-3 py-2 font-mono text-xs text-ht-content-primary ring-1 ring-white/6">{{ yaml_discard }}</pre>
+  <p class="mt-2 text-xs text-warning-fg opacity-80">Warning: this is irreversible once applied.</p>
+</div>
+{% endif %}

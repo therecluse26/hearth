@@ -23,6 +23,8 @@ fn smtp_config_yaml_round_trips_with_all_encryption_modes() {
             r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "Hearth <auth@example.com>"
@@ -51,6 +53,8 @@ fn smtp_transport_without_smtp_block_fails_validation() {
     let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"
@@ -65,6 +69,8 @@ fn smtp_transport_without_from_fails_validation() {
     let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   smtp:
@@ -81,6 +87,8 @@ fn smtp_transport_with_orphaned_username_fails_validation() {
     let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"
@@ -99,6 +107,8 @@ fn smtp_transport_with_orphaned_password_fails_validation() {
     let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "auth@example.com"
@@ -117,6 +127,8 @@ fn log_transport_accepts_minimal_config() {
     let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 "#;
     let config = Config::from_yaml_str(yaml).expect("default config should parse");
     assert_eq!(config.email.transport, EmailTransport::Log);
@@ -145,6 +157,8 @@ fn full_pipeline_delivers_verification_email() {
     let yaml = r#"
 storage:
   data_dir: "/tmp/hearth"
+oidc:
+  issuer: "https://auth.example.com"
 email:
   transport: smtp
   from: "Hearth <auth@example.com>"

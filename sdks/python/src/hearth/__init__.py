@@ -6,7 +6,20 @@ Provides HearthClient (auth flows, RBAC predicates), AdminClient
 
 from .client import HearthClient
 from .admin import AdminClient
-from .errors import HearthError
+from .errors import (
+    HearthError,
+    HearthSdkError,
+    ConfigurationError,
+    DiscoveryError,
+    JWKSFetchError,
+    TokenExpiredError,
+    TokenNotYetValidError,
+    TokenInvalidError,
+    TokenIssuerError,
+    TokenAudienceError,
+    IntrospectionError,
+)
+from .claims import Claims
 from .types import (
     BootstrapResponse,
     User,
@@ -29,6 +42,17 @@ __all__ = [
     "HearthClient",
     "AdminClient",
     "HearthError",
+    "HearthSdkError",
+    "ConfigurationError",
+    "DiscoveryError",
+    "JWKSFetchError",
+    "TokenExpiredError",
+    "TokenNotYetValidError",
+    "TokenInvalidError",
+    "TokenIssuerError",
+    "TokenAudienceError",
+    "IntrospectionError",
+    "Claims",
     "BootstrapResponse",
     "User",
     "CreateUserRequest",

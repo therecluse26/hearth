@@ -196,6 +196,17 @@ struct LoginTemplate {
     passkey_unavailable_error: &'static str,
     passkey_cancelled_error: &'static str,
     passkey_failed_error: &'static str,
+    /// When `true`, the TOTP step is shown inline instead of email+password.
+    /// Set by the handler when password is correct but MFA is required.
+    show_totp: bool,
+    /// URL the inline TOTP form POSTs to (scope-matched).
+    totp_action: String,
+    /// URL of the MFA recovery code page (scope-matched).
+    recovery_code_url: String,
+    /// Shown alongside error when email is unverified — "Resend verification email".
+    resend_verification_url: Option<String>,
+    /// Shown alongside error when a magic link is expired — "Request a new magic link".
+    new_magic_link_url: Option<String>,
     /// Federation sign-in buttons, one per configured connector.
     federation_buttons: Vec<FederationButton>,
     chrome: bool,
@@ -247,6 +258,11 @@ impl LoginTemplate {
             passkey_unavailable_error: text.passkey_unavailable_error,
             passkey_cancelled_error: text.passkey_cancelled_error,
             passkey_failed_error: text.passkey_failed_error,
+            show_totp: false,
+            totp_action: format!("{action_prefix}/mfa-challenge"),
+            recovery_code_url: format!("{action_prefix}/mfa-recovery"),
+            resend_verification_url: None,
+            new_magic_link_url: None,
             federation_buttons: Vec::new(),
             chrome: false,
             active: "",
@@ -321,6 +337,8 @@ struct DashboardTemplate {
     theme_css: String,
     realm_theme_css: Option<String>,
     config_warnings: Vec<crate::config::EnvVarWarning>,
+    /// Orphaned realms detected at startup (archived + has users + no resolution).
+    orphaned_realms: Vec<crate::identity::reconcile::OrphanRecord>,
     /// Entity counts for the admin stats row.
     user_count: usize,
     realm_count: usize,
@@ -437,6 +455,12 @@ impl MfaEnrollRequiredTemplate {
 #[template(path = "ui/mfa_challenge.html")]
 struct MfaChallengeTemplate {
     error: Option<String>,
+    /// URL the form POSTs to (scope-matched).
+    form_action: String,
+    /// URL of the MFA recovery code page (scope-matched).
+    recovery_code_url: String,
+    /// Carry through the post-login redirect.
+    return_to: Option<String>,
     chrome: bool,
     active: &'static str,
     user_email: Option<String>,
@@ -451,9 +475,17 @@ struct MfaChallengeTemplate {
 }
 
 impl MfaChallengeTemplate {
-    fn new(error: Option<String>, product_name: String, logo_url: String) -> Self {
+    fn new(
+        error: Option<String>,
+        product_name: String,
+        logo_url: String,
+        return_to: Option<String>,
+    ) -> Self {
         Self {
             error,
+            form_action: "/ui/mfa-challenge".to_string(),
+            recovery_code_url: "/ui/mfa-recovery".to_string(),
+            return_to,
             chrome: false,
             active: "",
             user_email: None,
@@ -915,11 +947,6 @@ fn login_submit_impl(
     let theme_css = state.theme_css.clone();
     let realm_theme = state.realm_theme_css_for(realm.id());
     let show_register = registration_enabled(&realm);
-    // MFA challenge is cookie-driven — the pending cookie carries the
-    // realm_id, so the URL doesn't need to. Bare URL keeps routing simple
-    // and avoids a scoped mirror route that adds no security value.
-    let mfa_url = "/ui/mfa-challenge".to_string();
-
     // Extract the client IP once, after trusted-proxy stripping, for the
     // per-IP rate limiter. Empty string = no IP available (skipped by engine).
     let client_ip = session_ctx.ip_address.clone().unwrap_or_default();
@@ -1005,15 +1032,33 @@ fn login_submit_impl(
         .mfa_enabled(realm.id(), user.id())
         .unwrap_or(false);
     let realm_requires_mfa = realm.config().mfa_required.unwrap_or(false);
+    let secure = state.is_secure_request(&headers);
     if mfa_on {
         let cookie = issue_mfa_pending_cookie(
             &state.cookie_secret,
             realm.id(),
             user.id(),
             return_to.as_deref(),
+            secure,
         );
         state.set_current_realm(realm.id().clone());
-        let mut response = Redirect::to(&mfa_url).into_response();
+        // Return the login page with the inline TOTP section visible rather than
+        // redirecting to /ui/mfa-challenge. The pending cookie still grants the
+        // challenge handler proof of password validation.
+        let mut tmpl = LoginTemplate::new(
+            None,
+            return_to.clone(),
+            &action_prefix,
+            show_register,
+            locale,
+            product_name.clone(),
+            state.logo_url.clone(),
+        );
+        tmpl.show_totp = true;
+        tmpl.email = email.to_string();
+        tmpl.theme_css = state.theme_css.clone();
+        tmpl.realm_theme_css.clone_from(&realm_theme);
+        let mut response = render(&tmpl);
         append_cookie(&mut response, &cookie);
         return response;
     } else if realm_requires_mfa {
@@ -1024,6 +1069,7 @@ fn login_submit_impl(
             realm.id(),
             user.id(),
             return_to.as_deref(),
+            secure,
         );
         state.set_current_realm(realm.id().clone());
         let mut response = Redirect::to("/ui/mfa-enroll-required").into_response();
@@ -1039,7 +1085,7 @@ fn login_submit_impl(
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id());
+            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id(), secure);
 
             state.set_current_realm(realm.id().clone());
 
@@ -1049,10 +1095,10 @@ fn login_submit_impl(
             append_cookie(&mut response, &csrf_cookie);
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    realm.id(),
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), realm.id()),
+                    secure,
+                ),
             );
             response
         }
@@ -1253,7 +1299,10 @@ fn passkey_login_complete_impl(
     path_realm: Option<String>,
 ) -> Response {
     use base64::Engine as _;
-    let session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    let mut session_ctx = build_session_context(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    // Passkeys are inherently multi-factor (possession + biometric/PIN), so they
+    // satisfy any realm-level mfa_required policy without a separate TOTP gate.
+    session_ctx.satisfies_mfa_via_passkey = true;
 
     let b64 = &base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -1328,6 +1377,7 @@ fn passkey_login_complete_impl(
         user_handle_bytes.as_ref(),
         &origin,
         &session_ctx,
+        state.is_secure_request(&headers),
     )
 }
 
@@ -1346,6 +1396,7 @@ fn passkey_complete_for_user(
     user_handle_bytes: Option<&Vec<u8>>,
     origin: &str,
     session_ctx: &SessionContext,
+    secure: bool,
 ) -> Response {
     let _ = user_id;
 
@@ -1392,6 +1443,7 @@ fn passkey_complete_for_user(
                 realm.id(),
                 auth_result.user_id(),
                 None, // no return_to for passkey flow
+                secure,
             );
             state.set_current_realm(realm.id().clone());
             let response_json = axum::Json(serde_json::json!({
@@ -1414,7 +1466,7 @@ fn passkey_complete_for_user(
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id());
+            } = issue_auth_cookies(&state.cookie_secret, realm.id(), session.id(), secure);
 
             state.set_current_realm(realm.id().clone());
 
@@ -1426,10 +1478,10 @@ fn passkey_complete_for_user(
             append_cookie(&mut response, &csrf_cookie);
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    realm.id(),
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), realm.id()),
+                    secure,
+                ),
             );
             response
         }
@@ -1466,12 +1518,16 @@ pub async fn mfa_challenge_form(
     let Some(raw) = cookie_value_from_headers(&headers, MFA_PENDING_COOKIE) else {
         return Redirect::to("/ui/login").into_response();
     };
-    if parse_mfa_pending_cookie(&state.cookie_secret, raw).is_none() {
+    let Some(pending) = parse_mfa_pending_cookie(&state.cookie_secret, raw) else {
         return Redirect::to("/ui/login").into_response();
-    }
+    };
 
-    let mut tmpl =
-        MfaChallengeTemplate::new(None, state.product_name.clone(), state.logo_url.clone());
+    let mut tmpl = MfaChallengeTemplate::new(
+        None,
+        state.product_name.clone(),
+        state.logo_url.clone(),
+        pending.return_to,
+    );
     tmpl.theme_css.clone_from(&state.theme_css);
     render(&tmpl)
 }
@@ -1520,8 +1576,14 @@ pub async fn mfa_challenge_submit(
     let product_name = state.product_name.clone();
     let logo_url = state.logo_url.clone();
     let theme_css = state.theme_css.clone();
+    let return_to = pending.return_to.clone();
     let mfa_err = |msg: String, status: StatusCode| {
-        let mut tmpl = MfaChallengeTemplate::new(Some(msg), product_name.clone(), logo_url.clone());
+        let mut tmpl = MfaChallengeTemplate::new(
+            Some(msg),
+            product_name.clone(),
+            logo_url.clone(),
+            return_to.clone(),
+        );
         tmpl.theme_css.clone_from(&theme_css);
         render_status(&tmpl, status)
     };
@@ -1555,22 +1617,28 @@ pub async fn mfa_challenge_submit(
         .create_session(&pending.realm_id, &pending.user_id, &session_ctx)
     {
         Ok(session) => {
+            let secure = state.is_secure_request(&headers);
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, &pending.realm_id, session.id());
+            } = issue_auth_cookies(
+                &state.cookie_secret,
+                &pending.realm_id,
+                session.id(),
+                secure,
+            );
 
             let location = pending.return_to.as_deref().unwrap_or("/ui");
             let mut response = Redirect::to(location).into_response();
             append_cookie(&mut response, &session_cookie);
             append_cookie(&mut response, &csrf_cookie);
-            append_cookie(&mut response, &clear_mfa_pending_cookie());
+            append_cookie(&mut response, &clear_mfa_pending_cookie(secure));
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    &pending.realm_id,
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), &pending.realm_id),
+                    secure,
+                ),
             );
             response
         }
@@ -1588,6 +1656,7 @@ fn mfa_expired_response(product_name: String, logo_url: String, theme_css: &str)
         Some("Your session has expired. Please sign in again.".to_string()),
         product_name,
         logo_url,
+        None,
     );
     tmpl.theme_css = theme_css.to_string();
     render_status(&tmpl, StatusCode::UNAUTHORIZED)
@@ -1735,6 +1804,7 @@ pub async fn mfa_enroll_required_submit(
     }
 
     // Enrollment confirmed — complete login.
+    let secure = state.is_secure_request(&headers);
     match state
         .identity
         .create_session(&pending.realm_id, &pending.user_id, &session_ctx)
@@ -1743,19 +1813,24 @@ pub async fn mfa_enroll_required_submit(
             let IssuedCookies {
                 session_cookie,
                 csrf_cookie,
-            } = issue_auth_cookies(&state.cookie_secret, &pending.realm_id, session.id());
+            } = issue_auth_cookies(
+                &state.cookie_secret,
+                &pending.realm_id,
+                session.id(),
+                secure,
+            );
 
             let location = pending.return_to.as_deref().unwrap_or("/ui");
             let mut response = Redirect::to(location).into_response();
             append_cookie(&mut response, &session_cookie);
             append_cookie(&mut response, &csrf_cookie);
-            append_cookie(&mut response, &clear_mfa_pending_cookie());
+            append_cookie(&mut response, &clear_mfa_pending_cookie(secure));
             append_cookie(
                 &mut response,
-                &super::auth::last_realm_cookie(&super::auth::last_realm_value(
-                    state.identity.as_ref(),
-                    &pending.realm_id,
-                )),
+                &super::auth::last_realm_cookie(
+                    &super::auth::last_realm_value(state.identity.as_ref(), &pending.realm_id),
+                    secure,
+                ),
             );
             response
         }
@@ -1854,6 +1929,11 @@ pub async fn dashboard(
         theme_css: state.theme_css.clone(),
         realm_theme_css: state.realm_theme_css(),
         config_warnings,
+        orphaned_realms: if is_admin {
+            state.orphaned_realms.clone()
+        } else {
+            Vec::new()
+        },
         user_count,
         realm_count,
         app_count,
@@ -1915,12 +1995,15 @@ pub struct LogoutForm {
 /// sign-out twice), we still clear the cookies and redirect.
 pub async fn logout_submit(
     State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
     session: super::auth::UiSession,
     Form(form): Form<LogoutForm>,
 ) -> Response {
     if let Err(resp) = super::auth::verify_csrf_form_field(&session, &form.csrf) {
         return resp;
     }
+
+    let secure = state.is_secure_request(&headers);
 
     // Resolve the realm *before* revoking — the session record is about
     // to disappear. System-realm sessions route back to /ui/admin/login;
@@ -1954,13 +2037,13 @@ pub async fn logout_submit(
 
     let login_url = super::auth::login_url_for_realm(redirect_realm.as_deref());
     let mut response = Redirect::to(&login_url).into_response();
-    for cookie in super::auth::clearing_cookies() {
+    for cookie in super::auth::clearing_cookies(secure) {
         append_cookie(&mut response, &cookie);
     }
     // Refresh the last-realm cookie so the user returns here on the
     // next unauthenticated request even if they clear other cookies.
     if let Some(ref name) = redirect_realm {
-        append_cookie(&mut response, &super::auth::last_realm_cookie(name));
+        append_cookie(&mut response, &super::auth::last_realm_cookie(name, secure));
     }
     response
 }

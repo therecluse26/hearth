@@ -181,7 +181,7 @@ async fn with_app_css_overrides_embedded_bytes() {
     runtime_bytes.extend_from_slice(marker);
     runtime_bytes.extend_from_slice(APP_CSS_SENTINEL);
     runtime_bytes.extend_from_slice(b"{display:none}");
-    assert!(assert_bytes_sane(&runtime_bytes).is_ok());
+    assert_bytes_sane(&runtime_bytes).expect("runtime bytes with sentinel must pass sanity check");
 
     let state = minimal_web_state().with_app_css(runtime_bytes.clone());
 

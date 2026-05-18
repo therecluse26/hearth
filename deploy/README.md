@@ -4,7 +4,7 @@ This directory contains ready-to-use deployment artifacts for three environments
 
 | Method | Directory | Best for |
 |---|---|---|
-| Docker Compose | `docker-compose.yml` | Local development, single-host |
+| Docker Compose | `docker-compose.yml` | Single-host / staging |
 | systemd | `systemd/hearth.service` | VM / bare-metal |
 | Helm | `helm/hearth/` | Kubernetes |
 
@@ -20,7 +20,7 @@ ghcr.io/hearth-rs/hearth:latest
 
 ---
 
-## Docker Compose (local development)
+## Docker Compose (single-host / staging)
 
 ### Setup
 

@@ -656,6 +656,8 @@ mod tests {
             permissions: vec![],
             parent_roles: vec![],
             scope_kind: RoleScopeKind::Realm,
+            status: crate::rbac::RoleStatus::Active,
+            yaml_managed: false,
             created_at: Timestamp::from_micros(0),
             updated_at: Timestamp::from_micros(0),
         }
@@ -720,54 +722,73 @@ mod tests {
 
     #[test]
     fn tier3_short_form_valid() {
-        assert!(validate_tier3_claim_name("department").is_ok());
-        assert!(validate_tier3_claim_name("employee_id").is_ok());
-        assert!(validate_tier3_claim_name("cost_center2").is_ok());
-        assert!(validate_tier3_claim_name("a").is_ok());
+        validate_tier3_claim_name("department").expect("'department' is a valid tier-3 claim name");
+        validate_tier3_claim_name("employee_id")
+            .expect("'employee_id' is a valid tier-3 claim name");
+        validate_tier3_claim_name("cost_center2")
+            .expect("'cost_center2' is a valid tier-3 claim name");
+        validate_tier3_claim_name("a").expect("'a' is a valid tier-3 claim name");
     }
 
     #[test]
     fn tier3_https_namespaced_valid() {
-        assert!(validate_tier3_claim_name("https://acme.com/department").is_ok());
-        assert!(validate_tier3_claim_name("https://example.com/custom/claim").is_ok());
+        validate_tier3_claim_name("https://acme.com/department")
+            .expect("HTTPS-namespaced department claim must be valid");
+        validate_tier3_claim_name("https://example.com/custom/claim")
+            .expect("HTTPS-namespaced custom claim must be valid");
     }
 
     #[test]
     fn tier3_http_rejected() {
-        assert!(validate_tier3_claim_name("http://acme.com/department").is_err());
+        let err = validate_tier3_claim_name("http://acme.com/department")
+            .expect_err("HTTP-namespaced claim must be rejected");
+        assert!(err.contains("https://"), "got: {err}");
     }
 
     #[test]
     fn tier3_short_form_uppercase_rejected() {
-        assert!(validate_tier3_claim_name("Department").is_err());
-        assert!(validate_tier3_claim_name("DEPARTMENT").is_err());
+        let err = validate_tier3_claim_name("Department")
+            .expect_err("uppercase-starting claim name must be rejected");
+        assert!(err.contains("lowercase ASCII letter"), "got: {err}");
+        let err = validate_tier3_claim_name("DEPARTMENT")
+            .expect_err("all-caps claim name must be rejected");
+        assert!(err.contains("lowercase ASCII letter"), "got: {err}");
     }
 
     #[test]
     fn tier3_short_form_starts_with_digit_rejected() {
-        assert!(validate_tier3_claim_name("1department").is_err());
+        let err = validate_tier3_claim_name("1department")
+            .expect_err("digit-starting claim name must be rejected");
+        assert!(err.contains("lowercase ASCII letter"), "got: {err}");
     }
 
     #[test]
     fn tier3_short_form_hyphen_rejected() {
-        assert!(validate_tier3_claim_name("my-claim").is_err());
+        let err = validate_tier3_claim_name("my-claim")
+            .expect_err("hyphen in short-form claim name must be rejected");
+        assert!(err.contains("invalid character"), "got: {err}");
     }
 
     #[test]
     fn tier3_empty_rejected() {
-        assert!(validate_tier3_claim_name("").is_err());
+        let err = validate_tier3_claim_name("").expect_err("empty claim name must be rejected");
+        assert!(err.contains("empty"), "got: {err}");
     }
 
     #[test]
     fn tier3_exceeds_64_chars_rejected() {
         let long = "a".repeat(65);
-        assert!(validate_tier3_claim_name(&long).is_err());
+        let err = validate_tier3_claim_name(&long)
+            .expect_err("claim name exceeding 64 chars must be rejected");
+        assert!(err.contains("64"), "got: {err}");
     }
 
     #[test]
     fn tier3_https_exceeds_256_chars_rejected() {
         let long = format!("https://acme.com/{}", "x".repeat(300));
-        assert!(validate_tier3_claim_name(&long).is_err());
+        let err = validate_tier3_claim_name(&long)
+            .expect_err("HTTPS claim name exceeding 256 chars must be rejected");
+        assert!(err.contains("256"), "got: {err}");
     }
 
     // ===== classify_scope_string =====

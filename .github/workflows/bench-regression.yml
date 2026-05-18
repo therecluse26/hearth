@@ -1,0 +1,111 @@
+name: Benchmark Regression Gate
+
+# Detects >5% mean latency regression in criterion benchmarks vs the main
+# branch baseline. Runs separately from the CI quality gate so that the
+# full benchmark suite (up to 60 min) does not block every clippy/test run.
+#
+# On push to main: runs benchmarks, saves criterion baselines to cache.
+# On PR into main: restores main baseline, runs benchmarks, fails if any
+#   benchmark's mean degrades by more than BENCH_REGRESSION_THRESHOLD%.
+#
+# The stored baseline is keyed on the commit SHA so each main commit produces
+# a fresh anchor. PRs use restore-keys prefix matching to pick up the
+# nearest available baseline when the exact SHA key is missing.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  BENCH_REGRESSION_THRESHOLD: "5"
+  PROTOC: protoc
+
+jobs:
+  bench-regression:
+    name: Benchmark regression (>5% mean fails)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-05-14
+        with:
+          toolchain: stable
+
+      - name: Cargo build cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── PR: restore main baseline before running benchmarks ─────────────────
+
+      - name: Restore criterion baseline (PR only)
+        if: github.event_name == 'pull_request'
+        id: restore-baseline
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: target/criterion
+          # Prefer exact match; fall back to most-recent main baseline.
+          key: criterion-baseline-main-${{ github.event.pull_request.base.sha }}
+          restore-keys: |
+            criterion-baseline-main-
+
+      - name: Warn if no baseline found (PR only)
+        if: >
+          github.event_name == 'pull_request' &&
+          steps.restore-baseline.outputs.cache-hit != 'true'
+        run: |
+          echo "::warning::No criterion baseline found for main. Regression check will be skipped." \
+               "Push to main first to establish a baseline."
+
+      # ── Common: run storage benchmarks, always save as 'main' baseline ──────
+      # --save-baseline main writes to target/criterion/.../main/estimates.json.
+      # --noplot skips HTML report generation to keep CI fast.
+
+      - name: Run storage_gate benchmark
+        run: |
+          PROTOC=${{ env.PROTOC }} cargo bench --bench storage_gate -- \
+            --save-baseline main --noplot 2>&1
+
+      - name: Run tiered_storage benchmark
+        run: |
+          PROTOC=${{ env.PROTOC }} cargo bench --bench tiered_storage -- \
+            --save-baseline main --noplot 2>&1
+
+      - name: Run demotion_latency benchmark
+        run: |
+          PROTOC=${{ env.PROTOC }} cargo bench --bench demotion_latency -- \
+            --save-baseline main --noplot 2>&1
+
+      # ── main push: persist freshly-run baselines for future PRs ─────────────
+
+      - name: Save criterion baseline to cache (main push only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: target/criterion
+          key: criterion-baseline-main-${{ github.sha }}
+
+      # ── PR: compare current 'new' results against restored 'main' baseline ──
+
+      - name: Check for regressions > ${{ env.BENCH_REGRESSION_THRESHOLD }}%
+        if: github.event_name == 'pull_request'
+        run: bash scripts/check-bench-regression.sh "${{ env.BENCH_REGRESSION_THRESHOLD }}"

@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, SystemClock};
-use hearth::identity::{CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine};
+use hearth::identity::{
+    CreateRealmRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
+};
 use hearth::rbac::{EmbeddedRbacEngine, RbacEngine};
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -186,6 +188,18 @@ impl TestHarness {
     /// Returns an `Arc<dyn AuditEngine>`.
     pub fn audit_arc(&self) -> Arc<dyn AuditEngine> {
         self.audit_engine.clone() as Arc<dyn AuditEngine>
+    }
+
+    /// Creates a new realm and returns its `RealmId`.
+    pub fn create_realm(&self) -> hearth::core::RealmId {
+        self.identity()
+            .create_realm(&CreateRealmRequest {
+                name: format!("test-realm-{}", uuid::Uuid::new_v4()),
+                config: None,
+            })
+            .expect("create test realm")
+            .id()
+            .clone()
     }
 
     /// Returns the base URL for server mode, or `None` for embedded mode.

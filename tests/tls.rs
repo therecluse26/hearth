@@ -178,11 +178,13 @@ async fn https_endpoint_serves_valid_tls() {
 
 #[tokio::test]
 async fn http_to_https_redirect() {
+    // Bind before spawning so the socket is in LISTEN state immediately.
+    // serve_redirect now accepts a pre-bound listener, eliminating the TOCTOU
+    // window that previously required an unconditional sleep.
     let redirect_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind redirect");
     let local_addr = redirect_listener.local_addr().expect("local addr");
-    drop(redirect_listener); // Release so serve_redirect can bind
 
     let https_port = 8443;
 
@@ -192,13 +194,10 @@ async fn http_to_https_redirect() {
     };
 
     let server_handle = tokio::spawn(async move {
-        http::serve_redirect(local_addr, https_port, shutdown_signal)
+        http::serve_redirect(redirect_listener, https_port, shutdown_signal)
             .await
             .expect("serve_redirect");
     });
-
-    // Give the redirect server time to bind
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Send a plain HTTP request without following redirects
     let client = reqwest::Client::builder()
@@ -339,8 +338,16 @@ async fn mtls_missing_client_cert_rejected() {
     let url = format!("https://localhost:{}/health", local_addr.port());
     let result = client.get(&url).send().await;
 
-    // Should fail — server requires client cert
-    assert!(result.is_err(), "request without client cert should fail");
+    // Should fail before any HTTP response is sent — the server closes the TLS
+    // handshake with a CertificateRequired alert, so no HTTP status is produced.
+    // We check `status().is_none()` rather than `is_connect()` because reqwest
+    // classifies TLS-handshake failures as request-layer errors in some hyper
+    // backend versions.
+    let err = result.expect_err("request without client cert should fail");
+    assert!(
+        err.status().is_none(),
+        "mTLS rejection must not produce an HTTP status (pre-HTTP TLS rejection), got: {err}"
+    );
 
     drop(shutdown_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;

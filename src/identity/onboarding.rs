@@ -190,7 +190,7 @@ fn log_and_notify_setup_url(
 ) {
     let url = match base_url {
         Some(base) => format!("{}/ui/setup?token={}", base.trim_end_matches('/'), token),
-        None => format!("/ui/setup?token={token}"),
+        None => format!("http://127.0.0.1:8420/ui/setup?token={token}"),
     };
     tracing::warn!(
         setup_url = %url,
@@ -523,6 +523,19 @@ impl OnboardingService {
     #[must_use]
     pub fn identity(&self) -> &Arc<dyn IdentityEngine> {
         &self.identity
+    }
+
+    /// Returns `true` when the admin wizard should be shown.
+    ///
+    /// The wizard is shown only when no non-system realms exist yet.
+    /// Once a realm is created (step 1), this returns `false` and the
+    /// landing page redirects to the dashboard instead of re-showing step 1.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the underlying `list_realms` call.
+    pub fn is_wizard_needed(&self) -> Result<bool, IdentityError> {
+        self.is_first_run()
     }
 
     /// Exposes the underlying data dir (used by tests).

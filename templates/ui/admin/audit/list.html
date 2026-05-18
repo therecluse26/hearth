@@ -67,9 +67,13 @@
         Verify integrity
       </button>
     </form>
-    <a href="/ui/admin/realms/{{ realm_name }}/audit/export?actor={{ form_actor }}&action={{ form_action }}&start_date={{ form_start_date }}&end_date={{ form_end_date }}&limit={{ form_limit }}"
+    <a href="/ui/admin/realms/{{ realm_name }}/audit/export?format=json&actor={{ form_actor }}&action={{ form_action }}&start_date={{ form_start_date }}&end_date={{ form_end_date }}&limit={{ form_limit }}"
        class="rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
       Export JSON
+    </a>
+    <a href="/ui/admin/realms/{{ realm_name }}/audit/export?format=csv&actor={{ form_actor }}&action={{ form_action }}&start_date={{ form_start_date }}&end_date={{ form_end_date }}&limit={{ form_limit }}"
+       class="rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+      Export CSV
     </a>
   </div>
 </div>
@@ -79,6 +83,7 @@
     <table class="w-full">
       <thead>
         <tr class="border-b border-divider bg-ht-surface-elevated">
+          <th class="w-8 px-3 py-3"></th>
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Time</th>
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Action</th>
           <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Actor</th>

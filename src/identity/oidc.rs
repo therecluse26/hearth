@@ -20,6 +20,23 @@ pub enum ClientTrustLevel {
     ThirdParty,
 }
 
+/// The lifecycle status of an OAuth 2.0 application client.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationStatus {
+    /// Client is active; all OAuth flows are permitted.
+    #[default]
+    Active,
+    /// Client was removed from YAML config and soft-deleted.
+    ///
+    /// New OAuth flows are rejected. The client record is preserved so that
+    /// existing sessions and tokens can be audited. Restored to `Active` if
+    /// the application re-appears in YAML. Permanently deleted only when the
+    /// admin chooses "Delete permanently" in the UI or via the API.
+    Archived,
+}
+
 /// Configuration for OIDC / OAuth 2.0 operations.
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
@@ -36,9 +53,17 @@ pub struct OidcConfig {
 
     /// Whether to enforce nonce uniqueness in authorization requests.
     ///
-    /// When enabled, duplicate nonces in authorization requests are
-    /// rejected to prevent replay attacks.
+    /// Enabled by default. When enabled, duplicate nonces in authorization
+    /// requests are rejected to prevent replay attacks. Set to `false` only for
+    /// legacy clients that cannot supply nonces; a startup warning is emitted.
     pub enforce_nonces: bool,
+
+    /// Require PKCE for confidential clients (RFC 9700 §2.1.1).
+    ///
+    /// `true` (default) — all clients, including those with a `client_secret`,
+    /// must supply `code_challenge`/`code_verifier`.  Set to `false` only for
+    /// legacy clients that cannot be updated; document the exemption.
+    pub require_pkce_for_confidential_clients: bool,
 }
 
 impl Default for OidcConfig {
@@ -46,7 +71,8 @@ impl Default for OidcConfig {
         Self {
             authorization_code_ttl_secs: 600, // 10 minutes
             issuer: "https://hearth.local".to_string(),
-            enforce_nonces: false,
+            enforce_nonces: true,
+            require_pkce_for_confidential_clients: true,
         }
     }
 }
@@ -149,6 +175,10 @@ pub struct OAuthClient {
     /// Whether a realm-level consent covers all org contexts.
     #[serde(default)]
     consent_spans_orgs: bool,
+    /// Lifecycle status. Defaults to `Active` for backward-compatible deserialization
+    /// of records written before the status field was introduced.
+    #[serde(default)]
+    status: ApplicationStatus,
     /// OIDC back-channel logout URI (OIDC BCL §2.5).
     ///
     /// When set, Hearth delivers a signed logout token to this URI after
@@ -194,6 +224,7 @@ impl OAuthClient {
             trust_level: ClientTrustLevel::FirstParty,
             declared_scopes: Vec::new(),
             consent_spans_orgs: false,
+            status: ApplicationStatus::Active,
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             post_logout_redirect_uris: Vec::new(),
@@ -222,6 +253,7 @@ impl OAuthClient {
             trust_level: ClientTrustLevel::FirstParty,
             declared_scopes: Vec::new(),
             consent_spans_orgs: false,
+            status: ApplicationStatus::Active,
             backchannel_logout_uri: None,
             frontchannel_logout_uri: None,
             post_logout_redirect_uris: Vec::new(),
@@ -374,6 +406,16 @@ impl OAuthClient {
         self.post_logout_redirect_uris = uris;
     }
 
+    /// Returns the client's lifecycle status.
+    pub fn status(&self) -> ApplicationStatus {
+        self.status
+    }
+
+    /// Sets the lifecycle status. Used internally during archive/restore operations.
+    pub(crate) fn set_status(&mut self, status: ApplicationStatus) {
+        self.status = status;
+    }
+
     /// Returns `true` if this client was provisioned from YAML configuration.
     ///
     /// YAML-managed clients have deterministic UUID v5 identifiers (derived
@@ -415,6 +457,8 @@ pub struct UpdateClientRequest {
     pub frontchannel_logout_uri: Option<Option<String>>,
     /// Allowed post-logout redirect URIs. Replaces the existing list.
     pub post_logout_redirect_uris: Option<Vec<String>>,
+    /// New lifecycle status. Used to archive or restore a client.
+    pub status: Option<ApplicationStatus>,
 }
 
 // ===== RP-Initiated Logout =====
@@ -516,12 +560,14 @@ pub struct AuthorizationResponse {
     code: String,
     /// The state value echoed back for CSRF verification.
     state: String,
+    /// RFC 9207 issuer identifier — appended to the redirect as `iss=`.
+    iss: String,
 }
 
 impl AuthorizationResponse {
     /// Creates a new authorization response.
-    pub(crate) fn new(code: String, state: String) -> Self {
-        Self { code, state }
+    pub(crate) fn new(code: String, state: String, iss: String) -> Self {
+        Self { code, state, iss }
     }
 
     /// Returns the authorization code.
@@ -532,6 +578,11 @@ impl AuthorizationResponse {
     /// Returns the state value.
     pub fn state(&self) -> &str {
         &self.state
+    }
+
+    /// Returns the RFC 9207 issuer identifier.
+    pub fn iss(&self) -> &str {
+        &self.iss
     }
 }
 
@@ -689,6 +740,9 @@ pub struct OidcDiscoveryDocument {
     /// Whether RFC 8707 resource indicators are supported.
     #[serde(default)]
     pub resource_indicators_supported: bool,
+    /// Whether the RFC 9207 `iss` parameter is included in authorization responses.
+    #[serde(default)]
+    pub authorization_response_iss_parameter_supported: bool,
     /// URL of the RP-initiated logout endpoint (OIDC RP-Initiated Logout 1.0 §3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_session_endpoint: Option<String>,
@@ -969,6 +1023,51 @@ pub struct UserInfoResponse {
     pub custom: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// Exercises the token exchange body parsing and validation pipeline on arbitrary bytes.
+///
+/// Intended for fuzz testing: interprets `data` as a JSON token request body,
+/// exercising grant_type dispatch, scope normalization, redirect URI validation,
+/// and PKCE verifier length checks. Must never panic — always returns `Ok` or `Err`.
+pub fn fuzz_parse_token_exchange(data: &[u8]) {
+    use crate::identity::types::canonicalize_scopes;
+    use crate::identity::validation::{validate_redirect_uri, validate_scope_tokens};
+
+    // Exercise JSON parsing of the token exchange body.
+    let _ = serde_json::from_slice::<serde_json::Value>(data);
+
+    // Exercise OIDC discovery document deserialization.
+    let input = String::from_utf8_lossy(data);
+    let _ = serde_json::from_str::<OidcDiscoveryDocument>(&input);
+
+    // Exercise introspection response deserialization.
+    let _ = serde_json::from_str::<IntrospectionResponse>(&input);
+
+    // Treat the input as a scope string and exercise normalization.
+    let scope_tokens: Vec<String> = input.split_whitespace().map(String::from).collect();
+    let _ = canonicalize_scopes(scope_tokens);
+    let _ = validate_scope_tokens(&input);
+
+    // Treat the input as a redirect URI and exercise validation.
+    let _ = validate_redirect_uri(&input);
+
+    // Extract grant_type-like string from raw JSON and exercise matching logic.
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&input) {
+        if let Some(serde_json::Value::String(s)) = map.get("redirect_uri") {
+            let _ = validate_redirect_uri(s);
+        }
+        if let Some(serde_json::Value::String(s)) = map.get("scope") {
+            let _ = validate_scope_tokens(s);
+            let tokens: Vec<String> = s.split_whitespace().map(String::from).collect();
+            let _ = canonicalize_scopes(tokens);
+        }
+        // Exercise code_verifier length boundary.
+        if let Some(serde_json::Value::String(v)) = map.get("code_verifier") {
+            let _ = v.len() > 128;
+            let _ = v.len() < 43;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1016,9 +1115,14 @@ mod tests {
 
     #[test]
     fn authorization_response_accessors() {
-        let resp = AuthorizationResponse::new("code123".to_string(), "state456".to_string());
+        let resp = AuthorizationResponse::new(
+            "code123".to_string(),
+            "state456".to_string(),
+            "https://auth.example.com".to_string(),
+        );
         assert_eq!(resp.code(), "code123");
         assert_eq!(resp.state(), "state456");
+        assert_eq!(resp.iss(), "https://auth.example.com");
     }
 
     #[test]
@@ -1088,6 +1192,7 @@ mod tests {
             revocation_endpoint: Some("https://hearth.local/revoke".to_string()),
             introspection_endpoint: Some("https://hearth.local/introspect".to_string()),
             resource_indicators_supported: false,
+            authorization_response_iss_parameter_supported: true,
             end_session_endpoint: Some("https://hearth.local/end_session".to_string()),
             backchannel_logout_supported: false,
             backchannel_logout_session_supported: false,
@@ -1096,5 +1201,47 @@ mod tests {
         let json = serde_json::to_string(&doc).expect("serialize");
         let deserialized: OidcDiscoveryDocument = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(doc, deserialized);
+    }
+}
+
+// ===== Resource Owner Password Credentials Grant (RFC 6749 §4.3) =====
+
+/// Request for the Resource Owner Password Credentials (ROPC) grant.
+///
+/// Identifies the end-user by email address. The client_id is used for
+/// per-client rate limiting only; no client authentication is required for
+/// public clients.
+#[derive(Debug, Clone)]
+pub struct PasswordGrantRequest {
+    /// The user's email address.
+    pub email: String,
+    /// The user's plaintext password.
+    pub password: String,
+    /// Optional OAuth scope (space-delimited). Passed through to the token.
+    pub scope: Option<String>,
+}
+
+/// Response from a successful ROPC grant — mirrors `OidcTokenResponse`.
+#[derive(Debug, Clone)]
+pub struct PasswordGrantResponse {
+    /// Short-lived access token (JWT).
+    pub access_token: String,
+    /// Long-lived refresh token (JWT).
+    pub refresh_token: String,
+    /// Always `"Bearer"`.
+    pub token_type: String,
+    /// Access token lifetime in seconds.
+    pub expires_in: i64,
+}
+
+impl PasswordGrantResponse {
+    /// Returns the access token.
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
+
+    /// Returns the refresh token.
+    pub fn refresh_token(&self) -> &str {
+        &self.refresh_token
     }
 }

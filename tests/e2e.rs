@@ -8,7 +8,6 @@ mod common;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use hearth::core::RealmId;
 use hearth::identity::{
     AuthorizationRequest, CleartextPassword, CodeChallengeMethod, CreateUserRequest,
     RegisterClientRequest, TokenExchangeRequest,
@@ -25,7 +24,7 @@ async fn developer_onramp_realm_app_oidc_login() {
         .expect("harness setup");
 
     // 1. Create a realm (just generate an ID — no separate realm CRUD yet)
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     // 2. Create a user (the developer)
     let user = harness
@@ -134,7 +133,7 @@ async fn user_lifecycle_register_authenticate_session_token() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     // 1. Register: create user
     let user = harness
@@ -219,7 +218,7 @@ async fn auth_plus_rbac_permission_grant_and_check() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     // 1. Create and authenticate user
     let user = harness
@@ -338,7 +337,7 @@ async fn cascading_invalidation_delete_user_invalidates_everything() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
 
     // 1. Create user with credentials, session, and tokens
     let user = harness

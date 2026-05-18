@@ -3,13 +3,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
-use hearth::config::{Config, EmailTransport, EnvVarWarningKind};
+use hearth::config::{Config, EmailTransport, EnvVarWarningKind, ValidationIssue};
 use hearth::core::{Clock, SystemClock};
+use hearth::identity::email::mailcatcher::{
+    generate_password, MailcatcherSender, MailcatcherState,
+};
 use hearth::identity::email::mailgun::MailgunRegion;
 use hearth::identity::email::{
     smtp_sender_from_config, ApiKey, EmailService, LoggingEmailSender, MailgunEmailSender,
@@ -18,7 +21,7 @@ use hearth::identity::email::{
 use hearth::identity::onboarding::{self, OnboardingService};
 use hearth::identity::{
     CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, OidcConfig,
-    TokenConfig,
+    RateLimitConfig, TokenConfig,
 };
 use hearth::protocol;
 use hearth::protocol::http::{self, AppState};
@@ -55,6 +58,12 @@ enum Commands {
         /// Address to bind to (overrides config file).
         #[arg(long)]
         bind: Option<String>,
+
+        /// Print debug-level startup diagnostics: resolved config, HTTP route groups,
+        /// realm names, and Ed25519 key fingerprints. Sets log level to debug for
+        /// the startup phase only (respects existing log level for steady-state).
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
     /// Manage realms.
     Realm {
@@ -80,6 +89,14 @@ enum Commands {
     Rbac {
         #[command(subcommand)]
         action: RbacAction,
+    },
+    /// Print a shell completion script to stdout.
+    ///
+    /// Pipe the output to your shell's completions directory.
+    /// Example: `hearth completions zsh > ~/.zsh/completions/_hearth`
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
     },
 }
 
@@ -173,6 +190,16 @@ enum ConfigAction {
         #[arg(default_value = "hearth.yaml")]
         file: PathBuf,
     },
+    /// Print a complete, annotated example hearth.yaml to stdout.
+    ///
+    /// The output is the same file shipped as `hearth.example.yaml` in the
+    /// repository and is guaranteed to parse as valid configuration. Redirect
+    /// it or use `--output` to bootstrap a new config file.
+    Example {
+        /// Write the example to this path instead of stdout.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// RBAC maintenance subcommands.
@@ -245,11 +272,36 @@ async fn main() {
             config: config_path,
             port,
             bind,
+            verbose,
         } => {
-            if let Err(e) = run_serve(dev, config_path, port, bind).await {
+            if let Err(e) = run_serve(dev, config_path, port, bind, verbose).await {
                 // Use eprintln! here — tracing may not be initialized yet if
                 // the error occurred during config loading.
-                eprintln!("error: {e}");
+                //
+                // HostKeyMismatch requires exit code 2 and an actionable message
+                // so operators know exactly how to recover.
+                match e.downcast::<hearth::storage::StorageError>() {
+                    Ok(storage_err) => {
+                        if let hearth::storage::StorageError::HostKeyMismatch {
+                            ref affected_realms,
+                        } = *storage_err
+                        {
+                            let realms = affected_realms.join(", ");
+                            eprintln!(
+                                "FATAL: Realm KEKs could not be decrypted with the current \
+                                 HEARTH_MASTER_KEY.\nIf you recently rotated the master key, \
+                                 set HEARTH_PREVIOUS_MASTER_KEY to the previous value. If the \
+                                 previous key is unavailable, restore from backup.\n\
+                                 Affected realms: {realms}"
+                            );
+                            std::process::exit(2);
+                        }
+                        eprintln!("error: {storage_err}");
+                    }
+                    Err(other) => {
+                        eprintln!("error: {other}");
+                    }
+                }
                 std::process::exit(1);
             }
         }
@@ -305,12 +357,22 @@ async fn main() {
                 }
             }
             ConfigAction::Validate { file } => {
-                if let Err(e) = run_config_validate(&file) {
+                // Errors are already printed with field-level detail inside
+                // run_config_validate; suppress the redundant "error: …" here.
+                if run_config_validate(&file).is_err() {
+                    std::process::exit(1);
+                }
+            }
+            ConfigAction::Example { output } => {
+                if let Err(e) = run_config_example(output.as_ref()) {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             }
         },
+        Commands::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "hearth", &mut std::io::stdout());
+        }
         Commands::Rbac { action } => match action {
             RbacAction::Orphans { action } => match action {
                 OrphansAction::List { realm, data_dir } => {
@@ -341,6 +403,7 @@ async fn run_serve(
     config_path: Option<PathBuf>,
     port_override: Option<u16>,
     bind_override: Option<String>,
+    verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let mut config = load_config(dev, config_path.as_deref())?;
@@ -351,6 +414,11 @@ async fn run_serve(
     }
     if let Some(bind) = bind_override {
         config.server.bind_address = bind;
+    }
+
+    // --verbose: promote log level to debug so startup diagnostics are visible.
+    if verbose && config.observability.log_level.as_str() != "trace" {
+        config.observability.log_level = "debug".to_string();
     }
 
     // Safety-net: print config warnings to stderr before tracing initialises
@@ -457,12 +525,32 @@ async fn run_serve(
             }
         }
         if let Some(enforce) = config.oidc.enforce_nonces {
+            if !enforce {
+                tracing::warn!(
+                    "oidc.enforce_nonces is disabled — nonce replay protection is off. \
+                     Confidential clients are vulnerable to authorization-response replay \
+                     attacks. Set enforce_nonces: true (the default) unless you require \
+                     legacy client compatibility."
+                );
+            }
             oc.enforce_nonces = enforce;
+        }
+        if let Some(require) = config.oidc.require_pkce_for_confidential_clients {
+            if !require {
+                tracing::warn!(
+                    "oidc.require_pkce_for_confidential_clients is disabled — confidential \
+                     clients are exempt from PKCE (RFC 9700 §2.1.1). Authorization code \
+                     interception attacks are possible. Enable this setting for all new \
+                     deployments."
+                );
+            }
+            oc.require_pkce_for_confidential_clients = require;
         }
         oc
     };
 
-    // Build TokenConfig from YAML. token.issuer defaults to oidc.issuer when omitted.
+    // Build TokenConfig from YAML. Both token.issuer and token.audience default to
+    // oidc.issuer when omitted, so operators only need one config key for the common case.
     let token_config = {
         let mut tc = TokenConfig::default();
         if let Some(issuer) = &config.token.issuer {
@@ -472,6 +560,11 @@ async fn run_serve(
         }
         if let Some(audience) = &config.token.audience {
             tc.audience.clone_from(audience);
+        } else if let Some(issuer) = &config.oidc.issuer {
+            // RFC 7519 §4.1.3: aud identifies the intended recipient.  When the
+            // operator has not set an explicit audience, default to the issuer URL
+            // so standard OIDC clients can validate aud without extra config.
+            tc.audience.clone_from(issuer);
         }
         if let Some(ttl) = &config.token.access_token_ttl {
             if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
@@ -483,7 +576,56 @@ async fn run_serve(
                 tc.refresh_token_ttl_secs = micros / 1_000_000;
             }
         }
+        if let Some(ttl) = &config.token.signing_key_rotation_grace_period {
+            if let Ok(micros) = hearth::config::parse_duration_to_micros(ttl) {
+                tc.signing_key_rotation_grace_period_secs = (micros / 1_000_000) as u64;
+            }
+        }
+        // Warn when the audience is still the placeholder value but oidc.issuer is a
+        // real URL.  This only triggers when token.audience is explicitly set to "hearth"
+        // in the config file while oidc.issuer is configured — the implicit default case
+        // is already resolved to oidc.issuer above.
+        if tc.audience == "hearth" {
+            if let Some(oidc_issuer) = &config.oidc.issuer {
+                if oidc_issuer != "hearth" {
+                    tracing::warn!(
+                        audience = %tc.audience,
+                        oidc_issuer = %oidc_issuer,
+                        "token.audience is the placeholder \"hearth\" but oidc.issuer is \
+                         configured. OIDC clients that validate aud against their client_id \
+                         or resource server URL will reject all tokens. Set token.audience \
+                         to a meaningful value (e.g. your issuer URL or service name)."
+                    );
+                }
+            }
+        }
         tc
+    };
+
+    // Build rate-limit config from YAML, falling back to compiled-in defaults.
+    let rate_limit_config = {
+        let defaults = RateLimitConfig::default();
+        let rl = config.security.rate_limiting.as_ref();
+        RateLimitConfig {
+            max_failed_attempts: rl
+                .and_then(|r| r.login_per_account.as_ref())
+                .and_then(|a| a.max_failures)
+                .unwrap_or(defaults.max_failed_attempts),
+            lockout_duration_micros: rl
+                .and_then(|r| r.login_per_account.as_ref())
+                .and_then(|a| a.lockout_seconds)
+                .map(|s| s as i64 * 1_000_000)
+                .unwrap_or(defaults.lockout_duration_micros),
+            ip_max_attempts: rl
+                .and_then(|r| r.login_per_ip.as_ref())
+                .and_then(|i| i.max_attempts)
+                .unwrap_or(defaults.ip_max_attempts),
+            ip_window_micros: rl
+                .and_then(|r| r.login_per_ip.as_ref())
+                .and_then(|i| i.window_seconds)
+                .map(|s| s as i64 * 1_000_000)
+                .unwrap_or(defaults.ip_window_micros),
+        }
     };
 
     let identity_config = if config.dev_mode {
@@ -491,12 +633,14 @@ async fn run_serve(
             credential: CredentialConfig::fast_for_testing(),
             oidc: oidc_config,
             token: token_config,
+            rate_limit: rate_limit_config,
             ..IdentityConfig::default()
         }
     } else {
         IdentityConfig {
             oidc: oidc_config,
             token: token_config,
+            rate_limit: rate_limit_config,
             ..IdentityConfig::default()
         }
     };
@@ -540,9 +684,55 @@ async fn run_serve(
             config.server.bind_address, config.server.port
         )
     });
+    if config.onboarding.base_url.is_none() {
+        warn!(
+            fallback_url = %base_url,
+            "onboarding.base_url is not configured; setup URL will use the bind address \
+             as a fallback — set onboarding.base_url to the public-facing URL for correct \
+             external links"
+        );
+    }
+
+    // Fatal guard: mailcatcher transport is dev-only.
+    if config.email.transport == EmailTransport::Mailcatcher && !config.dev_mode {
+        return Err(
+            "email.transport = mailcatcher is only allowed in dev mode (start with --dev)".into(),
+        );
+    }
+
+    // In dev mode, upgrade Log and Smtp to mailcatcher so `make dev` works without
+    // Docker or a real mail server. Production cloud transports (sendgrid, postmark,
+    // mailgun, mailtrap) are intentionally kept so engineers can test against real
+    // providers even in dev mode.
+    if maybe_upgrade_email_transport(&mut config) {
+        warn!(
+            "dev mode: overriding smtp transport → mailcatcher (no Docker required); \
+             set email.transport = mailcatcher explicitly to silence this warning"
+        );
+    }
+
+    // Build MailcatcherState now (before build_email_sender) when transport is Mailcatcher
+    // so the same Arc is shared between the sender and the HTTP routes.
+    let mailcatcher_state: Option<Arc<MailcatcherState>> =
+        if config.email.transport == EmailTransport::Mailcatcher {
+            let password = generate_password();
+            let state = Arc::new(MailcatcherState::new(password));
+            // Print prominent startup banner.
+            println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  MailcatcherSender active");
+            println!(
+                "  Inbox:    http://{}:{}/dev/mail",
+                config.server.bind_address, config.server.port
+            );
+            println!("  Password: {}", state.password);
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+            Some(state)
+        } else {
+            None
+        };
 
     // Email sender + service (default: log transport — stderr at WARN level).
-    let email_sender: SharedEmailSender = build_email_sender(&config)?;
+    let email_sender: SharedEmailSender = build_email_sender(&config, mailcatcher_state.as_ref())?;
     let email_service = Arc::new(build_email_service(email_sender, &config)?);
 
     // Ensure a first-run setup token exists BEFORE realm reconciliation.
@@ -565,6 +755,42 @@ async fn run_serve(
             error!(error = %e, "failed to ensure setup token; onboarding will be unavailable");
         }
     }
+
+    // Load the previous config snapshot (absent on first startup) so we can
+    // compute a typed diff against the current config before reconciliation.
+    let prev_snapshot = match hearth::identity::reconcile::load_snapshot(storage.as_ref()) {
+        Ok(snap) => snap,
+        Err(e) => {
+            error!(error = %e, "failed to load config snapshot; treating as first startup");
+            None
+        }
+    };
+
+    // Compute diff: absent snapshot → empty baseline (all realms "added").
+    let baseline = prev_snapshot.clone().unwrap_or_else(|| {
+        hearth::config::ConfigSnapshot::from_config(&hearth::config::Config::default())
+    });
+    let config_diffs = hearth::config::compute_diff(&baseline, &config);
+    if !config_diffs.is_empty() {
+        info!(
+            count = config_diffs.len(),
+            "config diff detected on startup"
+        );
+    }
+
+    // Apply diff handlers (Phase C: config-only items logged; data items reconciled).
+    let _consumed_rotations = match hearth::identity::reconcile::apply_diff(
+        &config_diffs,
+        &config,
+        identity_engine.as_ref(),
+        rbac_engine.as_ref(),
+    ) {
+        Ok(rotated) => rotated,
+        Err(e) => {
+            error!(error = %e, "config diff application failed");
+            Vec::new()
+        }
+    };
 
     // Reconcile YAML-declared realms with storage. Runs after setup-token
     // generation so reconciliation-created realms don't suppress the
@@ -592,6 +818,156 @@ async fn run_serve(
         Err(e) => {
             error!(error = %e, "realm reconciliation failed");
         }
+    }
+
+    // Re-seed RBAC defaults on every realm that exists in storage, not just
+    // YAML-declared ones. Repairs realms whose original seed failed silently.
+    hearth::identity::reconcile::reconcile_rbac_seeds(
+        identity_engine.as_ref(),
+        rbac_engine.as_ref(),
+    );
+
+    // Persist the current config snapshot after a successful reconciliation so
+    // the next startup can compute an accurate diff.
+    // NOTE: We do NOT clear rotate_signing_key in consumed realms. Leaving it as
+    // true (matching the YAML) means the next startup sees true→true, which is
+    // not a transition and does not re-trigger rotation. Clearing to false would
+    // cause an immediate re-trigger on the next restart while the flag is still
+    // in YAML.
+    let current_snapshot = hearth::config::ConfigSnapshot::from_config(&config);
+    match hearth::identity::reconcile::save_snapshot(storage.as_ref(), &current_snapshot) {
+        Ok(()) => {}
+        Err(e) => {
+            error!(error = %e, "failed to persist config snapshot; next startup will treat config as unchanged");
+        }
+    }
+
+    // Phase E: cross-realm user migration (migrate_from / copy_from).
+    // Runs after realm reconciliation so destination realms exist.
+    // `on_conflict: error` causes a hard exit; all other errors are warnings.
+    if let Some(realms_cfg) = config.realms.as_ref() {
+        for (dst_slug, realm_cfg) in realms_cfg {
+            let (src_slug, move_semantics) = match (&realm_cfg.migrate_from, &realm_cfg.copy_from) {
+                (Some(src), _) => (src.as_str(), true),
+                (None, Some(src)) => (src.as_str(), false),
+                (None, None) => continue,
+            };
+
+            let dst_realm = match identity_engine.get_realm_by_name(dst_slug) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    error!(realm_name = %dst_slug, "cross-realm migration: destination realm not found after reconciliation");
+                    continue;
+                }
+                Err(e) => {
+                    error!(error = %e, "cross-realm migration: destination realm lookup failed");
+                    continue;
+                }
+            };
+            let src_realm = match identity_engine.get_realm_by_name(src_slug) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    warn!(
+                        src_slug,
+                        "cross-realm migration: source realm not found; skipping"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    error!(error = %e, "cross-realm migration: source realm lookup failed");
+                    continue;
+                }
+            };
+
+            let migrate_cfg = realm_cfg.migrate.clone().unwrap_or_default();
+            let opts = hearth::identity::migration::cross_realm::CrossRealmMigrateOptions {
+                move_semantics,
+                users: migrate_cfg.users,
+                orgs: migrate_cfg.orgs,
+                on_conflict: migrate_cfg.on_conflict,
+            };
+
+            let now = {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                hearth::identity::reconcile::format_unix_secs_rfc3339(secs)
+            };
+            match hearth::identity::migration::cross_realm::execute_cross_realm_migration(
+                identity_engine.as_ref(),
+                rbac_engine.as_ref(),
+                storage.as_ref(),
+                src_realm.id(),
+                dst_realm.id(),
+                src_slug,
+                &opts,
+            ) {
+                Ok(report) => {
+                    info!(
+                        src_slug,
+                        dst_realm = %dst_slug,
+                        migrated = report.migrated,
+                        skipped = report.skipped,
+                        role_assignments_translated = report.role_assignments_translated,
+                        "cross-realm migration complete"
+                    );
+                    let status = if report.skipped > 0 {
+                        hearth::identity::reconcile::MigrationHistoryStatus::CompletedWithSkips
+                    } else {
+                        hearth::identity::reconcile::MigrationHistoryStatus::Completed
+                    };
+                    hearth::identity::reconcile::write_migration_history(
+                        storage.as_ref(),
+                        &hearth::identity::reconcile::MigrationHistoryRecord {
+                            source_slug: src_slug.to_string(),
+                            destination_slug: dst_slug.clone(),
+                            move_semantics,
+                            users_migrated: report.migrated,
+                            users_skipped: report.skipped,
+                            role_assignments_translated: report.role_assignments_translated,
+                            completed_at: now,
+                            status,
+                            conflict_emails: Vec::new(),
+                        },
+                    );
+                }
+                Err(conflict_err) => {
+                    error!(error = %conflict_err, "cross-realm migration conflict; refusing to start");
+                    hearth::identity::reconcile::write_migration_history(
+                        storage.as_ref(),
+                        &hearth::identity::reconcile::MigrationHistoryRecord {
+                            source_slug: src_slug.to_string(),
+                            destination_slug: dst_slug.clone(),
+                            move_semantics,
+                            users_migrated: 0,
+                            users_skipped: 0,
+                            role_assignments_translated: 0,
+                            completed_at: now,
+                            status: hearth::identity::reconcile::MigrationHistoryStatus::Failed,
+                            conflict_emails: conflict_err.emails.clone(),
+                        },
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    // Phase D: detect archived realms with live users but no declared
+    // migration destination.  Non-blocking — startup continues regardless.
+    let orphaned_realms = hearth::identity::reconcile::detect_orphaned_realms(
+        identity_engine.as_ref(),
+        &config,
+        storage.as_ref(),
+    );
+
+    // Load migration history for the admin UI.
+    let migration_records = hearth::identity::reconcile::load_migration_records(storage.as_ref());
+
+    // --verbose: emit resolved config, realm list, and key fingerprints at debug level.
+    if verbose {
+        log_verbose_startup_diagnostics(&config, identity_engine.as_ref());
     }
 
     // Validate server.default_realm after reconciliation so auto-created
@@ -718,6 +1094,28 @@ async fn run_serve(
         data_dir.clone(),
     ));
 
+    let rotation_grace_period_secs = config
+        .token
+        .signing_key_rotation_grace_period
+        .as_deref()
+        .and_then(|s| hearth::config::parse_duration_to_micros(s).ok())
+        .map(|micros| (micros / 1_000_000) as u64)
+        .unwrap_or(86_400);
+
+    // Parse trusted proxy IPs early so both AppState (JSON API) and WebState
+    // (browser UI) can use the same list for real client IP extraction.
+    let api_trusted_proxies: Vec<std::net::IpAddr> = config
+        .server
+        .trusted_proxies
+        .iter()
+        .filter_map(|s| {
+            s.parse::<std::net::IpAddr>().ok().or_else(|| {
+                warn!(addr = %s, "ignoring invalid trusted_proxies entry (expected IP address)");
+                None
+            })
+        })
+        .collect();
+
     let app_state = if config.dev_mode {
         Arc::new(
             AppState::new_dev(
@@ -726,7 +1124,9 @@ async fn run_serve(
                 Arc::clone(&audit_engine),
             )
             .with_webhook(Arc::clone(&webhook_engine))
-            .with_metrics_enabled(config.metrics.enabled),
+            .with_metrics_enabled(config.metrics.enabled)
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs)
+            .with_trusted_proxies(api_trusted_proxies.clone()),
         )
     } else {
         Arc::new(
@@ -736,7 +1136,9 @@ async fn run_serve(
                 Arc::clone(&audit_engine),
             )
             .with_webhook(Arc::clone(&webhook_engine))
-            .with_metrics_enabled(config.metrics.enabled),
+            .with_metrics_enabled(config.metrics.enabled)
+            .with_signing_key_rotation_grace_period_secs(rotation_grace_period_secs)
+            .with_trusted_proxies(api_trusted_proxies.clone()),
         )
     };
 
@@ -762,28 +1164,18 @@ async fn run_serve(
         Some(Arc::clone(&email_service)),
     )
     .with_config_warnings(config.config_warnings.clone())
+    .with_orphaned_realms(orphaned_realms)
+    .with_migration_records(migration_records)
     .with_email_log_transport(config.email.transport == EmailTransport::Log)
     .with_product_name(config.branding.product_name_or_default().to_string())
     .with_logo_url(web_logo_url)
     .with_default_realm(config.server.default_realm.clone())
     .with_config(Arc::new(config.clone()));
 
-    // Parse trusted proxy IPs from config for real client IP extraction.
-    let trusted_proxies: Vec<std::net::IpAddr> = config
-        .server
-        .trusted_proxies
-        .iter()
-        .filter_map(|s| {
-            s.parse::<std::net::IpAddr>().ok().or_else(|| {
-                warn!(addr = %s, "ignoring invalid trusted_proxies entry (expected IP address)");
-                None
-            })
-        })
-        .collect();
-    if !trusted_proxies.is_empty() {
-        info!(count = trusted_proxies.len(), "loaded trusted_proxies");
+    if !api_trusted_proxies.is_empty() {
+        info!(count = api_trusted_proxies.len(), "loaded trusted_proxies");
     }
-    web_state = web_state.with_trusted_proxies(trusted_proxies);
+    web_state = web_state.with_trusted_proxies(api_trusted_proxies);
 
     if let Some((bytes, content_type)) = custom_logo {
         web_state = web_state.with_custom_logo(bytes, content_type);
@@ -920,12 +1312,17 @@ async fn run_serve(
         .with_theme_css(global_theme_css)
         .with_realm_themes(realm_themes)
         .with_realm_product_names(realm_product_names)
-        .with_reload_notify(Arc::clone(&reload_notify));
+        .with_reload_notify(Arc::clone(&reload_notify))
+        .with_tls_enabled(config.server.tls_cert_path.is_some())
+        .with_trust_forwarded_proto(config.server.trust_forwarded_proto);
     if let Some(ref cfg_path) = reload_config_path {
         web_state = web_state.with_config_path(cfg_path.clone());
     }
 
-    let app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
+    let mut app_router = http::router(Arc::clone(&app_state)).merge(web::router(web_state));
+    if let Some(mc_state) = &mailcatcher_state {
+        app_router = app_router.merge(web::mailcatcher_router(Arc::clone(mc_state)));
+    }
 
     // Spawn the webhook dispatcher. Uses a watch channel so we can signal
     // clean shutdown after the HTTP server exits.
@@ -1062,10 +1459,19 @@ async fn run_serve(
 /// Returns the appropriate transport adapter based on the configured
 /// `email.transport`. Fails if the transport rejects the configuration
 /// at startup — better to fail early than on the first send attempt.
-fn build_email_sender(config: &Config) -> Result<SharedEmailSender, Box<dyn std::error::Error>> {
+fn build_email_sender(
+    config: &Config,
+    mailcatcher: Option<&Arc<MailcatcherState>>,
+) -> Result<SharedEmailSender, Box<dyn std::error::Error>> {
     use hearth::identity::email::http::UreqTransport;
 
     Ok(match config.email.transport {
+        EmailTransport::Mailcatcher => {
+            let state = mailcatcher
+                .cloned()
+                .ok_or("MailcatcherState must be pre-built before build_email_sender")?;
+            Arc::new(MailcatcherSender::new(state))
+        }
         EmailTransport::Log => Arc::new(LoggingEmailSender::new()),
         EmailTransport::Smtp => Arc::new(smtp_sender_from_config(&config.email)?),
         EmailTransport::Sendgrid => {
@@ -1177,6 +1583,28 @@ fn build_email_service(
     )?)
 }
 
+/// In dev mode, upgrades `Log` and `Smtp` transports to `Mailcatcher` so
+/// `--dev` works without Docker or a real mail server. Production cloud
+/// transports are kept so engineers can test against real providers.
+///
+/// Returns `true` when SMTP was promoted (callers log a helpful warning).
+fn maybe_upgrade_email_transport(config: &mut Config) -> bool {
+    if !config.dev_mode {
+        return false;
+    }
+    match config.email.transport {
+        EmailTransport::Log => {
+            config.email.transport = EmailTransport::Mailcatcher;
+            false
+        }
+        EmailTransport::Smtp => {
+            config.email.transport = EmailTransport::Mailcatcher;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Runs the HTTPS server with TLS, redirect listener, and SIGHUP cert + config reload.
 /// Registry type alias used for hot-swap on SIGHUP.
 type RegistrySwap = Arc<arc_swap::ArcSwap<hearth::rbac::registry::PermissionRegistry>>;
@@ -1220,11 +1648,14 @@ async fn run_serve_tls(
         .map_err(|e| format!("invalid redirect bind address: {e}"))?;
     let https_port = config.server.port;
     let mut redirect_shutdown_rx = shutdown_rx.clone();
+    let redirect_listener = tokio::net::TcpListener::bind(redirect_addr)
+        .await
+        .map_err(|e| format!("failed to bind HTTP redirect listener on {redirect_addr}: {e}"))?;
     let redirect_handle = tokio::spawn(async move {
         let shutdown = async move {
             let _ = redirect_shutdown_rx.changed().await;
         };
-        if let Err(e) = http::serve_redirect(redirect_addr, https_port, shutdown).await {
+        if let Err(e) = http::serve_redirect(redirect_listener, https_port, shutdown).await {
             warn!(error = %e, "HTTP redirect server failed");
         }
     });
@@ -1291,12 +1722,25 @@ fn load_config(
 ) -> Result<Config, Box<dyn std::error::Error>> {
     // Load the user's file if given (takes precedence over the default
     // location). `--dev` without `-c` falls back to the pure dev preset.
+    //
+    // When `dev=true`, use `from_file_as_dev` which applies dev settings
+    // (dev_mode, no fsync, empty data_dir) before validation. This lets
+    // `hearth serve --dev` work even when an auto-detected hearth.yaml omits
+    // production-only fields like oidc.issuer.
     let mut config = if let Some(path) = config_path {
-        Config::from_file(path)?
+        if dev {
+            Config::from_file_as_dev(path)?
+        } else {
+            Config::from_file(path)?
+        }
     } else {
         let default_path = std::path::Path::new("hearth.yaml");
         if default_path.exists() {
-            Config::from_file(default_path)?
+            if dev {
+                Config::from_file_as_dev(default_path)?
+            } else {
+                Config::from_file(default_path)?
+            }
         } else if dev {
             return Ok(Config::dev());
         } else {
@@ -1311,9 +1755,8 @@ fn load_config(
     // `hearth serve --dev -c examples/.../hearth.yaml` work the way
     // most readers expect.
     if dev {
-        config.dev_mode = true;
-        config.storage.fsync = false;
-        config.storage.data_dir = String::new();
+        // dev_mode, fsync, data_dir already applied by from_file_as_dev above;
+        // adjust log level here (not part of the pure file-loading concern).
         if config.observability.log_level.as_str() == "info" {
             config.observability.log_level = "debug".to_string();
         }
@@ -1359,7 +1802,7 @@ fn run_config_reconciliation(
             let app_archived = report
                 .applications
                 .iter()
-                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Deleted)
+                .filter(|e| e.action == hearth::identity::reconcile::AppReconcileAction::Archived)
                 .count();
             info!(
                 realms_created = report.created.len(),
@@ -1732,37 +2175,159 @@ fn mime_for_logo(path: &std::path::Path) -> &'static str {
 
 /// Runs the `hearth config validate` command.
 ///
-/// Parses the YAML file and validates every realm's `PermissionRegistry`
-/// (permission names, role cross-references, bundle names, claim-profile
-/// tier enforcement). Exits 1 on any error.
+/// Uses the all-collecting validator so every problem is reported in one pass.
+/// Exits 0 on success (with a human-readable summary) and 1 on any error.
 fn run_config_validate(file: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    use hearth::config::Config;
+    // Parse without short-circuit so we can collect every issue.
+    let config = match Config::from_file_unchecked(file) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("✗ Configuration invalid");
+            eprintln!();
+            eprintln!("  parse error: {e}");
+            return Err("configuration validation failed".into());
+        }
+    };
 
-    let config = Config::from_file(file).map_err(|e| format!("{e}"))?;
+    // Collect all structural issues in one pass.
+    let mut issues = config.validate_all();
 
-    let mut all_ok = true;
+    // TLS cert/key file existence (runtime check not covered by validate_all).
+    config_validate_tls_files(&config, &mut issues);
+
+    // Realm permission-registry cross-reference validation.
     if let Some(realms) = &config.realms {
         for (realm_name, realm_yaml) in realms {
-            match realm_yaml.to_realm_config(&config.auth, config.email.branding.as_ref()) {
-                Ok(_) => {
-                    println!("realm {realm_name:?}: OK");
-                }
-                Err(errs) => {
-                    all_ok = false;
-                    for e in &errs {
-                        eprintln!("realm {realm_name:?}: {e}");
-                    }
+            if let Err(errs) =
+                realm_yaml.to_realm_config(&config.auth, config.email.branding.as_ref())
+            {
+                for e in errs {
+                    issues.push(ValidationIssue {
+                        field: format!("realms.{realm_name}"),
+                        reason: e.to_string(),
+                    });
                 }
             }
         }
     }
 
-    if all_ok {
-        println!("config OK");
+    if issues.is_empty() {
+        println!("✓ Configuration valid");
+        println!();
+        config_validate_print_summary(&config);
         Ok(())
     } else {
+        eprintln!("✗ Configuration invalid — {} error(s):", issues.len());
+        eprintln!();
+        for issue in &issues {
+            eprintln!("  {}: {}", issue.field, issue.reason);
+            if let Some(hint) = config_validate_hint(&issue.field, &issue.reason) {
+                eprintln!("    → {hint}");
+            }
+        }
         Err("configuration validation failed".into())
     }
+}
+
+/// Checks TLS cert/key/CA file existence and appends issues when files are missing.
+fn config_validate_tls_files(config: &Config, issues: &mut Vec<ValidationIssue>) {
+    for (field, path_opt) in [
+        ("server.tls_cert_path", &config.server.tls_cert_path),
+        ("server.tls_key_path", &config.server.tls_key_path),
+        (
+            "server.tls_client_ca_path",
+            &config.server.tls_client_ca_path,
+        ),
+    ] {
+        if let Some(path) = path_opt {
+            if !path.exists() {
+                issues.push(ValidationIssue {
+                    field: field.to_string(),
+                    reason: format!("file not found at path '{}'", path.display()),
+                });
+            }
+        }
+    }
+}
+
+/// Prints a one-screen summary of resolved config values on successful validation.
+fn config_validate_print_summary(config: &Config) {
+    let issuer = config
+        .oidc
+        .issuer
+        .as_deref()
+        .or(config.token.issuer.as_deref())
+        .unwrap_or("not configured (defaults to https://hearth.local)");
+
+    let tls_mode = match (&config.server.tls_cert_path, &config.server.tls_key_path) {
+        (Some(cert), Some(_)) => format!("enabled (cert: {})", cert.display()),
+        _ => "disabled (plain HTTP)".to_string(),
+    };
+
+    let email_transport = format!("{:?}", config.email.transport).to_ascii_lowercase();
+
+    println!("  issuer:           {issuer}");
+    println!("  storage:          {}", config.storage.data_dir);
+    println!("  email transport:  {email_transport}");
+    println!("  TLS:              {tls_mode}");
+}
+
+/// Returns an actionable hint for well-known validation issues.
+fn config_validate_hint(field: &str, reason: &str) -> Option<String> {
+    if field == "storage.data_dir" && reason.contains("empty") {
+        return Some(
+            "set storage.data_dir to a writable directory, e.g. storage:\n      data_dir: ./data"
+                .to_string(),
+        );
+    }
+    if field == "email.smtp" && reason.contains("required") {
+        return Some(
+            "add an email.smtp block with at least host and port, e.g.:\n      smtp:\n        host: smtp.example.com\n        port: 587"
+                .to_string(),
+        );
+    }
+    if field == "email.from" {
+        return Some(
+            "set email.from to a valid RFC 5322 address, e.g. \"Hearth <noreply@example.com>\""
+                .to_string(),
+        );
+    }
+    if (field.contains("tls_cert_path") || field.contains("tls_key_path"))
+        && reason.contains("required")
+    {
+        return Some(
+            "both server.tls_cert_path and server.tls_key_path must be set together".to_string(),
+        );
+    }
+    if reason.contains("file not found") {
+        return Some(
+            "check that the path exists and is readable by the Hearth process".to_string(),
+        );
+    }
+    if field == "oidc.issuer" {
+        return Some(
+            "set oidc.issuer to the public URL of this server, e.g. https://auth.example.com"
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Runs the `hearth config example` command.
+///
+/// Writes the annotated example `hearth.yaml` (embedded at compile time from
+/// `hearth.example.yaml`) to stdout or to `--output <path>`.
+fn run_config_example(output: Option<&PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    const EXAMPLE_YAML: &str = include_str!("../hearth.example.yaml");
+
+    if let Some(path) = output {
+        std::fs::write(path, EXAMPLE_YAML)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        println!("wrote example configuration to {}", path.display());
+    } else {
+        print!("{EXAMPLE_YAML}");
+    }
+    Ok(())
 }
 
 /// Runs the `hearth rbac orphans list` command.
@@ -1847,6 +2412,71 @@ fn run_rbac_orphans_purge(
     Ok(())
 }
 
+/// Emits debug-level startup diagnostics when `--verbose` is set.
+///
+/// Logs resolved config values, HTTP route groups, realm names, and Ed25519
+/// key fingerprints (via JWKS kid). Called once after realm reconciliation.
+fn log_verbose_startup_diagnostics(config: &Config, identity: &dyn IdentityEngine) {
+    use tracing::debug;
+
+    let issuer = config
+        .oidc
+        .issuer
+        .as_deref()
+        .or(config.token.issuer.as_deref())
+        .unwrap_or("(default)");
+    let tls_mode = match (&config.server.tls_cert_path, &config.server.tls_key_path) {
+        (Some(cert), Some(_)) => format!("enabled (cert: {})", cert.display()),
+        _ => "disabled".to_string(),
+    };
+    let email_transport = format!("{:?}", config.email.transport).to_ascii_lowercase();
+
+    debug!(
+        storage_path = %config.storage.data_dir,
+        bind = %format!("{}:{}", config.server.bind_address, config.server.port),
+        issuer,
+        tls = %tls_mode,
+        email_transport,
+        "verbose: resolved config"
+    );
+
+    // HTTP route groups (axum does not expose runtime introspection; list by prefix).
+    debug!(
+        routes = "GET /health, /healthz, /readyz, /metrics, \
+                  POST /admin/bootstrap (dev), \
+                  /admin/api/* (users, realms, apps, roles, groups, webhooks, audit), \
+                  /.well-known/openid-configuration, \
+                  /authorize, /token, /register, /device_authorization, /introspect, /revoke, \
+                  /v1/me, /v1/me/permissions, \
+                  /ui/* (login, admin, static assets)",
+        "verbose: HTTP route groups"
+    );
+
+    // Realms and key fingerprints.
+    match identity.list_realms(None, 200) {
+        Ok(page) => {
+            debug!(count = page.items.len(), "verbose: loaded realms");
+            for realm in &page.items {
+                let kid = identity
+                    .realm_jwks(realm.id())
+                    .ok()
+                    .and_then(|jwks| jwks.keys.into_iter().next())
+                    .map(|k| k.kid)
+                    .unwrap_or_else(|| "(no key)".to_string());
+                debug!(
+                    realm_name = %realm.name(),
+                    realm_id = %realm.id().as_uuid(),
+                    key_fingerprint = %kid,
+                    "verbose: realm key"
+                );
+            }
+        }
+        Err(e) => {
+            debug!(error = %e, "verbose: could not list realms for key diagnostics");
+        }
+    }
+}
+
 /// Computes the exclusive end bound for a storage prefix scan.
 ///
 /// Increments the last byte of the prefix by 1 so that `scan(prefix,
@@ -1882,5 +2512,75 @@ fn print_migration_report(report: &hearth::identity::MigrationReport) {
         for w in &report.warnings {
             println!("  - {w}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hearth::config::{Config, EmailTransport};
+
+    // ── maybe_upgrade_email_transport ─────────────────────────────────────
+
+    #[test]
+    fn dev_mode_log_transport_upgraded_to_mailcatcher() {
+        let mut cfg = Config::dev();
+        cfg.email.transport = EmailTransport::Log;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(cfg.email.transport, EmailTransport::Mailcatcher);
+        assert!(!warned, "Log→Mailcatcher should not produce a warning");
+    }
+
+    #[test]
+    fn dev_mode_smtp_transport_upgraded_to_mailcatcher_with_warning() {
+        let mut cfg = Config::dev();
+        cfg.email.transport = EmailTransport::Smtp;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(cfg.email.transport, EmailTransport::Mailcatcher);
+        assert!(
+            warned,
+            "Smtp→Mailcatcher should return true so caller can warn"
+        );
+    }
+
+    #[test]
+    fn dev_mode_mailcatcher_unchanged() {
+        let mut cfg = Config::dev();
+        cfg.email.transport = EmailTransport::Mailcatcher;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(cfg.email.transport, EmailTransport::Mailcatcher);
+        assert!(!warned);
+    }
+
+    #[test]
+    fn dev_mode_production_transports_unchanged() {
+        for transport in [
+            EmailTransport::Sendgrid,
+            EmailTransport::Postmark,
+            EmailTransport::Mailgun,
+            EmailTransport::Mailtrap,
+        ] {
+            let mut cfg = Config::dev();
+            cfg.email.transport = transport;
+            let warned = maybe_upgrade_email_transport(&mut cfg);
+            assert_eq!(
+                cfg.email.transport, transport,
+                "production transport {transport:?} must not be overridden in dev mode"
+            );
+            assert!(!warned);
+        }
+    }
+
+    #[test]
+    fn non_dev_mode_does_not_upgrade_smtp() {
+        let mut cfg = Config::default();
+        cfg.email.transport = EmailTransport::Smtp;
+        let warned = maybe_upgrade_email_transport(&mut cfg);
+        assert_eq!(
+            cfg.email.transport,
+            EmailTransport::Smtp,
+            "non-dev mode must not override smtp"
+        );
+        assert!(!warned);
     }
 }

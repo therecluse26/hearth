@@ -2230,3 +2230,487 @@ pub async fn admin_user_revoke_permission(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bulk action
+// ---------------------------------------------------------------------------
+
+/// Form body for bulk user actions.
+#[derive(Debug, Deserialize)]
+pub struct BulkActionForm {
+    /// Comma-separated list of user UUID strings selected by the client.
+    #[serde(default)]
+    pub ids: String,
+    /// One of: `assign_role`, `send_invite`, `deactivate`, `export`.
+    #[serde(default)]
+    pub bulk_action: String,
+    /// Role UUID — required when `bulk_action == "assign_role"`.
+    #[serde(default)]
+    pub role_id: String,
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+}
+
+/// `POST /ui/admin/realms/{realm}/users/bulk-action`
+pub async fn admin_users_bulk_action(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(realm_name): AxumPath<String>,
+    FriendlyForm(form): FriendlyForm<BulkActionForm>,
+) -> Response {
+    if let Err(resp) = verify_csrf_form_field(&session, &form.csrf) {
+        return resp;
+    }
+
+    let user_ids: Vec<crate::core::UserId> = form
+        .ids
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.trim().parse::<uuid::Uuid>().ok())
+        .map(crate::core::UserId::new)
+        .collect();
+
+    if user_ids.is_empty() {
+        return Redirect::to(&format!(
+            "/ui/admin/realms/{realm_name}/users?flash=no_users_selected"
+        ))
+        .into_response();
+    }
+
+    match form.bulk_action.as_str() {
+        "deactivate" => {
+            let req = UpdateUserRequest {
+                email: None,
+                display_name: None,
+                first_name: None,
+                last_name: None,
+                attributes: None,
+                status: Some(UserStatus::Disabled),
+            };
+            for uid in &user_ids {
+                if let Err(e) = state.identity.update_user(target.id(), uid, &req) {
+                    tracing::warn!(error = %e, user_id = %uid.as_uuid(), "bulk deactivate failed");
+                }
+            }
+            Redirect::to(&format!(
+                "/ui/admin/realms/{realm_name}/users?flash=bulk_deactivated"
+            ))
+            .into_response()
+        }
+        "send_invite" => {
+            for uid in &user_ids {
+                match state.identity.get_user(target.id(), uid) {
+                    Ok(Some(user)) => {
+                        if let Err(e) = state
+                            .identity
+                            .request_password_reset(target.id(), user.email())
+                        {
+                            tracing::warn!(error = %e, user_id = %uid.as_uuid(), "bulk send_invite failed");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, user_id = %uid.as_uuid(), "get_user for bulk invite failed");
+                    }
+                }
+            }
+            Redirect::to(&format!(
+                "/ui/admin/realms/{realm_name}/users?flash=bulk_invited"
+            ))
+            .into_response()
+        }
+        "assign_role" => {
+            let role_uuid = match form.role_id.parse::<uuid::Uuid>() {
+                Ok(u) => u,
+                Err(_) => {
+                    return Redirect::to(&format!(
+                        "/ui/admin/realms/{realm_name}/users?flash=invalid_role"
+                    ))
+                    .into_response();
+                }
+            };
+            let role_id = crate::rbac::RoleId::new(role_uuid);
+            for uid in &user_ids {
+                let req = crate::rbac::AssignRoleRequest {
+                    subject: crate::rbac::Subject::User(uid.clone()),
+                    role_id: role_id.clone(),
+                    scope: crate::rbac::Scope::Realm,
+                    assigned_by: Some(session.user_id.clone()),
+                };
+                if let Err(e) = state.rbac.assign_role(target.id(), &req) {
+                    tracing::warn!(error = %e, user_id = %uid.as_uuid(), "bulk assign_role failed");
+                }
+            }
+            Redirect::to(&format!(
+                "/ui/admin/realms/{realm_name}/users?flash=bulk_role_assigned"
+            ))
+            .into_response()
+        }
+        _ => Redirect::to(&format!(
+            "/ui/admin/realms/{realm_name}/users?flash=unknown_action"
+        ))
+        .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// User CSV import
+// ---------------------------------------------------------------------------
+
+/// Template struct for the import form.
+#[derive(Template)]
+#[template(path = "ui/admin/users/import.html")]
+struct UserImportTemplate {
+    error: Option<String>,
+    realm_name: String,
+    list_url: String,
+    active_tab: &'static str,
+    chrome: bool,
+    active: &'static str,
+    user_email: Option<String>,
+    is_admin: bool,
+    flash: Option<Flash>,
+    csrf: Option<String>,
+    narrow: bool,
+    product_name: String,
+    logo_url: String,
+    theme_css: String,
+    realm_theme_css: Option<String>,
+}
+
+/// `GET /ui/admin/realms/{realm}/users/import`
+pub async fn admin_users_import_form(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(realm_name): AxumPath<String>,
+) -> Response {
+    render(&UserImportTemplate {
+        error: None,
+        realm_name: realm_name.clone(),
+        list_url: format!("/ui/admin/realms/{realm_name}/users"),
+        active_tab: "users",
+        chrome: true,
+        active: "realm-workspace",
+        user_email: Some(session.user_email.clone()),
+        is_admin: true,
+        flash: None,
+        csrf: session.csrf.clone(),
+        narrow: false,
+        product_name: state.product_name_for(target.id()),
+        logo_url: state.logo_url.clone(),
+        theme_css: state.theme_css.clone(),
+        realm_theme_css: state.realm_theme_css(),
+    })
+}
+
+/// `GET /ui/admin/realms/{realm}/users/import/template.csv`
+pub async fn admin_users_import_template_csv(
+    RequireAdmin(_session): RequireAdmin,
+    AxumPath(_realm_name): AxumPath<String>,
+) -> Response {
+    let csv = "email,name,role\nexample@company.com,Jane Doe,admin\n";
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header("Content-Type", "text/csv; charset=utf-8")
+        .header(
+            "Content-Disposition",
+            "attachment; filename=\"users_template.csv\"",
+        )
+        .body(axum::body::Body::from(csv))
+        .unwrap_or_else(|_| super::handlers_common::server_error())
+}
+
+/// Summary returned after a CSV import.
+struct ImportSummary {
+    created: usize,
+    updated: usize,
+    skipped: usize,
+    errors: Vec<String>,
+}
+
+/// `POST /ui/admin/realms/{realm}/users/import` — process uploaded CSV.
+pub async fn admin_users_import_submit(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(realm_name): AxumPath<String>,
+    mut multipart: axum::extract::Multipart,
+) -> Response {
+    // Extract CSV bytes and column mapping from the multipart form.
+    let mut csv_bytes: Option<Vec<u8>> = None;
+    let mut col_email = String::new();
+    let mut col_name = String::new();
+    let mut col_role = String::new();
+    let mut csrf_token = String::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        match field.name().unwrap_or("") {
+            "csv_file" => {
+                csv_bytes = field.bytes().await.ok().map(|b| b.to_vec());
+            }
+            "col_email" => {
+                col_email = field.text().await.unwrap_or_default();
+            }
+            "col_name" => {
+                col_name = field.text().await.unwrap_or_default();
+            }
+            "col_role" => {
+                col_role = field.text().await.unwrap_or_default();
+            }
+            "_csrf" => {
+                csrf_token = field.text().await.unwrap_or_default();
+            }
+            _ => {}
+        }
+    }
+
+    if let Err(resp) = verify_csrf_form_field(&session, &csrf_token) {
+        return resp;
+    }
+
+    let bytes = match csv_bytes {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            return render(&UserImportTemplate {
+                error: Some("No file uploaded.".to_string()),
+                realm_name: realm_name.clone(),
+                list_url: format!("/ui/admin/realms/{realm_name}/users"),
+                active_tab: "users",
+                chrome: true,
+                active: "realm-workspace",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: false,
+                product_name: state.product_name_for(target.id()),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: state.realm_theme_css(),
+            });
+        }
+    };
+
+    let text = match String::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(_) => {
+            return render(&UserImportTemplate {
+                error: Some("File is not valid UTF-8.".to_string()),
+                realm_name: realm_name.clone(),
+                list_url: format!("/ui/admin/realms/{realm_name}/users"),
+                active_tab: "users",
+                chrome: true,
+                active: "realm-workspace",
+                user_email: Some(session.user_email.clone()),
+                is_admin: true,
+                flash: None,
+                csrf: session.csrf.clone(),
+                narrow: false,
+                product_name: state.product_name_for(target.id()),
+                logo_url: state.logo_url.clone(),
+                theme_css: state.theme_css.clone(),
+                realm_theme_css: state.realm_theme_css(),
+            });
+        }
+    };
+
+    if col_email.is_empty() {
+        return render(&UserImportTemplate {
+            error: Some("Email column mapping is required.".to_string()),
+            realm_name: realm_name.clone(),
+            list_url: format!("/ui/admin/realms/{realm_name}/users"),
+            active_tab: "users",
+            chrome: true,
+            active: "realm-workspace",
+            user_email: Some(session.user_email.clone()),
+            is_admin: true,
+            flash: None,
+            csrf: session.csrf.clone(),
+            narrow: false,
+            product_name: state.product_name_for(target.id()),
+            logo_url: state.logo_url.clone(),
+            theme_css: state.theme_css.clone(),
+            realm_theme_css: state.realm_theme_css(),
+        });
+    }
+
+    let summary = process_csv_import(&state, target.id(), &text, &col_email, &col_name, &col_role);
+    let flash = format!(
+        "import_done:created={},updated={},skipped={},errors={}",
+        summary.created,
+        summary.updated,
+        summary.skipped,
+        summary.errors.len()
+    );
+
+    Redirect::to(&format!(
+        "/ui/admin/realms/{realm_name}/users?flash={flash}"
+    ))
+    .into_response()
+}
+
+/// Parses the CSV text and creates/updates users, returning a summary.
+fn process_csv_import(
+    state: &Arc<WebState>,
+    realm_id: &crate::core::RealmId,
+    text: &str,
+    col_email: &str,
+    col_name: &str,
+    col_role: &str,
+) -> ImportSummary {
+    let mut summary = ImportSummary {
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+
+    let mut lines = text.lines();
+    let header_line = match lines.next() {
+        Some(l) => l,
+        None => return summary,
+    };
+
+    let headers: Vec<&str> = header_line.split(',').map(str::trim).collect();
+    let idx_email = headers.iter().position(|h| *h == col_email);
+    let idx_name = if col_name.is_empty() {
+        None
+    } else {
+        headers.iter().position(|h| *h == col_name)
+    };
+    let idx_role = if col_role.is_empty() {
+        None
+    } else {
+        headers.iter().position(|h| *h == col_role)
+    };
+
+    let email_idx = match idx_email {
+        Some(i) => i,
+        None => {
+            summary
+                .errors
+                .push(format!("Column '{col_email}' not found in CSV header."));
+            return summary;
+        }
+    };
+
+    for (line_num, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.splitn(headers.len(), ',').map(str::trim).collect();
+        let email = match fields.get(email_idx) {
+            Some(e) if !e.is_empty() => (*e).to_owned(),
+            _ => {
+                summary
+                    .errors
+                    .push(format!("Row {}: missing email.", line_num + 2));
+                summary.skipped += 1;
+                continue;
+            }
+        };
+        let name = idx_name
+            .and_then(|i| fields.get(i))
+            .copied()
+            .unwrap_or("")
+            .to_string();
+        let role_slug = idx_role
+            .and_then(|i| fields.get(i))
+            .copied()
+            .unwrap_or("")
+            .to_string();
+
+        // Check if user already exists via search.
+        let existing = state
+            .identity
+            .search_users(realm_id, &email, 1)
+            .ok()
+            .and_then(|mut v| {
+                v.retain(|u| u.email().eq_ignore_ascii_case(&email));
+                v.into_iter().next()
+            });
+
+        if let Some(user) = existing {
+            // Update name if provided.
+            if !name.is_empty() {
+                let req = UpdateUserRequest {
+                    display_name: Some(name.clone()),
+                    first_name: None,
+                    last_name: None,
+                    attributes: None,
+                    status: None,
+                    email: None,
+                };
+                if let Err(e) = state.identity.update_user(realm_id, user.id(), &req) {
+                    tracing::warn!(error = %e, email = %email, "import update failed");
+                    summary
+                        .errors
+                        .push(format!("Row {}: update failed — {e}.", line_num + 2));
+                    continue;
+                }
+            }
+            assign_role_by_slug(state, realm_id, user.id(), &role_slug);
+            summary.updated += 1;
+        } else {
+            // Create new user.
+            let req = CreateUserRequest {
+                email: email.clone(),
+                display_name: if name.is_empty() {
+                    String::new()
+                } else {
+                    name.clone()
+                },
+                first_name: String::new(),
+                last_name: String::new(),
+                attributes: Default::default(),
+            };
+            match state.identity.create_user(realm_id, &req) {
+                Ok(user) => {
+                    assign_role_by_slug(state, realm_id, user.id(), &role_slug);
+                    summary.created += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, email = %email, "import create_user failed");
+                    summary
+                        .errors
+                        .push(format!("Row {}: create failed — {e}.", line_num + 2));
+                }
+            }
+        }
+    }
+
+    summary
+}
+
+/// Looks up a role by slug name and assigns it to the user (best-effort, silent on miss).
+fn assign_role_by_slug(
+    state: &Arc<WebState>,
+    realm_id: &crate::core::RealmId,
+    user_id: &crate::core::UserId,
+    role_slug: &str,
+) {
+    if role_slug.is_empty() {
+        return;
+    }
+    let Ok(page) = state.rbac.list_roles(realm_id, None, 500) else {
+        return;
+    };
+    let roles = page.items;
+    let Some(role) = roles
+        .iter()
+        .find(|r| r.name.eq_ignore_ascii_case(role_slug))
+    else {
+        return;
+    };
+    let req = crate::rbac::AssignRoleRequest {
+        subject: crate::rbac::Subject::User(user_id.clone()),
+        role_id: role.id.clone(),
+        scope: crate::rbac::Scope::Realm,
+        assigned_by: None,
+    };
+    if let Err(e) = state.rbac.assign_role(realm_id, &req) {
+        tracing::warn!(error = %e, role_slug = %role_slug, "import assign_role failed");
+    }
+}

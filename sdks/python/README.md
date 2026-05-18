@@ -16,8 +16,8 @@ pip install hearth-sdk
 from hearth import HearthClient
 
 client = HearthClient(
-    issuer_url="https://auth.example.com",
-    client_id="my-client",
+    issuer_url="https://hearth.example.com",
+    client_id="<your-client-id>",
 )
 ```
 

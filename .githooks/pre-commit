@@ -41,6 +41,25 @@ EOF
   git add sdks/typescript/src/generated sdks/go/generated
 fi
 
+# ── Changelog: warn when src/proto/sdks change but CHANGELOG.md does not ─
+#
+# Why: CLAUDE.md requires a CHANGELOG.md entry for every user-visible change.
+# Warn-only (no exit 1) so hotfixes are never blocked; CI does not enforce.
+staged_code=$(git diff --cached --name-only --diff-filter=ACMRD \
+  | grep -E '^(src/|proto/|sdks/)' || true)
+staged_changelog=$(git diff --cached --name-only --diff-filter=ACMRD \
+  | grep -F 'CHANGELOG.md' || true)
+
+if [ -n "$staged_code" ] && [ -z "$staged_changelog" ]; then
+  cat >&2 <<'EOF'
+warning: src/, proto/, or sdks/ files are staged but CHANGELOG.md was not
+  updated. If this change is user-visible (new endpoint, config key, security
+  fix, etc.) please add a CHANGELOG.md entry under ## [Unreleased].
+  See CLAUDE.md "Changelog Process" for the entry format.
+  (This is a warning — your commit will proceed.)
+EOF
+fi
+
 # ── CSS: regenerate Tailwind output when templates / CSS / config change ──
 #
 # Why: app.css is a checked-in build artifact embedded into the binary via

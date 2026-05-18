@@ -74,8 +74,7 @@ check_sdk() {
   echo ""
   echo "  [§5] Error types"
   for err in "${REQUIRED_ERRORS[@]}"; do
-    if grep -rq "$err" "$sdk_dir/src" "$sdk_dir"/*.go "$sdk_dir"/src/**/* 2>/dev/null \
-        || grep -rql "$err" "$sdk_dir" --include="*.ts" --include="*.go" --include="*.py" --include="*.rs" 2>/dev/null; then
+    if grep -rql "$err" "$sdk_dir" --include="*.ts" --include="*.go" --include="*.py" --include="*.rs" 2>/dev/null; then
       pass "$err"
     else
       fail "$err — not found in $sdk_dir source; add this error type (spec §5)"

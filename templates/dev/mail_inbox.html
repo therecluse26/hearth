@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hearth Mailcatcher · Inbox</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body class="min-h-screen bg-ht-surface-base text-ht-content-primary">
+
+  <header class="border-b border-white/6 bg-ht-surface-raised px-6 py-4">
+    <div class="mx-auto flex max-w-4xl items-center justify-between">
+      <div>
+        <h1 class="font-display text-lg font-semibold text-ht-content-primary">Mailcatcher Inbox</h1>
+        <p class="text-xs text-ht-content-muted">{{ emails.len() }} message{% if emails.len() != 1 %}s{% endif %} captured</p>
+      </div>
+      <form method="post" action="/dev/mail/clear"
+            onsubmit="return confirm('Clear all captured emails?')"
+            class="inline">
+        <button type="submit"
+                class="rounded border border-white/6 bg-ht-surface px-3 py-1.5 text-xs font-medium text-ht-content-secondary hover:bg-ht-surface-hover hover:text-ht-content-primary transition-colors">
+          Clear all
+        </button>
+      </form>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-4xl px-6 py-6">
+    {% if emails.is_empty() %}
+      <div class="rounded-lg border border-white/6 bg-ht-surface-elevated px-6 py-12 text-center">
+        <p class="text-sm font-medium text-ht-content-secondary">No emails captured yet.</p>
+        <p class="mt-1 text-xs text-ht-content-muted">
+          Send an email through Hearth (e.g. trigger account verification) and it will appear here.
+        </p>
+      </div>
+    {% else %}
+      <div class="overflow-hidden rounded-lg border border-white/6 bg-ht-surface-elevated">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-white/6">
+              <th class="px-4 py-3 text-left font-medium text-ht-content-muted">To</th>
+              <th class="px-4 py-3 text-left font-medium text-ht-content-muted">Subject</th>
+              <th class="px-4 py-3 text-left font-medium text-ht-content-muted">Received</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-white/[0.04]">
+            {% for email in emails %}
+            <tr class="hover:bg-white/[0.02] transition-colors">
+              <td class="px-4 py-3 font-mono text-xs text-ht-content-secondary">{{ email.to }}</td>
+              <td class="px-4 py-3">
+                <a href="/dev/mail/{{ email.id }}"
+                   class="font-medium text-ht-content-primary hover:text-ht-content-brand transition-colors">
+                  {{ email.subject }}
+                </a>
+              </td>
+              <td class="px-4 py-3 text-xs text-ht-content-muted whitespace-nowrap">{{ email.received_at }}</td>
+              <td class="px-4 py-3 text-right">
+                <form method="post" action="/dev/mail/{{ email.id }}/delete"
+                      onsubmit="return confirm('Delete this email?')"
+                      class="inline">
+                  <button type="submit"
+                          class="text-xs text-ht-content-muted hover:text-danger transition-colors">
+                    Delete
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </main>
+
+</body>
+</html>

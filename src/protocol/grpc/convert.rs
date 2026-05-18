@@ -30,6 +30,7 @@ pub fn identity_to_status(err: IdentityError) -> Status {
         | IdentityError::OrganizationNotFound
         | IdentityError::WebAuthnCredentialNotFound
         | IdentityError::ConsentNotFound
+        | IdentityError::WebhookNotFound
         | IdentityError::FederationNotLinked => (Code::NotFound, err.to_string()),
         IdentityError::DuplicateEmail
         | IdentityError::DuplicateRealmName
@@ -137,6 +138,7 @@ pub fn rbac_to_status(err: RbacError) -> Status {
         | RbacError::TokenSizeExceeded { .. } => {
             Status::new(Code::ResourceExhausted, err.to_string())
         }
+        RbacError::RoleArchived => Status::new(Code::FailedPrecondition, err.to_string()),
         RbacError::ReservedNamespace { .. } => Status::new(Code::PermissionDenied, err.to_string()),
         RbacError::InvalidScope { .. } => Status::new(Code::InvalidArgument, err.to_string()),
         RbacError::Storage(e) => {

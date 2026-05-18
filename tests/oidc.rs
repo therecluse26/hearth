@@ -9,12 +9,19 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use hearth::core::RealmId;
 use hearth::identity::{
-    AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, RegisterClientRequest,
-    TokenExchangeRequest, User,
+    AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, IdentityError,
+    RegisterClientRequest, TokenExchangeRequest, User,
 };
 use ring::rand::SecureRandom;
 
 /// Helper: creates a user with a unique email.
+fn pkce_challenge(verifier: &str) -> String {
+    use data_encoding::BASE64URL_NOPAD;
+    BASE64URL_NOPAD
+        .encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()).as_ref())
+}
+const TEST_PKCE_VERIFIER: &str = "S4gKJfVNgWiFl2PQ8RxXS7E6Mhr9BqyTvUIe3WoA5Zc";
+
 fn create_user(harness: &common::TestHarness, realm: &RealmId) -> User {
     harness
         .identity()
@@ -38,7 +45,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     // 1. Register an OAuth client
@@ -73,8 +80,8 @@ async fn oidc_authorization_code_flow_roundtrip() {
                 state: "integration-test-state".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -93,7 +100,7 @@ async fn oidc_authorization_code_flow_roundtrip() {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         )
         .expect("exchange code");
@@ -119,8 +126,8 @@ async fn oidc_authorization_code_flow_roundtrip() {
     assert_eq!(id_claims.sub, user.id().to_string());
     assert_eq!(id_claims.token_type, "id_token");
 
-    // 7. Access token should be verifiable via the EdDSA entry in JWKS
-    let jwks = harness.identity().jwks();
+    // 7. Access token should be verifiable via the EdDSA entry in realm JWKS
+    let jwks = harness.identity().realm_jwks(&realm).expect("realm JWKS");
     let jwk = jwks
         .keys
         .iter()
@@ -185,12 +192,31 @@ async fn oidc_authorization_code_flow_via_http() {
         if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
             break;
         }
+        // Short backoff between TCP probe attempts. The only way to detect
+        // server readiness is to probe the socket; tokio::time::advance
+        // would not help because server startup is real OS-process I/O, not
+        // timer-gated. This sleep is conditional on the poll loop continuing.
+        // AUDIT: justified-sleep: bounded by outer TCP-probe poll loop (HEA-571).
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     let base = format!("http://127.0.0.1:{port}");
     let http_client = reqwest::Client::new();
-    let realm_id = uuid::Uuid::new_v4().to_string();
+
+    // Bootstrap a realm so we have a valid realm ID to use throughout the test.
+    let bootstrap_resp: serde_json::Value = http_client
+        .post(format!("{base}/admin/bootstrap"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .expect("bootstrap request")
+        .json()
+        .await
+        .expect("parse bootstrap json");
+    let realm_id = bootstrap_resp["realm_id"]
+        .as_str()
+        .expect("realm_id in bootstrap response")
+        .to_string();
 
     // 1. Create a user via HTTP
     let user_resp = http_client
@@ -226,7 +252,7 @@ async fn oidc_authorization_code_flow_via_http() {
         .as_str()
         .expect("client_id in response");
 
-    // 3. Authorize: generate authorization code via HTTP
+    // 3. Authorize: generate authorization code via HTTP (PKCE required for public clients)
     let auth_resp = http_client
         .post(format!("{base}/authorize"))
         .header("X-Realm-ID", &realm_id)
@@ -236,7 +262,9 @@ async fn oidc_authorization_code_flow_via_http() {
             "scope": "openid",
             "state": "http-test-state",
             "response_type": "code",
-            "user_id": user_id
+            "user_id": user_id,
+            "code_challenge": pkce_challenge(TEST_PKCE_VERIFIER),
+            "code_challenge_method": "S256"
         }))
         .timeout(Duration::from_secs(5))
         .send()
@@ -251,14 +279,15 @@ async fn oidc_authorization_code_flow_via_http() {
         "http-test-state"
     );
 
-    // 4. Exchange code for tokens via HTTP
+    // 4. Exchange code for tokens via HTTP (include PKCE verifier)
     let token_resp = http_client
         .post(format!("{base}/token"))
         .header("X-Realm-ID", &realm_id)
         .json(&serde_json::json!({
             "client_id": client_id,
             "code": code,
-            "redirect_uri": "https://app.example.com/callback"
+            "redirect_uri": "https://app.example.com/callback",
+            "code_verifier": TEST_PKCE_VERIFIER
         }))
         .timeout(Duration::from_secs(5))
         .send()
@@ -339,7 +368,7 @@ async fn oidc_pkce_s256_flow() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let client = harness
@@ -395,12 +424,12 @@ async fn oidc_pkce_s256_flow() {
             client_id: client.client_id().clone(),
             code: auth_response.code().to_string(),
             redirect_uri: "https://app.example.com/callback".to_string(),
-            code_verifier: None,
+            code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
         },
     );
     assert!(
-        no_verifier_result.is_err(),
-        "exchange without verifier must fail when PKCE was used"
+        matches!(&no_verifier_result, Err(IdentityError::InvalidGrant { .. })),
+        "exchange with wrong verifier must return InvalidGrant"
     );
 
     // The code is now used, so we need a new one
@@ -434,8 +463,11 @@ async fn oidc_pkce_s256_flow() {
         },
     );
     assert!(
-        wrong_verifier_result.is_err(),
-        "exchange with wrong verifier must fail"
+        matches!(
+            &wrong_verifier_result,
+            Err(IdentityError::InvalidGrant { .. })
+        ),
+        "exchange with mismatched PKCE verifier must return InvalidGrant"
     );
 
     // New code needed since previous was consumed by failed PKCE
@@ -650,7 +682,7 @@ async fn conformance_token_endpoint_rfc6749() {
     let harness = common::TestHarness::embedded()
         .await
         .expect("harness setup");
-    let realm = RealmId::generate();
+    let realm = harness.create_realm();
     let user = create_user(&harness, &realm);
 
     let client = harness
@@ -683,8 +715,8 @@ async fn conformance_token_endpoint_rfc6749() {
                 state: "rfc6749-state".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -712,7 +744,7 @@ async fn conformance_token_endpoint_rfc6749() {
                 client_id: client.client_id().clone(),
                 code: auth_response.code().to_string(),
                 redirect_uri: "https://app.example.com/callback".to_string(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         )
         .expect("exchange code");
@@ -756,12 +788,12 @@ async fn conformance_token_endpoint_rfc6749() {
             client_id: client.client_id().clone(),
             code: auth_response.code().to_string(),
             redirect_uri: "https://app.example.com/callback".to_string(),
-            code_verifier: None,
+            code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
         },
     );
     assert!(
-        reuse_result.is_err(),
-        "RFC 6749 §4.1.2: reusing authorization code MUST be denied"
+        matches!(&reuse_result, Err(IdentityError::InvalidAuthorizationCode)),
+        "RFC 6749 §4.1.2: reusing authorization code must return InvalidAuthorizationCode"
     );
 
     // --- Section 5.2: Error Response ---
@@ -772,12 +804,15 @@ async fn conformance_token_endpoint_rfc6749() {
             client_id: client.client_id().clone(),
             code: "totally-invalid-code-value".to_string(),
             redirect_uri: "https://app.example.com/callback".to_string(),
-            code_verifier: None,
+            code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
         },
     );
     assert!(
-        invalid_result.is_err(),
-        "RFC 6749 §5.2: invalid code MUST produce an error"
+        matches!(
+            &invalid_result,
+            Err(IdentityError::InvalidAuthorizationCode)
+        ),
+        "RFC 6749 §5.2: invalid code must return InvalidAuthorizationCode"
     );
 
     // Wrong redirect_uri MUST produce an error
@@ -792,8 +827,8 @@ async fn conformance_token_endpoint_rfc6749() {
                 state: "state-2".to_string(),
                 response_type: "code".to_string(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -806,12 +841,15 @@ async fn conformance_token_endpoint_rfc6749() {
             client_id: client.client_id().clone(),
             code: auth_response2.code().to_string(),
             redirect_uri: "https://evil.example.com/callback".to_string(),
-            code_verifier: None,
+            code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
         },
     );
     assert!(
-        wrong_redirect.is_err(),
-        "RFC 6749 §4.1.3: mismatched redirect_uri MUST produce an error"
+        matches!(
+            &wrong_redirect,
+            Err(IdentityError::InvalidAuthorizationCode)
+        ),
+        "RFC 6749 §4.1.3: mismatched redirect_uri must return InvalidAuthorizationCode"
     );
 
     // --- OIDC-specific: ID token MUST be present ---

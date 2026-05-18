@@ -1,0 +1,95 @@
+{# Step 4 of 4 — Email transport test.
+   Rust handler vars: product_name, logo_url, theme_css, realm_theme_css, csrf,
+     chrome: bool, active: &str ("onboarding"),
+     realm_name: String,
+     configured_transport: String,  -- e.g. "log", "smtp", "sendgrid", …
+     admin_email: String            -- pre-fill the test recipient #}
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Setup · Email{% endblock %}
+{% block body %}
+<div class="mx-auto max-w-xl py-6">
+
+  <div class="mb-6">
+    <p class="font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ht-content-muted">Getting started · Realm: <span class="text-ht-content-secondary">{{ realm_name }}</span></p>
+    <h1 class="font-display text-3xl font-medium text-ht-content-primary">Test email delivery</h1>
+    <p class="mt-2 text-sm text-ht-content-secondary">
+      Hearth sends transactional email for invitations, magic links, and MFA. Confirm delivery works before finishing setup.
+    </p>
+  </div>
+
+  {% let step = 4_u8 %}
+  {% include "ui/admin/onboarding/_progress.html" %}
+
+  {# ── Transport status banner ── #}
+  <div class="mb-4 flex items-center gap-3 rounded-md bg-ht-surface-elevated px-4 py-3 ring-1 ring-divider-subtle">
+    <svg class="h-4 w-4 shrink-0 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 8.5 6.5a2.5 2.5 0 0 0 3 0L22 7"/></svg>
+    <p class="text-sm text-ht-content-secondary">
+      Transport:
+      <code class="rounded bg-elevated-half px-1.5 py-0.5 font-mono text-xs text-ht-content-primary">{{ configured_transport }}</code>
+      <a href="/ui/admin/settings/editor?section=email"
+         class="ml-2 text-xs text-ht-content-brand hover:underline">Configure →</a>
+    </p>
+  </div>
+
+  {# ── Test form ── #}
+  <div class="rounded-lg bg-ht-surface-elevated p-6 ring-1 ring-divider-subtle">
+    <div class="mb-5">
+      <h2 class="text-base font-semibold text-ht-content-primary">Send a test message</h2>
+      <p class="mt-0.5 text-sm text-ht-content-muted">
+        {% if configured_transport == "log" %}
+          The <strong class="text-ht-content-secondary">log</strong> transport writes email to stdout instead of sending it. Switch to a real transport in settings for production use.
+        {% else %}
+          A verification email will be sent immediately. Check your inbox and spam folder.
+        {% endif %}
+      </p>
+    </div>
+
+    {# HTMX form — result replaces #email-test-result inline #}
+    <form hx-post="/ui/admin/onboarding/email/test"
+          hx-target="#email-test-result"
+          hx-swap="outerHTML"
+          hx-indicator="#email-send-spinner"
+          autocomplete="off"
+          class="space-y-5">
+      {% match csrf %}
+        {% when Some with (token) %}
+          <input type="hidden" name="_csrf" value="{{ token }}">
+        {% when None %}
+      {% endmatch %}
+
+      <div>
+        <label for="test_recipient" class="block text-sm font-medium text-ht-content-secondary">Recipient</label>
+        <input type="email"
+               id="test_recipient"
+               name="recipient"
+               required
+               maxlength="254"
+               value="{{ admin_email }}"
+               class="mt-1 block w-full rounded-sm border border-divider bg-ht-surface-input px-3 py-2 text-sm text-ht-content-primary placeholder:text-ht-content-muted focus:border-ht-content-brand focus:outline-none focus:shadow-focus">
+      </div>
+
+      {# Inline result area — replaced by HTMX response #}
+      <div id="email-test-result"></div>
+
+      <div class="flex items-center gap-4 pt-2">
+        <button type="submit"
+                class="inline-flex items-center gap-2 rounded border border-divider bg-ht-surface-raised px-4 py-2 text-sm font-medium text-ht-content-primary transition-colors hover-bg-divider focus:outline-none focus:shadow-focus">
+          <span id="email-send-spinner" class="htmx-indicator">
+            <svg class="h-4 w-4 animate-spin text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>
+          </span>
+          <svg class="h-4 w-4 htmx-indicator-hide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          Send test email
+        </button>
+
+        {# Primary forward action — always reachable even if test skipped #}
+        <a href="/ui/admin/onboarding/complete"
+           class="btn-ember rounded px-5 py-2 text-sm font-semibold">
+          Finish setup
+          <svg class="ml-1.5 inline-block h-4 w-4 align-[-2px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </a>
+      </div>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

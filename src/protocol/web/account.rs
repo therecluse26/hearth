@@ -1119,6 +1119,7 @@ pub struct RevokeSessionForm {
 /// session clears both UI cookies and redirects to `/ui/login`.
 pub async fn revoke_session(
     State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
     session: UiSession,
     axum::extract::Path(sid): axum::extract::Path<String>,
     Form(form): Form<RevokeSessionForm>,
@@ -1157,8 +1158,9 @@ pub async fn revoke_session(
     }
 
     if is_current {
+        let secure = state.is_secure_request(&headers);
         let mut response = Redirect::to("/ui/login").into_response();
-        for cookie in clearing_cookies() {
+        for cookie in clearing_cookies(secure) {
             append_cookie(&mut response, &cookie);
         }
         response

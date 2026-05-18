@@ -1,5 +1,29 @@
 # Contributing to Hearth
 
+## Local development without Docker
+
+Hearth runs fully in-process — no external services required.
+
+**Cargo-only path (recommended for day-to-day development):**
+
+```sh
+make dev   # cargo run -- serve --dev
+```
+
+`--dev` mode:
+- Binds to `127.0.0.1:8420` with in-memory storage (no `data/` directory needed).
+- Auto-enables the **mailcatcher** transport, which captures all outgoing email
+  in-process. Inspect captured mail at <http://127.0.0.1:8420/dev/mail>.
+- No `hearth.yaml` required — all defaults are development-safe.
+
+Bootstrap a realm and admin token after the server starts:
+
+```sh
+curl -X POST http://127.0.0.1:8420/admin/bootstrap
+```
+
+---
+
 ## Contributor Setup
 
 Run once after cloning the repo:
@@ -54,20 +78,17 @@ must follow.
 
 ## Performance benchmarks and CI gates
 
-Hearth targets sub-millisecond p99 latency on the hot path. Two benchmark
-binaries enforce hard latency limits in CI (`make bench-gate`).
+Hearth targets sub-millisecond p99 latency on the hot path. Two complementary
+benchmark gates enforce this in CI.
 
-### Running the gates locally
+### Gate 1 — Absolute threshold gate (`make bench-gate`)
+
+Three bench binaries assert hard p50 and p99 limits before Criterion sampling
+begins. A failed assertion exits non-zero, failing `make ci-standard`.
 
 ```sh
-make bench-gate          # compile + run both gate binaries
+make bench-gate          # compile + run all three gate binaries
 ```
-
-Each binary runs threshold checks *before* Criterion sampling begins.
-A failed assertion exits non-zero, which fails the CI Standard tier
-(`make ci-standard`).
-
-### Gate thresholds
 
 | Binary | Operation | p50 limit | p99 limit |
 |--------|-----------|-----------|-----------|
@@ -77,9 +98,51 @@ A failed assertion exits non-zero, which fails the CI Standard tier
 | `storage_gate` | Session lookup by ID | 10 µs | 100 µs |
 | `storage_gate` | User lookup by ID | 20 µs | 200 µs |
 | `storage_gate` | User lookup by email | 20 µs | 200 µs |
+| `demotion_latency` | Pre-demotion read (hot tier full) | — | 500 µs |
+| `demotion_latency` | During-demotion read (eviction churn) | — | 500 µs |
+| `demotion_latency` | Post-demotion read (re-promotion) | — | 500 µs |
 
 Thresholds derive from `docs/specs/ARCHITECTURE.md` § Hot Path Rules
-and `docs/specs/TEST_SCENARIOS.md` benchmark scenarios.
+and `docs/specs/TEST_SCENARIOS.md` benchmark scenarios. The demotion
+thresholds are intentionally generous (500 µs) to tolerate the memtable
+fallback path during clock-sweep eviction without false CI failures.
+
+### Gate 2 — Regression gate (`.github/workflows/bench-regression.yml`)
+
+The regression workflow detects when a PR introduces a latency regression
+relative to the current `main` branch, regardless of absolute thresholds.
+
+**How it works:**
+
+1. On every push to `main`: benchmarks run with `--save-baseline main`,
+   and `target/criterion/` is cached under a commit-SHA key.
+2. On every PR: the workflow restores the nearest main baseline, runs the
+   same benchmarks, and calls `scripts/check-bench-regression.sh 5`.
+3. The script compares `target/criterion/<bench>/main/estimates.json`
+   (baseline) against `target/criterion/<bench>/new/estimates.json`
+   (current run). If any benchmark's mean increases by more than 5%,
+   the step exits non-zero and the check fails.
+
+**Running the regression check locally:**
+
+```sh
+# 1. Save a baseline on a clean checkout of main:
+PROTOC=protoc cargo bench --bench storage_gate   -- --save-baseline main --noplot
+PROTOC=protoc cargo bench --bench tiered_storage -- --save-baseline main --noplot
+PROTOC=protoc cargo bench --bench demotion_latency -- --save-baseline main --noplot
+
+# 2. Switch to your branch and run:
+PROTOC=protoc cargo bench --bench storage_gate   -- --save-baseline pr --noplot
+PROTOC=protoc cargo bench --bench tiered_storage -- --save-baseline pr --noplot
+PROTOC=protoc cargo bench --bench demotion_latency -- --save-baseline pr --noplot
+
+# 3. Check for regressions > 5%:
+bash scripts/check-bench-regression.sh 5
+```
+
+**Testing that the gate catches a regression:**
+
+Temporarily replace a hot-path constant (e.g., add a `std::thread::sleep(Duration::from_micros(10))` inside `EmbeddedStorageEngine::get`) and confirm the regression check exits non-zero.
 
 ### Running individual Criterion benchmarks
 
@@ -87,8 +150,9 @@ and `docs/specs/TEST_SCENARIOS.md` benchmark scenarios.
 # All benchmarks with HTML reports (target/criterion/):
 PROTOC=protoc cargo bench
 
-# A single bench group:
+# Individual bench groups:
 PROTOC=protoc cargo bench --bench tiered_storage
+PROTOC=protoc cargo bench --bench demotion_latency
 PROTOC=protoc cargo bench --bench session_lookup
 PROTOC=protoc cargo bench --bench user_lookup
 PROTOC=protoc cargo bench --bench rbac_check
@@ -98,10 +162,14 @@ PROTOC=protoc cargo bench --bench storage_gate
 ### Interpreting results
 
 Criterion reports **mean**, **median** (≈ p50), and standard deviation.
-The gate binaries independently compute p50 and p99 from 10 000 raw
-samples taken after 200 warm-up iterations, matching the hot-tier
-steady state (data already in the `ArcSwap`-backed lock-free tier).
+The gate binaries independently compute p50 and p99 from raw samples
+taken after warm-up iterations, matching the hot-tier steady state (data
+already in the `ArcSwap`-backed lock-free tier). See each bench file's
+module doc for sample count and warm-up details.
 
 If a gate fails on your machine but passes elsewhere, check for
 background load, frequency scaling (`cpupower frequency-info`), or
 running under a hypervisor that inflates tail latency.
+
+For capacity planning and hot/cold working-set sizing guidance, see
+[`docs/guides/storage-sizing.md`](docs/guides/storage-sizing.md).

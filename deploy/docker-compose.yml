@@ -1,12 +1,15 @@
 # Hearth — local development stack.
 #
-# Quick start:
+# Quick start (hearth only — email captured by mailcatcher, UI at /dev/mail):
 #   cp hearth.example.yaml hearth.yaml      # edit to taste
 #   docker compose -f deploy/docker-compose.yml up -d
 #
+# With external mailpit SMTP sink (web UI at http://localhost:8025):
+#   docker compose -f deploy/docker-compose.yml --profile mail up -d
+#
 # Services:
 #   hearth   — http://localhost:8420  (health at /health)
-#   mailpit  — http://localhost:8025  (SMTP capture UI)
+#   mailpit  — http://localhost:8025  (--profile mail only; SMTP capture UI)
 #
 # To wipe all data:  docker compose -f deploy/docker-compose.yml down -v
 
@@ -17,9 +20,6 @@ services:
     # Check releases at https://github.com/hearth-rs/hearth/releases.
     image: ghcr.io/hearth-rs/hearth:latest
     container_name: hearth
-    depends_on:
-      mailpit:
-        condition: service_started
     ports:
       # Bind only to localhost by default. Override to "0.0.0.0:8420:8420" or
       # put a reverse proxy (nginx/caddy/traefik) in front for public exposure.
@@ -61,9 +61,12 @@ services:
 
   mailpit:
     # Dev-only SMTP sink + web UI. Captures outbound mail from Hearth and
-    # renders it at http://localhost:8025.
+    # renders it at http://localhost:8025. Not started by default — opt in
+    # with `--profile mail`. For zero-Docker local dev, use mailcatcher
+    # (built-in transport; UI at http://127.0.0.1:8420/dev/mail).
     #
     # TODO(security): pin to a specific version tag before production use.
+    profiles: [mail]
     image: axllent/mailpit:latest
     container_name: mailpit
     ports:

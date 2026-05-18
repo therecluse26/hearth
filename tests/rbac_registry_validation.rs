@@ -7,7 +7,8 @@ use hearth::core::{RealmId, Timestamp};
 use hearth::identity::claims_config::{ClaimMapping, ClaimProfile, ClaimSource};
 use hearth::rbac::registry::{RealmPermissionRegistry, RegistryError};
 use hearth::rbac::{
-    Permission, PermissionDefinition, ProtectedResource, Role, RoleId, RoleScopeKind, ScopeBundle,
+    Permission, PermissionDefinition, ProtectedResource, Role, RoleId, RoleScopeKind, RoleStatus,
+    ScopeBundle,
 };
 use uuid::Uuid;
 
@@ -36,6 +37,8 @@ fn make_role(id: RoleId, name: &str, perms: &[&str], parents: Vec<RoleId>) -> Ro
             .collect(),
         parent_roles: parents,
         scope_kind: RoleScopeKind::Realm,
+        status: RoleStatus::Active,
+        yaml_managed: false,
         created_at: Timestamp::from_micros(0),
         updated_at: Timestamp::from_micros(0),
     }
@@ -85,13 +88,13 @@ fn valid_registry_passes() {
         protected_resources: vec![],
         claim_profile: None,
     };
-    assert!(reg.validate().is_ok(), "valid registry must pass");
+    reg.validate().expect("valid registry must pass");
 }
 
 #[test]
 fn empty_registry_passes() {
     let reg = RealmPermissionRegistry::default();
-    assert!(reg.validate().is_ok());
+    reg.validate().expect("empty registry must pass validation");
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +136,8 @@ fn bundle_name_valid_colon_passes() {
         scopes: vec![make_bundle("read:docs", &["docs.read"])],
         ..Default::default()
     };
-    assert!(reg.validate().is_ok());
+    reg.validate()
+        .expect("bundle name with colon separator must pass validation");
 }
 
 #[test]
@@ -143,7 +147,8 @@ fn bundle_name_nested_colons_passes() {
         scopes: vec![make_bundle("mcp:tools:invoke", &["docs.read"])],
         ..Default::default()
     };
-    assert!(reg.validate().is_ok());
+    reg.validate()
+        .expect("bundle name with nested colons must pass validation");
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +304,8 @@ fn role_diamond_no_cycle_passes() {
         ],
         ..Default::default()
     };
-    assert!(reg.validate().is_ok(), "diamond-shaped DAG must pass");
+    reg.validate()
+        .expect("diamond-shaped DAG must pass validation");
 }
 
 #[test]

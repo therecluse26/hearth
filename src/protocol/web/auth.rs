@@ -161,12 +161,15 @@ pub struct MfaPending {
 /// The cookie proves "this user passed password verification" and is
 /// valid for [`MFA_PENDING_TTL_SECS`]. It grants no access — only the
 /// right to attempt the second authentication factor.
+///
+/// Pass `secure = true` when the request is over TLS.
 #[must_use]
 pub fn issue_mfa_pending_cookie(
     secret: &CookieSecret,
     realm_id: &RealmId,
     user_id: &UserId,
     return_to: Option<&str>,
+    secure: bool,
 ) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -186,8 +189,9 @@ pub fn issue_mfa_pending_cookie(
         realm_id.as_uuid(),
     );
 
+    let secure_attr = if secure { "; Secure" } else { "" };
     format!(
-        "{MFA_PENDING_COOKIE}={value}; HttpOnly; Path=/ui; SameSite=Lax; Max-Age={MFA_PENDING_TTL_SECS}"
+        "{MFA_PENDING_COOKIE}={value}; HttpOnly; Path=/ui; SameSite=Lax; Max-Age={MFA_PENDING_TTL_SECS}{secure_attr}"
     )
 }
 
@@ -246,8 +250,9 @@ pub fn parse_mfa_pending_cookie(secret: &CookieSecret, value: &str) -> Option<Mf
 
 /// Returns the full `Set-Cookie` header value that clears the MFA pending cookie.
 #[must_use]
-pub fn clear_mfa_pending_cookie() -> String {
-    format!("{MFA_PENDING_COOKIE}=; HttpOnly; Path=/ui; SameSite=Lax; Max-Age=0")
+pub fn clear_mfa_pending_cookie(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("{MFA_PENDING_COOKIE}=; HttpOnly; Path=/ui; SameSite=Lax; Max-Age=0{secure_attr}")
 }
 
 /// Computes the HMAC tag for an MFA pending cookie.
@@ -313,11 +318,16 @@ fn compute_mac(secret: &CookieSecret, session_id: &SessionId, realm_id: &RealmId
 }
 
 /// Builds the authenticated cookie pair for a freshly created session.
+///
+/// Pass `secure = true` when the request arrived over TLS (direct or proxied)
+/// to include the `Secure` attribute.  Use [`WebState::is_secure_request`]
+/// to derive this from the incoming request headers.
 #[must_use]
 pub fn issue_auth_cookies(
     secret: &CookieSecret,
     realm_id: &RealmId,
     session_id: &SessionId,
+    secure: bool,
 ) -> IssuedCookies {
     let mac = compute_mac(secret, session_id, realm_id);
     let session_value = format!("{}.{}.{mac}", session_id.as_uuid(), realm_id.as_uuid());
@@ -328,21 +338,26 @@ pub fn issue_auth_cookies(
     SystemRandom::new().fill(&mut csrf_bytes).unwrap();
     let csrf_value = BASE64URL_NOPAD.encode(&csrf_bytes);
 
+    let secure_attr = if secure { "; Secure" } else { "" };
     IssuedCookies {
         session_cookie: format!(
-            "{SESSION_COOKIE}={session_value}; HttpOnly; Path=/ui; SameSite=Lax"
+            "{SESSION_COOKIE}={session_value}; HttpOnly; Path=/ui; SameSite=Lax{secure_attr}"
         ),
         // Note: no HttpOnly — the page reads it for HTMX headers.
-        csrf_cookie: format!("{CSRF_COOKIE}={csrf_value}; Path=/ui; SameSite=Lax"),
+        csrf_cookie: format!("{CSRF_COOKIE}={csrf_value}; Path=/ui; SameSite=Lax{secure_attr}"),
     }
 }
 
 /// Returns the full `Set-Cookie` header values that clear both cookies.
+///
+/// Pass `secure = true` when on a TLS connection to keep the browser able
+/// to expire the `Secure` cookies it set on login.
 #[must_use]
-pub fn clearing_cookies() -> [String; 2] {
+pub fn clearing_cookies(secure: bool) -> [String; 2] {
+    let secure_attr = if secure { "; Secure" } else { "" };
     [
-        format!("{SESSION_COOKIE}=; HttpOnly; Path=/ui; SameSite=Lax; Max-Age=0"),
-        format!("{CSRF_COOKIE}=; Path=/ui; SameSite=Lax; Max-Age=0"),
+        format!("{SESSION_COOKIE}=; HttpOnly; Path=/ui; SameSite=Lax; Max-Age=0{secure_attr}"),
+        format!("{CSRF_COOKIE}=; Path=/ui; SameSite=Lax; Max-Age=0{secure_attr}"),
     ]
 }
 
@@ -352,9 +367,10 @@ pub fn clearing_cookies() -> [String; 2] {
 /// Pass [`SYSTEM_REALM_SENTINEL`] for admin (system-realm) sign-ins.
 /// For regular sign-ins, pass the realm's slug/name.
 #[must_use]
-pub fn last_realm_cookie(realm_name: &str) -> String {
+pub fn last_realm_cookie(realm_name: &str, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
     format!(
-        "{LAST_REALM_COOKIE}={realm_name}; Path=/ui; SameSite=Lax; Max-Age={LAST_REALM_TTL_SECS}"
+        "{LAST_REALM_COOKIE}={realm_name}; Path=/ui; SameSite=Lax; Max-Age={LAST_REALM_TTL_SECS}{secure_attr}"
     )
 }
 
@@ -1091,7 +1107,7 @@ mod tests {
         let uid = UserId::generate();
         let tid = RealmId::generate();
 
-        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None, false);
         // Extract value from `Set-Cookie` header.
         let value = full
             .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
@@ -1113,7 +1129,7 @@ mod tests {
         let other = UserId::generate();
         let tid = RealmId::generate();
 
-        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None, false);
         let value = full
             .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
             .expect("prefix")
@@ -1136,7 +1152,7 @@ mod tests {
         let tid = RealmId::generate();
         let other_tid = RealmId::generate();
 
-        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None);
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, None, false);
         let value = full
             .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
             .expect("prefix")
@@ -1188,7 +1204,7 @@ mod tests {
         let uid = UserId::generate();
         let tid = RealmId::generate();
 
-        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, Some("/ui/admin/users"));
+        let full = issue_mfa_pending_cookie(&secret, &tid, &uid, Some("/ui/admin/users"), false);
         let value = full
             .strip_prefix(&format!("{MFA_PENDING_COOKIE}="))
             .expect("prefix")

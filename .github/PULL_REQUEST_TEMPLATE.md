@@ -25,3 +25,12 @@ Leave items unchecked only if they genuinely do not apply — CI will also enfor
 ## Non-SDK PRs
 
 For PRs that do not touch any SDK directory, mark all checklist items `N/A` by striking them through.
+
+---
+
+## Test plan
+
+<!-- How did you verify this change? Link CI run or describe manual steps. -->
+
+- [ ] CI passes (conformance check + unit tests)
+- [ ] Integration tests run against a live Hearth instance (if applicable)

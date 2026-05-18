@@ -199,7 +199,7 @@ Outbound email delivery for verification emails, password resets, magic links, a
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `host` | string | *required* | SMTP server hostname. |
-| `port` | integer | *required* | SMTP port (25, 465, 587, or 1025 for Mailpit). |
+| `port` | integer | *required* | SMTP port (25, 465, 587, or 1025 for a local relay). |
 | `encryption` | string | `"starttls"` | Transport encryption: `none`, `starttls`, `tls`. |
 | `username` | string | — | SMTP AUTH username. Must be paired with `password`. |
 | `password` | string | — | SMTP AUTH password. Must be paired with `username`. |
@@ -260,9 +260,10 @@ OIDC Discovery metadata and authorization code behavior.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `issuer` | string | `"https://hearth.local"` | The `iss` claim in ID tokens and the `issuer` in the discovery document. Must be a valid URL. |
+| `issuer` | string | — | The `iss` claim in ID tokens and the `issuer` in the discovery document. Must be a valid HTTPS URL. **Required in production — no safe default exists.** |
 | `authorization_code_ttl` | duration | `"10m"` | How long an authorization code is valid after issuance. |
-| `enforce_nonces` | bool | `false` | When `true`, authorization requests must include a unique `nonce` parameter. |
+| `enforce_nonces` | bool | `true` | When `true`, authorization requests must include a unique `nonce` parameter. Disable only for legacy clients that cannot supply a nonce. |
+| `require_pkce_for_confidential_clients` | bool | `true` | Require PKCE for confidential OAuth clients (RFC 9700 §2.1.1). Disable only for legacy clients that cannot supply `code_challenge`. |
 
 ```yaml
 oidc:
@@ -278,7 +279,7 @@ JWT issuance parameters.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `issuer` | string | `oidc.issuer` | The `iss` claim value. Defaults to `oidc.issuer` when omitted. Set this only if your token issuer differs from the OIDC issuer. |
-| `audience` | string | `"hearth"` | The `aud` claim value. |
+| `audience` | string | `oidc.issuer` | The `aud` claim value. Defaults to `oidc.issuer` when omitted. Override only if your resource server expects a different audience (e.g. a separate API gateway URL). |
 | `access_token_ttl` | duration | `"15m"` | Access token lifetime. |
 | `refresh_token_ttl` | duration | `"7d"` | Refresh token lifetime. |
 
@@ -684,11 +685,12 @@ Every field's default value at a glance.
 | `email` | `transport` | `"log"` |
 | `email.smtp` | `encryption` | `"starttls"` |
 | `email.mailgun` | `region` | `"us"` |
-| `oidc` | `issuer` | `"https://hearth.local"` |
+| `oidc` | `issuer` | required (no default) |
 | `oidc` | `authorization_code_ttl` | `"10m"` |
-| `oidc` | `enforce_nonces` | `false` |
+| `oidc` | `enforce_nonces` | `true` |
+| `oidc` | `require_pkce_for_confidential_clients` | `true` |
 | `token` | `issuer` | same as `oidc.issuer` |
-| `token` | `audience` | `"hearth"` |
+| `token` | `audience` | same as `oidc.issuer` |
 | `token` | `access_token_ttl` | `"15m"` |
 | `token` | `refresh_token_ttl` | `"7d"` |
 | `auth` | `session_ttl` | `"24h"` |

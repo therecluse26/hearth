@@ -57,7 +57,8 @@ pub use metadata::{
     ParsedIdpMetadata, SpMetadataParams,
 };
 pub use response::{
-    build_response_xml, extract_and_validate_assertion, Assertion, ResponseBuilder, SamlResponse,
+    build_response_xml, extract_and_validate_assertion, parse_response, Assertion, ResponseBuilder,
+    SamlResponse,
 };
 pub use signature::{sign_element, verify_signed_element, SignedElement};
 pub use sp::{SamlSpOutcome, SamlSpService};

@@ -1456,11 +1456,14 @@ func (x *JwksDocument) GetKeys() []*JsonWebKey {
 
 // Response from the dev bootstrap endpoint.
 type BootstrapResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RealmId       string                 `protobuf:"bytes,1,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
-	UserId        string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	AccessToken   string                 `protobuf:"bytes,3,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
-	RefreshToken  string                 `protobuf:"bytes,4,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	RealmId      string                 `protobuf:"bytes,1,opt,name=realm_id,json=realmId,proto3" json:"realm_id,omitempty"`
+	UserId       string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	AccessToken  string                 `protobuf:"bytes,3,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	RefreshToken string                 `protobuf:"bytes,4,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	// Ready-to-copy shell commands with actual realm_id and token interpolated.
+	// Only populated in --dev mode.
+	Quickstart    string `protobuf:"bytes,5,opt,name=quickstart,proto3" json:"quickstart,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1519,6 +1522,13 @@ func (x *BootstrapResponse) GetAccessToken() string {
 func (x *BootstrapResponse) GetRefreshToken() string {
 	if x != nil {
 		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *BootstrapResponse) GetQuickstart() string {
+	if x != nil {
+		return x.Quickstart
 	}
 	return ""
 }
@@ -1912,12 +1922,15 @@ const file_hearth_identity_v1_oauth_proto_rawDesc = "" +
 	"\x03use\x18\x05 \x01(\tR\x03use\x12\x10\n" +
 	"\x03alg\x18\x06 \x01(\tR\x03alg\"B\n" +
 	"\fJwksDocument\x122\n" +
-	"\x04keys\x18\x01 \x03(\v2\x1e.hearth.identity.v1.JsonWebKeyR\x04keys\"\x8f\x01\n" +
+	"\x04keys\x18\x01 \x03(\v2\x1e.hearth.identity.v1.JsonWebKeyR\x04keys\"\xaf\x01\n" +
 	"\x11BootstrapResponse\x12\x19\n" +
 	"\brealm_id\x18\x01 \x01(\tR\arealmId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12!\n" +
 	"\faccess_token\x18\x03 \x01(\tR\vaccessToken\x12#\n" +
-	"\rrefresh_token\x18\x04 \x01(\tR\frefreshToken\"f\n" +
+	"\rrefresh_token\x18\x04 \x01(\tR\frefreshToken\x12\x1e\n" +
+	"\n" +
+	"quickstart\x18\x05 \x01(\tR\n" +
+	"quickstart\"f\n" +
 	"\x17ListApplicationsRequest\x12\x1b\n" +
 	"\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n" +
 	"\x05limit\x18\x02 \x01(\rH\x01R\x05limit\x88\x01\x01B\t\n" +

@@ -312,6 +312,7 @@ impl RbacAdminService for RbacAdminSvc {
                     permissions,
                     parent_roles,
                     scope_kind: None,
+                    status: None,
                 },
             )
             .map_err(rbac_to_status)?;

@@ -56,13 +56,16 @@ pub mod auth;
 pub mod federation;
 pub mod handlers;
 pub(crate) mod handlers_common;
+pub mod mailcatcher;
 pub mod oauth_consent;
 pub mod realm_resolver;
 pub mod saml;
+pub mod security;
 pub(crate) mod templates;
 pub mod themes;
 
 pub use auth::CookieSecret;
+pub use mailcatcher::mailcatcher_router;
 
 /// Default logo URL served from the embedded static assets. Used when
 /// no custom `branding.logo_url` is configured.
@@ -100,6 +103,12 @@ pub struct WebState {
     /// Configuration warnings (missing/empty env vars) surfaced on the
     /// admin dashboard.
     pub config_warnings: Vec<EnvVarWarning>,
+    /// Orphaned-realm records detected at startup. Surfaced on the admin
+    /// dashboard as a warning banner. Empty when all realms are resolved.
+    pub orphaned_realms: Vec<crate::identity::reconcile::OrphanRecord>,
+    /// Migration history records loaded at startup. Surfaced on the
+    /// `/admin/migrations` page. Empty when no migrations have run.
+    pub migration_records: Vec<crate::identity::reconcile::MigrationHistoryRecord>,
     /// `true` when the email transport is `Log` (no real delivery).
     /// Used by the setup-sent page to show a "check your server logs"
     /// callout only when emails are not actually being sent.
@@ -171,6 +180,12 @@ pub struct WebState {
     /// `ETag` for [`WebState::app_css`]. SHA-256 prefix of the bytes,
     /// computed once at startup. Updated by [`WebState::with_app_css`].
     pub app_css_etag: String,
+    /// Whether the Hearth listener itself is TLS-enabled. When `true`,
+    /// cookies always receive the `Secure` attribute.
+    pub tls_enabled: bool,
+    /// Whether to trust `X-Forwarded-Proto: https` for Secure-cookie
+    /// decisions. Derived from `server.trust_forwarded_proto`.
+    pub trust_forwarded_proto: bool,
 }
 
 /// A logo loaded from a local file path at startup.
@@ -205,6 +220,8 @@ impl WebState {
             cookie_secret,
             current_realm: Arc::new(RwLock::new(None)),
             config_warnings: Vec::new(),
+            orphaned_realms: Vec::new(),
+            migration_records: Vec::new(),
             email_is_log_transport: false,
             product_name: "Hearth".to_string(),
             logo_url: DEFAULT_LOGO_URL.to_string(),
@@ -222,6 +239,8 @@ impl WebState {
             federation_http: None,
             app_css: Arc::new(APP_CSS_FALLBACK.to_vec()),
             app_css_etag: etag_for_bytes(APP_CSS_FALLBACK),
+            tls_enabled: false,
+            trust_forwarded_proto: false,
         }
     }
 
@@ -255,6 +274,26 @@ impl WebState {
     #[must_use]
     pub fn with_config_warnings(mut self, warnings: Vec<EnvVarWarning>) -> Self {
         self.config_warnings = warnings;
+        self
+    }
+
+    /// Attaches orphaned-realm records detected at startup.
+    #[must_use]
+    pub fn with_orphaned_realms(
+        mut self,
+        records: Vec<crate::identity::reconcile::OrphanRecord>,
+    ) -> Self {
+        self.orphaned_realms = records;
+        self
+    }
+
+    /// Attaches migration history records loaded at startup.
+    #[must_use]
+    pub fn with_migration_records(
+        mut self,
+        records: Vec<crate::identity::reconcile::MigrationHistoryRecord>,
+    ) -> Self {
+        self.migration_records = records;
         self
     }
 
@@ -353,6 +392,49 @@ impl WebState {
     pub fn with_default_realm(mut self, name: Option<String>) -> Self {
         self.default_realm_name = name;
         self
+    }
+
+    /// Marks whether the server listener is TLS-enabled.
+    ///
+    /// When `true`, all cookies issued by the UI receive the `Secure`
+    /// attribute unconditionally.
+    #[must_use]
+    pub fn with_tls_enabled(mut self, enabled: bool) -> Self {
+        self.tls_enabled = enabled;
+        self
+    }
+
+    /// Configures proxy-forwarded HTTPS detection.
+    ///
+    /// When `true`, the server trusts `X-Forwarded-Proto: https` from
+    /// reverse proxies in `trusted_proxies` and sets the `Secure` cookie
+    /// attribute accordingly.
+    #[must_use]
+    pub fn with_trust_forwarded_proto(mut self, trust: bool) -> Self {
+        self.trust_forwarded_proto = trust;
+        self
+    }
+
+    /// Returns `true` when cookies issued for this request should carry the
+    /// `Secure` attribute.
+    ///
+    /// Checks (in order):
+    /// 1. Direct TLS (`tls_enabled`) — always secure.
+    /// 2. `trust_forwarded_proto` + `X-Forwarded-Proto: https` — secure
+    ///    when the proxy signals HTTPS.
+    #[must_use]
+    pub fn is_secure_request(&self, headers: &axum::http::HeaderMap) -> bool {
+        if self.tls_enabled {
+            return true;
+        }
+        if self.trust_forwarded_proto {
+            return headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.eq_ignore_ascii_case("https"))
+                .unwrap_or(false);
+        }
+        false
     }
 
     /// Looks up the per-realm theme CSS for a specific realm, bypassing
@@ -722,6 +804,37 @@ pub fn router(state: WebState) -> Router {
             "/oauth/consent",
             axum::routing::get(oauth_consent::consent_page).post(oauth_consent::consent_submit),
         )
+        // --- First-run onboarding wizard ---
+        .route(
+            "/admin/onboarding",
+            axum::routing::get(admin::admin_onboarding_get),
+        )
+        .route(
+            "/admin/onboarding/realm",
+            axum::routing::post(admin::admin_onboarding_realm_post),
+        )
+        .route(
+            "/admin/onboarding/app",
+            axum::routing::get(admin::admin_onboarding_app_get)
+                .post(admin::admin_onboarding_app_post),
+        )
+        .route(
+            "/admin/onboarding/invite",
+            axum::routing::get(admin::admin_onboarding_invite_get)
+                .post(admin::admin_onboarding_invite_post),
+        )
+        .route(
+            "/admin/onboarding/email",
+            axum::routing::get(admin::admin_onboarding_email_get),
+        )
+        .route(
+            "/admin/onboarding/email/test",
+            axum::routing::post(admin::admin_onboarding_email_test_post),
+        )
+        .route(
+            "/admin/onboarding/complete",
+            axum::routing::get(admin::admin_onboarding_complete_get),
+        )
         .route(
             "/admin/admin-users",
             axum::routing::get(admin::admin_admin_users_list),
@@ -733,6 +846,15 @@ pub fn router(state: WebState) -> Router {
             // `?admin_target=system`, so submission lands on the same handler chain.
             "/admin/admin-users/new",
             axum::routing::get(admin::admin_admin_user_create_alias),
+        )
+        // --- Migration history + orphan recovery ---
+        .route(
+            "/admin/migrations",
+            axum::routing::get(admin::admin_migrations_list),
+        )
+        .route(
+            "/admin/migrations/orphans/resolve",
+            axum::routing::post(admin::admin_migrations_orphan_resolve),
         )
         // --- Realms list (system-scoped) ---
         .route(
@@ -1110,12 +1232,49 @@ pub fn router(state: WebState) -> Router {
             "/admin/test-email",
             axum::routing::post(admin::admin_test_email),
         )
+        // --- Realm-scoped: bulk user actions ---
+        .route(
+            "/admin/realms/{realm}/users/bulk-action",
+            axum::routing::post(admin::admin_users_bulk_action),
+        )
+        .route(
+            "/admin/realms/{realm}/users/import",
+            axum::routing::get(admin::admin_users_import_form)
+                .post(admin::admin_users_import_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/users/import/template.csv",
+            axum::routing::get(admin::admin_users_import_template_csv),
+        )
+        // --- Realm-scoped: webhooks ---
+        .route(
+            "/admin/realms/{realm}/webhooks",
+            axum::routing::get(admin::admin_webhooks_list),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/new",
+            axum::routing::get(admin::admin_webhook_create_form)
+                .post(admin::admin_webhook_create_submit),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/test-ping",
+            axum::routing::post(admin::admin_webhook_test_ping),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/{id}/delete",
+            axum::routing::post(admin::admin_webhook_delete),
+        )
+        .route(
+            "/admin/realms/{realm}/webhooks/{id}/test",
+            axum::routing::post(admin::admin_webhook_test),
+        )
         .route("/static/{*file}", axum::routing::get(serve_static))
         .with_state(Arc::clone(&shared));
 
     // axum 0.8 nest does NOT match `/ui/` (trailing slash) — only `/ui`
     // and `/ui/*`. Add a permanent redirect so bookmarks and old links
     // still work.
+    let tls_enabled = shared.tls_enabled;
     Router::new()
         .route(
             "/ui/",
@@ -1133,6 +1292,11 @@ pub fn router(state: WebState) -> Router {
         // same template as the explicit `not_found_authed` calls.
         .fallback(serve_branded_404)
         .with_state(shared)
+        .layer(security::SecurityHeadersLayer::new(
+            security::SecurityConfig {
+                hsts_enabled: tls_enabled,
+            },
+        ))
 }
 
 /// Default 404 handler. Returns the branded error page rather than letting
@@ -1179,6 +1343,9 @@ fn is_not_modified(headers: &HeaderMap, etag: &str) -> bool {
 
 /// HTMX v1.9.12 — pinned, checksum recorded in `assets/CHECKSUMS.txt`.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
+/// Global Alpine.js component registrations and keyboard shortcuts, extracted
+/// from inline `<script>` tags so the CSP can omit `unsafe-inline`.
+const LAYOUT_JS: &[u8] = include_bytes!("assets/layout.js");
 /// Tailwind-generated CSS for the admin UI, embedded at compile time.
 ///
 /// Used as the fallback when `server.assets_dir` is unset or the runtime
@@ -1361,6 +1528,7 @@ async fn serve_static(
     // Other embedded assets are immutable for the life of this binary.
     let embedded: Option<(&[u8], &str)> = match file.as_str() {
         "htmx.min.js" => Some((HTMX_JS, "application/javascript; charset=utf-8")),
+        "layout.js" => Some((LAYOUT_JS, "application/javascript; charset=utf-8")),
         "favicon.svg" => Some((FAVICON_SVG, "image/svg+xml")),
         "img/hearth-wide-web.svg" => Some((HEARTH_WIDE_SVG, "image/svg+xml")),
         "img/hearth-icon.svg" => Some((HEARTH_ICON_SVG, "image/svg+xml")),

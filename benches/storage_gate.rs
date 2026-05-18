@@ -32,7 +32,8 @@ use criterion::{black_box, criterion_group, Criterion};
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, RealmId, SystemClock};
 use hearth::identity::{
-    CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine, SessionContext,
+    CreateRealmRequest, CreateUserRequest, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
+    SessionContext,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -82,7 +83,14 @@ fn make_identity_engine() -> (tempfile::TempDir, EmbeddedIdentityEngine, RealmId
         Arc::clone(&audit),
     )
     .expect("engine");
-    let realm = RealmId::generate();
+    let realm = engine
+        .create_realm(&CreateRealmRequest {
+            name: format!("bench-{}", uuid::Uuid::new_v4()),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone();
     (dir, engine, realm)
 }
 

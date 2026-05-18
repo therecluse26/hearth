@@ -1,0 +1,136 @@
+{% extends "ui/_layout.html" %}
+{% block title %}{{ product_name }} · Webhooks{% endblock %}
+{% block body %}
+{% if !realm_name.is_empty() %}{% include "ui/admin/realms/_workspace_tabs.html" %}{% endif %}
+
+<div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+  <div>
+    <h1 class="text-2xl font-semibold text-ht-content-primary">Webhooks</h1>
+    <p class="mt-1 text-sm text-ht-content-muted">Receive HTTP POST events when users, sessions, or RBAC state changes in this realm.</p>
+  </div>
+  <a href="/ui/admin/realms/{{ realm_name }}/webhooks/new"
+     class="btn-ember inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
+    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Add webhook
+  </a>
+</div>
+
+{% match flash_message %}
+  {% when Some with (msg) %}
+    <div class="mb-4 rounded-md bg-success/[0.12] px-4 py-3 text-sm text-success-fg">{{ msg }}</div>
+  {% when None %}
+{% endmatch %}
+
+{% if webhooks.is_empty() %}
+  <div class="rounded-lg border border-divider-subtle bg-ht-surface-elevated px-6 py-12 text-center">
+    <svg class="mx-auto h-10 w-10 text-ht-content-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+    </svg>
+    <h2 class="mt-4 font-display text-lg font-medium text-ht-content-primary">No webhooks yet</h2>
+    <p class="mx-auto mt-2 max-w-md text-sm text-ht-content-secondary">
+      Webhooks let external services react to identity events in real time — user creation, login, role changes, and more.
+    </p>
+    <a href="/ui/admin/realms/{{ realm_name }}/webhooks/new"
+       class="btn-ember mt-6 inline-flex items-center gap-1.5 rounded px-4 py-2 text-sm font-semibold">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add your first webhook
+    </a>
+  </div>
+{% else %}
+  <div class="overflow-hidden rounded-md bg-ht-surface-elevated ring-1 ring-divider-subtle">
+    <table class="w-full">
+      <thead>
+        <tr class="border-b border-divider bg-ht-surface-elevated">
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Endpoint URL</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Events</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Status</th>
+          <th class="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-[0.12em] text-ht-content-muted">Last delivery</th>
+          <th class="px-4 py-3"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for wh in webhooks %}
+        <tr class="border-b border-divider-subtle hover-bg-divider"
+            x-data="{ confirmDelete: false }">
+          <td class="px-4 py-3">
+            <span class="font-mono text-sm text-ht-content-primary break-all">{{ wh.url }}</span>
+          </td>
+          <td class="px-4 py-3">
+            <div class="flex flex-wrap gap-1">
+              {% for event in wh.events %}
+                <span class="inline-flex items-center rounded-sm bg-ht-surface-base px-1.5 py-0.5 font-mono text-xs text-ht-content-muted ring-1 ring-divider-subtle">{{ event }}</span>
+              {% endfor %}
+              {% if wh.events.is_empty() %}
+                <span class="text-xs text-ht-content-muted italic">All events</span>
+              {% endif %}
+            </div>
+          </td>
+          <td class="px-4 py-3">
+            {% if wh.enabled %}
+              <span class="inline-flex items-center rounded-full bg-success/[0.12] px-2 py-0.5 text-xs font-medium text-success-fg">Active</span>
+            {% else %}
+              <span class="inline-flex items-center rounded-full bg-warning/[0.12] px-2 py-0.5 text-xs font-medium text-warning-fg">Disabled</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-sm">
+            {% match wh.last_delivery %}
+              {% when Some with (delivery) %}
+                <div class="flex flex-col gap-0.5">
+                  <span class="{% if delivery.success %}text-success-fg{% else %}text-danger-fg{% endif %} font-medium text-xs">
+                    {% if delivery.success %}200 OK{% else %}{{ delivery.status_code }}{% endif %}
+                  </span>
+                  <span class="text-ht-content-muted text-xs">{{ delivery.timestamp_display }}</span>
+                </div>
+              {% when None %}
+                <span class="text-xs text-ht-content-muted italic">Never</span>
+            {% endmatch %}
+          </td>
+          <td class="px-4 py-3">
+            <div class="flex items-center justify-end gap-2">
+              {# Test button — fires a ping event to the webhook URL #}
+              <form method="post" action="/ui/admin/realms/{{ realm_name }}/webhooks/{{ wh.id }}/test" class="inline">
+                {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+                <button type="submit"
+                        class="text-sm text-ht-content-muted hover:text-ht-content-secondary">
+                  Test
+                </button>
+              </form>
+              <a href="/ui/admin/realms/{{ realm_name }}/webhooks/{{ wh.id }}/edit"
+                 class="text-sm text-ht-content-muted hover:text-ht-content-secondary">Edit</a>
+              {# Two-click delete — confirm before submit (Forgiveness heuristic) #}
+              <form method="post" action="/ui/admin/realms/{{ realm_name }}/webhooks/{{ wh.id }}/delete" class="inline">
+                {% match csrf %}{% when Some with (token) %}<input type="hidden" name="_csrf" value="{{ token }}">{% when None %}{% endmatch %}
+                <button type="button"
+                        @click="
+                          if (!confirmDelete) {
+                            confirmDelete = true;
+                            setTimeout(() => confirmDelete = false, 4000);
+                            return;
+                          }
+                          $el.closest('form').submit();"
+                        :class="confirmDelete ? 'text-danger-fg font-medium' : 'text-ht-content-muted hover:text-danger-fg'"
+                        x-text="confirmDelete ? 'Confirm delete' : 'Delete'"
+                        class="text-sm transition-colors"></button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% match next_cursor %}
+    {% when Some with (cursor) %}
+      <nav class="mt-4 flex justify-end">
+        <a href="/ui/admin/realms/{{ realm_name }}/webhooks?cursor={{ cursor }}"
+           class="inline-flex items-center gap-1 rounded border border-strong bg-ht-surface-elevated px-3 py-1.5 text-sm font-medium text-ht-content-secondary hover-bg-divider">
+          Next page
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        </a>
+      </nav>
+    {% when None %}
+  {% endmatch %}
+{% endif %}
+{% endblock %}

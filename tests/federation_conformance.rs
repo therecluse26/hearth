@@ -155,7 +155,10 @@ fn rejects_audience_array_without_client() {
         given_name: None,
         family_name: None,
     };
-    assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).is_err());
+    assert!(matches!(
+        verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000),
+        Err(IdentityError::FederationTokenVerificationFailed)
+    ));
 }
 
 #[test]
@@ -178,7 +181,10 @@ fn rejects_missing_nonce_when_expected() {
         given_name: None,
         family_name: None,
     };
-    assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).is_err());
+    assert!(matches!(
+        verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000),
+        Err(IdentityError::FederationTokenVerificationFailed)
+    ));
 }
 
 #[test]
@@ -201,7 +207,10 @@ fn rejects_exp_past_skew_tolerance() {
         family_name: None,
     };
     // exp + 120s > 60s skew → reject.
-    assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_120).is_err());
+    assert!(matches!(
+        verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_120),
+        Err(IdentityError::FederationTokenVerificationFailed)
+    ));
 }
 
 #[test]
@@ -247,7 +256,10 @@ fn rejects_nbf_in_the_future_past_skew() {
         given_name: None,
         family_name: None,
     };
-    assert!(verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000).is_err());
+    assert!(matches!(
+        verify_id_token_claims(&claims, &cfg, &bag, 2_000_000_000),
+        Err(IdentityError::FederationTokenVerificationFailed)
+    ));
 }
 
 // ===== RS256 happy-path signature verify =====

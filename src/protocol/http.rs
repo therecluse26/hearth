@@ -8,7 +8,7 @@
 //! into domain calls on `IdentityEngine` and maps `IdentityError` to HTTP
 //! status codes. No business logic lives here.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -28,8 +28,11 @@ use tracing::{debug, error, info, Level};
 use crate::audit::{AuditEngine, CreateAuditEvent};
 use crate::core::{ClientId, RealmId, UserId, WebhookId};
 use crate::identity::email::{validate_email_template, EmailBranding, LocalizedEmailTemplate};
-use crate::identity::{IdentityEngine, UpdateRealmRequest};
-use crate::protocol::admin_auth::{AdminRateLimiter, RateLimitOutcome};
+use crate::identity::{IdentityEngine, PasswordGrantRequest, UpdateRealmRequest};
+use crate::protocol::admin_auth::{
+    AdminRateLimiter, RateLimitOutcome, TokenRateLimitOutcome, TokenRateLimiter,
+};
+use crate::protocol::client_info::extract_client_ip;
 use crate::protocol::convert::identity::{
     proto_user_status_to_domain, realm_page_to_proto, user_bulk_result_to_proto,
     user_page_to_proto, void_bulk_result_to_proto,
@@ -46,6 +49,13 @@ use crate::rbac::{
 use crate::webhook::{
     CreateWebhookRequest, DeliveryQuery, UpdateWebhookRequest, WebhookEngine, WebhookQuery,
 };
+
+/// Fallback peer address when `ConnectInfo` is unavailable (e.g. test
+/// harnesses that use `tower::oneshot` without connect-info). Results in
+/// per-IP rate limiting being a no-op (empty-string IP) when no trusted
+/// proxies are configured, matching the web-handler pattern.
+const FALLBACK_PEER: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
 /// Default maximum request body size (1 MiB).
 ///
@@ -86,6 +96,19 @@ pub struct AppState {
     /// admin surfaces so a caller cannot evade the limit by switching
     /// protocols.
     pub admin_rate_limiter: Arc<AdminRateLimiter>,
+    /// Per-`(realm, client_id)` rate limiter for token, introspection, and
+    /// device-authorization endpoints. Returns 429 with `Retry-After` when
+    /// exceeded.
+    pub token_rate_limiter: Arc<TokenRateLimiter>,
+    /// Grace period (seconds) during which a retiring signing key remains in
+    /// JWKS after rotation. Sourced from `token.signing_key_rotation_grace_period`.
+    pub signing_key_rotation_grace_period_secs: u64,
+    /// Trusted reverse-proxy IPs for `X-Forwarded-For` extraction.
+    ///
+    /// When non-empty, the OWASP "rightmost non-trusted" algorithm is applied
+    /// to derive the real client IP. When empty (default), the peer socket
+    /// IP is used directly.
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 impl AppState {
@@ -103,6 +126,9 @@ impl AppState {
             dev_mode: false,
             metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
+            token_rate_limiter: Arc::new(TokenRateLimiter::new()),
+            signing_key_rotation_grace_period_secs: 86_400,
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -122,6 +148,9 @@ impl AppState {
             dev_mode: true,
             metrics_enabled: true,
             admin_rate_limiter: Arc::new(AdminRateLimiter::new()),
+            token_rate_limiter: Arc::new(TokenRateLimiter::new()),
+            signing_key_rotation_grace_period_secs: 86_400,
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -143,7 +172,16 @@ impl AppState {
             dev_mode: false,
             metrics_enabled: true,
             admin_rate_limiter,
+            token_rate_limiter: Arc::new(TokenRateLimiter::new()),
+            signing_key_rotation_grace_period_secs: 86_400,
+            trusted_proxies: Vec::new(),
         }
+    }
+
+    /// Configures trusted reverse-proxy IPs for `X-Forwarded-For` extraction.
+    pub fn with_trusted_proxies(mut self, proxies: Vec<IpAddr>) -> Self {
+        self.trusted_proxies = proxies;
+        self
     }
 
     /// Attaches a webhook engine, enabling the webhook management endpoints.
@@ -155,6 +193,12 @@ impl AppState {
     /// Sets whether the `/metrics` Prometheus scrape endpoint is exposed.
     pub fn with_metrics_enabled(mut self, enabled: bool) -> Self {
         self.metrics_enabled = enabled;
+        self
+    }
+
+    /// Sets the signing key rotation grace period.
+    pub fn with_signing_key_rotation_grace_period_secs(mut self, secs: u64) -> Self {
+        self.signing_key_rotation_grace_period_secs = secs;
         self
     }
 }
@@ -268,6 +312,59 @@ fn check_admin_rate_limit(
     }
 }
 
+/// Checks the per-`(realm, client)` token endpoint rate limit.
+///
+/// Returns `Ok(())` when the request is allowed; `Err(Response)` with
+/// `429 Too Many Requests` and a `Retry-After` header when exceeded.
+fn check_token_rate_limit(
+    state: &AppState,
+    realm_id: &RealmId,
+    client_id: &ClientId,
+) -> Result<(), Response> {
+    #[allow(clippy::cast_possible_truncation)]
+    let now_micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as i64;
+
+    match state
+        .token_rate_limiter
+        .check(realm_id, client_id, now_micros)
+    {
+        TokenRateLimitOutcome::Allowed => Ok(()),
+        TokenRateLimitOutcome::Exceeded { retry_after_secs } => {
+            let retry_str = retry_after_secs.to_string();
+            Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", retry_str.as_str())],
+                Json(serde_json::json!({
+                    "error": "too_many_requests",
+                    "error_description": "rate limit exceeded"
+                })),
+            )
+                .into_response())
+        }
+    }
+}
+
+/// Builds a 429 Too Many Requests response with a `Retry-After` header.
+///
+/// Used for per-IP login rate limits on the token and magic-link endpoints.
+fn make_ip_rate_limit_response(retry_after_secs: u32) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(
+            axum::http::header::RETRY_AFTER,
+            retry_after_secs.to_string(),
+        )],
+        Json(serde_json::json!({
+            "error": "too_many_requests",
+            "error_description": "rate limit exceeded"
+        })),
+    )
+        .into_response()
+}
+
 /// Builds the HTTP router with all configured routes.
 ///
 /// The returned router is ready to be served with [`serve`].
@@ -295,6 +392,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::get(admin_get_realm)
                 .put(admin_update_realm)
                 .delete(admin_delete_realm),
+        )
+        .route(
+            "/realms/{id}/rotate-signing-key",
+            axum::routing::post(admin_rotate_realm_signing_key),
         )
         .route(
             "/realms/{id}/branding",
@@ -404,7 +505,10 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
         )
         .route("/authorize", axum::routing::post(authorize))
-        .route("/token", axum::routing::post(token_exchange))
+        .route(
+            "/token",
+            axum::routing::post(token_exchange).options(token_preflight),
+        )
         .route(
             "/end_session",
             axum::routing::get(end_session).post(end_session),
@@ -412,19 +516,26 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/revoke",
             axum::routing::post(token_revocation)
+                .options(token_preflight)
                 .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
         )
         .route(
             "/introspect",
             axum::routing::post(token_introspection)
+                .options(token_preflight)
                 .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
         )
         .route(
             "/device_authorization",
-            axum::routing::post(device_authorization),
+            axum::routing::post(device_authorization).options(token_preflight),
         )
         .route("/userinfo", axum::routing::get(userinfo))
         .route("/v1/me/permissions", axum::routing::get(me_permissions))
+        .route(
+            "/v1/{realm}/auth/magic-link",
+            axum::routing::post(magic_link_request)
+                .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
+        )
         .route("/oauth/consents", axum::routing::get(self_list_consents))
         .route(
             "/oauth/consents/{client_id}",
@@ -466,20 +577,25 @@ pub fn router(state: Arc<AppState>) -> Router {
                 )
                 .route("/.well-known/jwks.json", axum::routing::get(realm_jwks))
                 .route("/authorize", axum::routing::post(realm_authorize))
-                .route("/token", axum::routing::post(realm_token_exchange))
+                .route(
+                    "/token",
+                    axum::routing::post(realm_token_exchange).options(realm_token_preflight),
+                )
                 .route(
                     "/revoke",
                     axum::routing::post(realm_token_revocation)
+                        .options(realm_token_preflight)
                         .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
                 )
                 .route(
                     "/introspect",
                     axum::routing::post(realm_token_introspection)
+                        .options(realm_token_preflight)
                         .route_layer(DefaultBodyLimit::max(BODY_LIMIT_SMALL)),
                 )
                 .route(
                     "/device_authorization",
-                    axum::routing::post(realm_device_authorization),
+                    axum::routing::post(realm_device_authorization).options(realm_token_preflight),
                 )
                 .route("/userinfo", axum::routing::get(realm_userinfo))
                 .route(
@@ -628,11 +744,15 @@ pub async fn serve_tls_router(
 
 /// Starts an HTTP server that redirects all requests to HTTPS via 301.
 ///
-/// Binds to the specified address and responds to every request with a
-/// `301 Moved Permanently` redirect to the HTTPS equivalent URL on the
-/// given `https_port`.
+/// Accepts connections on the given pre-bound `listener` and responds to every
+/// request with a `301 Moved Permanently` redirect to the HTTPS equivalent URL
+/// on the given `https_port`.
+///
+/// The caller is responsible for binding the listener; this function does not
+/// call `bind()` internally so callers can detect the assigned port before
+/// invoking this function.
 pub async fn serve_redirect(
-    addr: SocketAddr,
+    listener: TcpListener,
     https_port: u16,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), std::io::Error> {
@@ -664,9 +784,7 @@ pub async fn serve_redirect(
         )
     });
 
-    let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
-
     info!(%local_addr, "HTTP→HTTPS redirect server listening");
 
     axum::serve(listener, app)
@@ -899,6 +1017,11 @@ struct HttpTokenRequest {
     // Device code field
     #[serde(default)]
     device_code: Option<String>,
+    // ROPC (password grant) fields — RFC 6749 §4.3
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
 }
 
 /// HTTP request body for token revocation (RFC 7009).
@@ -955,16 +1078,17 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
 /// Extracts client credentials from HTTP Basic Auth or body parameters and
 /// verifies them against the stored client record.
 ///
-/// Returns a 401 response if the client_id is missing, the client does not
-/// exist, or the secret is wrong. Confidential clients require a secret;
-/// public clients are accepted with client_id alone.
+/// Returns the authenticated `ClientId` on success, or a 401 response if
+/// client_id is missing, the client does not exist, or the secret is wrong.
+/// Confidential clients require a secret; public clients are accepted with
+/// client_id alone.
 fn verify_endpoint_client(
     state: &AppState,
     realm_id: &RealmId,
     headers: &HeaderMap,
     body_client_id: Option<&str>,
     body_client_secret: Option<&str>,
-) -> Result<(), Response> {
+) -> Result<ClientId, Response> {
     // Prefer Basic Auth (RFC 6749 §2.3.1); fall back to body parameters.
     let (raw_id, secret) = if let Some((id, sec)) = parse_basic_auth(headers) {
         (id, Some(sec))
@@ -991,6 +1115,7 @@ fn verify_endpoint_client(
     state
         .identity
         .authenticate_client(realm_id, &client_id, secret.as_deref())
+        .map(|()| client_id)
         .map_err(|_| {
             (
                 StatusCode::UNAUTHORIZED,
@@ -998,6 +1123,153 @@ fn verify_endpoint_client(
             )
                 .into_response()
         })
+}
+
+/// Returns the CORS `Access-Control-Allow-Origin` value for `origin` if it
+/// matches any base origin of a registered client's `redirect_uris`.
+///
+/// Base origin = scheme + "://" + host (+ optional port). E.g.
+/// `https://app.example.com` extracted from `https://app.example.com/callback`.
+fn cors_origin_for_client(
+    state: &AppState,
+    realm_id: &RealmId,
+    client_id: &ClientId,
+    request_origin: &str,
+) -> Option<axum::http::HeaderValue> {
+    let client = state.identity.get_client(realm_id, client_id).ok()??;
+    let origin_base = extract_origin_base(request_origin)?;
+    let allowed = client.redirect_uris().iter().any(|uri| {
+        extract_origin_base(uri)
+            .map(|base| base == origin_base)
+            .unwrap_or(false)
+    });
+    if allowed {
+        axum::http::HeaderValue::from_str(request_origin).ok()
+    } else {
+        None
+    }
+}
+
+/// Extracts `scheme://host[:port]` from a URI string.
+fn extract_origin_base(uri: &str) -> Option<String> {
+    // Fast path: find "://" then take up to the next "/"
+    let after_scheme = uri.find("://")?;
+    let rest = &uri[after_scheme + 3..];
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    Some(format!("{}://{host}", &uri[..after_scheme]))
+}
+
+/// Appends CORS headers to `response` when the request `Origin` is authorised
+/// for the given authenticated client.
+fn apply_cors_to_response(
+    resp: &mut Response,
+    state: &AppState,
+    realm_id: &RealmId,
+    client_id: &ClientId,
+    request_headers: &HeaderMap,
+) {
+    let Some(origin_val) = request_headers.get(axum::http::header::ORIGIN) else {
+        return;
+    };
+    let Ok(origin_str) = origin_val.to_str() else {
+        return;
+    };
+    if let Some(allow_origin) = cors_origin_for_client(state, realm_id, client_id, origin_str) {
+        let h = resp.headers_mut();
+        h.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            allow_origin,
+        );
+        h.insert(
+            axum::http::HeaderName::from_static("access-control-allow-credentials"),
+            axum::http::HeaderValue::from_static("true"),
+        );
+    }
+}
+
+/// Handles `OPTIONS` preflight for token endpoints. Validates that at least
+/// one registered client in the realm accepts the requesting origin, then
+/// responds `204 No Content` with the required CORS preflight headers.
+async fn token_options_preflight(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    realm_id: RealmId,
+) -> Response {
+    let Some(origin_val) = headers.get(axum::http::header::ORIGIN) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Ok(origin_str) = origin_val.to_str() else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Some(origin_base) = extract_origin_base(origin_str) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    // Check whether any registered client accepts this origin.
+    let allowed = state
+        .identity
+        .list_clients(&realm_id, None, 200)
+        .ok()
+        .map(|page| {
+            page.items.iter().any(|c| {
+                c.redirect_uris().iter().any(|uri| {
+                    extract_origin_base(uri)
+                        .map(|base| base == origin_base)
+                        .unwrap_or(false)
+                })
+            })
+        })
+        .unwrap_or(false);
+    if !allowed {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let Ok(allow_origin_hv) = axum::http::HeaderValue::from_str(origin_str) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let mut resp = StatusCode::NO_CONTENT.into_response();
+    let h = resp.headers_mut();
+    h.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        allow_origin_hv,
+    );
+    h.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+        axum::http::HeaderValue::from_static("POST, OPTIONS"),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static("access-control-allow-headers"),
+        axum::http::HeaderValue::from_static("Authorization, Content-Type"),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static("access-control-allow-credentials"),
+        axum::http::HeaderValue::from_static("true"),
+    );
+    h.insert(
+        axum::http::HeaderName::from_static("access-control-max-age"),
+        axum::http::HeaderValue::from_static("86400"),
+    );
+    resp
+}
+
+/// `OPTIONS /token` — CORS preflight.
+async fn token_preflight(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let Ok(realm_id) = extract_realm_id(&headers) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    token_options_preflight(State(state), headers, realm_id).await
+}
+
+/// `OPTIONS /realms/{realm}/token` — CORS preflight.
+async fn realm_token_preflight(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(_) => return StatusCode::NO_CONTENT.into_response(),
+    };
+    token_options_preflight(State(state), headers, realm_id).await
 }
 
 /// Extracts a `RealmId` from the `X-Realm-ID` header.
@@ -1196,9 +1468,14 @@ fn identity_error_to_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error: audit record failed",
         ),
+        IdentityError::WebhookNotFound => (StatusCode::NOT_FOUND, "webhook not found"),
     };
 
-    (status, Json(serde_json::json!({"error": message})))
+    let error_code = crate::protocol::error_codes::for_identity_error(err);
+    (
+        status,
+        Json(serde_json::json!({"error": message, "error_code": error_code})),
+    )
 }
 
 /// Register an OAuth 2.0 client.
@@ -1412,18 +1689,65 @@ async fn authorize(
 /// - `refresh_token`: exchange a refresh token for a new token pair
 /// - `client_credentials`: issue an access token for a confidential client
 /// - `urn:ietf:params:oauth:grant-type:device_code`: poll for device authorization
-#[allow(clippy::too_many_lines)]
 async fn token_exchange(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<HttpTokenRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    // Parse client_id and realm_id before dispatch so CORS can be applied to
+    // every response path, including grant-type-specific error branches.
+    let maybe_client_id = body.client_id.parse::<uuid::Uuid>().ok().map(ClientId::new);
+    let maybe_realm_id = extract_realm_id(&headers).ok();
+
+    let mut resp = token_exchange_impl(Arc::clone(&state), headers.clone(), body).await;
+
+    if let (Some(ref realm_id), Some(ref client_id)) = (&maybe_realm_id, &maybe_client_id) {
+        apply_cors_to_response(&mut resp, &state, realm_id, client_id, &headers);
+    }
+    resp
+}
+
+/// Inner implementation of [`token_exchange`].
+///
+/// Separated from the outer handler so that CORS application can wrap all
+/// exit paths without touching every early-return site.
+#[allow(clippy::too_many_lines)]
+async fn token_exchange_impl(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    body: HttpTokenRequest,
+) -> Response {
     let realm_id = match extract_realm_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
 
+    // Rate limit per client_id before any grant-type dispatch.
+    if let Ok(client_uuid) = body.client_id.parse::<uuid::Uuid>() {
+        let client_id = ClientId::new(client_uuid);
+        if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+            return resp;
+        }
+    }
+
     let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
+
+    // Per-IP rate limiting for the ROPC password grant.
+    // In production traffic goes through a reverse proxy so the real IP
+    // arrives via X-Forwarded-For; FALLBACK_PEER is used when ConnectInfo is
+    // unavailable (e.g. tower::ServiceExt::oneshot in tests).
+    let client_ip = extract_client_ip(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    if grant_type == "password"
+        && state
+            .identity
+            .check_ip_login_rate_limit(&realm_id, &client_ip)
+            .is_err()
+    {
+        let retry_after = state
+            .identity
+            .ip_login_retry_after_secs(&realm_id, &client_ip);
+        return make_ip_rate_limit_response(retry_after as u32);
+    }
 
     match grant_type {
         "authorization_code" => {
@@ -1562,7 +1886,7 @@ async fn token_exchange(
                     .into_response();
             };
 
-            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+            let oauth_client_id = match body.client_id.parse::<uuid::Uuid>() {
                 Ok(u) => ClientId::new(u),
                 Err(_) => {
                     return (
@@ -1575,7 +1899,7 @@ async fn token_exchange(
 
             match state
                 .identity
-                .poll_device_token(&realm_id, &device_code, &client_id)
+                .poll_device_token(&realm_id, &device_code, &oauth_client_id)
             {
                 Ok(response) => {
                     crate::metrics::metrics()
@@ -1595,9 +1919,57 @@ async fn token_exchange(
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
+        "password" => {
+            let (Some(email), Some(password)) = (body.username, body.password) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "username and password required for password grant"})),
+                )
+                    .into_response();
+            };
+            let request = PasswordGrantRequest {
+                email,
+                password,
+                scope: body.scope,
+            };
+            let realm_str = realm_id.as_uuid().to_string();
+            match state.identity.password_grant_token(&realm_id, &request) {
+                Ok(response) => {
+                    crate::metrics::metrics()
+                        .tokens_issued_total
+                        .with_label_values(&[realm_str.as_str(), "password"])
+                        .inc();
+                    crate::metrics::metrics().active_sessions.inc();
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "access_token": response.access_token(),
+                            "refresh_token": response.refresh_token(),
+                            "token_type": response.token_type,
+                            "expires_in": response.expires_in,
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(
+                    ref e @ (crate::identity::IdentityError::InvalidCredential { .. }
+                    | crate::identity::IdentityError::RateLimited),
+                ) => {
+                    // Record the failed attempt against the IP for credential failures.
+                    state
+                        .identity
+                        .record_ip_login_attempt(&realm_id, &client_ip);
+                    identity_error_to_response(e).into_response()
+                }
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
         _ => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "unsupported_grant_type"})),
+            Json(serde_json::json!({
+                "error": "unsupported_grant_type",
+                "error_code": crate::protocol::error_codes::UNSUPPORTED_GRANT_TYPE,
+            })),
         )
             .into_response(),
     }
@@ -1620,13 +1992,17 @@ async fn token_revocation(
         Err(e) => return e.into_response(),
     };
 
-    if let Err(resp) = verify_endpoint_client(
+    let client_id = match verify_endpoint_client(
         &state,
         &realm_id,
         &headers,
         body.client_id.as_deref(),
         body.client_secret.as_deref(),
     ) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
         return resp;
     }
 
@@ -1635,7 +2011,7 @@ async fn token_revocation(
         token_type_hint: body.token_type_hint,
     };
 
-    match state.identity.revoke_token(&realm_id, &request) {
+    let mut resp = match state.identity.revoke_token(&realm_id, &request) {
         Ok(()) => {
             // A successful revoke ends a session; keep the gauge consistent.
             crate::metrics::metrics().active_sessions.dec();
@@ -1646,7 +2022,9 @@ async fn token_revocation(
             StatusCode::OK.into_response()
         }
         Err(e) => identity_error_to_response(&e).into_response(),
-    }
+    };
+    apply_cors_to_response(&mut resp, &state, &realm_id, &client_id, &headers);
+    resp
 }
 
 // === Token Introspection (RFC 7662) ===
@@ -1665,13 +2043,17 @@ async fn token_introspection(
         Err(e) => return e.into_response(),
     };
 
-    if let Err(resp) = verify_endpoint_client(
+    let client_id = match verify_endpoint_client(
         &state,
         &realm_id,
         &headers,
         body.client_id.as_deref(),
         body.client_secret.as_deref(),
     ) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
         return resp;
     }
 
@@ -1680,14 +2062,16 @@ async fn token_introspection(
         token_type_hint: body.token_type_hint,
     };
 
-    match state.identity.introspect_token(&realm_id, &request) {
+    let mut resp = match state.identity.introspect_token(&realm_id, &request) {
         // Use the domain type directly: the domain IntrospectionResponse has
         // #[derive(Serialize)] and always emits `active: false` for inactive
         // tokens. The proto-generated serde omits proto3 default values (false)
         // which would violate RFC 7662 §2.2 by leaving `active` absent.
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(e) => identity_error_to_response(&e).into_response(),
-    }
+    };
+    apply_cors_to_response(&mut resp, &state, &realm_id, &client_id, &headers);
+    resp
 }
 
 // === Device Authorization (RFC 8628) ===
@@ -1715,6 +2099,9 @@ async fn device_authorization(
                 .into_response();
         }
     };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+        return resp;
+    }
 
     let request = crate::identity::DeviceAuthorizationRequest {
         client_id,
@@ -1880,6 +2267,7 @@ fn rbac_error_to_response(err: &RbacError) -> (StatusCode, Json<serde_json::Valu
         | RbacError::TokenSizeExceeded { .. } => {
             (StatusCode::PAYLOAD_TOO_LARGE, "resource_exhausted")
         }
+        RbacError::RoleArchived => (StatusCode::CONFLICT, "role_archived"),
         RbacError::ReservedNamespace { .. } => (StatusCode::FORBIDDEN, "reserved_namespace"),
         RbacError::InvalidScope { .. } => (StatusCode::BAD_REQUEST, "invalid_scope"),
         RbacError::Storage(_) | RbacError::Serialization { .. } => {
@@ -2637,6 +3025,59 @@ async fn admin_delete_realm(
             Json(serde_json::json!({"error": "not found"})),
         )
             .into_response(),
+        Err(e) => identity_error_to_response(&e).into_response(),
+    }
+}
+
+/// Admin: rotate the Ed25519 signing key for a realm.
+///
+/// Generates a new key, promotes it to the active key, and keeps the old key
+/// in the JWKS response for the configured grace period (default 24 h) so
+/// tokens signed with the old key remain valid during that window.
+async fn admin_rotate_realm_signing_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let auth = match extract_admin_auth(&headers, &state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    let realm_id = match parse_realm_id(&id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    let _ = match require_realm(&state, &realm_id) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    let grace_period_secs = state.signing_key_rotation_grace_period_secs;
+
+    match state
+        .identity
+        .rotate_realm_signing_key(&realm_id, grace_period_secs)
+    {
+        Ok(()) => {
+            let _ = state.audit.append(&crate::audit::CreateAuditEvent {
+                realm_id: auth.realm_id.clone(),
+                actor: auth.user_id.as_uuid().to_string(),
+                action: crate::audit::AuditAction::RealmUpdated,
+                resource_type: "realm".to_string(),
+                resource_id: realm_id.as_uuid().to_string(),
+                metadata: Some(serde_json::json!({"action": "rotate_signing_key", "grace_period_secs": grace_period_secs})),
+            });
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "message": "signing key rotated",
+                    "grace_period_secs": grace_period_secs
+                })),
+            )
+                .into_response()
+        }
         Err(e) => identity_error_to_response(&e).into_response(),
     }
 }
@@ -3598,11 +4039,15 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     let realm_id = realm.id().clone();
 
-    // Seed RBAC defaults on the new realm. Logged-only on failure so the
-    // dev bootstrap doesn't brick on a storage blip — the realm record
-    // already exists and seeding is idempotent.
+    // Seed RBAC defaults on the new realm. Hard error: a dev bootstrap
+    // with a broken seed produces a realm where the admin user cannot be
+    // granted realm.admin, making the bootstrap useless.
     if let Err(e) = state.rbac.seed_realm(&realm_id) {
-        tracing::warn!(error = %e, "dev bootstrap: RBAC seed failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("RBAC seed failed: {e}")})),
+        )
+            .into_response();
     }
 
     // Create admin user
@@ -3666,13 +4111,27 @@ async fn admin_bootstrap(State(state): State<Arc<AppState>>) -> impl IntoRespons
         Err(e) => return identity_error_to_response(&e).into_response(),
     };
 
+    let realm_id_str = realm_id.as_uuid().to_string();
+    let access_token_str = tokens.access_token().to_string();
+    let quickstart = format!(
+        r#"# 1. Register an OAuth application
+curl -fsS -X POST http://127.0.0.1:8420/clients \
+  -H "Authorization: Bearer {access_token_str}" \
+  -H "X-Realm-ID: {realm_id_str}" \
+  -H "Content-Type: application/json" \
+  -d '{{"client_name":"my-app","redirect_uris":["https://myapp.example.com/callback"]}}'
+
+# 2. Full PKCE flow — see docs/guides/getting-started.md"#
+    );
+
     (
         StatusCode::OK,
         Json(pb::BootstrapResponse {
-            realm_id: realm_id.as_uuid().to_string(),
+            realm_id: realm_id_str,
             user_id: user_id.as_uuid().to_string(),
-            access_token: tokens.access_token().to_string(),
+            access_token: access_token_str,
             refresh_token: tokens.refresh_token().to_string(),
+            quickstart,
         }),
     )
         .into_response()
@@ -3924,6 +4383,7 @@ async fn admin_update_role(
             permissions,
             parent_roles,
             scope_kind: None,
+            status: None,
         },
     ) {
         Ok(role) => (StatusCode::OK, Json(role)).into_response(),
@@ -4657,6 +5117,53 @@ fn resolve_realm_by_name(
     }
 }
 
+/// POST /v1/{realm}/auth/magic-link
+///
+/// Requests a magic-link login email. Always returns 202 regardless of whether
+/// the email is registered (enumeration resistance). Returns 429 when the
+/// caller's IP has exceeded the per-IP rate limit.
+#[derive(Deserialize)]
+struct MagicLinkRequestBody {
+    email: String,
+}
+
+async fn magic_link_request(
+    State(state): State<Arc<AppState>>,
+    Path(realm_name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<MagicLinkRequestBody>,
+) -> impl IntoResponse {
+    let realm_id = match resolve_realm_by_name(&state, &realm_name) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+
+    // Per-IP rate limit. Real IP arrives via X-Forwarded-For in production;
+    // FALLBACK_PEER is used when ConnectInfo is unavailable (tests).
+    let client_ip = extract_client_ip(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    if state
+        .identity
+        .check_ip_login_rate_limit(&realm_id, &client_ip)
+        .is_err()
+    {
+        let retry_after = state
+            .identity
+            .ip_login_retry_after_secs(&realm_id, &client_ip);
+        return make_ip_rate_limit_response(retry_after as u32);
+    }
+
+    // Request magic link; ignore per-email RateLimited to prevent enumeration.
+    let _ = state.identity.request_magic_link(&realm_id, &body.email);
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "message": "If an account exists, a magic link has been sent"
+        })),
+    )
+        .into_response()
+}
+
 async fn realm_oidc_discovery(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
@@ -4724,13 +5231,36 @@ async fn realm_authorize(
 async fn realm_token_exchange(
     State(state): State<Arc<AppState>>,
     Path(realm_name): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<HttpTokenRequest>,
 ) -> impl IntoResponse {
     let realm_id = match resolve_realm_by_name(&state, &realm_name) {
         Ok(id) => id,
         Err(e) => return e,
     };
+    // Rate limit per client_id before any grant-type dispatch.
+    if let Ok(client_uuid) = body.client_id.parse::<uuid::Uuid>() {
+        let client_id = ClientId::new(client_uuid);
+        if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+            return resp;
+        }
+    }
     let grant_type = body.grant_type.as_deref().unwrap_or("authorization_code");
+
+    // Per-IP rate limiting for the ROPC password grant.
+    // Real IP arrives via X-Forwarded-For in production; FALLBACK_PEER used in tests.
+    let client_ip = extract_client_ip(&headers, FALLBACK_PEER, &state.trusted_proxies);
+    if grant_type == "password"
+        && state
+            .identity
+            .check_ip_login_rate_limit(&realm_id, &client_ip)
+            .is_err()
+    {
+        let retry_after = state
+            .identity
+            .ip_login_retry_after_secs(&realm_id, &client_ip);
+        return make_ip_rate_limit_response(retry_after as u32);
+    }
     match grant_type {
         "authorization_code" => {
             let (Some(code), Some(redirect_uri)) = (body.code, body.redirect_uri) else {
@@ -4828,7 +5358,7 @@ async fn realm_token_exchange(
                 )
                     .into_response();
             };
-            let client_id = match body.client_id.parse::<uuid::Uuid>() {
+            let oauth_client_id = match body.client_id.parse::<uuid::Uuid>() {
                 Ok(u) => ClientId::new(u),
                 Err(_) => {
                     return (
@@ -4840,13 +5370,49 @@ async fn realm_token_exchange(
             };
             match state
                 .identity
-                .poll_device_token(&realm_id, &device_code, &client_id)
+                .poll_device_token(&realm_id, &device_code, &oauth_client_id)
             {
                 Ok(response) => (
                     StatusCode::OK,
                     Json(proto_to_rest_json(&pb::OidcTokenResponse::from(&response))),
                 )
                     .into_response(),
+                Err(e) => identity_error_to_response(&e).into_response(),
+            }
+        }
+        "password" => {
+            let (Some(email), Some(password)) = (body.username, body.password) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "username and password required for password grant"})),
+                )
+                    .into_response();
+            };
+            let request = PasswordGrantRequest {
+                email,
+                password,
+                scope: body.scope,
+            };
+            match state.identity.password_grant_token(&realm_id, &request) {
+                Ok(response) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "access_token": response.access_token(),
+                        "refresh_token": response.refresh_token(),
+                        "token_type": response.token_type,
+                        "expires_in": response.expires_in,
+                    })),
+                )
+                    .into_response(),
+                Err(
+                    ref e @ (crate::identity::IdentityError::InvalidCredential { .. }
+                    | crate::identity::IdentityError::RateLimited),
+                ) => {
+                    state
+                        .identity
+                        .record_ip_login_attempt(&realm_id, &client_ip);
+                    identity_error_to_response(e).into_response()
+                }
                 Err(e) => identity_error_to_response(&e).into_response(),
             }
         }
@@ -4979,6 +5545,9 @@ async fn realm_device_authorization(
                 .into_response()
         }
     };
+    if let Err(resp) = check_token_rate_limit(&state, &realm_id, &client_id) {
+        return resp;
+    }
     let request = crate::identity::DeviceAuthorizationRequest {
         client_id,
         scope: body

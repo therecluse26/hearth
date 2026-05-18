@@ -6,15 +6,21 @@
 
 mod common;
 
-use hearth::core::RealmId;
 use hearth::identity::{
-    AuthorizationRequest, CreateUserRequest, IdentityError, RegisterClientRequest, SessionContext,
-    TokenExchangeRequest,
+    AuthorizationRequest, CodeChallengeMethod, CreateUserRequest, IdentityError,
+    RegisterClientRequest, SessionContext, TokenExchangeRequest,
 };
 use hearth::rbac::{
     AssignRoleRequest, CreateGroupRequest, CreateRoleRequest, GroupMember, Permission, Scope,
     Subject,
 };
+
+fn pkce_challenge(verifier: &str) -> String {
+    use data_encoding::BASE64URL_NOPAD;
+    BASE64URL_NOPAD
+        .encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()).as_ref())
+}
+const TEST_PKCE_VERIFIER: &str = "S4gKJfVNgWiFl2PQ8RxXS7E6Mhr9BqyTvUIe3WoA5Zc";
 
 fn perms(list: &[&str]) -> Vec<Permission> {
     list.iter()
@@ -25,7 +31,7 @@ fn perms(list: &[&str]) -> Vec<Permission> {
 #[tokio::test]
 async fn populates_roles_groups_permissions() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -107,7 +113,7 @@ async fn populates_roles_groups_permissions() {
 #[tokio::test]
 async fn claims_empty_for_user_with_no_assignments() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     let user = h
         .identity()
         .create_user(
@@ -142,7 +148,7 @@ async fn claims_empty_for_user_with_no_assignments() {
 #[tokio::test]
 async fn permissions_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -212,7 +218,7 @@ async fn permissions_cap_refuses_issuance() {
 #[tokio::test]
 async fn roles_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -281,7 +287,7 @@ async fn roles_cap_refuses_issuance() {
 #[tokio::test]
 async fn groups_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -340,7 +346,7 @@ async fn groups_cap_refuses_issuance() {
 #[tokio::test]
 async fn exact_limit_succeeds() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -454,7 +460,7 @@ async fn exact_limit_succeeds() {
 #[tokio::test]
 async fn byte_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -532,7 +538,7 @@ async fn byte_cap_refuses_issuance() {
 #[tokio::test]
 async fn oauth_path_permissions_cap_refuses_issuance() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
 
     let user = h
         .identity()
@@ -607,8 +613,8 @@ async fn oauth_path_permissions_cap_refuses_issuance() {
                 state: "csrf".into(),
                 response_type: "code".into(),
                 user_id: user.id().clone(),
-                code_challenge: None,
-                code_challenge_method: None,
+                code_challenge: Some(pkce_challenge(TEST_PKCE_VERIFIER)),
+                code_challenge_method: Some(CodeChallengeMethod::S256),
                 nonce: None,
                 resource: None,
             },
@@ -624,7 +630,7 @@ async fn oauth_path_permissions_cap_refuses_issuance() {
                 client_id: client.client_id().clone(),
                 code: auth_resp.code().to_string(),
                 redirect_uri: "http://localhost/callback".into(),
-                code_verifier: None,
+                code_verifier: Some(TEST_PKCE_VERIFIER.to_string()),
             },
         )
         .expect_err("should fail");

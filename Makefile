@@ -5,7 +5,7 @@ PROTOC ?= protoc
 CARGO_FLAGS ?=
 BUF := buf
 
-.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test ci-fast bench-gate ci-standard docker-up docker-reload
+.PHONY: setup build test clippy fmt check css css-check css-watch tailwind-install proto-gen proto-lint proto-breaking proto-check sdk-test test-quality ci-fast bench-gate ci-standard dev
 
 # ── Contributor Setup ─────────────────────────────────
 
@@ -72,8 +72,14 @@ clippy:
 fmt:
 	cargo fmt --check
 
-## Run all Rust checks (build + clippy + fmt + tests).
-check: clippy fmt test
+## Run all Rust checks (build + clippy + fmt + tests + test-quality guardrail).
+check: clippy fmt test-quality test
+
+## Grep-based guardrail against false-confidence test patterns
+## (weak is_ok/is_err asserts, unconditional sleeps, untracked #[ignore]).
+## See docs/specs/TESTING.md § "Test Quality Anti-Patterns" and HEA-571.
+test-quality:
+	@bash scripts/check-test-quality.sh
 
 # ── Proto ─────────────────────────────────────────────
 
@@ -110,12 +116,12 @@ sdk-test:
 
 # ── CI Tiers ──────────────────────────────────────────
 
-## CI fast tier: lint + fmt + proto lint + css freshness (every commit).
-ci-fast: fmt clippy proto-lint css-check
+## CI fast tier: lint + fmt + proto lint + css freshness + test-quality (every commit).
+ci-fast: fmt clippy proto-lint css-check test-quality
 
 ## CI benchmark gate: compile and run hot-path perf threshold gates.
 ##
-## Two bench binaries run in sequence; each asserts p50 and p99 targets
+## Three bench binaries run in sequence; each asserts p50 and p99 targets
 ## before Criterion sampling begins. Non-zero exit fails the Standard CI tier.
 ##
 ## rbac_check gates:
@@ -127,22 +133,21 @@ ci-fast: fmt clippy proto-lint css-check
 ##   session lookup by ID      p50 ≤ 10 µs, p99 ≤ 100 µs
 ##   user lookup by ID         p50 ≤ 20 µs, p99 ≤ 200 µs
 ##   user lookup by email      p50 ≤ 20 µs, p99 ≤ 200 µs
+##
+## demotion_latency gates:
+##   pre-demotion read p99     ≤ 500 µs
+##   during-demotion read p99  ≤ 500 µs
+##   post-demotion read p99    ≤ 500 µs
 bench-gate:
 	PROTOC=$(PROTOC) cargo bench --bench rbac_check $(CARGO_FLAGS)
 	PROTOC=$(PROTOC) cargo bench --bench storage_gate $(CARGO_FLAGS)
+	PROTOC=$(PROTOC) cargo bench --bench demotion_latency $(CARGO_FLAGS)
 
 ## CI standard tier: fast + tests + SDK tests + proto breaking + perf gate (merge).
 ci-standard: ci-fast test proto-breaking sdk-test proto-check bench-gate
 
-# ── Docker ──────────────────────────────────────────
-
-## First-time image build + start (bakes binary into image).
-docker-up:
-	docker compose up --build -d
-
-## Fast iterate: incremental Docker build via BuildKit cache + restart (~15–25 s).
-## BuildKit cache mounts persist cargo registry + target dir across builds, so
-## only the hearth crate recompiles. Works on Linux, macOS, and Windows.
-docker-reload:
-	docker compose down
-	DOCKER_BUILDKIT=1 docker compose up --build -d hearth
+## Run Hearth in local dev mode.
+## Emails are captured in-process — mailcatcher inbox at http://127.0.0.1:8420/dev/mail
+## No Docker required.
+dev:
+	cargo run -- serve --dev

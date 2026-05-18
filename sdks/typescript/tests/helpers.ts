@@ -1,5 +1,5 @@
 import { execSync, spawn, type ChildProcess } from "node:child_process";
-import { HearthClient } from "../src/client.js";
+import { HearthApiClient } from "../src/client.js";
 import type { BootstrapResponse } from "../src/types.js";
 
 const PROJECT_ROOT = new URL("../../..", import.meta.url).pathname.replace(
@@ -41,7 +41,7 @@ export interface TestServer {
   baseUrl: string;
   process: ChildProcess;
   bootstrap: BootstrapResponse;
-  client: HearthClient;
+  client: HearthApiClient;
 }
 
 /** Start a Hearth dev server and bootstrap admin credentials. */
@@ -75,8 +75,8 @@ export async function startServer(): Promise<TestServer> {
   }
 
   // Bootstrap admin credentials
-  const bootstrap = await HearthClient.bootstrap(baseUrl);
-  const client = new HearthClient({
+  const bootstrap = await HearthApiClient.bootstrap(baseUrl);
+  const client = new HearthApiClient({
     baseUrl,
     realmId: bootstrap.realm_id,
   });

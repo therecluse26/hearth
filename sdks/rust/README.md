@@ -1,8 +1,8 @@
-# hearth-sdk (Rust)
+# Hearth Rust SDK
 
 > **SDK Specification:** This SDK must conform to the [Hearth SDK Common Specification](../../docs/sdk-spec.md).
 
-Rust SDK for the [Hearth](https://github.com/hearthauth/hearth) identity platform.
+Rust SDK for the [Hearth](https://github.com/therecluse26/hearth) identity platform.
 
 ## Installation
 
@@ -21,7 +21,7 @@ use hearth_sdk::{HearthClient, HearthConfig};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = HearthClient::new(HearthConfig {
-        issuer_url: "https://auth.example.com".to_string(),
+        issuer_url: "https://hearth.example.com".to_string(),
         client_id: Some("my-app".to_string()),
         ..Default::default()
     })?;

@@ -1,0 +1,19 @@
+# Hearth configuration for the SCIM 2.0 provisioning demo.
+#
+# Exposes the HTTP surface on 8420. The demo mints an admin Bearer via
+# `POST /admin/bootstrap`, then drives the SCIM endpoints at /scim/v2/*.
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8422
+
+storage:
+  data_dir: "./data/scim-provisioning"
+  fsync: false
+
+observability:
+  log_level: info
+  log_format: text
+
+oidc:
+  issuer: "http://localhost:8422"

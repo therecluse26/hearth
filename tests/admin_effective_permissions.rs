@@ -81,7 +81,7 @@ async fn issue_token_for(
 #[tokio::test]
 async fn happy_path_returns_effective_permissions() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     // Create a target user and assign them a role with some permissions.
@@ -174,7 +174,7 @@ async fn happy_path_returns_effective_permissions() {
 #[tokio::test]
 async fn non_admin_token_returns_403() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     let (non_admin_token, _) = issue_token_for(&h, &realm, "user@example.com", false).await;
@@ -204,7 +204,7 @@ async fn non_admin_token_returns_403() {
 #[tokio::test]
 async fn unknown_user_returns_404() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     let (admin_token, _) = issue_token_for(&h, &realm, "admin@example.com", true).await;
@@ -233,7 +233,7 @@ async fn unknown_user_returns_404() {
 #[tokio::test]
 async fn bad_org_id_returns_400() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     // Create a target user so we pass the precheck.
@@ -281,7 +281,7 @@ async fn bad_org_id_returns_400() {
 #[tokio::test]
 async fn scope_narrowing_filters_permissions() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     let target_user = h
@@ -381,7 +381,7 @@ async fn scope_narrowing_filters_permissions() {
 #[tokio::test]
 async fn invalid_token_returns_401() {
     let h = common::TestHarness::embedded().await.expect("harness");
-    let realm = RealmId::generate();
+    let realm = h.create_realm();
     h.rbac().seed_realm(&realm).expect("seed");
 
     let app = build_app(&h).await;

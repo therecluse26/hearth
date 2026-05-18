@@ -67,7 +67,10 @@ fn org_to_proto(o: &domain::Organization) -> pb::Organization {
         display_name: o.name().to_string(),
         status: match o.status() {
             domain::OrganizationStatus::Active => pb::OrganizationStatus::Active as i32,
-            domain::OrganizationStatus::Suspended => pb::OrganizationStatus::Suspended as i32,
+            // Archived behaves like Suspended on the wire (no proto value yet).
+            domain::OrganizationStatus::Suspended | domain::OrganizationStatus::Archived => {
+                pb::OrganizationStatus::Suspended as i32
+            }
         },
         created_at: o.created_at().as_micros(),
         updated_at: o.updated_at().as_micros(),
@@ -209,12 +212,14 @@ impl IdentityAdminService for IdentityAdminSvc {
             .identity
             .create_realm(&body)
             .map_err(identity_to_status)?;
-        // Seed the RBAC defaults on every new realm. Logged-only on failure:
-        // the realm record is already committed and `seed_realm` is
-        // idempotent on retry.
-        if let Err(e) = self.state.rbac.seed_realm(realm.id()) {
-            tracing::warn!(error = %e, "create_realm: RBAC seed failed");
-        }
+        // Seed the RBAC defaults on the new realm. Hard error: the caller
+        // must see the failure so they can retry or rollback. The realm record
+        // is already committed but the unsurfaced-failure path would leave the
+        // realm permanently broken with no admin roles.
+        self.state
+            .rbac
+            .seed_realm(realm.id())
+            .map_err(|e| Status::internal(format!("RBAC seed failed: {e}")))?;
         Ok(Response::new(pb::Realm::from(&realm)))
     }
 

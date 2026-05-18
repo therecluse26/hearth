@@ -8,8 +8,8 @@ use std::sync::Arc;
 use hearth::audit::{AuditEngine, EmbeddedAuditEngine};
 use hearth::core::{Clock, FakeClock, RealmId, Timestamp};
 use hearth::identity::{
-    CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine, IdentityConfig, IdentityEngine,
-    SessionContext,
+    CreateRealmRequest, CreateUserRequest, CredentialConfig, EmbeddedIdentityEngine,
+    IdentityConfig, IdentityEngine, SessionContext,
 };
 use hearth::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -21,11 +21,10 @@ fn simulation_crash_recovery_sessions() {
     let _ = seed;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let realm = RealmId::generate();
     let mut session_ids = Vec::new();
 
     // Phase 1: Create users and sessions, then drop (crash)
-    {
+    let realm = {
         let config = StorageConfig::dev(dir.path().to_path_buf());
         let storage =
             Arc::new(EmbeddedStorageEngine::open(config).expect("open")) as Arc<dyn StorageEngine>;
@@ -46,6 +45,15 @@ fn simulation_crash_recovery_sessions() {
         )
         .expect("engine");
 
+        let realm = engine
+            .create_realm(&CreateRealmRequest {
+                name: "crash-recovery".to_string(),
+                config: None,
+            })
+            .expect("create realm")
+            .id()
+            .clone();
+
         for i in 0..5 {
             let user = engine
                 .create_user(
@@ -65,7 +73,9 @@ fn simulation_crash_recovery_sessions() {
                 .expect("create session");
             session_ids.push((session.id().clone(), user.id().clone()));
         }
-    }
+
+        realm
+    };
 
     // Phase 2: Recover from WAL and verify all sessions survived
     {
@@ -116,7 +126,6 @@ fn simulation_ttl_clock_skew() {
     let _ = seed;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let realm = RealmId::generate();
 
     let config = StorageConfig::dev(dir.path().to_path_buf());
     let storage =
@@ -137,6 +146,15 @@ fn simulation_ttl_clock_skew() {
         Arc::clone(&audit),
     )
     .expect("engine");
+
+    let realm = engine
+        .create_realm(&CreateRealmRequest {
+            name: "ttl-clock-skew".to_string(),
+            config: None,
+        })
+        .expect("create realm")
+        .id()
+        .clone();
 
     let user = engine
         .create_user(

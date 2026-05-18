@@ -1,6 +1,13 @@
 {% for user in users %}
 <tr class="border-b border-divider-subtle hover-bg-divider">
   <td class="px-4 py-3">
+    <input type="checkbox"
+           value="{{ user.id().as_uuid() }}"
+           aria-label="Select {{ user.email() }}"
+           @change="updateCount()"
+           class="row-check h-4 w-4 rounded border-divider bg-ht-surface-elevated">
+  </td>
+  <td class="px-4 py-3">
     <a href="{{ user_base_url }}/{{ user.id().as_uuid() }}{{ user_detail_qs }}" class="text-sm font-medium text-ht-content-brand hover:text-ht-brand-deep">{{ user.email() }}</a>
   </td>
   <td class="px-4 py-3 text-sm text-ht-content-secondary">{{ user.display_name() }}</td>
@@ -19,5 +26,5 @@
 </tr>
 {% endfor %}
 {% if users.is_empty() %}
-<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-ht-content-muted">No users found.</td></tr>
+<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-ht-content-muted">No users found.</td></tr>
 {% endif %}
