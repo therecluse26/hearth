@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package hearth.cluster.v1;
+
+option go_package = "github.com/hearthdb/hearth/sdks/go/generated/cluster/v1;clusterv1";
+
+// Raft consensus peer-to-peer RPC service.
+//
+// All messages carry opaque JSON-encoded payloads to decouple the transport
+// schema from openraft's internal types. This keeps the wire format stable
+// across openraft version upgrades.
+//
+// InstallSnapshot is a unary RPC: openraft's default full_snapshot
+// implementation already chunks the snapshot and calls install_snapshot once
+// per chunk (with offset/done fields inside the payload), so there is no need
+// for a streaming RPC at this layer.
+service RaftService {
+  // Leader replicates log entries to a follower or candidate.
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Candidate requests a vote from a peer during leader election.
+  rpc Vote(VoteRequest) returns (VoteResponse);
+
+  // Leader sends one snapshot chunk to a follower.
+  // Called once per chunk by openraft's Chunked snapshot transport.
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+}
+
+// AppendEntries RPC request.
+// Payload is serde_json-encoded openraft::AppendEntriesRequest<HearthRaftConfig>.
+message AppendEntriesRequest {
+  bytes payload = 1;
+}
+
+// AppendEntries RPC response.
+// Payload is serde_json-encoded openraft::AppendEntriesResponse<u64>.
+message AppendEntriesResponse {
+  bytes payload = 1;
+}
+
+// Vote RPC request.
+// Payload is serde_json-encoded openraft::VoteRequest<u64>.
+message VoteRequest {
+  bytes payload = 1;
+}
+
+// Vote RPC response.
+// Payload is serde_json-encoded openraft::VoteResponse<u64>.
+message VoteResponse {
+  bytes payload = 1;
+}
+
+// InstallSnapshot RPC request (one chunk per call).
+// Payload is serde_json-encoded openraft::InstallSnapshotRequest<HearthRaftConfig>.
+message InstallSnapshotRequest {
+  bytes payload = 1;
+}
+
+// InstallSnapshot RPC response.
+// Payload is serde_json-encoded openraft::InstallSnapshotResponse<u64>.
+message InstallSnapshotResponse {
+  bytes payload = 1;
+}
