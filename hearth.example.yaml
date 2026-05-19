@@ -396,3 +396,29 @@ onboarding:
   # enabled: true  # set to false to permanently disable the /ui/setup flow
   # base_url: "https://auth.example.com"  # used in the setup URL logged at startup
   # notification_email: ops@example.com   # receives the setup URL on first boot (requires SMTP)
+
+# ── Cluster (multi-node Raft) ─────────────────────────────────────────────────
+#
+# Omit this section entirely for single-node deployments. When absent, Hearth
+# runs in single-node mode with no clustering overhead.
+#
+# Prerequisites before enabling cluster mode:
+#   1. Generate a CA and per-node leaf certificates (see docs/guides/clustering.md).
+#   2. Ensure NTP is running on every node — clock skew causes incorrect write
+#      ordering. Hearth logs a warning if skew exceeds 1 second on startup.
+#   3. Open port 8421 (or your chosen peer_address port) between nodes.
+#
+# cluster:
+#   node_id: 1                           # unique integer per node (1, 2, 3, …)
+#   peer_address: "10.0.0.1:8421"        # this node's inbound Raft RPC address
+#                                        # default: "127.0.0.1:8421"
+#   peers:                               # all other nodes in the cluster
+#     - id: 2
+#       address: "10.0.0.2:8421"
+#     - id: 3
+#       address: "10.0.0.3:8421"
+#   tls_cert_path: "/etc/hearth/certs/node1.crt"   # required — node leaf cert
+#   tls_key_path:  "/etc/hearth/certs/node1.key"   # required — node private key
+#   tls_ca_cert_path: "/etc/hearth/certs/ca.crt"   # required — CA shared by all nodes
+#   read_lag_threshold_ms: 500           # optional — redirect reads when follower
+#                                        # is lagging more than this (default: 500)

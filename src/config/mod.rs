@@ -12,6 +12,7 @@ pub use diff::{compute_diff, ConfigDiff, ConfigSnapshot};
 pub use env::{EnvVarWarning, EnvVarWarningKind};
 pub use error::ConfigError;
 pub use types::parse_duration_to_micros;
+pub use types::ClusterConfig;
 pub use types::{
     AccountRateLimitYaml, ApplicationYamlConfig, AuthConfig, BrandingConfig, ClaimsYamlConfig,
     CompactionSection, EmailConfig, EmailTransport, FederationProviderYaml, FederationYamlConfig,
