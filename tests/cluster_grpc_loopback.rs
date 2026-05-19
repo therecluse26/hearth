@@ -31,8 +31,7 @@ use uuid::Uuid;
 /// Mirrors the rcgen 0.13 pattern already established in `tests/tls.rs` so
 /// the test follows the codebase's existing cert convention.
 fn generate_cluster_certs(dir: &Path, n_nodes: usize) -> (PathBuf, Vec<(PathBuf, PathBuf)>) {
-    let mut ca_params =
-        rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let ca_key = rcgen::KeyPair::generate().expect("ca keygen");
     let ca_cert = ca_params.self_signed(&ca_key).expect("ca self-sign");
@@ -42,11 +41,9 @@ fn generate_cluster_certs(dir: &Path, n_nodes: usize) -> (PathBuf, Vec<(PathBuf,
 
     let mut leafs = Vec::with_capacity(n_nodes);
     for i in 1..=n_nodes {
-        let leaf_params = rcgen::CertificateParams::new(vec![
-            "localhost".to_string(),
-            "127.0.0.1".to_string(),
-        ])
-        .expect("leaf params");
+        let leaf_params =
+            rcgen::CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+                .expect("leaf params");
         let leaf_key = rcgen::KeyPair::generate().expect("leaf keygen");
         let leaf_cert = leaf_params
             .signed_by(&leaf_key, &ca_cert, &ca_key)
@@ -109,9 +106,8 @@ impl TestCluster {
             std::fs::create_dir_all(&data_dir).expect("create data dir");
 
             let storage_cfg = StorageConfig::dev(data_dir);
-            let storage = Arc::new(
-                EmbeddedStorageEngine::open(storage_cfg.clone()).expect("open storage"),
-            );
+            let storage =
+                Arc::new(EmbeddedStorageEngine::open(storage_cfg.clone()).expect("open storage"));
 
             let (cert_path, key_path) = leaf_certs[i].clone();
             let cluster_cfg = ClusterConfig {
@@ -126,10 +122,9 @@ impl TestCluster {
                 read_lag_threshold_ms: Some(10_000),
             };
 
-            let engine =
-                ClusterEngine::build_clustered(storage, &cluster_cfg, &storage_cfg)
-                    .await
-                    .expect("build_clustered");
+            let engine = ClusterEngine::build_clustered(storage, &cluster_cfg, &storage_cfg)
+                .await
+                .expect("build_clustered");
             let engine = Arc::new(engine);
 
             let server_engine = Arc::clone(&engine);
@@ -153,7 +148,9 @@ impl TestCluster {
         for cfg in &configs {
             members.insert(
                 cfg.node_id,
-                HearthNode { addr: cfg.peer_address.clone() },
+                HearthNode {
+                    addr: cfg.peer_address.clone(),
+                },
             );
         }
         engines[0]
@@ -174,8 +171,12 @@ impl TestCluster {
         let start = Instant::now();
         loop {
             for engine in &self.engines {
-                let Some(metrics) = engine.raft_metrics() else { continue };
-                let Some(leader) = metrics.current_leader else { continue };
+                let Some(metrics) = engine.raft_metrics() else {
+                    continue;
+                };
+                let Some(leader) = metrics.current_leader else {
+                    continue;
+                };
                 // Confirm the elected leader also reports itself as leader —
                 // a freshly-elected node briefly disagrees with its followers.
                 let self_view = self
@@ -206,11 +207,7 @@ impl TestCluster {
     fn engine_for(&self, node_id: u64) -> &Arc<ClusterEngine> {
         self.engines
             .iter()
-            .find(|e| {
-                e.raft_metrics()
-                    .map(|m| m.id == node_id)
-                    .unwrap_or(false)
-            })
+            .find(|e| e.raft_metrics().map(|m| m.id == node_id).unwrap_or(false))
             .expect("engine present for node id")
     }
 
@@ -245,9 +242,7 @@ async fn three_node_grpc_loopback_replicates_ten_writes() {
     let cluster = TestCluster::build(3).await;
 
     // Election timeouts are 1500–3000 ms; 15 s margin tolerates a slow runner.
-    let leader_id = cluster
-        .wait_for_leader(Duration::from_secs(15))
-        .await;
+    let leader_id = cluster.wait_for_leader(Duration::from_secs(15)).await;
     assert!(
         (1..=3).contains(&leader_id),
         "elected leader {leader_id} outside expected range 1..=3"
@@ -307,9 +302,7 @@ async fn three_node_grpc_loopback_replicates_ten_writes() {
                     );
                 }
             }
-            panic!(
-                "replication did not converge to last_applied >= {leader_target} within 10 s"
-            );
+            panic!("replication did not converge to last_applied >= {leader_target} within 10 s");
         }
         tokio::time::sleep(Duration::from_millis(50)).await; // AUDIT: justified-sleep: poll interval inside replication-convergence loop; log commit is async with no notification hook
     }

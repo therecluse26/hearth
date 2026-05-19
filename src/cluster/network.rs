@@ -9,9 +9,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use openraft::{
-    error::{
-        InstallSnapshotError, NetworkError as OraftNetworkError, RPCError, RaftError,
-    },
+    error::{InstallSnapshotError, NetworkError as OraftNetworkError, RPCError, RaftError},
     network::{RPCOption, RaftNetwork, RaftNetworkFactory},
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
@@ -24,10 +22,8 @@ use tracing::{debug, warn};
 
 use crate::cluster::error::TransportError;
 use crate::cluster::rpc::{
-    raft_service_client::RaftServiceClient,
-    AppendEntriesRequest as GrpcAer,
-    InstallSnapshotRequest as GrpcIsr,
-    VoteRequest as GrpcVr,
+    raft_service_client::RaftServiceClient, AppendEntriesRequest as GrpcAer,
+    InstallSnapshotRequest as GrpcIsr, VoteRequest as GrpcVr,
 };
 use crate::cluster::types::{HearthNode, HearthRaftConfig};
 
@@ -58,7 +54,11 @@ impl HearthNetworkFactory {
     /// `ca_pem` is the CA used to verify peer certificates.
     pub fn new(cert_pem: Vec<u8>, key_pem: Vec<u8>, ca_pem: Vec<u8>) -> Self {
         Self {
-            creds: Arc::new(TlsCredentials { cert_pem, key_pem, ca_pem }),
+            creds: Arc::new(TlsCredentials {
+                cert_pem,
+                key_pem,
+                ca_pem,
+            }),
         }
     }
 }
@@ -157,10 +157,7 @@ impl RaftNetwork<HearthRaftConfig> for HearthPeerNetwork {
         &mut self,
         rpc: AppendEntriesRequest<HearthRaftConfig>,
         _option: RPCOption,
-    ) -> Result<
-        AppendEntriesResponse<u64>,
-        RPCError<u64, HearthNode, RaftError<u64>>,
-    > {
+    ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, HearthNode, RaftError<u64>>> {
         let payload = json_enc(&rpc).map_err(|e| net_err(TransportError::Serialize(e)))?;
         let ch = self.get_or_connect().await.map_err(net_err)?;
         let mut client = RaftServiceClient::new(ch);
@@ -184,8 +181,7 @@ impl RaftNetwork<HearthRaftConfig> for HearthPeerNetwork {
         InstallSnapshotResponse<u64>,
         RPCError<u64, HearthNode, RaftError<u64, InstallSnapshotError>>,
     > {
-        let payload =
-            json_enc(&rpc).map_err(|e| net_err_ise(TransportError::Serialize(e)))?;
+        let payload = json_enc(&rpc).map_err(|e| net_err_ise(TransportError::Serialize(e)))?;
         let ch = self.get_or_connect().await.map_err(net_err_ise)?;
         let mut client = RaftServiceClient::new(ch);
 
@@ -210,13 +206,10 @@ impl RaftNetwork<HearthRaftConfig> for HearthPeerNetwork {
         let ch = self.get_or_connect().await.map_err(net_err)?;
         let mut client = RaftServiceClient::new(ch);
 
-        let resp = client
-            .vote(GrpcVr { payload })
-            .await
-            .map_err(|e| {
-                self.invalidate_channel();
-                net_err(TransportError::Rpc(e))
-            })?;
+        let resp = client.vote(GrpcVr { payload }).await.map_err(|e| {
+            self.invalidate_channel();
+            net_err(TransportError::Rpc(e))
+        })?;
 
         json_dec(&resp.into_inner().payload).map_err(|e| net_err(TransportError::Deserialize(e)))
     }
@@ -233,9 +226,7 @@ fn json_dec<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
 }
 
 /// Wraps a [`TransportError`] as `RPCError::Network` for non-snapshot RPCs.
-fn net_err<E: std::error::Error>(
-    e: TransportError,
-) -> RPCError<u64, HearthNode, E> {
+fn net_err<E: std::error::Error>(e: TransportError) -> RPCError<u64, HearthNode, E> {
     let io = io::Error::new(io::ErrorKind::BrokenPipe, e.to_string());
     RPCError::Network(OraftNetworkError::new(&io))
 }
@@ -260,7 +251,9 @@ mod tests {
     async fn factory_creates_peer_with_correct_addr() {
         let mut factory =
             HearthNetworkFactory::new(b"cert".to_vec(), b"key".to_vec(), b"ca".to_vec());
-        let node = HearthNode { addr: "127.0.0.1:8421".to_string() };
+        let node = HearthNode {
+            addr: "127.0.0.1:8421".to_string(),
+        };
         let peer = factory.new_client(2, &node).await;
         assert_eq!(peer.addr, "127.0.0.1:8421");
         assert_eq!(peer.target, 2);
@@ -273,7 +266,9 @@ mod tests {
     async fn append_entries_returns_network_error_on_connection_failure() {
         let mut factory =
             HearthNetworkFactory::new(b"bad".to_vec(), b"bad".to_vec(), b"bad".to_vec());
-        let node = HearthNode { addr: "127.0.0.1:19999".to_string() };
+        let node = HearthNode {
+            addr: "127.0.0.1:19999".to_string(),
+        };
         let mut peer = factory.new_client(99, &node).await;
 
         let dummy = AppendEntriesRequest::<HearthRaftConfig> {
@@ -286,7 +281,10 @@ mod tests {
             .append_entries(dummy, RPCOption::new(std::time::Duration::from_millis(100)))
             .await;
 
-        assert!(result.is_err(), "expected error on unreachable peer, got Ok");
+        assert!(
+            result.is_err(),
+            "expected error on unreachable peer, got Ok"
+        );
         let e = result.unwrap_err();
         assert!(
             matches!(e, RPCError::Network(_)),
@@ -299,7 +297,9 @@ mod tests {
     async fn vote_returns_network_error_on_connection_failure() {
         let mut factory =
             HearthNetworkFactory::new(b"bad".to_vec(), b"bad".to_vec(), b"bad".to_vec());
-        let node = HearthNode { addr: "127.0.0.1:19999".to_string() };
+        let node = HearthNode {
+            addr: "127.0.0.1:19999".to_string(),
+        };
         let mut peer = factory.new_client(99, &node).await;
 
         let dummy = VoteRequest::<u64> {
@@ -310,6 +310,9 @@ mod tests {
             .vote(dummy, RPCOption::new(std::time::Duration::from_millis(100)))
             .await;
 
-        assert!(result.is_err(), "expected error on unreachable peer, got Ok");
+        assert!(
+            result.is_err(),
+            "expected error on unreachable peer, got Ok"
+        );
     }
 }

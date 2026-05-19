@@ -29,8 +29,8 @@
 pub mod engine;
 pub(crate) mod error;
 pub mod log_store;
-pub(crate) mod rpc;
 pub mod network;
+pub(crate) mod rpc;
 pub mod server;
 pub mod state_machine;
 pub mod types;

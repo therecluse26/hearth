@@ -80,10 +80,7 @@ impl<D: IncomingRpcDispatch> RaftService for RaftRpcHandler<D> {
             })
     }
 
-    async fn vote(
-        &self,
-        request: Request<VoteRequest>,
-    ) -> Result<Response<VoteResponse>, Status> {
+    async fn vote(&self, request: Request<VoteRequest>) -> Result<Response<VoteResponse>, Status> {
         let payload = request.into_inner().payload;
         debug!("received Vote from peer");
 
@@ -139,9 +136,10 @@ pub async fn serve<D: IncomingRpcDispatch>(
         .identity(identity)
         .client_ca_root(ca_cert);
 
-    let addr: SocketAddr = config.peer_address.parse().map_err(|e| {
-        format!("invalid peer_address '{}': {e}", config.peer_address)
-    })?;
+    let addr: SocketAddr = config
+        .peer_address
+        .parse()
+        .map_err(|e| format!("invalid peer_address '{}': {e}", config.peer_address))?;
 
     info!(
         node_id = config.node_id,

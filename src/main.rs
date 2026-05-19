@@ -470,45 +470,48 @@ async fn run_serve(
     }
 
     // Initialize storage engine
-    let storage: Arc<EmbeddedStorageEngine> = if config.dev_mode {
-        let temp_dir = tempfile::tempdir()?;
-        info!(path = %temp_dir.path().display(), "using temporary data directory (dev mode)");
-        // Convert to owned path so it outlives the tempdir handle
-        let data_path = temp_dir.keep();
-        let mut storage_config = StorageConfig::dev(data_path);
-        storage_config.compaction = CompactionConfig {
-            enabled: config.storage.compaction.enabled,
-            interval_secs: config.storage.compaction.interval_secs,
-            min_sst_count: config.storage.compaction.min_sst_count,
-        };
-        Arc::new(EmbeddedStorageEngine::open(storage_config)?)
-    } else {
-        let hot_tier_capacity = config.storage.hot_tier_capacity.unwrap_or_else(|| {
-            let cap = hearth::storage::auto_size::auto_size_hot_tier_capacity(
-                config.storage.hot_tier_max_memory,
-            );
-            info!(
-                capacity = cap,
-                memory_budget = ?config.storage.hot_tier_max_memory,
-                "hot tier auto-sized",
-            );
-            cap
-        });
+    let (storage, app_storage_config): (Arc<EmbeddedStorageEngine>, StorageConfig) =
+        if config.dev_mode {
+            let temp_dir = tempfile::tempdir()?;
+            info!(path = %temp_dir.path().display(), "using temporary data directory (dev mode)");
+            // Convert to owned path so it outlives the tempdir handle
+            let data_path = temp_dir.keep();
+            let mut storage_config = StorageConfig::dev(data_path);
+            storage_config.compaction = CompactionConfig {
+                enabled: config.storage.compaction.enabled,
+                interval_secs: config.storage.compaction.interval_secs,
+                min_sst_count: config.storage.compaction.min_sst_count,
+            };
+            let engine = Arc::new(EmbeddedStorageEngine::open(storage_config.clone())?);
+            (engine, storage_config)
+        } else {
+            let hot_tier_capacity = config.storage.hot_tier_capacity.unwrap_or_else(|| {
+                let cap = hearth::storage::auto_size::auto_size_hot_tier_capacity(
+                    config.storage.hot_tier_max_memory,
+                );
+                info!(
+                    capacity = cap,
+                    memory_budget = ?config.storage.hot_tier_max_memory,
+                    "hot tier auto-sized",
+                );
+                cap
+            });
 
-        let mut storage_config = StorageConfig::production(
-            PathBuf::from(&config.storage.data_dir),
-            config.storage.wal_max_size_bytes,
-            config.storage.fsync,
-            config.storage.memtable_flush_bytes,
-            hot_tier_capacity,
-        );
-        storage_config.compaction = CompactionConfig {
-            enabled: config.storage.compaction.enabled,
-            interval_secs: config.storage.compaction.interval_secs,
-            min_sst_count: config.storage.compaction.min_sst_count,
+            let mut storage_config = StorageConfig::production(
+                PathBuf::from(&config.storage.data_dir),
+                config.storage.wal_max_size_bytes,
+                config.storage.fsync,
+                config.storage.memtable_flush_bytes,
+                hot_tier_capacity,
+            );
+            storage_config.compaction = CompactionConfig {
+                enabled: config.storage.compaction.enabled,
+                interval_secs: config.storage.compaction.interval_secs,
+                min_sst_count: config.storage.compaction.min_sst_count,
+            };
+            let engine = Arc::new(EmbeddedStorageEngine::open(storage_config.clone())?);
+            (engine, storage_config)
         };
-        Arc::new(EmbeddedStorageEngine::open(storage_config)?)
-    };
 
     // Initialize identity engine
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
@@ -1064,6 +1067,47 @@ async fn run_serve(
                         warn!(error = %join_err, "compaction task panicked");
                     }
                     _ => {}
+                }
+            }
+        });
+    }
+
+    // Start the Raft peer gRPC server when cluster mode is configured.
+    //
+    // The peer server handles inbound AppendEntries / Vote / InstallSnapshot
+    // RPCs over mTLS-secured gRPC.  The ClusterEngine owns the Raft log and
+    // state machine; the existing `storage` binding continues to serve the
+    // HTTP application layer until callers are ported to use ClusterEngine
+    // directly for writes (see follow-up: storage layer async integration).
+    if let Some(cluster_cfg) = &config.cluster {
+        let cluster_cfg = cluster_cfg.clone();
+        let cluster_storage = Arc::clone(&storage);
+        let cluster_storage_cfg = app_storage_config.clone();
+        tokio::spawn(async move {
+            use hearth::cluster::{serve, ClusterEngine};
+            match ClusterEngine::build_clustered(
+                cluster_storage,
+                &cluster_cfg,
+                &cluster_storage_cfg,
+            )
+            .await
+            {
+                Ok(engine) => {
+                    let engine = Arc::new(engine);
+                    info!(
+                        node_id = cluster_cfg.node_id,
+                        peer_address = %cluster_cfg.peer_address,
+                        "Raft cluster mode active — starting peer gRPC server"
+                    );
+                    if let Err(e) = serve(&cluster_cfg, engine).await {
+                        error!(error = %e, "Raft peer gRPC server terminated with error");
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        "failed to initialise Raft ClusterEngine — cluster mode disabled"
+                    );
                 }
             }
         });
