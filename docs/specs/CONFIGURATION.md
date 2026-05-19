@@ -93,6 +93,47 @@ storage:
   hot_tier_max_memory: 4294967296  # 4 GiB
 ```
 
+### `cluster`
+
+Multi-node Raft consensus configuration. **Omit this section entirely for single-node deployments** — when absent, Hearth runs in single-node mode with no clustering overhead, no extra port, and no Raft log.
+
+When present, Hearth starts a Raft engine and participates in peer-to-peer log replication over mTLS-secured gRPC. All three TLS certificate fields are required — plaintext peer connections are unconditionally rejected.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `node_id` | integer | — | **Required.** This node's numeric ID. Must be unique across the cluster. Typically `1`, `2`, `3`, … |
+| `peer_address` | string | `"127.0.0.1:8421"` | `host:port` this node listens on for inbound Raft RPCs from peers. Use a routable address in production (not loopback). |
+| `peers` | list | `[]` | Known cluster peers. Each entry has `id` (integer) and `address` (string `host:port`). List all nodes except this one. |
+| `tls_cert_path` | path | — | **Required.** Path to this node's PEM certificate (presented to peers during mTLS). |
+| `tls_key_path` | path | — | **Required.** Path to this node's PEM private key. |
+| `tls_ca_cert_path` | path | — | **Required.** Path to the CA certificate used to verify peer certificates. All nodes must share the same CA. |
+| `read_lag_threshold_ms` | integer | `500` | Maximum follower replication lag in milliseconds before reads are refused. When exceeded, the caller receives a redirect to the leader's address. |
+
+```yaml
+cluster:
+  node_id: 1
+  peer_address: "10.0.0.1:8421"
+  peers:
+    - id: 2
+      address: "10.0.0.2:8421"
+    - id: 3
+      address: "10.0.0.3:8421"
+  tls_cert_path: "/etc/hearth/certs/node1.crt"
+  tls_key_path:  "/etc/hearth/certs/node1.key"
+  tls_ca_cert_path: "/etc/hearth/certs/ca.crt"
+  read_lag_threshold_ms: 500   # optional — omit to use the default
+```
+
+**Write routing:** Writes that arrive on a follower return an error with the leader's address. Your load balancer or client should retry the write against that address. Writes go through Raft and are only acknowledged after quorum commit.
+
+**Read routing:** Follower reads are served locally when replication lag is below `read_lag_threshold_ms`. When lag is exceeded, reads also return the leader's address for redirect.
+
+**Bootstrap:** On first cluster startup, call the bootstrap API on the designated bootstrap node once all peers are reachable. See the [Clustering guide](../guides/clustering.md) for the step-by-step sequence.
+
+**NTP requirement:** Hearth embeds `leader_timestamp` (wall-clock microseconds) in every Raft log entry to produce stable, monotonic timestamps across nodes. **NTP-synchronized clocks are a hard operational requirement for cluster mode.** Clock skew above 1 second will cause a startup warning; skew above several seconds will produce incorrect ordering of concurrent writes.
+
+> **See also:** [Clustering guide](../guides/clustering.md) for bootstrap, quorum, cert generation, graceful shutdown, and backup strategy.
+
 ### `metrics`
 
 Prometheus metrics endpoint configuration.
@@ -669,6 +710,8 @@ Every field's default value at a glance.
 | `server` | `bind_address` | `"127.0.0.1"` |
 | `server` | `port` | `8420` |
 | `server` | `tls_require_client_cert` | `false` |
+| `cluster` | `peer_address` | `"127.0.0.1:8421"` |
+| `cluster` | `read_lag_threshold_ms` | `500` |
 | `storage` | `data_dir` | `"./data"` |
 | `storage` | `wal_max_size_bytes` | `268435456` (256 MiB) |
 | `storage` | `memtable_flush_bytes` | `67108864` (64 MiB) |

@@ -18,22 +18,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use flate2::Compression;
 use openraft::storage::RaftSnapshotBuilder;
-use openraft::{
-    EntryPayload, LogId, Snapshot, SnapshotMeta, StorageError, StorageIOError,
-    StoredMembership,
-};
 use openraft::storage::RaftStateMachine;
+use openraft::{
+    EntryPayload, LogId, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
+};
 use serde::{Deserialize, Serialize};
 use tokio::task::spawn_blocking;
 use tracing::{debug, info, instrument};
 
-use crate::cluster::types::{
-    HearthLogResponse, HearthNode, HearthRaftConfig, RaftCommand,
-};
+use crate::cluster::types::{HearthLogResponse, HearthNode, HearthRaftConfig, RaftCommand};
 use crate::core::RealmId;
 use crate::storage::{EmbeddedStorageEngine, StorageConfig, StorageEngine};
 
@@ -107,10 +104,7 @@ impl RaftSnapshotBuilder<HearthRaftConfig> for HearthSnapshotBuilder {
 
         let snapshot_id = format!(
             "snap-{}-{}",
-            last_applied
-                .as_ref()
-                .map(|id| id.index)
-                .unwrap_or(0),
+            last_applied.as_ref().map(|id| id.index).unwrap_or(0),
             uuid::Uuid::new_v4()
         );
 
@@ -206,10 +200,7 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
 
     #[instrument(skip(self, entries), name = "sm_apply")]
     #[allow(clippy::cast_precision_loss)]
-    async fn apply<I>(
-        &mut self,
-        entries: I,
-    ) -> Result<Vec<HearthLogResponse>, StorageError<u64>>
+    async fn apply<I>(&mut self, entries: I) -> Result<Vec<HearthLogResponse>, StorageError<u64>>
     where
         I: IntoIterator<Item = openraft::Entry<HearthRaftConfig>> + Send,
         I::IntoIter: Send,
@@ -230,10 +221,8 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
                 }
 
                 EntryPayload::Membership(membership) => {
-                    self.last_membership = StoredMembership::new(
-                        Some(entry.log_id),
-                        membership.clone(),
-                    );
+                    self.last_membership =
+                        StoredMembership::new(Some(entry.log_id), membership.clone());
                     debug!(log_id = ?entry.log_id, "membership change applied");
                 }
             }
@@ -282,22 +271,18 @@ impl RaftStateMachine<HearthRaftConfig> for HearthStateMachine {
         let payload = decompress_payload(&compressed)?;
 
         // Extract realm IDs before moving payload into spawn_blocking.
-        let realm_ids: BTreeSet<RealmId> = payload
-            .realms
-            .iter()
-            .map(|r| r.realm_id.clone())
-            .collect();
+        let realm_ids: BTreeSet<RealmId> =
+            payload.realms.iter().map(|r| r.realm_id.clone()).collect();
 
         let data_dir = self.storage_config.data_dir.clone();
         let storage_config = self.storage_config.clone();
 
         // Replay into a fresh engine in a temp directory, then atomically
         // rename to the production data directory.
-        let new_engine: Arc<dyn StorageEngine> = spawn_blocking(move || {
-            install_snapshot_blocking(&data_dir, storage_config, &payload)
-        })
-        .await
-        .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
+        let new_engine: Arc<dyn StorageEngine> =
+            spawn_blocking(move || install_snapshot_blocking(&data_dir, storage_config, &payload))
+                .await
+                .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
 
         // Swap in the new engine.
         self.engine = new_engine;
@@ -350,11 +335,9 @@ impl HearthStateMachine {
                 value,
             } => {
                 self.known_realms.insert(realm.clone());
-                spawn_blocking(move || {
-                    engine.put(&realm, &key, &value).map_err(to_write_err)
-                })
-                .await
-                .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
+                spawn_blocking(move || engine.put(&realm, &key, &value).map_err(to_write_err))
+                    .await
+                    .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
             }
 
             RaftCommand::Delete {
@@ -363,11 +346,9 @@ impl HearthStateMachine {
                 key,
             } => {
                 self.known_realms.insert(realm.clone());
-                spawn_blocking(move || {
-                    engine.delete(&realm, &key).map_err(to_write_err)
-                })
-                .await
-                .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
+                spawn_blocking(move || engine.delete(&realm, &key).map_err(to_write_err))
+                    .await
+                    .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
             }
 
             RaftCommand::Batch {
@@ -376,11 +357,9 @@ impl HearthStateMachine {
                 entries,
             } => {
                 self.known_realms.insert(realm.clone());
-                spawn_blocking(move || {
-                    engine.put_batch(&realm, &entries).map_err(to_write_err)
-                })
-                .await
-                .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
+                spawn_blocking(move || engine.put_batch(&realm, &entries).map_err(to_write_err))
+                    .await
+                    .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))??;
             }
         }
 
@@ -395,9 +374,7 @@ fn compress_payload(payload: &SnapshotPayload) -> Result<Vec<u8>, StorageError<u
         .map_err(|e| io_write_err(std::io::Error::other(e.to_string())))?;
 
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(&cbor_buf)
-        .map_err(to_write_err)?;
+    encoder.write_all(&cbor_buf).map_err(to_write_err)?;
     encoder.finish().map_err(to_write_err)
 }
 
@@ -422,15 +399,11 @@ fn install_snapshot_blocking(
         .parent()
         .ok_or_else(|| io_write_err(std::io::Error::other("data_dir has no parent")))?;
 
-    let temp_dir = parent.join(format!(
-        "hearth-snap-{}.tmp",
-        uuid::Uuid::new_v4()
-    ));
+    let temp_dir = parent.join(format!("hearth-snap-{}.tmp", uuid::Uuid::new_v4()));
 
     // Create a fresh engine in the temp directory.
     let temp_config = StorageConfig::dev(temp_dir.clone());
-    let temp_engine =
-        EmbeddedStorageEngine::open(temp_config).map_err(to_write_err)?;
+    let temp_engine = EmbeddedStorageEngine::open(temp_config).map_err(to_write_err)?;
 
     // Replay all entries from the snapshot.
     for realm_data in &payload.realms {
@@ -501,11 +474,7 @@ mod tests {
         }
     }
 
-    fn make_delete_entry(
-        index: u64,
-        realm: RealmId,
-        key: Vec<u8>,
-    ) -> Entry<HearthRaftConfig> {
+    fn make_delete_entry(index: u64, realm: RealmId, key: Vec<u8>) -> Entry<HearthRaftConfig> {
         Entry {
             log_id: make_log_id(index),
             payload: EntryPayload::Normal(RaftCommand::Delete {
@@ -546,9 +515,14 @@ mod tests {
         let mut sm = open_sm(dir.path().join("data").as_path());
         let realm = make_realm();
 
-        sm.apply([make_put_entry(1, realm.clone(), b"k".to_vec(), b"v".to_vec())])
-            .await
-            .unwrap();
+        sm.apply([make_put_entry(
+            1,
+            realm.clone(),
+            b"k".to_vec(),
+            b"v".to_vec(),
+        )])
+        .await
+        .unwrap();
 
         let got = sm.engine.get(&realm, b"k").unwrap();
         assert_eq!(got, Some(b"v".to_vec()));
@@ -742,9 +716,7 @@ mod tests {
         let data_dir = dir.path().join("data");
         let mut sm = open_sm(&data_dir);
         let realm = make_realm();
-        let pairs: Vec<_> = (0u8..20)
-            .map(|i| (vec![i], vec![i * 2]))
-            .collect();
+        let pairs: Vec<_> = (0u8..20).map(|i| (vec![i], vec![i * 2])).collect();
 
         sm.apply([make_batch_entry(1, realm.clone(), pairs.clone())])
             .await

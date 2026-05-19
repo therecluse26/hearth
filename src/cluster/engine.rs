@@ -16,13 +16,13 @@
 //! flag; if `false` the caller receives [`ClusterError::ReplicationLagExceeded`].
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use openraft::RaftMetrics;
 use openraft::error::{ClientWriteError, RaftError};
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest, VoteRequest};
+use openraft::RaftMetrics;
 use openraft::{Config as RaftConfig, EntryPayload};
 use tokio::task::spawn_blocking;
 use tracing::{info, warn};
@@ -234,16 +234,19 @@ impl ClusterEngine {
             ClusterError::Raft("propose called on single-node engine".to_string())
         })?;
 
-        raft.client_write(cmd).await.map(|_| ()).map_err(|e| match e {
-            RaftError::APIError(ClientWriteError::ForwardToLeader(fwd)) => {
-                let addr = fwd
-                    .leader_node
-                    .map(|n| n.addr)
-                    .unwrap_or_else(|| "unknown".to_string());
-                ClusterError::NotLeader { leader_addr: addr }
-            }
-            other => ClusterError::Raft(other.to_string()),
-        })
+        raft.client_write(cmd)
+            .await
+            .map(|_| ())
+            .map_err(|e| match e {
+                RaftError::APIError(ClientWriteError::ForwardToLeader(fwd)) => {
+                    let addr = fwd
+                        .leader_node
+                        .map(|n| n.addr)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    ClusterError::NotLeader { leader_addr: addr }
+                }
+                other => ClusterError::Raft(other.to_string()),
+            })
     }
 
     // ── Async storage API ─────────────────────────────────────────────────────
@@ -299,11 +302,7 @@ impl ClusterEngine {
     }
 
     /// Delete a key. In cluster mode proposes through Raft.
-    pub async fn delete(
-        &self,
-        realm_id: &RealmId,
-        key: &[u8],
-    ) -> Result<(), ClusterError> {
+    pub async fn delete(&self, realm_id: &RealmId, key: &[u8]) -> Result<(), ClusterError> {
         if self.raft.is_some() {
             return self
                 .propose(RaftCommand::Delete {
@@ -386,8 +385,7 @@ impl IncomingRpcDispatch for ClusterEngine {
 
     async fn vote(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
         let raft = self.raft.as_ref().ok_or("Raft not initialised")?;
-        let req: VoteRequest<u64> =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let req: VoteRequest<u64> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let resp = raft.vote(req).await.map_err(|e| e.to_string())?;
         serde_json::to_vec(&resp).map_err(|e| e.to_string())
     }
@@ -421,8 +419,7 @@ async fn run_lag_monitor(
         if !ok {
             warn!(
                 lag_ms = lag,
-                threshold_ms,
-                "replication lag exceeds threshold — follower reads disabled"
+                threshold_ms, "replication lag exceeds threshold — follower reads disabled"
             );
         }
     }
@@ -450,17 +447,21 @@ pub(crate) fn compute_lag_ms(metrics: &RaftMetrics<u64, HearthNode>) -> u64 {
 ///
 /// NTP synchronisation is a deployment prerequisite for cluster mode.
 fn check_clock_skew(payload: &[u8]) {
-    let Ok(req) =
-        serde_json::from_slice::<AppendEntriesRequest<HearthRaftConfig>>(payload)
-    else {
+    let Ok(req) = serde_json::from_slice::<AppendEntriesRequest<HearthRaftConfig>>(payload) else {
         return;
     };
     for entry in &req.entries {
         let leader_ts = match &entry.payload {
             EntryPayload::Normal(cmd) => match cmd {
-                RaftCommand::Put { leader_timestamp, .. }
-                | RaftCommand::Delete { leader_timestamp, .. }
-                | RaftCommand::Batch { leader_timestamp, .. } => *leader_timestamp,
+                RaftCommand::Put {
+                    leader_timestamp, ..
+                }
+                | RaftCommand::Delete {
+                    leader_timestamp, ..
+                }
+                | RaftCommand::Batch {
+                    leader_timestamp, ..
+                } => *leader_timestamp,
             },
             _ => continue,
         };
@@ -503,10 +504,11 @@ mod tests {
         Arc::new(EmbeddedStorageEngine::open(config).expect("open engine"))
     }
 
-    fn make_metrics(log_idx: Option<u64>, applied_idx: Option<u64>) -> RaftMetrics<u64, HearthNode> {
-        let make_log_id = |idx: u64| {
-            Some(LogId::new(CommittedLeaderId::new(1, 0), idx))
-        };
+    fn make_metrics(
+        log_idx: Option<u64>,
+        applied_idx: Option<u64>,
+    ) -> RaftMetrics<u64, HearthNode> {
+        let make_log_id = |idx: u64| Some(LogId::new(CommittedLeaderId::new(1, 0), idx));
 
         RaftMetrics {
             running_state: Ok(()),

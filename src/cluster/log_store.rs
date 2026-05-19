@@ -13,7 +13,7 @@ use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use openraft::storage::{LogFlushed, LogState, RaftLogStorage, RaftLogReader};
+use openraft::storage::{LogFlushed, LogState, RaftLogReader, RaftLogStorage};
 use openraft::{Entry, LogId, StorageError, StorageIOError, Vote};
 use redb::{Database, ReadableTable, TableDefinition};
 use tracing::{debug, trace};
@@ -56,55 +56,90 @@ impl Inner {
         let db = Database::create(path)?;
         // Eagerly create tables so subsequent transactions never encounter
         // `TableDoesNotExist`.
-        let txn = db.begin_write().map_err(|e| redb::DatabaseError::Storage(redb::StorageError::Io(
-            std::io::Error::other(e.to_string()),
-        )))?;
+        let txn = db.begin_write().map_err(|e| {
+            redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::other(
+                e.to_string(),
+            )))
+        })?;
         {
-            txn.open_table(LOG_TABLE).map_err(|e| redb::DatabaseError::Storage(redb::StorageError::Io(
-                std::io::Error::other(e.to_string()),
-            )))?;
-            txn.open_table(META_TABLE).map_err(|e| redb::DatabaseError::Storage(redb::StorageError::Io(
-                std::io::Error::other(e.to_string()),
-            )))?;
+            txn.open_table(LOG_TABLE).map_err(|e| {
+                redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::other(
+                    e.to_string(),
+                )))
+            })?;
+            txn.open_table(META_TABLE).map_err(|e| {
+                redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::other(
+                    e.to_string(),
+                )))
+            })?;
         }
-        txn.commit().map_err(|e| redb::DatabaseError::Storage(redb::StorageError::Io(
-            std::io::Error::other(e.to_string()),
-        )))?;
+        txn.commit().map_err(|e| {
+            redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::other(
+                e.to_string(),
+            )))
+        })?;
         Ok(Self { db })
     }
 
     // ── meta helpers ──────────────────────────────────────────────────────────
 
     fn write_meta(&self, key: &str, value: &[u8]) -> Result<(), StorageError<u64>> {
-        let txn = self.db.begin_write().map_err(|e| io_err(redb::Error::from(e)))?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| io_err(redb::Error::from(e)))?;
         {
-            let mut table = txn.open_table(META_TABLE).map_err(|e| io_err(redb::Error::from(e)))?;
-            table.insert(key, value).map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+            let mut table = txn
+                .open_table(META_TABLE)
+                .map_err(|e| io_err(redb::Error::from(e)))?;
+            table.insert(key, value).map_err(|e| {
+                io_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+            })?;
         }
         txn.commit().map_err(|e| io_err(redb::Error::from(e)))?;
         Ok(())
     }
 
     fn read_meta(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError<u64>> {
-        let txn = self.db.begin_read().map_err(|e| read_err(redb::Error::from(e)))?;
-        let table = txn.open_table(META_TABLE).map_err(|e| read_err(redb::Error::from(e)))?;
-        let val = table.get(key).map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| read_err(redb::Error::from(e)))?;
+        let table = txn
+            .open_table(META_TABLE)
+            .map_err(|e| read_err(redb::Error::from(e)))?;
+        let val = table
+            .get(key)
+            .map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
         Ok(val.map(|v| v.value().to_vec()))
     }
 
     // ── log helpers ───────────────────────────────────────────────────────────
 
-    fn read_entries_range<RB>(&self, range: RB) -> Result<Vec<Entry<HearthRaftConfig>>, StorageError<u64>>
+    fn read_entries_range<RB>(
+        &self,
+        range: RB,
+    ) -> Result<Vec<Entry<HearthRaftConfig>>, StorageError<u64>>
     where
         RB: RangeBounds<u64> + Clone + Debug,
     {
-        let txn = self.db.begin_read().map_err(|e| read_err(redb::Error::from(e)))?;
-        let table = txn.open_table(LOG_TABLE).map_err(|e| read_err(redb::Error::from(e)))?;
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| read_err(redb::Error::from(e)))?;
+        let table = txn
+            .open_table(LOG_TABLE)
+            .map_err(|e| read_err(redb::Error::from(e)))?;
         let mut entries = Vec::new();
-        for result in table.range(range.clone()).map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))? {
-            let (_, v) = result.map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
-            let entry: Entry<HearthRaftConfig> = serde_json::from_slice(v.value())
-                .map_err(|e| read_err(e))?;
+        for result in table
+            .range(range.clone())
+            .map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?
+        {
+            let (_, v) = result.map_err(|e| {
+                read_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+            })?;
+            let entry: Entry<HearthRaftConfig> =
+                serde_json::from_slice(v.value()).map_err(|e| read_err(e))?;
             entries.push(entry);
         }
         trace!(count = entries.len(), range = ?range, "read log entries");
@@ -112,11 +147,20 @@ impl Inner {
     }
 
     fn last_log_id(&self) -> Result<Option<LogId<u64>>, StorageError<u64>> {
-        let txn = self.db.begin_read().map_err(|e| read_err(redb::Error::from(e)))?;
-        let table = txn.open_table(LOG_TABLE).map_err(|e| read_err(redb::Error::from(e)))?;
-        if let Some(result) = table.last().map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))? {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| read_err(redb::Error::from(e)))?;
+        let table = txn
+            .open_table(LOG_TABLE)
+            .map_err(|e| read_err(redb::Error::from(e)))?;
+        if let Some(result) = table
+            .last()
+            .map_err(|e| read_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?
+        {
             let (_, v) = result;
-            let entry: Entry<HearthRaftConfig> = serde_json::from_slice(v.value()).map_err(|e| read_err(e))?;
+            let entry: Entry<HearthRaftConfig> =
+                serde_json::from_slice(v.value()).map_err(|e| read_err(e))?;
             return Ok(Some(entry.log_id));
         }
         Ok(None)
@@ -169,22 +213,34 @@ pub struct HearthLogReader {
 }
 
 impl RaftLogReader<HearthRaftConfig> for HearthLogReader {
-    async fn try_get_log_entries<RB>(&mut self, range: RB) -> Result<Vec<Entry<HearthRaftConfig>>, StorageError<u64>>
+    async fn try_get_log_entries<RB>(
+        &mut self,
+        range: RB,
+    ) -> Result<Vec<Entry<HearthRaftConfig>>, StorageError<u64>>
     where
         RB: RangeBounds<u64> + Clone + Debug + Send,
     {
-        let inner = self.inner.lock().map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
         inner.read_entries_range(range)
     }
 }
 
 // RaftLogReader is also required on the store itself (openraft blanket requirement).
 impl RaftLogReader<HearthRaftConfig> for HearthLogStore {
-    async fn try_get_log_entries<RB>(&mut self, range: RB) -> Result<Vec<Entry<HearthRaftConfig>>, StorageError<u64>>
+    async fn try_get_log_entries<RB>(
+        &mut self,
+        range: RB,
+    ) -> Result<Vec<Entry<HearthRaftConfig>>, StorageError<u64>>
     where
         RB: RangeBounds<u64> + Clone + Debug + Send,
     {
-        let inner = self.inner.lock().map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
         inner.read_entries_range(range)
     }
 }
@@ -195,7 +251,10 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
     type LogReader = HearthLogReader;
 
     async fn get_log_state(&mut self) -> Result<LogState<HearthRaftConfig>, StorageError<u64>> {
-        let inner = self.inner.lock().map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
         let last_purged_log_id = inner.last_purged_log_id()?;
         let last_log_id = inner.last_log_id()?;
         // If the log is empty, last_log_id falls back to last_purged_log_id.
@@ -214,14 +273,20 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
 
     async fn save_vote(&mut self, vote: &Vote<u64>) -> Result<(), StorageError<u64>> {
         let bytes = serde_json::to_vec(vote).map_err(|e| io_err(e))?;
-        let inner = self.inner.lock().map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
         inner.write_meta(KEY_VOTE, &bytes)?;
         debug!(?vote, "vote persisted");
         Ok(())
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote<u64>>, StorageError<u64>> {
-        let inner = self.inner.lock().map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
         match inner.read_meta(KEY_VOTE)? {
             None => Ok(None),
             Some(bytes) => {
@@ -235,7 +300,10 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
         &mut self,
         committed: Option<LogId<u64>>,
     ) -> Result<(), StorageError<u64>> {
-        let inner = self.inner.lock().map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
         match committed {
             None => {
                 // Store an empty marker so restarts can distinguish "never set" from None.
@@ -250,7 +318,10 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId<u64>>, StorageError<u64>> {
-        let inner = self.inner.lock().map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| read_err(std::io::Error::other(e.to_string())))?;
         match inner.read_meta(KEY_COMMITTED)? {
             None => Ok(None),
             Some(bytes) if bytes == b"null" => Ok(None),
@@ -265,19 +336,33 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
     ///
     /// redb commits synchronously, so the callback is fired before this method
     /// returns.  Entries are serialised as JSON and stored under their log index.
-    async fn append<I>(&mut self, entries: I, callback: LogFlushed<HearthRaftConfig>) -> Result<(), StorageError<u64>>
+    async fn append<I>(
+        &mut self,
+        entries: I,
+        callback: LogFlushed<HearthRaftConfig>,
+    ) -> Result<(), StorageError<u64>>
     where
         I: IntoIterator<Item = Entry<HearthRaftConfig>> + Send,
         I::IntoIter: Send,
     {
-        let inner = self.inner.lock().map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
-        let txn = inner.db.begin_write().map_err(|e| io_err(redb::Error::from(e)))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
+        let txn = inner
+            .db
+            .begin_write()
+            .map_err(|e| io_err(redb::Error::from(e)))?;
         {
-            let mut table = txn.open_table(LOG_TABLE).map_err(|e| io_err(redb::Error::from(e)))?;
+            let mut table = txn
+                .open_table(LOG_TABLE)
+                .map_err(|e| io_err(redb::Error::from(e)))?;
             for entry in entries {
                 let index = entry.log_id.index;
                 let bytes = serde_json::to_vec(&entry).map_err(|e| io_err(e))?;
-                table.insert(index, bytes.as_slice()).map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+                table.insert(index, bytes.as_slice()).map_err(|e| {
+                    io_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+                })?;
                 trace!(index, "appended log entry");
             }
         }
@@ -289,21 +374,37 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
 
     /// Truncate the log starting at `log_id.index`, inclusive.
     async fn truncate(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
-        let inner = self.inner.lock().map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
-        let txn = inner.db.begin_write().map_err(|e| io_err(redb::Error::from(e)))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
+        let txn = inner
+            .db
+            .begin_write()
+            .map_err(|e| io_err(redb::Error::from(e)))?;
         {
-            let mut table = txn.open_table(LOG_TABLE).map_err(|e| io_err(redb::Error::from(e)))?;
+            let mut table = txn
+                .open_table(LOG_TABLE)
+                .map_err(|e| io_err(redb::Error::from(e)))?;
             // Collect keys to remove to avoid borrow conflicts.
             let to_remove: Vec<u64> = table
                 .range(log_id.index..)
                 .map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?
                 .map(|r| r.map(|(k, _)| k.value()))
                 .collect::<Result<_, _>>()
-                .map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+                .map_err(|e| {
+                    io_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+                })?;
             for key in &to_remove {
-                table.remove(key).map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+                table.remove(key).map_err(|e| {
+                    io_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+                })?;
             }
-            debug!(from = log_id.index, removed = to_remove.len(), "log truncated");
+            debug!(
+                from = log_id.index,
+                removed = to_remove.len(),
+                "log truncated"
+            );
         }
         txn.commit().map_err(|e| io_err(redb::Error::from(e)))?;
         Ok(())
@@ -311,26 +412,44 @@ impl RaftLogStorage<HearthRaftConfig> for HearthLogStore {
 
     /// Purge (compact) log entries up to and including `log_id`.
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
-        let inner = self.inner.lock().map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
-        let txn = inner.db.begin_write().map_err(|e| io_err(redb::Error::from(e)))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| io_err(std::io::Error::other(e.to_string())))?;
+        let txn = inner
+            .db
+            .begin_write()
+            .map_err(|e| io_err(redb::Error::from(e)))?;
         {
-            let mut table = txn.open_table(LOG_TABLE).map_err(|e| io_err(redb::Error::from(e)))?;
+            let mut table = txn
+                .open_table(LOG_TABLE)
+                .map_err(|e| io_err(redb::Error::from(e)))?;
             let to_remove: Vec<u64> = table
                 .range(..=log_id.index)
                 .map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?
                 .map(|r| r.map(|(k, _)| k.value()))
                 .collect::<Result<_, _>>()
-                .map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+                .map_err(|e| {
+                    io_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+                })?;
             for key in &to_remove {
-                table.remove(key).map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+                table.remove(key).map_err(|e| {
+                    io_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+                })?;
             }
             debug!(upto = log_id.index, removed = to_remove.len(), "log purged");
         }
         // Persist the new last-purged pointer before committing the deletions.
         {
-            let mut table = txn.open_table(META_TABLE).map_err(|e| io_err(redb::Error::from(e)))?;
+            let mut table = txn
+                .open_table(META_TABLE)
+                .map_err(|e| io_err(redb::Error::from(e)))?;
             let bytes = serde_json::to_vec(&log_id).map_err(|e| io_err(e))?;
-            table.insert(KEY_LAST_PURGED, bytes.as_slice()).map_err(|e| io_err(redb::StorageError::Io(std::io::Error::other(e.to_string()))))?;
+            table
+                .insert(KEY_LAST_PURGED, bytes.as_slice())
+                .map_err(|e| {
+                    io_err(redb::StorageError::Io(std::io::Error::other(e.to_string())))
+                })?;
         }
         txn.commit().map_err(|e| io_err(redb::Error::from(e)))?;
         Ok(())
@@ -397,9 +516,16 @@ mod tests {
     async fn truncate_removes_entries_from_index() {
         let dir = tempdir().unwrap();
         let mut store = open_store(dir.path().join("raft.db").as_path());
-        append_entries_with_signal(&mut store, vec![make_entry(1, 1), make_entry(1, 2), make_entry(1, 3)]).await;
+        append_entries_with_signal(
+            &mut store,
+            vec![make_entry(1, 1), make_entry(1, 2), make_entry(1, 3)],
+        )
+        .await;
 
-        store.truncate(LogId::new(openraft::CommittedLeaderId::new(1, 0), 2)).await.unwrap();
+        store
+            .truncate(LogId::new(openraft::CommittedLeaderId::new(1, 0), 2))
+            .await
+            .unwrap();
 
         let got = store.try_get_log_entries(1u64..=3u64).await.unwrap();
         assert_eq!(got.len(), 1, "only index 1 should remain");
@@ -411,9 +537,16 @@ mod tests {
     async fn purge_updates_last_purged_state() {
         let dir = tempdir().unwrap();
         let mut store = open_store(dir.path().join("raft.db").as_path());
-        append_entries_with_signal(&mut store, vec![make_entry(1, 1), make_entry(1, 2), make_entry(1, 3)]).await;
+        append_entries_with_signal(
+            &mut store,
+            vec![make_entry(1, 1), make_entry(1, 2), make_entry(1, 3)],
+        )
+        .await;
 
-        store.purge(LogId::new(openraft::CommittedLeaderId::new(1, 0), 2)).await.unwrap();
+        store
+            .purge(LogId::new(openraft::CommittedLeaderId::new(1, 0), 2))
+            .await
+            .unwrap();
 
         let state = store.get_log_state().await.unwrap();
         let purged = state.last_purged_log_id.expect("purged pointer set");
