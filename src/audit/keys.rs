@@ -22,6 +22,9 @@ const ACTOR_PREFIX: &str = "audit:actor:";
 /// Prefix for audit action index keys.
 const ACTION_PREFIX: &str = "audit:action:";
 
+/// Key for the per-realm audit retention configuration.
+const RETENTION_CONFIG_KEY: &str = "audit:config:retention";
+
 /// Formats a timestamp as a 19-digit zero-padded string.
 ///
 /// This ensures lexicographic ordering matches chronological ordering
@@ -107,6 +110,11 @@ pub(crate) fn encode_action_index(
 /// Format: `audit:action:{action}:`
 pub(crate) fn action_scan_prefix(action: &str) -> Vec<u8> {
     format!("{ACTION_PREFIX}{action}:").into_bytes()
+}
+
+/// Returns the storage key for the realm's audit retention configuration.
+pub(crate) fn retention_config_key() -> Vec<u8> {
+    RETENTION_CONFIG_KEY.as_bytes().to_vec()
 }
 
 /// Computes the exclusive end bound for a prefix scan.

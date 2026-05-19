@@ -779,20 +779,27 @@ pub async fn admin_audit_export(
                     .body(axum::body::Body::from(csv))
                     .unwrap_or_else(|_| super::handlers_common::server_error())
             } else {
-                let body = match serde_json::to_vec_pretty(&events) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "audit export serialize failed");
-                        return super::handlers_common::server_error();
+                // NDJSON: one JSON object per line, suitable for streaming consumers.
+                let mut ndjson = String::with_capacity(events.len() * 256);
+                for e in &events {
+                    match serde_json::to_string(e) {
+                        Ok(line) => {
+                            ndjson.push_str(&line);
+                            ndjson.push('\n');
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "audit export serialize failed");
+                            return super::handlers_common::server_error();
+                        }
                     }
-                };
-                let filename = format!("audit-{realm_slug}-{today}.json");
+                }
+                let filename = format!("audit-{realm_slug}-{today}.ndjson");
                 let disposition = format!("attachment; filename=\"{filename}\"");
                 axum::response::Response::builder()
                     .status(200)
-                    .header("Content-Type", "application/json")
+                    .header("Content-Type", "application/x-ndjson")
                     .header("Content-Disposition", disposition)
-                    .body(axum::body::Body::from(body))
+                    .body(axum::body::Body::from(ndjson))
                     .unwrap_or_else(|_| super::handlers_common::server_error())
             }
         }
@@ -801,6 +808,100 @@ pub async fn admin_audit_export(
             super::handlers_common::server_error()
         }
     }
+}
+
+/// `GET /admin/api/realms/{realm}/audit/config` — read retention configuration.
+///
+/// Returns the current `retention_days` for the realm's audit log.
+/// A value of `0` means unlimited (no pruning).
+pub async fn admin_api_audit_config_get(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+) -> Response {
+    match state.audit.get_retention_config(target.id()) {
+        Ok(config) => axum::response::Json(config).into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit config get failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// Request body for updating audit retention configuration.
+#[derive(serde::Deserialize)]
+pub struct UpdateAuditRetentionBody {
+    pub retention_days: u32,
+}
+
+/// `PUT /admin/api/realms/{realm}/audit/config` — update retention configuration.
+///
+/// Sets `retention_days` for the realm's audit log. A value of `0`
+/// disables automatic pruning (unlimited retention).
+pub async fn admin_api_audit_config_put(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+    axum::Json(body): axum::Json<UpdateAuditRetentionBody>,
+) -> Response {
+    let config = crate::audit::AuditRetentionConfig {
+        retention_days: body.retention_days,
+    };
+    match state.audit.set_retention_config(target.id(), &config) {
+        Ok(()) => axum::response::Json(config).into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit config update failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// `POST /admin/api/realms/{realm}/audit/prune` — manually prune old events.
+///
+/// Immediately deletes all audit events older than the realm's configured
+/// `retention_days`. If `retention_days` is `0` (unlimited), returns 200
+/// with `{"deleted": 0}` without touching any events.
+pub async fn admin_api_audit_prune(
+    State(state): State<Arc<WebState>>,
+    RequireAdmin(_session): RequireAdmin,
+    target: TargetRealm,
+    AxumPath(_realm_name): AxumPath<String>,
+) -> Response {
+    let config = match state.audit.get_retention_config(target.id()) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "audit prune: config fetch failed");
+            return super::handlers_common::server_error();
+        }
+    };
+    if config.retention_days == 0 {
+        return axum::response::Json(serde_json::json!({"deleted": 0})).into_response();
+    }
+    let cutoff = prune_cutoff_timestamp(config.retention_days);
+    match state.audit.prune_before(target.id(), cutoff) {
+        Ok(deleted) => {
+            tracing::info!(
+                realm = %target.0.name(),
+                deleted,
+                "audit: manual prune completed"
+            );
+            axum::response::Json(serde_json::json!({"deleted": deleted})).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "audit prune failed");
+            super::handlers_common::server_error()
+        }
+    }
+}
+
+/// Computes the cutoff timestamp for pruning events older than `retention_days`.
+pub fn prune_cutoff_timestamp(retention_days: u32) -> crate::core::Timestamp {
+    let now_micros = crate::core::Timestamp::now().as_micros();
+    let window_micros = (retention_days as i64) * 86_400 * 1_000_000;
+    let cutoff_micros = now_micros.saturating_sub(window_micros);
+    crate::core::Timestamp::from_micros(cutoff_micros)
 }
 
 /// Appends a single CSV field, quoting it when it contains commas, quotes, or newlines.

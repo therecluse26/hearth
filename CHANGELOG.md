@@ -9,6 +9,13 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Added
 
+- **Audit log retention policy and NDJSON export** — per-realm configurable `retention_days`
+  (default 90, `0` = unlimited) with automatic daily pruning of expired events. New REST endpoints:
+  `GET/PUT /admin/api/realms/{realm}/audit/config` (read/update retention) and
+  `POST /admin/api/realms/{realm}/audit/prune` (manual trigger). The audit export endpoint
+  (`GET /admin/realms/{realm}/audit/export`) now returns NDJSON (`application/x-ndjson`, one JSON
+  object per line) by default instead of a JSON array, with `?format=csv` unchanged (HEA-590).
+
 - **Raft clustering foundation (Phase 2)** — adds a `cluster:` section to `hearth.yaml` that enables
   multi-node Raft consensus via `openraft`. When configured, Hearth starts a Raft peer gRPC server
   (`peer_address`) secured by mutual TLS. The implementation includes durable log storage (`redb`),

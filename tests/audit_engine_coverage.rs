@@ -199,6 +199,26 @@ async fn test_destructive_delete_fails_when_audit_down() {
         ) -> Result<bool, hearth::audit::AuditError> {
             Ok(true)
         }
+        fn get_retention_config(
+            &self,
+            _realm_id: &hearth::core::RealmId,
+        ) -> Result<hearth::audit::AuditRetentionConfig, hearth::audit::AuditError> {
+            Ok(hearth::audit::AuditRetentionConfig::default())
+        }
+        fn set_retention_config(
+            &self,
+            _realm_id: &hearth::core::RealmId,
+            _config: &hearth::audit::AuditRetentionConfig,
+        ) -> Result<(), hearth::audit::AuditError> {
+            Ok(())
+        }
+        fn prune_before(
+            &self,
+            _realm_id: &hearth::core::RealmId,
+            _cutoff: hearth::core::Timestamp,
+        ) -> Result<u64, hearth::audit::AuditError> {
+            Ok(0)
+        }
     }
 
     let audit = std::sync::Arc::new(FailingAuditEngine);
