@@ -1193,6 +1193,15 @@ pub fn router(state: WebState) -> Router {
             axum::routing::get(admin::admin_api_audit_events),
         )
         .route(
+            "/admin/api/realms/{realm}/audit/config",
+            axum::routing::get(admin::admin_api_audit_config_get)
+                .put(admin::admin_api_audit_config_put),
+        )
+        .route(
+            "/admin/api/realms/{realm}/audit/prune",
+            axum::routing::post(admin::admin_api_audit_prune),
+        )
+        .route(
             "/admin/settings",
             axum::routing::get(admin::admin_system_info),
         )

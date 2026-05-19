@@ -10,7 +10,9 @@
 //! is the storage-backed implementation.
 //!
 //! Events are **append-only**: the trait exposes no update or delete
-//! operations. This is enforced at the type level.
+//! operations. This is enforced at the type level. The sole exception is
+//! [`AuditEngine::prune_before`], an explicit administrative deletion used
+//! for compliance-driven retention (e.g., COPPA data deletion).
 
 pub mod context;
 mod engine;
@@ -21,14 +23,17 @@ mod types;
 pub use context::{Actor, AuditContext};
 pub use engine::EmbeddedAuditEngine;
 pub use error::AuditError;
-pub use types::{AuditAction, AuditEvent, AuditFailurePolicy, AuditQuery, CreateAuditEvent};
+pub use types::{
+    AuditAction, AuditEvent, AuditFailurePolicy, AuditQuery, AuditRetentionConfig, CreateAuditEvent,
+};
 
 use crate::core::{RealmId, Timestamp};
 
 /// Trait defining the audit engine interface.
 ///
-/// **Append-only by design**: no methods exist to update or delete events.
-/// This guarantees immutability at the API level.
+/// Events are append-only by design to maintain the tamper-evident hash chain.
+/// The only administrative deletion path is [`prune_before`], which is
+/// intentional and explicitly breaks the chain for the pruned window.
 pub trait AuditEngine: Send + Sync {
     /// Appends a new audit event to the log.
     ///
@@ -53,4 +58,26 @@ pub trait AuditEngine: Send + Sync {
         start: Option<Timestamp>,
         end: Option<Timestamp>,
     ) -> Result<bool, AuditError>;
+
+    /// Returns the retention configuration for a realm.
+    ///
+    /// Returns the default config (90 days) if none has been set.
+    fn get_retention_config(&self, realm_id: &RealmId) -> Result<AuditRetentionConfig, AuditError>;
+
+    /// Updates the retention configuration for a realm.
+    fn set_retention_config(
+        &self,
+        realm_id: &RealmId,
+        config: &AuditRetentionConfig,
+    ) -> Result<(), AuditError>;
+
+    /// Deletes all audit events strictly older than `cutoff`.
+    ///
+    /// This is an intentional administrative operation for compliance-driven
+    /// retention (e.g., COPPA). It breaks the hash chain for the pruned
+    /// window — integrity verification should only be run against the
+    /// retained window after pruning.
+    ///
+    /// Returns the number of primary events deleted.
+    fn prune_before(&self, realm_id: &RealmId, cutoff: Timestamp) -> Result<u64, AuditError>;
 }

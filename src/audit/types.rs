@@ -564,6 +564,24 @@ pub struct CreateAuditEvent {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Retention configuration for a realm's audit log.
+///
+/// Controls automatic pruning of old audit events. Pruning intentionally
+/// breaks the hash chain for the removed window — this is expected and
+/// acceptable for compliance-driven data deletion (e.g., COPPA).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuditRetentionConfig {
+    /// Number of days to retain audit events. `0` means unlimited (no pruning).
+    /// Default: 90 days.
+    pub retention_days: u32,
+}
+
+impl Default for AuditRetentionConfig {
+    fn default() -> Self {
+        Self { retention_days: 90 }
+    }
+}
+
 /// Query parameters for filtering audit events.
 ///
 /// All filters are optional and combined with AND semantics.

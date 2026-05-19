@@ -1147,6 +1147,64 @@ async fn run_serve(
         hearth::webhook::NotifyingAuditEngine::new(Arc::clone(&raw_audit), webhook_tx),
     );
 
+    // Background daily audit log pruning sweep.
+    // Iterates all realms and deletes events older than each realm's
+    // configured `retention_days`. Realms with `retention_days = 0` are skipped.
+    {
+        let prune_audit = Arc::clone(&raw_audit);
+        let prune_identity = Arc::clone(&identity_engine);
+        tokio::spawn(async move {
+            // 24-hour interval; first tick fires at startup + 24h.
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let mut cursor = None::<String>;
+                loop {
+                    let page = match prune_identity.list_realms(cursor.as_deref(), 100) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(error = %e, "audit prune: realm enumeration failed");
+                            break;
+                        }
+                    };
+                    for realm in &page.items {
+                        let config = match prune_audit.get_retention_config(realm.id()) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!(realm = %realm.name(), error = %e, "audit prune: config fetch failed");
+                                continue;
+                            }
+                        };
+                        if config.retention_days == 0 {
+                            continue; // unlimited
+                        }
+                        let now_micros = hearth::core::Timestamp::now().as_micros();
+                        let window_micros =
+                            (config.retention_days as i64) * 86_400 * 1_000_000;
+                        let cutoff = hearth::core::Timestamp::from_micros(
+                            now_micros.saturating_sub(window_micros),
+                        );
+                        match prune_audit.prune_before(realm.id(), cutoff) {
+                            Ok(0) => {}
+                            Ok(n) => {
+                                info!(realm = %realm.name(), deleted = n, "audit prune: pruned old events");
+                            }
+                            Err(e) => {
+                                warn!(realm = %realm.name(), error = %e, "audit prune: prune failed");
+                            }
+                        }
+                    }
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     let onboarding_service = Arc::new(OnboardingService::new(
         Arc::clone(&identity_engine),
         Arc::clone(&rbac_engine),

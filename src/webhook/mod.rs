@@ -115,4 +115,27 @@ impl crate::audit::AuditEngine for NotifyingAuditEngine {
     ) -> Result<bool, crate::audit::AuditError> {
         self.inner.verify_integrity(realm_id, start, end)
     }
+
+    fn get_retention_config(
+        &self,
+        realm_id: &RealmId,
+    ) -> Result<crate::audit::AuditRetentionConfig, crate::audit::AuditError> {
+        self.inner.get_retention_config(realm_id)
+    }
+
+    fn set_retention_config(
+        &self,
+        realm_id: &RealmId,
+        config: &crate::audit::AuditRetentionConfig,
+    ) -> Result<(), crate::audit::AuditError> {
+        self.inner.set_retention_config(realm_id, config)
+    }
+
+    fn prune_before(
+        &self,
+        realm_id: &RealmId,
+        cutoff: crate::core::Timestamp,
+    ) -> Result<u64, crate::audit::AuditError> {
+        self.inner.prune_before(realm_id, cutoff)
+    }
 }

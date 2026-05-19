@@ -13,7 +13,7 @@ use crate::storage::StorageEngine;
 
 use super::error::AuditError;
 use super::keys;
-use super::types::{AuditAction, AuditEvent, AuditQuery, CreateAuditEvent};
+use super::types::{AuditAction, AuditEvent, AuditQuery, AuditRetentionConfig, CreateAuditEvent};
 use super::AuditEngine;
 
 /// The genesis hash used as the "previous hash" for the first event in a realm.
@@ -263,6 +263,55 @@ impl AuditEngine for EmbeddedAuditEngine {
         }
 
         Ok(true)
+    }
+
+    fn get_retention_config(&self, realm_id: &RealmId) -> Result<AuditRetentionConfig, AuditError> {
+        let key = keys::retention_config_key();
+        match self.storage.get(realm_id, &key)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| AuditError::Serialization {
+                reason: e.to_string(),
+            }),
+            None => Ok(AuditRetentionConfig::default()),
+        }
+    }
+
+    fn set_retention_config(
+        &self,
+        realm_id: &RealmId,
+        config: &AuditRetentionConfig,
+    ) -> Result<(), AuditError> {
+        let key = keys::retention_config_key();
+        let value = serde_json::to_vec(config).map_err(|e| AuditError::Serialization {
+            reason: e.to_string(),
+        })?;
+        self.storage.put(realm_id, &key, &value)?;
+        Ok(())
+    }
+
+    fn prune_before(&self, realm_id: &RealmId, cutoff: Timestamp) -> Result<u64, AuditError> {
+        let start = keys::event_scan_prefix();
+        let end = keys::event_scan_end(cutoff);
+        let entries = self.storage.scan(realm_id, &start, &end)?;
+
+        let mut deleted: u64 = 0;
+        for entry in entries {
+            let event: AuditEvent =
+                serde_json::from_slice(&entry.value).map_err(|e| AuditError::Serialization {
+                    reason: e.to_string(),
+                })?;
+            // Delete primary key
+            self.storage.delete(realm_id, &entry.key)?;
+            // Delete actor index
+            let actor_key =
+                keys::encode_actor_index(&event.actor, event.timestamp, &event.id);
+            self.storage.delete(realm_id, &actor_key)?;
+            // Delete action index
+            let action_key =
+                keys::encode_action_index(event.action.as_str(), event.timestamp, &event.id);
+            self.storage.delete(realm_id, &action_key)?;
+            deleted += 1;
+        }
+        Ok(deleted)
     }
 }
 
