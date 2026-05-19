@@ -102,6 +102,13 @@ pub struct Config {
     /// realms are managed via API/onboarding (backward compatible).
     #[serde(default)]
     pub realms: Option<std::collections::HashMap<String, RealmYamlConfig>>,
+    /// Raft clustering configuration.
+    ///
+    /// When `Some`, Hearth starts a Raft consensus engine and participates in
+    /// peer-to-peer replication over mTLS-secured gRPC. When `None` (the
+    /// default), Hearth runs in single-node mode with no clustering overhead.
+    #[serde(default)]
+    pub cluster: Option<ClusterConfig>,
     /// Whether development mode is active. Not serialized — set by [`Config::dev`].
     #[serde(skip)]
     pub dev_mode: bool,
@@ -191,6 +198,7 @@ impl Config {
             auth: AuthConfig::default(),
             metrics: MetricsConfig::default(),
             realms: None,
+            cluster: None,
             security: SecurityYaml::default(),
             dev_mode: true,
             config_warnings: Vec::new(),
