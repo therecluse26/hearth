@@ -483,6 +483,116 @@ fn check_clock_skew(payload: &[u8]) {
     }
 }
 
+// ── ClusterStorageAdapter ─────────────────────────────────────────────────────
+
+/// Sync bridge: exposes [`ClusterEngine`] as [`StorageEngine`].
+///
+/// [`StorageEngine`] is a synchronous trait; [`ClusterEngine`] is async.
+/// This adapter bridges the gap using
+/// [`tokio::runtime::Handle::current().block_on`], which is safe to call
+/// from threads that have a runtime handle but are not themselves async
+/// executor threads — i.e., from inside [`tokio::task::spawn_blocking`]
+/// closures (which is how all upper-layer storage callers invoke storage).
+///
+/// [`ClusterError::NotLeader`] and [`ClusterError::ReplicationLagExceeded`]
+/// are surfaced as [`StorageError::Io`] with a descriptive message so
+/// callers can detect redirect-eligible errors by inspecting the message.
+/// A future revision may add a dedicated `StorageError::ClusterRedirect`
+/// variant to enable structured HTTP 307 responses.
+pub struct ClusterStorageAdapter {
+    engine: Arc<ClusterEngine>,
+}
+
+impl ClusterStorageAdapter {
+    /// Wraps a [`ClusterEngine`] for use as [`StorageEngine`].
+    pub fn new(engine: Arc<ClusterEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+fn cluster_to_storage_err(e: ClusterError) -> crate::storage::StorageError {
+    use crate::storage::StorageError;
+    match e {
+        ClusterError::Storage(se) => se,
+        ClusterError::NotLeader { leader_addr } => StorageError::Io(std::io::Error::other(
+            format!("raft: not the leader; redirect to {leader_addr}"),
+        )),
+        ClusterError::ReplicationLagExceeded { leader_addr } => {
+            StorageError::Io(std::io::Error::other(format!(
+                "raft: replication lag exceeded; redirect to {leader_addr}"
+            )))
+        }
+        ClusterError::Raft(msg) => StorageError::Io(std::io::Error::other(format!("raft: {msg}"))),
+    }
+}
+
+impl StorageEngine for ClusterStorageAdapter {
+    fn get(
+        &self,
+        realm_id: &RealmId,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, crate::storage::StorageError> {
+        let engine = Arc::clone(&self.engine);
+        let realm_id = realm_id.clone();
+        let key = key.to_vec();
+        tokio::runtime::Handle::current()
+            .block_on(async move { engine.get(&realm_id, &key).await })
+            .map_err(cluster_to_storage_err)
+    }
+
+    fn put(
+        &self,
+        realm_id: &RealmId,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), crate::storage::StorageError> {
+        let engine = Arc::clone(&self.engine);
+        let realm_id = realm_id.clone();
+        let key = key.to_vec();
+        let value = value.to_vec();
+        tokio::runtime::Handle::current()
+            .block_on(async move { engine.put(&realm_id, &key, &value).await })
+            .map_err(cluster_to_storage_err)
+    }
+
+    fn delete(&self, realm_id: &RealmId, key: &[u8]) -> Result<(), crate::storage::StorageError> {
+        let engine = Arc::clone(&self.engine);
+        let realm_id = realm_id.clone();
+        let key = key.to_vec();
+        tokio::runtime::Handle::current()
+            .block_on(async move { engine.delete(&realm_id, &key).await })
+            .map_err(cluster_to_storage_err)
+    }
+
+    fn scan(
+        &self,
+        realm_id: &RealmId,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Vec<ScanEntry>, crate::storage::StorageError> {
+        let engine = Arc::clone(&self.engine);
+        let realm_id = realm_id.clone();
+        let start = start.to_vec();
+        let end = end.to_vec();
+        tokio::runtime::Handle::current()
+            .block_on(async move { engine.scan(&realm_id, &start, &end).await })
+            .map_err(cluster_to_storage_err)
+    }
+
+    fn put_batch(
+        &self,
+        realm_id: &RealmId,
+        entries: &[(Vec<u8>, Vec<u8>)],
+    ) -> Result<(), crate::storage::StorageError> {
+        let engine = Arc::clone(&self.engine);
+        let realm_id = realm_id.clone();
+        let entries = entries.to_vec();
+        tokio::runtime::Handle::current()
+            .block_on(async move { engine.put_batch(&realm_id, &entries).await })
+            .map_err(cluster_to_storage_err)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

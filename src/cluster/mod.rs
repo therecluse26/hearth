@@ -35,7 +35,7 @@ pub mod server;
 pub mod state_machine;
 pub mod types;
 
-pub use engine::{ClusterBuildError, ClusterEngine, ClusterError};
+pub use engine::{ClusterBuildError, ClusterEngine, ClusterError, ClusterStorageAdapter};
 pub use log_store::{HearthLogReader, HearthLogStore};
 pub use network::HearthNetworkFactory;
 pub use server::{serve, IncomingRpcDispatch, NoopDispatch, RaftRpcHandler};
