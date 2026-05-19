@@ -9,6 +9,13 @@ Hearth has not yet cut a versioned release; all shipped work appears under `[Unr
 
 ### Added
 
+- **Raft clustering foundation (Phase 2)** — adds a `cluster:` section to `hearth.yaml` that enables
+  multi-node Raft consensus via `openraft`. When configured, Hearth starts a Raft peer gRPC server
+  (`peer_address`) secured by mutual TLS. The implementation includes durable log storage (`redb`),
+  a CBOR+gzip snapshot format, mTLS peer transport, and a lag-gated read path. Single-node mode is
+  unchanged — the cluster layer has zero overhead when `cluster:` is absent. Full write-path
+  integration tracked in HEA-616 (HEA-589).
+
 - **Per-IP and per-account rate limiting on auth endpoints** — `POST /token` (password grant),
   `POST /v1/auth/magic-link`, and realm token exchange now enforce a configurable sliding-window
   per-IP limit and a consecutive-failure lockout per account. Blocked callers receive
