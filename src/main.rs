@@ -470,7 +470,13 @@ async fn run_serve(
     }
 
     // Initialize storage engine
-    let (storage, app_storage_config): (Arc<EmbeddedStorageEngine>, StorageConfig) =
+    //
+    // `inner_storage` is the raw EmbeddedStorageEngine — kept for
+    // maintenance tasks that need concrete methods (e.g. compact_ssts).
+    // `storage` is what the rest of the app uses: in cluster mode it is
+    // wrapped in ClusterStorageAdapter so writes route through Raft quorum
+    // commit; in single-node mode it is a zero-overhead passthrough.
+    let (inner_storage, app_storage_config): (Arc<EmbeddedStorageEngine>, StorageConfig) =
         if config.dev_mode {
             let temp_dir = tempfile::tempdir()?;
             info!(path = %temp_dir.path().display(), "using temporary data directory (dev mode)");
@@ -512,6 +518,57 @@ async fn run_serve(
             let engine = Arc::new(EmbeddedStorageEngine::open(storage_config.clone())?);
             (engine, storage_config)
         };
+
+    // Build cluster-aware storage: wraps inner_storage in ClusterEngine so
+    // all writes (put / delete / put_batch) go through Raft quorum commit
+    // in cluster mode.  In single-node mode ClusterEngine is a zero-overhead
+    // passthrough and the peer server is not started.
+    let cluster_engine: Arc<hearth::cluster::ClusterEngine> =
+        if let Some(cluster_cfg) = &config.cluster {
+            match hearth::cluster::ClusterEngine::build_clustered(
+                Arc::clone(&inner_storage),
+                cluster_cfg,
+                &app_storage_config,
+            )
+            .await
+            {
+                Ok(engine) => {
+                    let engine = Arc::new(engine);
+                    let serve_cfg = cluster_cfg.clone();
+                    let serve_engine = Arc::clone(&engine);
+                    tokio::spawn(async move {
+                        if let Err(e) = hearth::cluster::serve(&serve_cfg, serve_engine).await {
+                            error!(error = %e, "Raft peer gRPC server terminated");
+                        }
+                    });
+                    info!(
+                        node_id = cluster_cfg.node_id,
+                        peer_address = %cluster_cfg.peer_address,
+                        "Raft cluster mode active"
+                    );
+                    engine
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        "Raft ClusterEngine init failed — falling back to single-node mode"
+                    );
+                    Arc::new(hearth::cluster::ClusterEngine::single_node(Arc::clone(
+                        &inner_storage,
+                    )))
+                }
+            }
+        } else {
+            Arc::new(hearth::cluster::ClusterEngine::single_node(Arc::clone(
+                &inner_storage,
+            )))
+        };
+
+    // `storage` is the app-layer storage handle: always a ClusterStorageAdapter,
+    // which routes through Raft in cluster mode and is a thin passthrough otherwise.
+    let storage: Arc<dyn StorageEngine> = Arc::new(hearth::cluster::ClusterStorageAdapter::new(
+        Arc::clone(&cluster_engine),
+    ));
 
     // Initialize identity engine
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
@@ -1045,7 +1102,7 @@ async fn run_serve(
 
     // Background periodic SST compaction.
     if config.storage.compaction.enabled && config.storage.compaction.interval_secs > 0 {
-        let storage_engine = Arc::clone(&storage);
+        let storage_engine = Arc::clone(&inner_storage);
         let interval_secs = config.storage.compaction.interval_secs;
         let min_sst_count = config.storage.compaction.min_sst_count;
         tokio::spawn(async move {
@@ -1067,47 +1124,6 @@ async fn run_serve(
                         warn!(error = %join_err, "compaction task panicked");
                     }
                     _ => {}
-                }
-            }
-        });
-    }
-
-    // Start the Raft peer gRPC server when cluster mode is configured.
-    //
-    // The peer server handles inbound AppendEntries / Vote / InstallSnapshot
-    // RPCs over mTLS-secured gRPC.  The ClusterEngine owns the Raft log and
-    // state machine; the existing `storage` binding continues to serve the
-    // HTTP application layer until callers are ported to use ClusterEngine
-    // directly for writes (see follow-up: storage layer async integration).
-    if let Some(cluster_cfg) = &config.cluster {
-        let cluster_cfg = cluster_cfg.clone();
-        let cluster_storage = Arc::clone(&storage);
-        let cluster_storage_cfg = app_storage_config.clone();
-        tokio::spawn(async move {
-            use hearth::cluster::{serve, ClusterEngine};
-            match ClusterEngine::build_clustered(
-                cluster_storage,
-                &cluster_cfg,
-                &cluster_storage_cfg,
-            )
-            .await
-            {
-                Ok(engine) => {
-                    let engine = Arc::new(engine);
-                    info!(
-                        node_id = cluster_cfg.node_id,
-                        peer_address = %cluster_cfg.peer_address,
-                        "Raft cluster mode active — starting peer gRPC server"
-                    );
-                    if let Err(e) = serve(&cluster_cfg, engine).await {
-                        error!(error = %e, "Raft peer gRPC server terminated with error");
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        error = %e,
-                        "failed to initialise Raft ClusterEngine — cluster mode disabled"
-                    );
                 }
             }
         });
@@ -2037,7 +2053,7 @@ fn run_migrate_keycloak(
         let temp_dir = tempfile::tempdir()?;
         let storage_config = StorageConfig::dev(temp_dir.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-        let (identity, rbac) = build_engines(&storage, true)?;
+        let (identity, rbac) = build_engines(Arc::clone(&storage) as Arc<dyn StorageEngine>, true)?;
         let importer = KeycloakImporter::new(identity, rbac);
         let report =
             importer.import_realm(&export, requested_realm, &ImportOptions { dry_run: true })?;
@@ -2051,7 +2067,7 @@ fn run_migrate_keycloak(
     std::fs::create_dir_all(data_dir)?;
     let storage_config = StorageConfig::dev(data_dir.to_path_buf());
     let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-    let (identity, rbac) = build_engines(&storage, false)?;
+    let (identity, rbac) = build_engines(Arc::clone(&storage) as Arc<dyn StorageEngine>, false)?;
     let importer = KeycloakImporter::new(identity, rbac);
 
     let report =
@@ -2089,7 +2105,7 @@ fn run_migrate_auth0(
         let temp_dir = tempfile::tempdir()?;
         let storage_config = StorageConfig::dev(temp_dir.path().to_path_buf());
         let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-        let (identity, rbac) = build_engines(&storage, true)?;
+        let (identity, rbac) = build_engines(Arc::clone(&storage) as Arc<dyn StorageEngine>, true)?;
         let importer = Auth0Importer::new(identity, rbac);
         let report = importer.import_bundle(
             &bundle,
@@ -2106,7 +2122,7 @@ fn run_migrate_auth0(
     std::fs::create_dir_all(data_dir)?;
     let storage_config = StorageConfig::dev(data_dir.to_path_buf());
     let storage = Arc::new(EmbeddedStorageEngine::open(storage_config)?);
-    let (identity, rbac) = build_engines(&storage, false)?;
+    let (identity, rbac) = build_engines(Arc::clone(&storage) as Arc<dyn StorageEngine>, false)?;
     let importer = Auth0Importer::new(identity, rbac);
 
     let report = importer.import_bundle(
@@ -2127,7 +2143,7 @@ type AdminEngines = (
 /// Builds the identity + RBAC engine pair used by one-shot admin
 /// commands (migrations, etc.). Keeps the wiring in one place.
 fn build_engines(
-    storage: &Arc<EmbeddedStorageEngine>,
+    storage: Arc<dyn StorageEngine>,
     dev_mode: bool,
 ) -> Result<AdminEngines, Box<dyn std::error::Error>> {
     let clock = Arc::new(SystemClock) as Arc<dyn Clock>;
@@ -2140,15 +2156,15 @@ fn build_engines(
         IdentityConfig::default()
     };
     let rbac = Arc::new(EmbeddedRbacEngine::new(
-        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&storage),
         Arc::clone(&clock),
     )) as Arc<dyn hearth::rbac::RbacEngine>;
     let audit = Arc::new(EmbeddedAuditEngine::new(
-        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&storage),
         Arc::clone(&clock),
     )) as Arc<dyn hearth::audit::AuditEngine>;
     let identity = Arc::new(EmbeddedIdentityEngine::with_rbac(
-        Arc::clone(storage) as Arc<dyn StorageEngine>,
+        Arc::clone(&storage),
         clock,
         identity_config,
         Arc::clone(&rbac),
