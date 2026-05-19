@@ -60,7 +60,7 @@ jobs:
       - name: Restore criterion baseline (PR only)
         if: github.event_name == 'pull_request'
         id: restore-baseline
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: target/criterion
           # Prefer exact match; fall back to most-recent main baseline.
@@ -99,7 +99,7 @@ jobs:
 
       - name: Save criterion baseline to cache (main push only)
         if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: target/criterion
           key: criterion-baseline-main-${{ github.sha }}
